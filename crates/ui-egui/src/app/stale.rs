@@ -115,10 +115,23 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
+    /// Run changed (⌘/Ctrl+Enter) or Run workflow (#965), from the shortcut or the palette:
+    /// quotes the run and shows its confirmation, or says there is nothing to run.
+    pub(super) fn run_whole_command(&mut self, id: &str) {
+        let kind = if id == "run.workflow" { super::generate::RunKind::Workflow } else { super::generate::RunKind::Changed };
+        if let Err(error) = self.request_whole(kind) {
+            self.notice = Some(error.message);
+        }
+    }
     pub(super) fn palette_command_params(&self, id: &str) -> serde_json::Value {
-        if id == "canvas.stale" { json!({"canvas": self.canvas}) } else { json!({}) }
+        if matches!(id, "canvas.stale" | "run.changed" | "run.workflow") { json!({"canvas": self.canvas}) } else { json!({}) }
     }
     pub(super) fn dispatch_palette_command(&mut self, id: &str) {
+        // A run of the whole canvas opens its price confirmation; nothing starts from here.
+        if matches!(id, "run.changed" | "run.workflow") {
+            self.run_whole_command(id);
+            return;
+        }
         // The review is read a page at a time in its panel.
         #[cfg(not(target_arch = "wasm32"))]
         if id == "usage.ownership" {

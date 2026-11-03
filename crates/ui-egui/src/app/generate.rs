@@ -18,6 +18,12 @@ pub(super) enum RunKind {
     Generate,
     /// Refresh a stale result (#211): the card with whatever upstream is stale or has no result.
     Refresh,
+    /// Run changed (#965, ⌘/Ctrl+Enter): every card on the canvas whose result is stale,
+    /// part-made or missing, with the upstream it needs.
+    Changed,
+    /// Run workflow (#965): every generation and technique card on the canvas, and whatever
+    /// Run changed would run.
+    Workflow,
 }
 
 impl RunKind {
@@ -25,15 +31,54 @@ impl RunKind {
         match self {
             Self::Generate => "selected",
             Self::Refresh => "with_upstream",
+            Self::Changed => nodecraft_engine::run_cmds::CHANGED_MODE,
+            Self::Workflow => nodecraft_engine::run_cmds::WORKFLOW_MODE,
         }
     }
     fn title(self) -> &'static str {
         match self {
             Self::Generate => "Generate",
             Self::Refresh => "Refresh",
+            Self::Changed => "Run changed",
+            Self::Workflow => "Run workflow",
         }
     }
+
+    /// A run of the whole canvas, which names no cards.
+    pub(super) fn whole(self) -> bool {
+        matches!(self, Self::Changed | Self::Workflow)
+    }
+
+    /// The command that quotes this run of `nodes` on `canvas`, and its parameters. A run of the
+    /// whole canvas is quoted by its own command (`run.changed`, `run.workflow`), the one the
+    /// palette and CLI run too.
+    fn quote_request(self, canvas: CanvasId, nodes: &[NodeId]) -> (&'static str, Json) {
+        match self {
+            Self::Changed => ("run.changed", json!({"canvas": canvas})),
+            Self::Workflow => ("run.workflow", json!({"canvas": canvas})),
+            Self::Generate | Self::Refresh => ("run.quote", json!({"canvas": canvas, "mode": self.mode(), "nodes": nodes})),
+        }
+    }
+
+    /// `run.start` parameters for this run, accepting `accept`.
+    fn start_request(self, canvas: CanvasId, nodes: &[NodeId], accept: Json) -> Json {
+        if self.whole() {
+            json!({"canvas": canvas, "mode": self.mode(), "accept": accept})
+        } else {
+            json!({"canvas": canvas, "mode": self.mode(), "nodes": nodes, "accept": accept})
+        }
+    }
+
+    /// `run.estimate` takes the parameters of `run.quote`.
+    fn estimate_request(self, canvas: CanvasId, nodes: &[NodeId]) -> Json {
+        if self.whole() { json!({"canvas": canvas, "mode": self.mode()}) } else { json!({"canvas": canvas, "mode": self.mode(), "nodes": nodes}) }
+    }
 }
+
+/// What ⌘/Ctrl+Enter and Run workflow say when the canvas has nothing to run (#965).
+pub(super) const NOTHING_TO_RUN: &str = "Nothing to run: every card's result is up to date.";
+/// The same for a canvas with no generation, action or technique cards at all.
+pub(super) const NO_WORKFLOW: &str = "Nothing to run: this canvas has no cards that generate or compute a result.";
 
 pub(super) struct RunConfirm {
     session: Arc<()>,
@@ -97,6 +142,12 @@ pub(super) struct Quote {
     alike: usize,
     /// Nodes whose cached results are reused without a step or charge.
     reused: usize,
+    /// The nodes of the listed steps, in run order.
+    steps: Vec<NodeId>,
+    /// How many steps the run has, listed or not.
+    steps_total: usize,
+    /// Nodes a whole-canvas run leaves for the next one, after a batch it feeds (#965).
+    waiting: usize,
     /// Whether applying cached results is the only work in this quote.
     cached_only: bool,
     /// The planner found nothing in the way; a budget may still refuse the price.
@@ -145,7 +196,35 @@ impl Quote {
         let cached_only = reused > 0 && steps.is_empty() && listed;
         let planned = value.get("blocked").and_then(Json::as_array).is_none_or(Vec::is_empty);
         let capped = value.get("blocks").and_then(Json::as_array).is_some_and(|blocks| !blocks.is_empty());
-        Some(Self { token, amounts, totals, complete, allowed, reasons, unpriced_jobs, listed, resumable, quoted, alike, reused, cached_only, planned, capped })
+        let steps_total = value.get("steps_total").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(steps.len());
+        let steps = steps.iter().filter_map(|step| serde_json::from_value(step.get("node")?.clone()).ok()).collect();
+        let listed_waiting = value.get("waiting").and_then(Json::as_array).map_or(0, Vec::len);
+        let waiting = value.get("waiting_total").and_then(Json::as_u64).and_then(|n| usize::try_from(n).ok()).unwrap_or(listed_waiting);
+        Some(Self {
+            token,
+            amounts,
+            totals,
+            complete,
+            allowed,
+            reasons,
+            unpriced_jobs,
+            listed,
+            resumable,
+            quoted,
+            alike,
+            reused,
+            steps,
+            steps_total,
+            waiting,
+            cached_only,
+            planned,
+            capped,
+        })
+    }
+
+    /// Nothing runs and nothing is reused, and nothing is in the way: every result is current.
+    pub(super) fn nothing(&self) -> bool {
+        self.planned && self.allowed && self.listed && self.steps.is_empty() && self.reused == 0
     }
 
     /// Whether the quote can be accepted as shown, given the consent collected so far.
@@ -193,13 +272,26 @@ impl NodeCraftApp {
         self.request_runs(vec![id], kind)
     }
 
-    /// Quote one run of the cards `nodes` together and ask before starting it.
-    pub(super) fn request_runs(&mut self, nodes: Vec<NodeId>, kind: RunKind) -> Result<(), Error> {
-        if nodes.is_empty() {
+    /// Quote a run of the whole canvas (#965), Run changed or Run workflow, and ask before
+    /// starting it. Nothing starts from here; a canvas with nothing to run says so.
+    pub(super) fn request_whole(&mut self, kind: RunKind) -> Result<(), Error> {
+        self.request_runs(Vec::new(), kind)
+    }
+
+    /// Quote one run of the cards `nodes` together and ask before starting it. A run of the
+    /// whole canvas finds its own cards, and `nodes` is ignored.
+    pub(super) fn request_runs(&mut self, mut nodes: Vec<NodeId>, kind: RunKind) -> Result<(), Error> {
+        if nodes.is_empty() && !kind.whole() {
             return Err(Error::new(ErrorKind::InvalidInput, "nothing to run"));
         }
         if self.run_confirm.is_some() {
             return Ok(());
+        }
+        if kind.whole() {
+            // What the run starts from, for its providers; the engine plans the run itself.
+            self.refresh_stale_badges();
+            let stale = self.stale_badges.as_ref().map(|badges| &badges.nodes).cloned().unwrap_or_default();
+            nodes = super::runs::whole_roots(&self.session, self.canvas, kind == RunKind::Workflow, &stale);
         }
         if self.runs.is_some() {
             // A synchronous browser key command can finish later in this same UI frame.
@@ -219,9 +311,14 @@ impl NodeCraftApp {
                 return Ok(());
             }
         }
-        let request = json!({"canvas": self.canvas, "mode": kind.mode(), "nodes": nodes});
-        let value = self.session.dispatch("run.quote", &request)?;
+        let (command, request) = kind.quote_request(self.canvas, &nodes);
+        let value = self.session.dispatch(command, &request)?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
+        if kind.whole() && quote.nothing() {
+            self.notice = Some(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN }.into());
+            return Ok(());
+        }
+        let request = kind.estimate_request(self.canvas, &nodes);
         // Jobs priced only while they run may have a price their provider can give now (#663),
         // which may also be what a budget needs to allow them; a host that can't ask refuses the
         // command.
@@ -229,7 +326,14 @@ impl NodeCraftApp {
             .then(|| self.session.dispatch("run.estimate", &request).ok())
             .flatten()
             .and_then(|answer| answer.get("request").and_then(Json::as_u64));
-        let drafts = nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id));
+        let drafts = if kind.whole() {
+            let canvas = self.session.document().canvases().get(&self.canvas);
+            canvas.is_some_and(|canvas| {
+                canvas.nodes().keys().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id))
+            })
+        } else {
+            nodes.iter().any(|id| self.editors.get(id).is_some_and(EditorState::has_uncommitted) || self.sheet_draft_pending(*id))
+        };
         self.run_confirm = Some(RunConfirm {
             session: self.session.view_identity(),
             canvas: self.canvas,
@@ -270,8 +374,8 @@ impl NodeCraftApp {
         if confirm.revision != self.session.revision() || confirm.error.is_some() {
             return;
         }
-        let request = json!({"canvas": confirm.canvas, "mode": confirm.kind.mode(), "nodes": confirm.nodes});
-        match self.session.dispatch("run.quote", &request).ok().as_ref().and_then(Quote::read) {
+        let (command, request) = confirm.kind.quote_request(confirm.canvas, &confirm.nodes);
+        match self.session.dispatch(command, &request).ok().as_ref().and_then(Quote::read) {
             Some(quote) => {
                 confirm.quote = quote;
                 // Consent was to the price shown before.
@@ -334,6 +438,20 @@ impl NodeCraftApp {
         let mut start = false;
         let mut requote = false;
         let mut change_caps = false;
+        // A run of the whole canvas names the cards it runs (#965); a card's own run is that card.
+        let runs = (confirm.kind.whole() && !stale).then(|| self.steps_line(&confirm.quote)).flatten();
+        // A card still running from an earlier run would be generated, and charged, twice: a
+        // whole-canvas run waits until it finishes (#965). Only listed steps are checked; a quote
+        // with more steps than are listed can't be started from here at all.
+        let busy = match &self.runs {
+            Some(host) if confirm.kind.whole() => {
+                let mut cards: Vec<NodeId> = confirm.quote.steps.iter().copied().filter(|id| host.is_running(confirm.canvas, *id)).collect();
+                cards.sort();
+                cards.dedup();
+                cards.len()
+            }
+            _ => 0,
+        };
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
@@ -355,6 +473,23 @@ impl NodeCraftApp {
                 }
             } else {
                 ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
+                if let Some(runs) = &runs {
+                    ui.label(runs);
+                }
+                if quote.waiting > 0 {
+                    ui.label(format!(
+                        "{} card(s) after a batch wait for this run's results: press ⌘/Ctrl+Enter (Run changed) again once it finishes.",
+                        quote.waiting
+                    ));
+                }
+                if busy > 0 {
+                    ui.colored_label(
+                        t.danger,
+                        format!(
+                            "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
+                        ),
+                    );
+                }
                 if quote.reused > 0 {
                     ui.label(format!("{} reused, free", quote.reused));
                 }
@@ -391,7 +526,11 @@ impl NodeCraftApp {
                 }
             }
             if confirm.drafts {
-                ui.label("Unsaved edits on this card are not part of this run.");
+                ui.label(if confirm.kind.whole() {
+                    "Unsaved edits on cards are not part of this run."
+                } else {
+                    "Unsaved edits on this card are not part of this run."
+                });
             }
             if let Some(error) = &confirm.error {
                 ui.colored_label(t.danger, error);
@@ -412,7 +551,7 @@ impl NodeCraftApp {
                     } else {
                         format!("{title} for {}", quote.price())
                     };
-                    start = ui.add_enabled(quote.acceptable(confirm.partial), egui::Button::new(label)).clicked();
+                    start = ui.add_enabled(quote.acceptable(confirm.partial) && busy == 0, egui::Button::new(label)).clicked();
                 }
                 if quote.capped && !quote.allowed && !stale {
                     change_caps = ui.button("Change budgets…").on_hover_text("Raise or remove the cap that blocks this run").clicked();
@@ -426,7 +565,7 @@ impl NodeCraftApp {
             close = true;
         }
         close |= modal.should_close();
-        if start && !stale && confirm.error.is_none() {
+        if start && busy == 0 && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;
             let mut accept = json!({"token": quote.token, "amounts": quote.amounts});
             if !quote.complete {
@@ -435,8 +574,7 @@ impl NodeCraftApp {
             if quote.unpriced_jobs > 0 {
                 accept["unpriced_jobs"] = json!(quote.unpriced_jobs);
             }
-            match self.session.dispatch("run.start", &json!({"canvas": confirm.canvas, "mode": confirm.kind.mode(), "nodes": confirm.nodes, "accept": accept}))
-            {
+            match self.session.dispatch("run.start", &confirm.kind.start_request(confirm.canvas, &confirm.nodes, accept)) {
                 Ok(_) => {
                     self.notice = None;
                     close = true;
@@ -454,6 +592,40 @@ impl NodeCraftApp {
             self.run_confirm = Some(confirm);
         }
         true
+    }
+
+    /// Which cards a quoted run of the whole canvas runs, in run order: the first few by title.
+    fn steps_line(&self, quote: &Quote) -> Option<String> {
+        const NAMED: usize = 6;
+        let canvas = self.session.document().canvases().get(&self.canvas)?;
+        let mut cards: Vec<NodeId> = Vec::new();
+        // A technique card's inlined steps are listed under it, once.
+        for id in &quote.steps {
+            if !cards.contains(id) {
+                cards.push(*id);
+            }
+        }
+        if cards.is_empty() {
+            return None;
+        }
+        let names: Vec<String> = cards
+            .iter()
+            .take(NAMED)
+            .filter_map(|id| canvas.nodes().get(id))
+            .map(|node| card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor())))
+            .collect();
+        let more = cards.len().saturating_sub(names.len());
+        // Past the listed steps the count is of steps, as a technique's inlined steps aren't told
+        // apart from cards there.
+        let count = if !quote.listed {
+            format!("{} steps", quote.steps_total)
+        } else if cards.len() == 1 {
+            "1 card".to_owned()
+        } else {
+            format!("{} cards", cards.len())
+        };
+        let tail = if more > 0 { format!(" and {more} more") } else { String::new() };
+        Some(line(&format!("Runs {count}: {}{tail}.", names.join(", "))))
     }
 
     /// The toolbar over the one selected generation card: its model and mode, aspect ratio,
