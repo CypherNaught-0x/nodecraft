@@ -12,10 +12,76 @@ For other clients, configure a stdio server that runs `nodecraft-cli` with the a
 
 The server starts with a new, empty project with one canvas. It has no allowed folders, so the
 project file commands are listed but refused; use the bridge below to open and save projects.
-It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership` and
-`usage.unsettled` are listed as `ready: false` with bridge guidance, rather than reporting an
+It does not load the desktop app's usage log: `usage.export_csv`, `usage.ownership`,
+`usage.unsettled` and `usage.unresolved` are listed as `ready: false` with bridge guidance, rather than reporting an
 empty log as though it were billing evidence. Bridge to the running app to read its real log.
-Streamable HTTP and the in-app server setting are still to come (#116).
+
+## Streamable HTTP
+
+```sh
+nodecraft-cli mcp --listen                    # http://127.0.0.1:41117/mcp, a new project
+nodecraft-cli mcp --bridge --listen 127.0.0.1:9000   # the running app, over HTTP
+```
+
+`--listen [address]` serves the same server over MCP Streamable HTTP instead of stdio (#116), with
+either backend. The address must be on this computer (`127.0.0.1`, another `127.x` address or
+`[::1]`); any other is refused, so other machines can't reach it. Every request needs
+`Authorization: Bearer <token>`. The token is `NODECRAFT_MCP_TOKEN` when that is set (32–256
+characters of letters, digits and `-._~+/=`), otherwise a new random one is printed once on stderr
+with a ready `claude mcp add --transport http …` line. It is never written to a file.
+
+```sh
+claude mcp add --transport http nodecraft http://127.0.0.1:41117/mcp --header "Authorization: Bearer <token>"
+```
+
+The endpoint is `/mcp`. Each `POST` carries one JSON-RPC message (`Content-Type: application/json`,
+with `Content-Length`; chunked bodies are refused). A request gets one `application/json` reply;
+a notification or response gets `202 Accepted`. The server never streams: `GET` answers `405`, as
+the specification allows, so no Server-Sent Events are used. `initialize` returns an
+`Mcp-Session-Id`; later requests must send it (`400` without, `404` once it has ended, after which
+the client initializes again) and `DELETE /mcp` with it ends the session. An
+`MCP-Protocol-Version` header naming a revision this server doesn't speak is refused with `400`.
+Sessions are bookkeeping: all of them share the one project (or bridged app), as stdio clients of
+one process would. At most 32 are remembered; a new one past that ends the least recently used.
+
+Protections, checked before the body is read: the `Host` header must name a loopback host and the
+server's port, and an `Origin`, when sent, must be a loopback one (`http://localhost:3000` passes,
+`http://evil.example` and `null` don't). This stops a web page that rebinds its own name to
+127.0.0.1 (DNS rebinding). No CORS headers are ever sent, so browsers can't read replies from
+other origins. A wrong or missing token is `401` with `WWW-Authenticate: Bearer`. Limits: request
+heads at most 16 KiB and 64 headers, messages at most 4 MiB (`413`), 10 s for a head (a new
+connection must send its first request within 10 s), 30 s for a body, 60 s idle between requests
+on a kept-alive connection, and 16 connections at once (`503` beyond). Only `POST` carries a body,
+and `Expect: 100-continue` is answered before it is read (other expectations get `417`).
+
+Messages are handled one at a time in arrival order. A message that hasn't started within 30 s is
+answered `503` ("nothing ran") and dropped, never run late, so a client that retries after its own
+60 s timeout doesn't find the first attempt still queued; one whose client disconnects while it
+waits is dropped the same way. A message that has started runs to the end: if it takes longer
+than 120 s the client is answered `503`, but the command may still finish, so check (for example
+with `canvas_inspect` or `run.held`) before repeating something that costs money. Tools, command classification, quotes, budgets and
+human-only commands are exactly those of the stdio server.
+
+## In the desktop app
+
+**Automation › Enable MCP server** (the plug button in the top bar) starts the same server inside
+the app, on `http://127.0.0.1:41116/mcp` (`[automation] mcp_port` in `config.toml` changes the
+port; below 1024 means the default). It is off until the person turns it on, and the choice is kept
+in settings (`[automation] mcp_server`), so it starts with the app afterwards. It serves the window
+the person sees, like `--bridge`: the same tools including `screenshot`, edits appear live and undo
+there, and the `--root`/`--read-root` folders apply when the app was started with them. The panel
+shows the state (off, starting, running at the address, or why it isn't running), the token masked
+to its last four characters, and buttons to copy the address, the token and a `claude mcp add`
+command, and to make a new token (clients must then be given it).
+
+The token is kept in the OS keychain (account `nodecraft-mcp-server`), so client configurations keep
+working across restarts. Without a keychain a token is made for the session, and the panel says it
+lasts until NodeCraft closes. The token never passes through a command or a log.
+
+Commands: `automation.mcp_server_set {enabled}` turns it on or off and is human-only (opening the
+app to local agents is the person's call); `automation.mcp_server_status {}` returns
+`{enabled, state, url, error}`, never the token, and agents may read it. Elsewhere (the CLI, the
+browser) both are refused as unsupported.
 
 ## Bridge to the running app
 
@@ -57,7 +123,8 @@ Limits: the check happens when the command arrives. A program that can change th
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
 `file.cancel` cancels any background save or open, including one the person started outside the
 folders. Opening checks that the project's folder is writable for recovery, which briefly creates
-a file there, even in a `--read-root` folder.
+a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
+refused with `busy` before anything is written; the message gives the sizes needed and free.
 
 ## Tools
 
@@ -129,7 +196,9 @@ machine, so it is human-only for the same reason (#557), as are `timeline.export
 takes it from, so it is human-only too (#831). `run.record` writes results the host ran, and
 `usage.reconcile_ownership` records a person's judgement about historical charges against their
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed
-(#332); agents can still review those charges with `usage.ownership` and `usage.unsettled`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
+(#332), and `usage.resolve_unresolved` for what an ordinary unresolved charge was billed (#298);
+agents can still review those charges with `usage.ownership`, `usage.unsettled` and
+`usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
@@ -155,7 +224,14 @@ lists, and a test fails until then.
 `export.local_plan` previews a batch without writing files and is agent-visible; `export.local_run`
 would publish files outside the project and undo, so it is human-only (#98). Both require an
 app-injected authorized folder. File → Save workflow results now obtains an ephemeral grant
-for `export.results_plan` / `export.results_start` (#966); the `media.export` node remains #746. On Windows and
+for `export.results_plan` / `export.results_start` (#966). An Export to folder card (`media.export`,
+#746) is performed by `export.node_plan` (agent-visible preview) and `export.node_run` (human-only),
+which turn the card into exactly the `export.local_*` request from the results wired into it; the
+folder is the one a person chose on the card in the desktop app, never a parameter, so an agent
+can preview a card but cannot grant a folder or write. `export.local_run` and `export.node_run`
+take `background: true` to write on the export worker (`export.status`, `export.cancel`); its
+finished `export.status` result has `state: "batch"` with the same per-entry `outcome` the
+synchronous command returns. On Windows and
 other non-Unix platforms an authorized host can preview with `export.local_plan`, but
 `export.local_run` returns Unsupported before creating or replacing any file: secure folder writes
 need an equivalent descriptor-relative no-follow implementation. The browser cannot authorize a
@@ -168,6 +244,13 @@ Neither command changes active history, edits the graph or opens a dialog.
 **Keychain prompts:** `keys.status` reads the OS keychain. The first time `nodecraft-cli` reads a
 key the app stored, macOS can ask whether to allow it. Messages are handled one at a time, so the
 server waits until the prompt is answered.
+
+**Whole-canvas runs (#965):** `run.changed` and `run.workflow` take `{canvas}` and return the
+`run.quote` result for mode `pending` (every card whose result is stale, part-made or missing,
+with the upstream it needs) or `workflow` (every generation and technique card as well), plus
+that `mode`. A node with work between two nodes of the run runs too; nodes after a batch the run
+feeds are listed in `waiting` for the next run. They start nothing; start the quoted run with `run.start {canvas, mode, accept}`.
+In the app they are **Run changed** (⌘/Ctrl+Enter) and **Run workflow**.
 
 **Provider prices:** Standalone `nodecraft-cli mcp` supports `command_run` with
 `id: "run.estimate"` and the same parameters as `run.quote`. It sends the job's inputs to the

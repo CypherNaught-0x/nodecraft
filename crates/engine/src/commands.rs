@@ -206,6 +206,8 @@ pub enum Effect {
     },
     LocalExport {
         plan: nodecraft_format::export::ExportPlan,
+        /// Hand the plan to the shared background export worker and return `{pending:id}`.
+        background: bool,
     },
     Service {
         capability: &'static str,
@@ -287,7 +289,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 75] = [
+        let groups: [fn() -> Vec<CommandSpec>; 78] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -319,8 +321,10 @@ impl Registry {
             crate::search_cmds::specs,
             crate::file_cmds::specs,
             crate::storage_window_cmds::specs,
+            crate::mcp_server_cmds::specs,
             crate::local_export::specs,
             crate::results_export::specs,
+            crate::node_export::specs,
             crate::layout_cmds::specs,
             crate::comment_cmds::specs,
             crate::run_cmds::specs,
@@ -349,6 +353,7 @@ impl Registry {
             crate::plugin_cmds::specs,
             crate::ownership_cmds::specs,
             crate::resolve_cmds::specs,
+            crate::billing_cmds::specs,
             crate::held_cmds::specs,
             crate::share_cmds::specs,
             crate::private_cmds::specs,

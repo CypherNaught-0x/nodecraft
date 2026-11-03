@@ -23,6 +23,7 @@ pub enum Icon {
     More,
     Apps,
     Cloud,
+    Plug,
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
@@ -42,6 +43,7 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("wallet", include_bytes!("../../../assets/icons/tabler/wallet.svg")),
     ("folder-open", include_bytes!("../../../assets/icons/tabler/folder-open.svg")),
     ("device-floppy", include_bytes!("../../../assets/icons/tabler/device-floppy.svg")),
+    ("plug-connected", include_bytes!("../../../assets/icons/tabler/plug-connected.svg")),
 ];
 
 fn catalog() -> &'static SvgIconSet {
@@ -58,7 +60,7 @@ fn catalog() -> &'static SvgIconSet {
 }
 
 impl Icon {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::Search,
         Self::Comments,
         Self::Key,
@@ -75,6 +77,7 @@ impl Icon {
         Self::More,
         Self::Apps,
         Self::Cloud,
+        Self::Plug,
     ];
 
     pub fn name(self) -> &'static str {
@@ -95,6 +98,7 @@ impl Icon {
             Self::More => "dots",
             Self::Apps => "apps",
             Self::Cloud => "cloud",
+            Self::Plug => "plug-connected",
         }
     }
 
@@ -116,6 +120,7 @@ impl Icon {
             Self::More => "More",
             Self::Apps => "Open as app",
             Self::Cloud => "Providers",
+            Self::Plug => "Automation",
         }
     }
 

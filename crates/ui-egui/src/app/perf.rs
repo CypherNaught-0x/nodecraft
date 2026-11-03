@@ -159,3 +159,6 @@ mod regression152;
 // The app's live recompute, and so its look counter, is native-only.
 #[cfg(not(target_arch = "wasm32"))]
 mod param556;
+// A Batch Generate sheet's table and grid at 1,000 rows (#163); its fixture is native-only.
+#[cfg(not(target_arch = "wasm32"))]
+mod sheet163;

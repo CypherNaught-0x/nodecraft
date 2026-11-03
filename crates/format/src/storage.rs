@@ -91,6 +91,12 @@ pub trait ProjectStorage {
         cancel.check()?;
         self.append(plan.small_bytes()?)
     }
+    /// Free space on the volumes a save to, or an open of, `location` writes to, for the
+    /// advisory preflight in [`crate::space`] (#367). Hosts without a filesystem (the browser,
+    /// memory) report nothing, and nothing is checked. Must not block on the location itself.
+    fn space_probe(&self, _location: &StorageLocation) -> crate::space::SpaceProbe {
+        crate::space::SpaceProbe::default()
+    }
     fn load(&mut self, location: &StorageLocation) -> Result<Vec<u8>, Error>;
     /// Stage a location without releasing the active destination. Locking/read-only hosts
     /// must implement this protocol; defaults suit writable hosts without location locks.
@@ -288,6 +294,13 @@ pub(crate) mod native {
         fn capability(&self) -> StorageCapability {
             StorageCapability::StreamingV2
         }
+        fn space_probe(&self, location: &StorageLocation) -> crate::space::SpaceProbe {
+            let StorageLocation::Path(path) = location else {
+                return crate::space::SpaceProbe::default();
+            };
+            let recovery = self.recovery.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+            space::probe(path, recovery)
+        }
         fn asset_context(&self) -> Option<AssetContext> {
             Some(self.context.clone())
         }
@@ -421,6 +434,41 @@ pub(crate) mod native {
                 && let Some(workspace) = &self.context.0.workspace
             {
                 workspace.remove_journal(&self.journal);
+            }
+        }
+    }
+    /// The platform side of the space preflight: free bytes and volume identity per folder, and
+    /// the size of a file already at the location. Every failure reads as unknown.
+    mod space {
+        use std::path::Path;
+        pub(super) fn probe(location: &Path, recovery: &Path) -> crate::space::SpaceProbe {
+            let folder = location.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+            // Metadata follows links but never opens the file, so a FIFO or device can't block.
+            let existing_bytes = std::fs::metadata(location).ok().filter(std::fs::Metadata::is_file).map(|m| m.len());
+            crate::space::SpaceProbe {
+                destination_free: fs4::available_space(folder).ok(),
+                recovery_free: fs4::available_space(recovery).ok(),
+                shared: same_volume(folder, recovery),
+                existing_bytes,
+            }
+        }
+        #[cfg(unix)]
+        fn same_volume(a: &Path, b: &Path) -> bool {
+            use std::os::unix::fs::MetadataExt;
+            match (std::fs::metadata(a), std::fs::metadata(b)) {
+                (Ok(a), Ok(b)) => a.dev() == b.dev(),
+                // Unknown: assume one volume, so the larger combined need is the one checked.
+                _ => true,
+            }
+        }
+        #[cfg(not(unix))]
+        fn same_volume(a: &Path, b: &Path) -> bool {
+            // Drive letters and UNC shares; a folder mounted inside another drive reads as
+            // that drive, which only makes the check stricter.
+            let root = |path: &Path| path.canonicalize().ok().and_then(|path| path.components().next().map(|c| c.as_os_str().to_ascii_lowercase()));
+            match (root(a), root(b)) {
+                (Some(a), Some(b)) => a == b,
+                _ => true,
             }
         }
     }

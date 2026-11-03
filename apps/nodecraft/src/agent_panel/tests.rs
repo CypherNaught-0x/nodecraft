@@ -1,5 +1,6 @@
 use super::*;
 use nodecraft_engine::settings::AgentEndpoint;
+use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_providers::llm::{ChatResponse, Message, Part, Role, StopReason};
 use nodecraft_providers::{ProviderError, Usage};
 use serde_json::{Value, json};
@@ -171,15 +172,50 @@ fn an_endpoint_without_a_model_or_a_worker_says_so_instead_of_asking() {
 #[test]
 fn the_endpoint_needs_its_key_and_local_servers_none() {
     let keys = nodecraft_engine::secrets::MemoryStore::default();
-    let missing = worker::endpoint(&AgentSettings::default(), &keys).unwrap_err();
+    let missing = worker::endpoint(&AgentSettings::default(), &[ProviderSettings::default()], &keys).unwrap_err();
     assert!(missing.message.contains("anthropic"), "{missing:?}");
     let account = nodecraft_engine::secrets::Account::new("anthropic").unwrap();
     nodecraft_engine::secrets::SecretStore::set(&keys, &account, &nodecraft_engine::secrets::Secret::new("sk-test").unwrap()).unwrap();
-    let endpoint = worker::endpoint(&AgentSettings::default(), &keys).unwrap();
+    let endpoint = worker::endpoint(&AgentSettings::default(), &[ProviderSettings::default()], &keys).unwrap();
     assert_eq!(endpoint.id, "anthropic");
     let local = AgentSettings { endpoint: AgentEndpoint::LmStudio, base_url: Some("http://10.0.0.2:1234".into()), ..AgentSettings::default() };
-    let endpoint = worker::endpoint(&local, &keys).unwrap();
+    let endpoint = worker::endpoint(&local, &[ProviderSettings::default()], &keys).unwrap();
     assert_eq!((endpoint.base_url.as_str(), endpoint.key.is_none()), ("http://10.0.0.2:1234/v1", true));
+}
+
+#[test]
+fn the_agent_follows_a_custom_base_url_or_refuses() {
+    let keys = nodecraft_engine::secrets::MemoryStore::default();
+    for name in ["anthropic", "openai"] {
+        let account = nodecraft_engine::secrets::Account::new(name).unwrap();
+        nodecraft_engine::secrets::SecretStore::set(&keys, &account, &nodecraft_engine::secrets::Secret::new("sk-test").unwrap()).unwrap();
+    }
+    let openai = AgentSettings { endpoint: AgentEndpoint::Openai, ..AgentSettings::default() };
+    assert_eq!(worker::endpoint(&openai, &[ProviderSettings::default()], &keys).unwrap().base_url, "https://api.openai.com/v1", "nothing set: unchanged");
+    let mut providers = ProviderSettings::default();
+    providers.base_urls.insert("openai".into(), "http://127.0.0.1:4000/v1".into());
+    providers.base_urls.insert("anthropic".into(), "ftp://gateway.example/v1".into());
+    assert_eq!(worker::endpoint(&openai, std::slice::from_ref(&providers), &keys).unwrap().base_url, "http://127.0.0.1:4000/v1");
+    let refused = worker::endpoint(&AgentSettings::default(), std::slice::from_ref(&providers), &keys).unwrap_err();
+    assert!(refused.message.contains("custom base URL") && !refused.message.contains("gateway.example"), "{refused:?}");
+    // A key set up for OpenAI Images' custom base URL doesn't go to OpenAI's own API either.
+    let mut images = ProviderSettings::default();
+    images.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(worker::endpoint(&openai, std::slice::from_ref(&images), &keys).is_err());
+    // A custom base gets the custom-endpoint client's base; the views must agree.
+    let mut local = ProviderSettings::default();
+    local.base_urls.insert("openai".into(), "http://127.0.0.1:4000/v1".into());
+    let (_, base) = worker::routed(&openai, &[local.clone(), local.clone()], &keys).unwrap();
+    assert_eq!(base.unwrap().as_str(), "http://127.0.0.1:4000/v1");
+    // The file now unreadable (defaults) never undoes what was loaded at startup, nor the reverse.
+    let defaults = ProviderSettings::default();
+    for views in [[local.clone(), defaults.clone()], [defaults.clone(), local.clone()]] {
+        let refused = worker::endpoint(&openai, &views, &keys).unwrap_err();
+        assert!(refused.message.contains("restart"), "{refused:?}");
+    }
+    let mut images_now = ProviderSettings::default();
+    images_now.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(worker::endpoint(&openai, &[defaults, images_now], &keys).is_err(), "either view's shared-key rule refuses");
 }
 
 #[test]
@@ -210,7 +246,7 @@ fn costs_show_rounded_up_to_the_cent() {
 }
 
 fn shell(panel: AgentPanel) -> crate::shell::Shell {
-    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None, storage_window: None }
+    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None, storage_window: None, mcp: None }
 }
 
 /// A frame of the real window: the sidebar's logic before the app's, then `Shell::show`.

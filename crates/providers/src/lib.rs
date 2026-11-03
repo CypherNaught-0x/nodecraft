@@ -16,6 +16,7 @@
 //! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
 //! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
+pub mod base_url;
 #[cfg(feature = "bfl")]
 pub mod bfl;
 pub mod broker;
@@ -78,7 +79,7 @@ mod task;
 pub mod tripo;
 
 pub use delivery::{HttpFailure, MAX_STREAMED_TEXT, MAX_TEXT_DELTA, RequestContext, SubmitContext};
-pub use error::{ErrorKind, ProviderError};
+pub use error::{CONTEXT_LIMIT, CONTEXT_LIMIT_FIX, ErrorKind, ProviderError, is_context_limit_text};
 #[cfg(feature = "http")]
 pub use http::ReqwestHttp;
 pub use http::{ChunkSink, Http, HttpMethod, HttpRequest, HttpResponse, MAX_REDIRECTS, USER_AGENT};

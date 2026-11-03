@@ -263,6 +263,9 @@ fn error_from(status: Option<u16>, err: &Value) -> ProviderError {
         (Some(s), None) => ProviderError::from_status(s, b"").kind,
         (None, None) => ErrorKind::Server,
     };
+    if code == "context_length_exceeded" && kind == ErrorKind::UnsupportedInput {
+        return ProviderError::context_limit(&message);
+    }
     ProviderError::new(kind, message)
 }
 
@@ -321,6 +324,9 @@ mod tests {
         );
         assert_eq!(e(429, r#"{"error":{"message":"slow down","type":"requests","code":"rate_limit_exceeded"}}"#), ErrorKind::RateLimited);
         assert_eq!(e(400, r#"{"error":{"message":"too long","code":"context_length_exceeded"}}"#), ErrorKind::UnsupportedInput);
+        let long = error(400, br#"{"error":{"message":"This model's maximum context length is 8192 tokens.","code":"context_length_exceeded"}}"#);
+        assert!(long.is_context_limit() && long.message.contains("8192 tokens"), "named as a context limit, keeping the provider's words: {long}");
+        assert!(!error(400, br#"{"error":{"message":"bad","code":null}}"#).is_context_limit());
         assert_eq!(e(401, r#"{"error":{"message":"bad key","code":"invalid_api_key"}}"#), ErrorKind::Auth);
         assert_eq!(e(404, r#"{"error":{"message":"no such model","code":"model_not_found"}}"#), ErrorKind::NotFound);
         assert_eq!(e(503, "Service Unavailable"), ErrorKind::Busy);
