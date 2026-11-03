@@ -154,7 +154,7 @@ pub(crate) fn report(prepared: &Prepared) -> String {
             }
         }
     }
-    out.push_str("\nImporting this document into other editors hasn't been verified yet; see NodeCraft's docs/timeline-interchange.md.\n");
+    out.push_str("\nSee NodeCraft's docs/timeline-interchange.md for editor import results and limitations.\n");
     out
 }
 

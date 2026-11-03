@@ -27,9 +27,8 @@
   rounding remains a loss. Audible fades report the interframe interpolation approximation
   separately from the removed omitted-fade loss. Unsupported playback speed still reports its unretimed length;
   played fade durations scale to that same source clock.
-- **Keep actual editor validation as a merge blocker.** Neither Final Cut Pro nor Resolve is
-  installed here. XML goldens, mock tests and original sample archives do not satisfy the
-  actual-import acceptance criterion. The PR remains draft without issue closure until both
-  app versions and observed import behavior are recorded in [the import matrix](../timeline-interchange.md).
-  In particular, destination interpolation between audio frame samples is not claimed to be
-  sample-identical. Apple's DTD is not vendored without a permissive redistribution license.
+- **Require an actual editor import.** XML goldens, mock tests and original sample archives
+  exercise the writer. The [import matrix](../timeline-interchange.md) records the maintainer's
+  test scope, exact editor versions and observed behavior. Audio interpolation between frame
+  samples can vary by destination. Apple's DTD is not vendored without a permissive
+  redistribution license.

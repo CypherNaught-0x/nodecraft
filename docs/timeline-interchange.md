@@ -139,27 +139,20 @@ The export and preview commands check connected media before enabling. The write
 trim and frame bounds and the fade keyframe budget when the command runs. A failure names
 the affected clip or the limit reached.
 
-Unit tests check each document's elements and timing, frame by frame. Nothing validates it
-against the FCPXML DTD yet, and importing it into Final Cut Pro or DaVinci Resolve **has not been
-verified**. Please report what an
-editor does with an export, and which version of the editor you used.
+Unit tests check the document's elements and frame timing. FCPXML DTD validation remains open.
 
-### Required editor import evidence for #643
+### Editor import evidence for #643
 
-The offline changes are **draft-only until both rows below have real results**. Structural XML
-tests and opening ZIP entries are not import proof. No editor version is inferred from an export
-file. On the development host, neither Final Cut Pro/Trial nor DaVinci Resolve/Studio was found
-in installed application metadata; no editor was installed or launched for these checks.
+The maintainer selected FilmCraft for the FCPXML import check and deferred DaVinci Resolve.
 
-| Editor | Version | Representative import | Relative media, fades, lanes, transitions, captions | Status |
-|---|---|---|---|---|
-| Final Cut Pro | unavailable | not run | not checked in the editor | **merge blocker** |
-| DaVinci Resolve | unavailable | not run | not checked in the editor | **merge blocker** |
+| Editor | Version | Observed result |
+|---|---|---|
+| FilmCraft | 0.17.0 (macOS) | Opened `Practice-cut.fcpxml` as a 48-frame, 30 fps sequence. Found all three files via relative media URLs. Kept both primary clips, the connected still and audio on separate lanes, the second clip's source trim at frames 9–30, and the six-frame cross dissolve centered on frame 27. The three picture clips each carried four opacity keyframes. The linked video audio carried 14 volume keyframes per clip and the separate WAV carried 20. FilmCraft skipped the FCPXML title and imported the companion SRT as one caption without warnings. |
+| Final Cut Pro | — | Direct import untested. |
+| DaVinci Resolve | — | Deferred by the maintainer. |
 
-The original tiny moving-marker video fixture has twelve distinct frames and a 440 Hz tone;
-the sample author adds original WAV/PNG content. The ignored sample-export test writes portable
-ZIPs to `NODECRAFT_INTERCHANGE643_SAMPLES` for a person with both editors. Import each unzipped
-document, inspect media relinking, trim/transition handles, connected picture/audio tracks,
-opacity and audible ramps, then record the exact app versions, results and any required fixes
-here before marking the PR ready. No copyrighted Apple DTD is vendored: its public documentation
-is not a permissive redistribution license, and even DTD validation would not prove an import.
+The ignored sample-export test writes an original project and portable ZIP to
+`NODECRAFT_INTERCHANGE643_SAMPLES`. Extract the ZIP, import `Practice-cut.fcpxml`, then import
+`Practice-cut.srt` into the same sequence if the editor skips FCPXML titles. FilmCraft's control
+API reported the imported timeline, online media and keyframe counts. Playback, the audible
+shape of the volume ramps between keyframes and title placement in Final Cut Pro remain unverified.

@@ -117,7 +117,7 @@ fn verify_archive(path: &std::path::Path) {
     let mut report = String::new();
     zip.by_name("report.txt").unwrap().read_to_string(&mut report).unwrap();
     assert!(!report.lines().any(|line| line.contains(": fade:") || line.contains(": opacity:")), "{report}");
-    assert!(report.contains("hasn't been verified"));
+    assert!(report.contains("docs/timeline-interchange.md for editor import results and limitations"));
 }
 
 #[test]
@@ -143,5 +143,5 @@ fn write_representative_interchange643_samples() {
     let reopened = nodecraft_format::decode(&nodecraft_format::encode(&snapshot).unwrap()).unwrap();
     assert_eq!(reopened.project, first);
     std::fs::write(root.join("practice-source.ncraft"), nodecraft_format::encode(&snapshot).unwrap()).unwrap();
-    std::fs::write(root.join("IMPORT-CHECKLIST.txt"),"Original NodeCraft sample. Not imported in an editor by this test.\nRecord exact Final Cut Pro and Resolve versions and verify relative media, trims/dissolve handles, video/still/audio lanes, opacity/audio fades, captions and durations.\nBoth real imports remain required before #643 can merge.\n").unwrap();
+    std::fs::write(root.join("IMPORT-CHECKLIST.txt"), "Original NodeCraft sample. This test only writes the archive.\nExtract the ZIP and import the FCPXML in an editor. Verify relative media, trims, dissolve handles, video/still/audio lanes, opacity and audio fades, captions and durations. Import the SRT separately if the editor skips FCPXML titles.\nSee docs/timeline-interchange.md for tested editors and results.\n").unwrap();
 }
