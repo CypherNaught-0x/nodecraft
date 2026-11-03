@@ -552,6 +552,7 @@ fn template(id: &str) -> (Session, Value) {
         // The rows have no results, so this reaches the "nothing to place" refusal; the
         // engine's own tests place real results.
         "sheet.place" => json!({"canvas":sheet,"seed":node_id(0x57),"rows":[sheet_rows[0]],"target":canvas(),"pos":{"x":1,"y":2}}),
+        "sheet.rename" => json!({"canvas":sheet,"title":"Renamed batch"}),
         "sheet.expand" => {
             json!({"canvas":sheet,"seed":node_id(0x56),"template":"a {{colour}} fox","variables":[{"name":"colour","text":["red","blue"]}],"copies":2})
         }

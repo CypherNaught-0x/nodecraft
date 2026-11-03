@@ -661,9 +661,11 @@ pub fn specs() -> Vec<CommandSpec> {
         ),
         expand::spec(),
         place::spec(),
+        batch::spec(),
     ]
 }
 
+pub mod batch;
 mod expand;
 pub mod place;
 pub mod template;
