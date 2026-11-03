@@ -317,6 +317,19 @@ mod reqwest_impl {
             Ok(Self { client, public_only: false })
         }
 
+        /// [`Self::new`] without system proxies: loopback fixture servers in tests, which a proxy
+        /// named by `HTTP_PROXY` would otherwise intercept. Native only.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub fn without_proxy() -> Result<Self, ProviderError> {
+            let client = reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
+            Ok(Self { client, public_only: false })
+        }
+
         /// A transport for requests a package shapes (#174): no redirects, no proxy (a proxy
         /// would resolve names itself), and names resolved only to public addresses
         /// ([`public_address`]). Native only; the browser resolves names itself.
