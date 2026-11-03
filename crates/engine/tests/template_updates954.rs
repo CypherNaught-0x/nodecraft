@@ -127,7 +127,7 @@ impl Host {
             assert_eq!(self.status()["pending"], json!(true));
         }
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-        let http = nodecraft_providers::ReqwestHttp::new().unwrap();
+        let http = nodecraft_providers::ReqwestHttp::without_proxy().unwrap();
         let result = runtime.block_on(templates::fetch::fetch_from(&http, source, request));
         templates::fetch::settle(&mut self.session, result)
     }
@@ -344,8 +344,10 @@ fn template_updates954_corrupt_cache_files_are_reported_skipped_and_removable() 
     assert!(!status["cache"]["problems"].as_array().unwrap().is_empty());
     assert_eq!(status["cache"]["location"], json!(dir.display().to_string()));
 
+    std::fs::create_dir_all(data.path().join("templates").join("v2")).unwrap();
     host.run("templates.clear_cache", &Source::official()).unwrap();
-    assert!(!data.path().join("templates").exists());
+    assert!(!dir.exists());
+    assert!(data.path().join("templates").join("v2").exists(), "another layout's folder belongs to another build");
     assert!(!host.available(&good));
     assert_eq!(host.status()["cache"]["problems"], json!([]));
     assert_eq!(host.status()["cache"]["files"], json!(0));
@@ -424,7 +426,7 @@ fn template_updates954_hostile_update_requests_are_errors() {
     let identity = json!({"id":"x","version":1,"blake3":"0".repeat(64)});
     let many: Vec<Value> = (0..600).map(|_| identity.clone()).collect();
     let request: Request = serde_json::from_value(json!({"kind":"update","known":many,"have":[]})).unwrap();
-    let http = nodecraft_providers::ReqwestHttp::new().unwrap();
+    let http = nodecraft_providers::ReqwestHttp::without_proxy().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     // Refused before any request: the source is a port nothing listens on, which would be a Network error.
     let error = runtime.block_on(templates::fetch::fetch_from(&http, &Source::loopback("http://127.0.0.1:9/").unwrap(), request)).err().unwrap();
@@ -435,4 +437,64 @@ fn template_updates954_hostile_update_requests_are_errors() {
         assert!(host.session.dispatch("templates.status", &params).is_err());
         assert!(host.session.dispatch("templates.clear_cache", &params).is_err());
     }
+}
+
+#[test]
+fn template_updates954_a_cached_record_contradicting_the_cached_index_is_dropped_not_the_index() {
+    let data = tempfile::tempdir().unwrap();
+    let dir = data.path().join("templates").join(templates::disk::LAYOUT);
+    std::fs::create_dir_all(&dir).unwrap();
+    let (published, bytes) = versioned("generate-text", 2);
+    // Another archive claiming to be the same published version, with different content.
+    let (mut rival, rival_bytes) = versioned("generate-text", 5);
+    rival.version = 2;
+    rival.file = format!("templates/generate-text/2/{}.ncraft", rival.blake3);
+    std::fs::write(dir.join("index.json"), index(&[&published])).unwrap();
+    std::fs::write(dir.join(format!("{}.ncraft", rival.blake3)), &rival_bytes).unwrap();
+    std::fs::write(dir.join(format!("{}.json", rival.blake3)), serde_json::to_vec(&rival).unwrap()).unwrap();
+
+    let mut host = Host::new(session());
+    let problems = templates::disk::install(&mut host.session, Box::new(FileCache::new(data.path())));
+    assert!(problems.iter().any(|problem| problem.contains("contradicts") && problem.contains("Clear downloaded")), "{problems:#?}");
+    assert!(!host.available(&rival));
+    assert!(!dir.join(format!("{}.ncraft", rival.blake3)).exists(), "the contradicting copy is removed");
+    let listing: templates::catalog::Listing = serde_json::from_value(host.session.dispatch("template.list", &json!({})).unwrap()).unwrap();
+    assert!(listing.templates.contains(&published), "the cached index is kept");
+
+    // The next update is not blocked by a Conflict: it downloads the published copy.
+    let fixture = serve(routes(vec![("index.json", Reply::Body(200, index(&[&published]))), (published.file.as_str(), Reply::Body(200, bytes))]));
+    host.run("templates.update", &Source::loopback(&fixture.base).unwrap()).unwrap();
+    assert!(host.available(&published));
+}
+
+#[test]
+fn template_updates954_signed_mode_reverifies_the_cached_index_signature() {
+    use ed25519_dalek::Signer;
+    let key = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
+    let (entry, bytes) = versioned("generate-text", 2);
+    let body = index(&[&entry]);
+    let mut message = update::SIGNATURE_CONTEXT.to_vec();
+    message.extend_from_slice(&body);
+    let signature = key.sign(&message).to_bytes().to_vec();
+    let fixture = serve(routes(vec![
+        ("index.json", Reply::Body(200, body)),
+        ("index.json.sig", Reply::Body(200, signature)),
+        (entry.file.as_str(), Reply::Body(200, bytes)),
+    ]));
+    let data = tempfile::tempdir().unwrap();
+    let mut host = Host::new(session());
+    templates::disk::install_keyed(&mut host.session, Box::new(FileCache::new(data.path())), &[key.verifying_key()]);
+    host.run("templates.update", &Source::loopback(&fixture.base).unwrap().with_keys(vec![key.verifying_key()])).unwrap();
+    let dir = data.path().join("templates").join(templates::disk::LAYOUT);
+    assert!(dir.join("index.json.sig").is_file(), "the verified signature is cached beside the index");
+
+    let mut restarted = session();
+    assert!(templates::disk::install_keyed(&mut restarted, Box::new(FileCache::new(data.path())), &[key.verifying_key()]).is_empty());
+    // A cached index whose signature no longer matches is ignored on the next start.
+    let mut tampered = std::fs::read(dir.join("index.json")).unwrap();
+    tampered.push(b' ');
+    std::fs::write(dir.join("index.json"), tampered).unwrap();
+    let mut restarted = session();
+    let problems = templates::disk::install_keyed(&mut restarted, Box::new(FileCache::new(data.path())), &[key.verifying_key()]);
+    assert!(problems.iter().any(|problem| problem.contains("signed")), "{problems:#?}");
 }

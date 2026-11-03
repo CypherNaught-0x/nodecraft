@@ -37,7 +37,8 @@ pub struct Failure {
 /// What the network half of an update brought back, verified but not yet installed.
 pub struct Updated {
     pub index: Vec<u8>,
-    pub signed: bool,
+    /// The index's verified signature, when the source requires one.
+    pub signature: Option<Vec<u8>>,
     pub archives: Vec<(Entry, Vec<u8>)>,
     pub failed: Vec<Failure>,
     pub skipped: usize,
@@ -118,22 +119,26 @@ pub(super) fn failed(session: &mut Session, error: &Error) {
     }
 }
 
-/// Checks `index.json.sig` when the source carries keys. Returns whether the index was signed.
-pub(super) async fn verify_signature(http: &dyn Http, source: &Source, index: &[u8]) -> Result<bool, Error> {
+/// Checks `index.json.sig` when the source carries keys. Returns the verified signature, which is
+/// cached beside the index so a restart can verify the cached index again.
+pub(super) async fn verify_signature(http: &dyn Http, source: &Source, index: &[u8]) -> Result<Option<Vec<u8>>, Error> {
     if !source.signed() {
-        return Ok(false);
+        return Ok(None);
     }
-    let refused = || Error::new(ErrorKind::InvalidInput, "The template index signature doesn't verify; keeping the previous templates");
     let signature = source.get(http, "index.json.sig", 128).await?;
-    let signature: [u8; 64] = signature.as_slice().try_into().map_err(|_| refused())?;
+    if !signature_valid(source.keys(), index, &signature) {
+        return Err(Error::new(ErrorKind::InvalidInput, "The template index signature doesn't verify; keeping the previous templates"));
+    }
+    Ok(Some(signature))
+}
+/// Whether `signature` (64 raw bytes) signs [`SIGNATURE_CONTEXT`] + `index` with one of `keys`.
+pub(super) fn signature_valid(keys: &[ed25519_dalek::VerifyingKey], index: &[u8], signature: &[u8]) -> bool {
+    let Ok(signature) = <[u8; 64]>::try_from(signature) else { return false };
     let signature = ed25519_dalek::Signature::from_bytes(&signature);
     let mut message = Vec::with_capacity(SIGNATURE_CONTEXT.len().saturating_add(index.len()));
     message.extend_from_slice(SIGNATURE_CONTEXT);
     message.extend_from_slice(index);
-    if !source.keys().iter().any(|key| key.verify_strict(&message, &signature).is_ok()) {
-        return Err(refused());
-    }
-    Ok(true)
+    keys.iter().any(|key| key.verify_strict(&message, &signature).is_ok())
 }
 
 /// The network half of an update. Fails as a whole only when the index can't be read or trusted;
@@ -143,11 +148,14 @@ pub async fn run(http: &dyn Http, source: &Source, known: &[Identity], have: &[I
         return Err(invalid());
     }
     let index = source.get(http, "index.json", MAX_INDEX_BYTES).await?;
-    let signed = verify_signature(http, source, &index).await?;
+    let signature = verify_signature(http, source, &index).await?;
     let entries = parse_index(&index)?;
     for entry in &entries {
         if known.iter().chain(have).any(|old| old.id == entry.id && old.version == entry.version && old.blake3 != entry.blake3) {
-            return Err(Error::new(ErrorKind::Conflict, "A published template version changed its content; keeping the previous catalog"));
+            return Err(Error::new(
+                ErrorKind::Conflict,
+                "A published template version changed its content; keeping the previous catalog. If this persists, use Clear downloaded",
+            ));
         }
     }
     let wanted: Vec<&Entry> = entries.iter().filter(|entry| !have.iter().any(|old| old.id == entry.id && old.version >= entry.version)).collect();
@@ -170,15 +178,16 @@ pub async fn run(http: &dyn Http, source: &Source, known: &[Identity], have: &[I
             }
         }
     }
-    Ok(Updated { index, signed, archives, failed, skipped })
+    Ok(Updated { index, signature, archives, failed, skipped })
 }
 
 /// Installs a fetched update: the index first (refused as a whole if it contradicts what is
 /// held), then each archive, persisted when the host keeps a cache.
 pub(super) fn apply(session: &mut Session, updated: Updated) -> Result<(), Error> {
-    let Updated { index, signed, archives, mut failed, skipped } = updated;
+    let Updated { index, signature, archives, mut failed, skipped } = updated;
+    let signed = signature.is_some();
     let listed = parse_index(&index).map_or(0, |entries| entries.len());
-    if let Err(error) = catalog::install_index(session, &index) {
+    if let Err(error) = catalog::install_signed_index(session, &index, signature.as_deref()) {
         record(session, Outcome { id: 0, listed, downloaded: Vec::new(), failed, skipped, signed, error: Some(error.message.clone()) });
         return Err(error);
     }
@@ -219,8 +228,7 @@ pub fn notice(outcome: &Outcome) -> String {
 struct Empty {}
 
 fn update(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
-    let _: Empty = params(value)?;
-    enabled(c, value)?;
+    enabled_update(c, value)?;
     let listing = catalog::listing(c.resources)?;
     let known = listing.templates.iter().map(Identity::from).collect();
     let request = Request::Update { known, have: listing.available };
@@ -234,6 +242,14 @@ fn clear_cache(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_service(c: &Context<'_>, value: &Value) -> Result<(), Error> {
     let _: Empty = params(value)?;
     enabled(c, value)
+}
+/// Waits for the startup cache read: until then the update would download what it holds.
+fn enabled_update(c: &Context<'_>, value: &Value) -> Result<(), Error> {
+    enabled_service(c, value)?;
+    if super::disk::loading(c.resources) {
+        return Err(Error::new(ErrorKind::Busy, "Downloaded templates are still being read; try again in a moment"));
+    }
+    Ok(())
 }
 fn enabled_status(_: &Context<'_>, value: &Value) -> Result<(), Error> {
     let _: Empty = params(value)?;
@@ -270,7 +286,7 @@ pub fn specs() -> Vec<CommandSpec> {
             alternate_shortcuts: &[],
             input_schema: empty_schema,
             params_doc: "{} -> {pending:id}; reads the configured templates repository's index over HTTPS, then downloads at most 16 listed templates this session lacks, each checked against its index digest before it is stored or shown. A mismatch is rejected and the previous copy kept. Read the outcome with templates.status. Never edits the project, runs a provider or asks for keys. Unsupported without a host fetch service (CLI).",
-            enabled: enabled_service,
+            enabled: enabled_update,
             run: update,
         },
         CommandSpec {
@@ -279,7 +295,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: empty_schema,
-            params_doc: "{} -> {supported, source, pending, last:{id,listed,downloaded:[{id,version,blake3}],failed:[{id,version,error}],skipped,signed,error}|null, bundled, available, cache:{layout,persistent,location,files,bytes,problems:[string]}}; read-only, no network.",
+            params_doc: "{} -> {supported, source, pending, last:{id,listed,downloaded:[{id,version,blake3}],failed:[{id,version,error}],skipped,signed,error}|null, bundled, available, cache:{layout,persistent,location,loading,files,bytes,problems:[string]}}; read-only, no network.",
             enabled: enabled_status,
             run: status,
         },

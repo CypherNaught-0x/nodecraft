@@ -80,7 +80,8 @@ impl Source {
     pub(super) fn signed(&self) -> bool {
         !self.keys.is_empty()
     }
-    pub(super) fn keys(&self) -> &[ed25519_dalek::VerifyingKey] {
+    /// The keys the index must be signed with (none for the official repository today).
+    pub fn keys(&self) -> &[ed25519_dalek::VerifyingKey] {
         &self.keys
     }
     /// One bounded GET of `path` (already validated) under the source.
@@ -123,7 +124,9 @@ pub async fn fetch_from(http: &dyn Http, source: &Source, request: Request) -> R
     match request {
         Request::Index => {
             let body = source.get(http, "index.json", MAX_INDEX_BYTES).await?;
-            super::update::verify_signature(http, source, &body).await?;
+            // A single-step refresh stores no signature; in signed mode the cached copy then fails
+            // verification at the next start and is ignored, never trusted.
+            let _signature = super::update::verify_signature(http, source, &body).await?;
             parse_index(&body)?;
             Ok(Fetched::Index(body))
         }
