@@ -27,6 +27,23 @@ fn add_cube(h: &mut Harness<'static, NodeCraftApp>) -> NodeId {
 }
 
 #[test]
+fn worker1013_native_canvas_switch_preserves_the_shared_preview_cache() {
+    let mut h = harness();
+    let other = nodecraft_types::CanvasId::from_bytes([99; 16]);
+    let mut project = h.state().session.document().clone();
+    nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(other, "Other") }.apply(&mut project).unwrap();
+    h.state_mut().session = Session::new(project).unwrap();
+    add_cube(&mut h);
+    assert!(wait_for(&mut h, "3D model, 12 triangles, shaded view"));
+    let cached = h.state().meshes.bytes();
+    assert!(cached > 0);
+
+    h.state_mut().canvas = other;
+    h.step();
+    assert_eq!(h.state().meshes.bytes(), cached, "desktop canvas changes keep the cache and its single worker slot");
+}
+
+#[test]
 fn mesh928_a_3d_card_saves_one_drag_and_restores_it_after_undo_and_reopen() {
     let mut h = harness();
     let id = add_cube(&mut h);

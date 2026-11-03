@@ -10,13 +10,15 @@
   carry the protocol and a source/build digest, so stale stable-name worker files fail visibly
   instead of being silently adopted. Hosts should revalidate stable worker files on deployment.
   No handwritten JavaScript, Blob bootstrap, eval, unsafe memory view or guest executable is used.
-- There is one active worker and no queued bodies. Visible cards waiting behind it retain only
-  their existing graph identities and are reconsidered on later frames. Same-hash requests use
-  one job/cache entry. Session, project, canvas or asset-context replacement drops the worker and all CPU view caches. The active owner’s current asset hash is checked before adoption. A deleted owner or changed
-  hash cancels the job; panning or zooming it offscreen preserves the same bounded job/cache.
+- There is one active worker and a FIFO of up to eight waiting model hashes and owner IDs.
+  The queue holds no asset bytes. Same-hash requests share one job and cache entry. The worker
+  and queue belong to the browser session, project, canvas and asset context. Replacing any of
+  these drops both and resets the CPU preview cache. The active owner’s hash is checked before
+  adoption. Waiting owners and hashes are checked before reading original bytes. Deleted and
+  changed entries are discarded. Panning or zooming a card offscreen preserves its work.
   Waiting jobs schedule deadline checks and copy/adoption chunks request their next frame.
-  Cancellation is termination,
-  because synchronous worker Wasm cannot receive a cancel message while decoding.
+  Cancellation terminates the worker because synchronous Wasm cannot receive a cancel message
+  while decoding. The desktop keeps its shared hash cache and one decoder across canvas changes.
 - The worker receives insertion-verified immutable resident original bytes, never paths, URLs,
   keys or a store/session object. Owned JavaScript ArrayBuffers are copied from these originals
   and transferred; Wasm memory is never detached. The worker rechecks the original hash. The
@@ -51,7 +53,7 @@
   a deliberate retry. Generated worker files are lazy, so a missing loader cannot prevent the
   main application from starting.
 
-Parent #569 remains open for USDZ, retained materials/UV rendering and any larger browser
+Parent #569 remains open for retained materials/UV rendering and any larger browser
 storage profile. The original synthetic conformance model is generated in Rust; no third-party
 model, decoder code or screenshot is shipped. The conformance-only binary and fault probes are
 feature gated and excluded from the release package inventory.

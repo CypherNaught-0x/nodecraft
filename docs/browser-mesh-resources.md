@@ -25,11 +25,13 @@ free or grant an unbounded model/storage profile.
 | Main cache |64 MiB prepared bytes /256 total descriptors | Cache admission refuses another current model if it cannot fit; a small exact-byte Budget descriptor retries only after unused entries can be evicted and headroom reserved. Moving another model offscreen makes its old Ready entry eligible for this pressure eviction; invalid-data failures do not retry. Arc paint-callback leases can briefly outlive a cache reset and release with the frame. |
 | GPU /targets | existing512 MiB model and512 MiB target soft budgets /32 target policy | These are separate existing eviction policies, not added to the CPU cap as if it were an RSS budget. Current visible entries can survive eviction. Upload still writes admitted vertex/index/edge data on the frame and must be measured. |
 
-One active job, no queued bodies. Session/project/canvas/asset-context changes terminate it;
-the active owner's current hash is looked up before reply adoption. Deleted/replaced owners,
-wrong generation/hash/build, malformed extents and late replies cannot supply current geometry.
-Pan, zoom, orbit and unrelated document edits keep the same scope and do not decode again.
-Startup deadline15s; decode/adoption30s. No large inline fallback.
+The browser holds one active job and up to eight FIFO entries of one hash and owner ID each.
+It looks up the current hash before reading a queued asset or adopting an active reply. Session,
+project, canvas and asset-context changes terminate the worker and clear the queue. Deleted
+or replaced owners, wrong generation/hash/build, malformed extents and late replies cannot
+supply current geometry. Pan, zoom, orbit and unrelated document edits keep the same scope
+and do not decode again. The startup deadline is 15 seconds and decode/adoption uses a
+30-second deadline. The browser never falls back to inline decode.
 
 Coverage: real9,000,084-byte original300×300 tessellated pyramid,180,000 facets/540,000 decoded
 vertices/540,000 unique indexed edges/28,080,000 prepared bytes. Native/browser-profile exact
@@ -37,5 +39,23 @@ geometry/bounds/edge/fingerprint comparison; main-protocol raw-number/buffer che
 zero-large-reservation stale/oversize rejection; original-store Arc sharing; context invalidation;
 actual glTF lowered JSON/texture budget, retained-image count and oriented JPEG preflight tests.
 The texture tests distinguish probe/output/rotation refusal from retained RGBA conversion.
+
+## Run the browser probe
+
+From `apps/nodecraft-web`, build the test-only page with the pinned Trunk 0.21.14:
+
+```sh
+trunk build --offline --locked --release --dist ../../target/web-conformance --public-url ./ mesh-conformance.html
+```
+
+Serve that output directory over localhost HTTP and open it in a browser. Click **Run
+conformance**, then click **Edit counter** when the status reports decoding. The page runs the
+worker against the native reference fingerprint and checks raw protocol admission, cancellation,
+timeout, build mismatch, message errors, stale and oversized replies, and restart. Serve a copy
+under a nested path and repeat to verify relative loader resolution. For the missing-worker test,
+serve another copy under `/missing/probe/` with the three `nodecraft-mesh-worker*` files omitted.
+The page should start, report an unavailable worker after **Run conformance**, and still accept
+the edit-counter click. Production packages exclude this page.
+
 Actual browser/GPU upload and maximum poll timing are PENDING and must be recorded with the
 frozen browser-build commit/tree and artifact digests before publication.

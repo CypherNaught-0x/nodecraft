@@ -24,7 +24,7 @@ declaration that all milestone exit criteria have passed. Status distinguishes t
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial; first signed release pending | 18/30 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial; Elements library (#552) and Image tools (#103) | 10/13 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | 🟡 partial; Generate audio card (#672), ComfyUI video/audio (#110), Veo on Google Cloud (#742), Seedance (#18), Kling (#19) | 28/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 12/16 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 13/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 partial; CLI serve exists, #117 open | 5/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | 🟡 partial; presence (#120), browser live sharing (#699) | 14/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial; several ComfyUI servers per install (#864) | 3/29 |
@@ -78,6 +78,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   or bounded ASCII PLY with RGBA channel data (#1011), or a self-contained static USDA/USDZ
   triangle profile with linear RGBA and bounded read/reopen support (#1019; parts of #569;
   see `docs/3d-formats.md`). General USD scenes and retained materials remain separate work.
+  Browser 3D previews decode and prepare models in a dedicated Rust/Wasm worker within
+  the existing 16 MiB per-original storage limit and separate geometry bounds (#1013).
   Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor

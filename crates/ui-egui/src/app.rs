@@ -1335,21 +1335,15 @@ impl NodeCraftApp {
         let file_owns_input = self.results_overlay(ui.ctx()) || self.export_overlay(ui.ctx()) || file_owns_input;
         self.videos.poll(ui.ctx());
         self.audios.poll(ui.ctx());
-        self.meshes.bind_session(
-            crate::navigation::Geometry::identity(&mut self.session),
-            self.session.document().id(),
-            self.canvas,
-            self.session.assets().context(),
-        );
+        #[cfg(not(target_arch = "wasm32"))]
+        self.meshes.poll();
+        #[cfg(target_arch = "wasm32")]
         if ui.ctx().current_pass_index() == 0 {
-            #[cfg(not(target_arch = "wasm32"))]
-            self.meshes.poll();
-            #[cfg(target_arch = "wasm32")]
-            {
-                let canvas = self.session.document().canvases().get(&self.canvas);
-                self.meshes
-                    .poll_current(ui.ctx(), |owner| canvas.and_then(|c| c.nodes().get(&owner)).and_then(crate::mesh_view::mesh_of).map(|asset| asset.hash));
-            }
+            let identity = crate::navigation::Geometry::identity(&mut self.session);
+            let assets = self.session.assets();
+            self.meshes.bind_session(identity, self.session.document().id(), self.canvas, assets.context());
+            let canvas = self.session.document().canvases().get(&self.canvas);
+            self.meshes.poll_current(ui.ctx(), assets, |owner| canvas.and_then(|c| c.nodes().get(&owner)).and_then(crate::mesh_view::mesh_of));
         }
         if let Some(render) = &self.mesh_render {
             crate::mesh_view::prune(render, ui.ctx().cumulative_frame_nr());

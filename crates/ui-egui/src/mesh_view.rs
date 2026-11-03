@@ -41,6 +41,8 @@ const TARGET_FRAMES: u64 = 120;
 const MAX_BROWSER_MODEL_BYTES: usize = 64 * 1024 * 1024;
 #[cfg(any(target_arch = "wasm32", test))]
 const BUDGET_UNAVAILABLE: &str = "Move another 3D model offscreen to free preview space";
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_WAITING_MODELS: usize = 8;
 const RANGE_UNAVAILABLE: &str = "3D preview unavailable at this coordinate range";
 
 /// The 3D model a node shows: a Source 3D node's asset, else the first model in its active result.
@@ -170,15 +172,46 @@ pub struct Meshes {
     entries: HashMap<Blake3, Entry>,
     bytes: usize,
     clock: u64,
+    #[cfg(any(target_arch = "wasm32", test))]
     session: Option<Arc<crate::navigation::SessionIdentity>>,
+    #[cfg(any(target_arch = "wasm32", test))]
     scope: Option<(nodecraft_types::ProjectId, nodecraft_types::CanvasId)>,
+    #[cfg(any(target_arch = "wasm32", test))]
     source_context: Option<nodecraft_format::AssetContext>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    waiting: BrowserQueue,
     #[cfg(target_arch = "wasm32")]
     browser: nodecraft_mesh_preview::browser::Browser,
     #[cfg(target_arch = "wasm32")]
     browser_hash: Option<(Blake3, nodecraft_types::NodeId)>,
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<Worker>,
+}
+
+/// Waiting browser work contains only identity. Read original bytes at admission to the worker.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Default)]
+struct BrowserQueue(std::collections::VecDeque<(Blake3, nodecraft_types::NodeId)>);
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl BrowserQueue {
+    fn push(&mut self, hash: Blake3, owner: nodecraft_types::NodeId) {
+        if self.0.len() < MAX_WAITING_MODELS && !self.0.iter().any(|(queued, _)| *queued == hash) {
+            self.0.push_back((hash, owner));
+        }
+    }
+
+    fn next_current<'a>(
+        &mut self,
+        mut current: impl FnMut(nodecraft_types::NodeId) -> Option<&'a AssetRef>,
+    ) -> Option<(nodecraft_types::NodeId, &'a AssetRef)> {
+        while let Some((hash, owner)) = self.0.pop_front() {
+            if let Some(asset) = current(owner).filter(|asset| asset.hash == hash) {
+                return Some((owner, asset));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -210,7 +243,8 @@ fn read_message(reason: nodecraft_format::PreviewReadError) -> &'static str {
 }
 
 impl Meshes {
-    /// A replacement session has no authority over old preview jobs or caches.
+    /// A replacement browser scope has no authority over old preview jobs or caches.
+    #[cfg(any(target_arch = "wasm32", test))]
     pub(crate) fn bind_session(
         &mut self,
         identity: Arc<crate::navigation::SessionIdentity>,
@@ -230,16 +264,25 @@ impl Meshes {
             self.source_context = Some(context.clone());
         }
     }
-    /// Recheck only the active owner's graph identity before adopting a browser reply.
+    /// Recheck the active owner before adoption, and the next waiting owner before reading bytes.
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn poll_current(&mut self, ctx: &egui::Context, current: impl FnOnce(nodecraft_types::NodeId) -> Option<Blake3>) {
-        if self.browser_hash.is_some_and(|(hash, owner)| current(owner) != Some(hash)) {
+    pub(crate) fn poll_current<'a>(
+        &mut self,
+        ctx: &egui::Context,
+        assets: &nodecraft_format::AssetStore,
+        mut current: impl FnMut(nodecraft_types::NodeId) -> Option<&'a AssetRef>,
+    ) {
+        if self.browser_hash.is_some_and(|(hash, owner)| current(owner).is_none_or(|asset| asset.hash != hash)) {
             self.browser.cancel();
             if let Some((hash, _)) = self.browser_hash.take() {
                 self.entries.remove(&hash);
             }
         }
         self.poll();
+        while !self.browser.busy() {
+            let Some((owner, asset)) = self.waiting.next_current(&mut current) else { break };
+            self.request(ctx, owner, asset, || assets.preview_read(asset));
+        }
         // A pending offscreen card still needs its deadline checked. Visibility is not
         // authority to cancel immutable model work; panning back must reuse its result.
         if self.browser.busy() {
@@ -398,6 +441,7 @@ impl Meshes {
         }
         #[cfg(target_arch = "wasm32")]
         if self.browser.busy() {
+            self.waiting.push(hash, owner);
             ctx.request_repaint_after(std::time::Duration::from_millis(250));
             return MeshPreview::Pending;
         }

@@ -93,6 +93,7 @@ fn worker1013_scope_changes_discard_models_but_ordinary_frame_binding_reuses_the
     let mut meshes = Meshes::default();
     meshes.bind_session(identity.clone(), project, canvas, &context);
     meshes.inline(hash(90), QUAD);
+    meshes.waiting.push(hash(91), nodecraft_types::NodeId::from_bytes([4; 16]));
     let size = meshes.bytes();
     assert!(size > 0);
     meshes.bind_session(identity.clone(), project, canvas, &context.clone());
@@ -100,6 +101,7 @@ fn worker1013_scope_changes_discard_models_but_ordinary_frame_binding_reuses_the
     meshes.bind_session(identity.clone(), project, CanvasId::from_bytes([3; 16]), &context);
     assert_eq!(meshes.bytes(), 0);
     assert!(meshes.entries.is_empty());
+    assert!(meshes.waiting.0.is_empty());
     meshes.inline(hash(90), QUAD);
     meshes.bind_session(identity.clone(), project, CanvasId::from_bytes([3; 16]), &nodecraft_format::AssetContext::default());
     assert_eq!(meshes.bytes(), 0, "same content identity in another asset context does not retain pending authority");
@@ -109,6 +111,31 @@ fn worker1013_scope_changes_discard_models_but_ordinary_frame_binding_reuses_the
     meshes.inline(hash(90), QUAD);
     meshes.bind_session(Arc::new(crate::navigation::SessionIdentity), ProjectId::from_bytes([4; 16]), canvas, &context);
     assert_eq!(meshes.bytes(), 0);
+}
+
+#[test]
+fn worker1013_waiting_identities_are_bounded_deduplicated_and_revalidated_in_order() {
+    use nodecraft_types::NodeId;
+    let owner = |n| NodeId::from_bytes([n; 16]);
+    let asset = |n| AssetRef { hash: hash(n), mime: "model/obj".parse().unwrap(), meta: Default::default() };
+    let assets: Vec<_> = (0..10).map(asset).collect();
+    let mut waiting = BrowserQueue::default();
+    waiting.push(hash(0), owner(0));
+    waiting.push(hash(0), owner(9)); // A second visible card with the same original.
+    for n in 1..10 {
+        waiting.push(hash(n), owner(n));
+    }
+    assert_eq!(waiting.0.len(), MAX_WAITING_MODELS);
+    let current = |id| match id {
+        id if id == owner(0) => None,          // The queued card was deleted.
+        id if id == owner(1) => assets.get(9), // The queued card's model was replaced.
+        id => (2..10).find(|&n| owner(n) == id).and_then(|n| assets.get(usize::from(n))),
+    };
+    for n in 2..8 {
+        let (id, value) = waiting.next_current(current).unwrap();
+        assert_eq!((id, value.hash), (owner(n), hash(n)));
+    }
+    assert!(waiting.next_current(current).is_none(), "identities beyond the cap were never retained");
 }
 
 #[test]
