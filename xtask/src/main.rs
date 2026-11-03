@@ -40,8 +40,8 @@ commands:
                   time every test and regenerate the slow-test list in .config/nextest.toml
                   (default 5 seconds)
   shared -- <cargo args>
-                  run any cargo command in the shared build directory (needs
-                  NODECRAFT_SHARED_TARGET); `shared --clean` empties it
+                  run an explicit Cargo command in the shared build directory (needs
+                  NODECRAFT_SHARED_TARGET). Use `shared --clean` to remove an owned cache.
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
   update-key <secret file>
@@ -67,7 +67,7 @@ fn main() -> ExitCode {
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     // Held until main returns: the shared build directory stays locked for the whole command.
-    let _shared = match args.first().map(String::as_str) {
+    let shared = match args.first().map(String::as_str) {
         Some("ci" | "wasm" | "catalog-check" | "slow-tests") => match share() {
             Ok(guard) => guard,
             Err(error) => {
@@ -80,6 +80,10 @@ fn main() -> ExitCode {
     let result = match args.first().map(String::as_str) {
         Some("shared") => root().and_then(|root| cmd_shared(&root, &rest)),
         Some("perf") => {
+            if rest.first() == Some(&"collect") && shared_target::inherited() {
+                eprintln!("error: perf collect needs an isolated target. Run it outside a shared command.");
+                return ExitCode::from(3);
+            }
             return match root().and_then(|root| perf::run(&root, &rest)) {
                 Ok(code) => ExitCode::from(code),
                 Err(error) => {
@@ -109,6 +113,10 @@ fn main() -> ExitCode {
         }
         Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
     };
+    let result = match shared {
+        Some(guard) => guard.finish(result),
+        None => result,
+    };
     match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
@@ -127,11 +135,38 @@ pub fn root() -> Result<PathBuf, String> {
 pub fn cargo(root: &Path) -> Command {
     let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     c.current_dir(root);
-    if let Some((dir, token)) = shared_target::route() {
-        // The build dir too, so a configured `build.build-dir` cannot hide fingerprints elsewhere.
-        c.env("CARGO_TARGET_DIR", dir).env("CARGO_BUILD_BUILD_DIR", dir).env(shared_target::HELD, token);
-    }
+    shared_target::configure(&mut c);
+    shared_target::cargo_options(&mut c, root);
     c
+}
+
+fn cargo_task(root: &Path, subcommand: &str, args: &[&str]) -> Command {
+    let Some(executable) = shared_target::extension(subcommand) else {
+        let mut command = cargo(root);
+        command.arg(subcommand).args(args);
+        return command;
+    };
+    let mut command = Command::new(executable);
+    command.current_dir(root).arg(subcommand);
+    shared_target::configure(&mut command);
+    match (subcommand, args) {
+        ("clippy", ["--version" | "-V" | "--help" | "-h"]) => {
+            command.args(args);
+        }
+        ("clippy", _) => {
+            shared_target::cargo_options(&mut command, root);
+            command.args(args);
+        }
+        ("nextest", [operation @ ("run" | "list" | "archive"), rest @ ..]) => {
+            command.arg(operation);
+            shared_target::cargo_options(&mut command, root);
+            command.args(rest);
+        }
+        _ => {
+            command.args(args);
+        }
+    }
+    command
 }
 
 /// Locks and routes into the shared build directory when `NODECRAFT_SHARED_TARGET` is set.
@@ -155,17 +190,20 @@ fn member_names(root: &Path) -> Result<std::collections::BTreeSet<String>, Strin
 /// `cargo xtask shared -- <cargo args>` and `cargo xtask shared --clean`.
 fn cmd_shared(root: &Path, args: &[&str]) -> Result<(), String> {
     const USAGE: &str = "usage: cargo xtask shared -- <cargo args> | cargo xtask shared --clean";
+    if shared_target::inherited() {
+        return Err("shared needs a separate invocation outside the managed command".into());
+    }
     let shared = shared_target::configured()?.ok_or_else(|| format!("{} is not set\n{USAGE}", shared_target::ENV))?;
     match args {
         ["--clean"] => shared_target::clean(root, &shared),
-        ["--", cargo_args @ ..] if !cargo_args.is_empty() => {
-            if let Some(why) = shared_target::refused_argument(cargo_args) {
+        ["--", subcommand, cargo_args @ ..] => {
+            if let Some(why) = shared_target::refused_argument(subcommand, cargo_args) {
                 return Err(format!("refused: {why}"));
             }
-            let _guard = shared_target::acquire(root, &shared, &member_names(root)?)?;
-            let mut c = cargo(root);
-            c.args(cargo_args);
-            run(c, &format!("cargo {}", cargo_args.join(" ")))
+            let guard = shared_target::acquire(root, &shared, &member_names(root)?)?;
+            let c = cargo_task(root, subcommand, cargo_args);
+            let result = run(c, &format!("cargo {subcommand} {}", cargo_args.join(" ")));
+            guard.finish(result)
         }
         _ => Err(USAGE.into()),
     }
@@ -173,7 +211,19 @@ fn cmd_shared(root: &Path, args: &[&str]) -> Result<(), String> {
 
 fn run(mut cmd: Command, what: &str) -> Result<(), String> {
     eprintln!("$ {what}");
-    let status = cmd.status().map_err(|e| format!("{what}: failed to spawn: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("{what}: failed to spawn: {e}"))?;
+    let status = child.wait().map_err(|e| {
+        shared_target::interrupted_child();
+        format!("{what}: failed to wait for child: {e}")
+    })?;
+    // On Windows an externally terminated process can report an ordinary nonzero code.
+    #[cfg(windows)]
+    let uncertain = !status.success();
+    #[cfg(not(windows))]
+    let uncertain = status.code().is_none();
+    if uncertain {
+        shared_target::interrupted_child();
+    }
     if status.success() { Ok(()) } else { Err(format!("{what}: exited with {status}")) }
 }
 
@@ -280,16 +330,15 @@ fn cmd_ci(root: &Path, args: &[&str]) -> Result<(), String> {
         _ => return Err("usage: cargo xtask ci [--quick [--base REF]]".into()),
     };
     type Step<'a> = (&'static str, Box<dyn Fn() -> Result<(), String> + 'a>);
-    let cargo_step = |args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
+    let cargo_step = |command: &'static str, args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
         Box::new(move || {
-            let mut c = cargo(root);
-            c.args(args);
-            run(c, &format!("cargo {}", args.join(" ")))
+            let c = cargo_task(root, command, args);
+            run(c, &format!("cargo {command} {}", args.join(" ")))
         })
     };
     let mut steps: Vec<Step<'_>> = vec![
-        ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
-        ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--features", PROVIDER_FEATURES, "--", "-D", "warnings"])),
+        ("fmt", cargo_step("fmt", &["--all", "--", "--check"])),
+        ("clippy", cargo_step("clippy", &["--workspace", "--all-targets", "--features", PROVIDER_FEATURES, "--", "-D", "warnings"])),
         (
             "test",
             match quick {

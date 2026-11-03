@@ -238,15 +238,16 @@ that drive real pointer and key events through the canvas.
     Costs about 15 GB per worktree. Agents sharing the primary checkout use
     `CARGO_TARGET_DIR=target/agent-<name>` instead and delete it when they are done.
   - **Shared build directory**, when disk is short: export one absolute
-    `NODECRAFT_SHARED_TARGET` for every worktree and build only through xtask (`cargo xtask ci`,
-    `ci --quick`, `wasm`, and `cargo xtask shared -- <cargo args>` for anything else). xtask then:
+    `NODECRAFT_SHARED_TARGET` at a new or empty dedicated directory for updated worktrees. Build
+    through xtask (`cargo xtask ci`, `ci --quick`, `wasm`, or `cargo xtask shared -- <cargo args>`
+    for supported Cargo commands). xtask then:
     - takes a lock, so only one build runs at a time and the others wait;
     - rebuilds only the workspace crates when a different checkout built last, reusing every
       dependency.
 
     That is one ~15 GB build for all worktrees plus ~200 MB each, for some extra compile time.
-    `cargo xtask shared --clean` empties it. See `docs/development.md`, "Sharing one build
-    directory".
+    `cargo xtask shared --clean` removes the owned cache and retains its sibling lock. See
+    `docs/development.md`, "Sharing one build directory", for recovery after an interrupted build.
 - Disk is the scarce resource. Agent worktrees build with `CARGO_INCREMENTAL=0` exported for the
   whole task: it drops the incremental cache, about half of a worktree's `target/` (some 6 GB), for
   roughly 30–40 s more per rebuild after an edit to a core crate. Set it before the first build and
