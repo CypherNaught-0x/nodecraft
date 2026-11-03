@@ -747,7 +747,8 @@ row's own number, and "Select shown" selects exactly the rows a filter shows. A 
 variable is Text (with an optional empty value) or Images (image sources on the sheet). The
 Table/Grid switch shows the shown rows that have a result as a grid of thumbnails with status
 badges; clicking a tile selects its row, and ‹/› step through a row's older results. "Send N to
-canvas" dispatches `sheet.place` to the project's first plain canvas, and "Export N"/"Export all"
+canvas" dispatches `sheet.place` to the plain canvas open before the sheet (a picker chooses
+another when there are several), and "Export N"/"Export all" (at most 256 rows)
 asks for a folder and opens the shared workflow-result save (#966) on those rows' active results,
 written off the UI thread; macOS and Linux only, like that save.
 

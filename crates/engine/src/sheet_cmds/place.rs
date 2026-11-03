@@ -45,16 +45,30 @@ struct Placed<'a> {
     modality: nodecraft_types::Modality,
 }
 
-/// Where the first card goes when the caller doesn't say: right of everything on `canvas`, level
-/// with its top, or at the origin of an empty one.
-fn anchor(canvas: &Canvas) -> Position {
+/// Where the first card goes when the caller doesn't say, for a grid of `count` cards: right
+/// of everything on `canvas`, level with its top; else, when that grid would leave the canvas,
+/// below everything, level with its left; else the origin. Nodes carry no size, so the gaps
+/// assume cards of about the default 320-point width and 400-point height.
+fn anchor(canvas: &Canvas, count: usize) -> Position {
     let nodes = canvas.nodes().values();
-    let right = nodes.clone().map(|node| node.pos.x).fold(None, |most: Option<f32>, x| Some(most.map_or(x, |most| most.max(x))));
-    let top = nodes.map(|node| node.pos.y).fold(None, |least: Option<f32>, y| Some(least.map_or(y, |least| least.min(y))));
-    match (right, top) {
-        (Some(x), Some(y)) => Position { x: x + PLACE_GAP, y },
-        _ => Position { x: 0.0, y: 0.0 },
+    let fold = |pick: fn(&Node) -> f32, better: fn(f32, f32) -> f32| {
+        nodes.clone().map(pick).fold(None, |best: Option<f32>, v| Some(best.map_or(v, |best| better(best, v))))
+    };
+    let (right, left) = (fold(|node| node.pos.x, f32::max), fold(|node| node.pos.x, f32::min));
+    let (top, bottom) = (fold(|node| node.pos.y, f32::min), fold(|node| node.pos.y, f32::max));
+    let mut candidates = Vec::new();
+    if let (Some(right), Some(top)) = (right, top) {
+        candidates.push(Position { x: right + PLACE_GAP, y: top });
     }
+    if let (Some(left), Some(bottom)) = (left, bottom) {
+        candidates.push(Position { x: left, y: bottom + PLACE_SPACING.y });
+    }
+    candidates.into_iter().find(|from| fits(*from, count)).unwrap_or_default()
+}
+
+/// Whether every card of a grid of `count` from `from` is inside the canvas.
+fn fits(from: Position, count: usize) -> bool {
+    inside(from) && count.checked_sub(1).is_none_or(|last| inside(grid(from, last)) && inside(grid(from, last.min(COLUMNS - 1))))
 }
 
 fn inside(pos: Position) -> bool {
@@ -105,57 +119,61 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     if target.kind() != CanvasKind::Canvas {
         return Err(invalid("results go on a plain canvas, not a sheet or a published technique"));
     }
-    let from = p.pos.unwrap_or_else(|| anchor(target));
-    if !inside(from) {
-        return Err(invalid("position is outside the canvas"));
-    }
-    let mut changes = Vec::new();
-    let mut placed = Vec::new();
-    let mut skipped = Vec::new();
+    let mut found = Vec::new();
+    let mut skipped: Vec<Json> = Vec::new();
+    let mut skip = |row: NodeId, reason: &str| {
+        // One entry per row: its first reason.
+        if !skipped.iter().any(|entry| entry["row"] == json!(row)) {
+            skipped.push(json!({"row": row, "reason": reason}));
+        }
+    };
     // Row order, not the order the caller listed them in: the grid reads like the sheet.
     for row in order.iter().filter(|row| chosen.contains(&row.id)) {
-        let found = match values(row) {
-            Ok(found) => found,
+        let values = match values(row) {
+            Ok(values) => values,
             Err(reason) => {
-                skipped.push(json!({"row": row.id, "reason": reason}));
+                skip(row.id, reason);
                 continue;
             }
         };
-        for one in found {
+        for one in values {
             let (kind, parameter) = match source_kind(one.modality) {
-                Ok(found) => found,
+                Ok(source) => source,
                 Err(error) => {
-                    skipped.push(json!({"row": row.id, "reason": error.message}));
+                    skip(row.id, &error.message);
                     continue;
                 }
             };
-            if placed.len() >= MAX_PLACED {
+            if found.len() >= MAX_PLACED {
                 return Err(Error::new(ErrorKind::Overflow, format!("one placement adds at most {MAX_PLACED} cards; choose fewer rows")));
             }
-            let id = NodeId::from_bytes(derive(p.seed, "place", placed.len()));
-            let pos = grid(from, placed.len());
-            if !inside(pos) {
-                return Err(invalid("the cards would go outside the canvas; place them nearer the middle"));
-            }
+            let id = NodeId::from_bytes(derive(p.seed, "place", found.len()));
             let supplied: ParamValues = [(parameter.to_owned(), one.value.clone())].into_iter().collect();
             let config: BTreeMap<String, Value> = [(RESULT_CONFIG.to_owned(), provenance(p.canvas, &one))].into_iter().collect();
-            let mut node = match c.kinds.get(kind)?.instantiate_instance(id, config, &supplied) {
-                Ok(node) => node,
-                Err(error) => {
-                    skipped.push(json!({"row": row.id, "reason": error.message}));
-                    continue;
-                }
-            };
-            node.pos = pos;
-            changes.push(Change::AddNode { canvas: p.target, node });
-            placed.push(json!({"id": id, "row": one.row, "generation": one.generation, "port": one.port, "item": one.item}));
+            match c.kinds.get(kind)?.instantiate_instance(id, config, &supplied) {
+                Ok(node) => found.push((node, json!({"id": id, "row": one.row, "generation": one.generation, "port": one.port, "item": one.item}))),
+                Err(error) => skip(row.id, &error.message),
+            }
         }
     }
-    if placed.is_empty() {
+    if found.is_empty() {
         let why = skipped.first().and_then(|first| first["reason"].as_str()).unwrap_or("nothing to place");
         let message =
             if chosen.len() == 1 { format!("nothing to place: {why}") } else { format!("none of those rows has a result to place (the first: {why})") };
         return Err(Error::new(ErrorKind::Unsupported, message));
+    }
+    let from = match p.pos {
+        Some(pos) if !inside(pos) => return Err(invalid("position is outside the canvas")),
+        Some(pos) if !fits(pos, found.len()) => return Err(invalid("the cards would go outside the canvas; place them nearer the middle")),
+        Some(pos) => pos,
+        None => anchor(target, found.len()),
+    };
+    let mut changes = Vec::with_capacity(found.len());
+    let mut placed = Vec::with_capacity(found.len());
+    for (n, (mut node, report)) in found.into_iter().enumerate() {
+        node.pos = grid(from, n);
+        changes.push(Change::AddNode { canvas: p.target, node });
+        placed.push(report);
     }
     edit(c, changes, json!({"target": p.target, "placed": placed, "skipped": skipped}))
 }
@@ -171,7 +189,7 @@ pub(super) fn spec() -> CommandSpec {
                 "pos": {"type": "object", "additionalProperties": false, "required": ["x", "y"],
                     "properties": {"x": {"type": "number"}, "y": {"type": "number"}}}})
         ),
-        "{canvas: sheet, seed: new UUID, rows, target: plain CanvasId, pos?: {x, y}} -> {target, placed: [{id, row, generation, port, item}], skipped: [{row, reason}]}; puts each row's active result on `target` as source cards (as history.extract makes them: text, image, video, audio, 3D or document), every item of a list result its own card, in a grid four across in sheet order from `pos` (right of the target's cards when absent). Each card records {sheet, row, generation, port, item, asset} under config `nodecraft.sheet_result`. One undo step; rows without a result are skipped and reported, and placing nothing is refused. At most 100 cards; new ids derive from `seed`.",
+        "{canvas: sheet, seed: new UUID, rows, target: plain CanvasId, pos?: {x, y}} -> {target, placed: [{id, row, generation, port, item}], skipped: [{row, reason}]}; puts each row's active result on `target` as source cards (as history.extract makes them: text, image, video, audio, 3D or document), every item of a list result its own card, in a grid four across in sheet order from `pos` (when absent: right of the target's cards, else below them if that would leave the canvas, else the origin). Each card records {sheet, row, generation, port, item, asset} under config `nodecraft.sheet_result`. One undo step; rows without a result are skipped and reported once each, and placing nothing is refused. At most 100 cards; new ids derive from `seed`.",
         place
     )
 }

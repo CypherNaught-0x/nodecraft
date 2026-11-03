@@ -105,7 +105,7 @@ fn selected_results_go_on_the_canvas_as_source_cards_in_one_undo_step() {
     assert_eq!(card.params.get("asset"), Some(&asset(6)));
     let Some(Value::Text(recorded)) = card.config.get(RESULT_CONFIG) else { panic!("no provenance") };
     let recorded: Json = serde_json::from_str(recorded).unwrap();
-    let Value::Media(media) = asset(6) else { unreachable!() };
+    let Value::Media(media) = asset(6) else { panic!("not media") };
     assert_eq!(
         recorded,
         json!({"sheet": SHEET, "row": rows[5], "generation": g(6), "port": card_port(&s, rows[5]), "item": null, "asset": media.hash.to_string()})
@@ -218,4 +218,44 @@ fn rows_active_results_export_through_the_local_folder_export() {
     assert_eq!(written, expected);
     // Without a folder the app authorized, nothing is written anywhere.
     assert_eq!(s.dispatch("export.local_run", &params).unwrap_err().kind, ErrorKind::Unsupported);
+}
+
+#[test]
+fn more_than_a_hundred_cards_are_refused_and_change_nothing() {
+    let (s, rows) = sheet(&["red", "green"]);
+    let list = |from: u8| Value::List((from..from + 51).map(asset).collect());
+    let mut s = with_results(&s, &[(rows[0], g(1), list(0)), (rows[1], g(2), list(100))], &[]);
+    let before = s.document().clone();
+    let error = place(&mut s, json!({"rows": rows})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Overflow, "{}", error.message);
+    assert!(error.message.contains("at most 100 cards"), "{}", error.message);
+    assert_eq!(s.document(), &before);
+    // 51 of one row fit.
+    assert_eq!(place(&mut s, json!({"rows": [rows[0]]})).unwrap()["placed"].as_array().unwrap().len(), 51);
+}
+
+#[test]
+fn without_a_place_cards_go_below_when_right_would_leave_the_canvas() {
+    let (s, rows) = sheet(&["red"]);
+    let mut s = with_results(&s, &[(rows[0], g(1), Value::List(vec![asset(1), asset(2)]))], &[]);
+    // A card near the canvas's right edge.
+    let edge = s.kinds().get("source.text").unwrap().descriptor().instantiate(seed(40), &Default::default()).unwrap();
+    let edge = nodecraft_graph::Node { pos: nodecraft_graph::Position { x: 9_999_500.0, y: 30.0 }, ..edge };
+    s.dispatch("node.add", &json!({"canvas": PLAIN, "node": edge})).unwrap();
+    let placed = place(&mut s, json!({"rows": [rows[0]]})).unwrap();
+    let id: NodeId = serde_json::from_value(placed["placed"][0]["id"].clone()).unwrap();
+    assert_eq!(plain(&s).nodes().get(&id).unwrap().pos, nodecraft_graph::Position { x: 9_999_500.0, y: 30.0 + PLACE_SPACING.y });
+}
+
+#[test]
+fn a_row_is_reported_skipped_once_however_many_of_its_values_cant_be_placed() {
+    let (s, rows) = sheet(&["red", "green"]);
+    // A list of numbers on an image output: none of them is an image source's value.
+    let numbers = Value::List(vec![Value::Bool(true), Value::Bool(false)]);
+    let mut s = with_results(&s, &[(rows[0], g(1), asset(1)), (rows[1], g(2), numbers)], &[]);
+    let placed = place(&mut s, json!({"rows": rows})).unwrap();
+    assert_eq!(placed["placed"].as_array().unwrap().len(), 1);
+    let skipped = placed["skipped"].as_array().unwrap();
+    assert_eq!(skipped.len(), 1, "{skipped:?}");
+    assert_eq!(skipped[0]["row"], json!(rows[1]));
 }

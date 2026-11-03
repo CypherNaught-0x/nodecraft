@@ -51,11 +51,19 @@ fn scene(sheet: &[&str]) -> Harness<'static, NodeCraftApp> {
 }
 
 fn scene_of(sheet: &[String]) -> Harness<'static, NodeCraftApp> {
+    scene_in(&[], sheet)
+}
+
+/// [`scene_of`] with more plain canvases.
+fn scene_in(canvases: &[(CanvasId, &str)], sheet: &[String]) -> Harness<'static, NodeCraftApp> {
     let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_IMAGE).unwrap();
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([103; 16]), "Sheets").unwrap();
     Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    for (id, title) in canvases {
+        Change::AddCanvas { canvas: Canvas::new(*id, *title) }.apply(&mut project).unwrap();
+    }
     let mut resources = Resources::default();
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
@@ -539,6 +547,8 @@ fn run_rows(h: &mut Harness<'static, NodeCraftApp>, rows: &[NodeId]) {
             history_of(app, *row).len() > *count && app.session.document().canvases().get(&S).unwrap().nodes().get(row).unwrap().active.is_some()
         })
     });
+    // And until the runs are done with them, so nothing recorded late changes the active result.
+    frames_until(h, |app| app.runs.as_ref().is_none_or(|runs| rows.iter().all(|row| runs.card_status(S, *row).is_none())));
     h.run();
 }
 
@@ -669,4 +679,81 @@ fn a_template_takes_an_empty_value_and_an_image_variable_from_the_panel() {
     for row in 1..3 {
         assert_eq!(listed["rows"][row]["references"][0]["node"], json!(snow), "each new row has the image wired in");
     }
+}
+
+#[test]
+fn export_offers_the_selected_results_else_all_and_refuses_too_many() {
+    use super::sheet_view::{MAX_EXPORT_ROWS, export_choice};
+    let ids: Vec<NodeId> = (0..=MAX_EXPORT_ROWS)
+        .map(|n| NodeId::from_bytes([u8::try_from(n % 250).unwrap(), u8::try_from(n / 250).unwrap(), 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]))
+        .collect();
+    let all = export_choice(Vec::new(), ids[..3].to_vec());
+    assert_eq!((all.label.as_str(), all.rows.len(), all.problem.is_none()), ("Export all", 3, true), "selected rows without results fall back to all");
+    let some = export_choice(vec![ids[1]], ids[..3].to_vec());
+    assert_eq!((some.label.as_str(), some.rows.clone()), ("Export 1", vec![ids[1]]));
+    let none = export_choice(Vec::new(), Vec::new());
+    assert!(none.problem.is_some());
+    let many = export_choice(Vec::new(), ids.clone());
+    assert!(many.problem.unwrap().contains("at most 256 rows"), "the shared save takes at most 256 nodes");
+    assert!(export_choice(Vec::new(), ids[..MAX_EXPORT_ROWS].to_vec()).problem.is_none());
+}
+
+#[test]
+fn a_text_result_shows_its_start_in_the_grid() {
+    use super::sheet_view::{Preview, preview_of};
+    let mut node = Node::new(NodeId::from_bytes([71; 16]), "generation.text");
+    node.outputs = vec![nodecraft_graph::Port { name: "text".into(), port_type: PortType { modality: Modality::Text, many: false } }];
+    assert_eq!(preview_of(&node, 8), Preview::Nothing);
+    let made = nodecraft_types::GenerationId::from_bytes([72; 16]);
+    node.history.push(nodecraft_graph::Generation::new(made, vec![Value::Text("a quiet fox in the snow".into())]));
+    node.active = Some(made);
+    assert_eq!(preview_of(&node, 8), Preview::Text("a quiet ".into()));
+}
+
+#[test]
+fn results_go_to_the_canvas_open_before_the_sheet_or_the_one_picked() {
+    // Its id sorts after the first canvas's, so it is not the project's home canvas.
+    let other = CanvasId::from_bytes([109; 16]);
+    let mut h = scene_in(&[(other, "Moodboard")], &["a fox".to_owned()]);
+    assert_eq!(h.state().canvas, C);
+    h.state_mut().open_canvas(other);
+    h.state_mut().open_canvas(S);
+    h.run();
+    let row = rows_of(&h.state().session)[0];
+    run_rows(&mut h, &[row]);
+    assert_eq!(h.state().place_target(), Some(other), "the canvas open before the sheet");
+    let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
+    click(&mut h, first);
+    press(&mut h, Role::Button, "Send 1 to canvas");
+    let on = |h: &Harness<'static, NodeCraftApp>, id: CanvasId| h.state().session.document().canvases().get(&id).unwrap().nodes().len();
+    assert_eq!((on(&h, other), on(&h, C)), (1, 0));
+    // The picker sends to another.
+    let picker = h
+        .query_all_by_role(Role::ComboBox)
+        .find(|node| {
+            node.value().is_some_and(|value| value.contains("Moodboard")) || node.accesskit_node().label().is_some_and(|label| label.contains("Moodboard"))
+        })
+        .unwrap()
+        .rect()
+        .center();
+    click(&mut h, picker);
+    let canvas = h.get_by_label("Canvas").rect().center();
+    click(&mut h, canvas);
+    assert_eq!(h.state().place_target(), Some(C));
+    press(&mut h, Role::Button, "Send 1 to canvas");
+    assert_eq!((on(&h, other), on(&h, C)), (1, 1));
+}
+
+#[test]
+fn a_document_this_session_can_only_view_takes_no_results() {
+    let mut h = on_sheet(&["a fox"]);
+    let row = rows_of(&h.state().session)[0];
+    run_rows(&mut h, &[row]);
+    let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
+    click(&mut h, first);
+    h.state_mut().session.set_access(nodecraft_engine::access::Access::new(nodecraft_sync::Role::View, None).unwrap());
+    h.run();
+    press(&mut h, Role::Button, "Send 1 to canvas");
+    assert!(h.state().session.document().canvases().get(&C).unwrap().nodes().is_empty());
+    assert!(h.state().notice.is_some(), "the refusal is shown");
 }

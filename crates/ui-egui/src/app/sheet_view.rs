@@ -29,6 +29,41 @@ pub(super) struct SheetView {
     pub(super) template: Option<TemplateDraft>,
     /// Whether the rows show as the table or as a grid of their results.
     pub(super) mode: ViewMode,
+    /// The plain canvas open before the sheet: where results are sent unless one is picked.
+    pub(super) last_plain: Option<CanvasId>,
+    /// The plain canvas picked to send results to.
+    pub(super) target: Option<CanvasId>,
+    /// The open sheet's image sources an image variable can list, with the canvas and revision
+    /// they were read at.
+    sources: Option<(CanvasId, u64, Sources)>,
+}
+
+/// Image sources on a sheet with their titles, top to bottom.
+type Sources = Arc<Vec<(NodeId, String)>>;
+
+/// Most rows one export takes: the workflow-result save's limit on nodes (#966).
+pub(super) const MAX_EXPORT_ROWS: usize = 256;
+
+/// What the Export button offers: its label, the rows it saves, and why it can't, if it can't.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct ExportChoice {
+    pub(super) label: String,
+    pub(super) rows: Vec<NodeId>,
+    pub(super) problem: Option<String>,
+}
+
+/// The selected rows with a result when there are any, else every row with one (`done`, top to
+/// bottom), refused past [`MAX_EXPORT_ROWS`].
+pub(super) fn export_choice(chosen: Vec<NodeId>, done: Vec<NodeId>) -> ExportChoice {
+    let (label, rows) = if chosen.is_empty() { ("Export all".to_owned(), done) } else { (format!("Export {}", chosen.len()), chosen) };
+    let problem = if rows.is_empty() {
+        Some("No row has a result to export yet".to_owned())
+    } else if rows.len() > MAX_EXPORT_ROWS {
+        Some(format!("One export saves at most {MAX_EXPORT_ROWS} rows; select fewer (the filter's Select shown helps)"))
+    } else {
+        None
+    };
+    ExportChoice { label, rows, problem }
 }
 
 /// How the sheet shows its rows: the table of cells, or a grid of their results to review.
@@ -153,8 +188,8 @@ struct Row {
 }
 
 /// What a grid tile shows of a row's active result.
-#[derive(Clone, Debug, Default)]
-enum Preview {
+#[derive(Clone, Debug, Default, PartialEq)]
+pub(super) enum Preview {
     #[default]
     Nothing,
     Image(nodecraft_types::AssetRef),
@@ -248,6 +283,10 @@ impl NodeCraftApp {
         if canvas == self.canvas {
             return;
         }
+        if self.session.document().canvases().get(&self.canvas).is_some_and(|open| open.kind() == nodecraft_graph::CanvasKind::Canvas) {
+            self.sheet.last_plain = Some(self.canvas);
+        }
+        self.sheet.target = None;
         self.canvas = canvas;
         // Like a menu, the panel closes once it has done its job.
         self.sheet.open = false;
@@ -482,7 +521,7 @@ impl NodeCraftApp {
                     }
                     ui.separator();
                     let done: Vec<NodeId> = rows.rows.iter().filter(|row| row.generation.is_some()).map(|row| row.id).collect();
-                    let chosen: Vec<NodeId> = done.iter().copied().filter(|id| selected.contains(id)).collect();
+                    let chosen: Vec<NodeId> = done.iter().copied().filter(|id| self.selection.contains(*id)).collect();
                     let place = if chosen.is_empty() { "Send to canvas".to_owned() } else { format!("Send {} to canvas", chosen.len()) };
                     if ui
                         .add_enabled(!chosen.is_empty(), egui::Button::new(place))
@@ -491,13 +530,22 @@ impl NodeCraftApp {
                     {
                         actions.push(Action::Place(chosen.clone()));
                     }
-                    let (export, what) = if some { (format!("Export {}", chosen.len()), chosen) } else { ("Export all".to_owned(), done) };
+                    self.target_picker(ui);
+                    let export = export_choice(chosen, done);
+                    let hint = match &export.problem {
+                        Some(problem) => problem.clone(),
+                        None if some && export.label == "Export all" => {
+                            "None of the selected rows has a result: save every row's result into a folder you choose".to_owned()
+                        }
+                        None => "Save these rows' results into a folder you choose".to_owned(),
+                    };
                     if ui
-                        .add_enabled(!what.is_empty(), egui::Button::new(export))
-                        .on_hover_text("Save the results of the selected rows, or of every row with one, into a folder you choose")
+                        .add_enabled(export.problem.is_none(), egui::Button::new(export.label))
+                        .on_disabled_hover_text(hint.as_str())
+                        .on_hover_text(hint.as_str())
                         .clicked()
                     {
-                        actions.push(Action::Export(what));
+                        actions.push(Action::Export(export.rows));
                     }
                 });
                 if self.sheet.template.is_some() {
@@ -778,7 +826,7 @@ impl NodeCraftApp {
     fn template_panel(&mut self, ui: &mut egui::Ui, t: &Tokens, existing: usize, actions: &mut Vec<Action>) {
         let canvas = self.canvas;
         let revision = self.session.revision();
-        let sources = self.image_sources();
+        let sources = self.image_sources(revision);
         let Some(draft) = self.sheet.template.as_mut() else { return };
         let frame =
             egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
@@ -831,7 +879,7 @@ impl NodeCraftApp {
                             if sources.is_empty() {
                                 ui.label(egui::RichText::new("The sheet has no image sources to choose").color(t.text_muted));
                             }
-                            for (id, title) in &sources {
+                            for (id, title) in sources.iter() {
                                 let mut on = chosen.contains(id);
                                 if ui.checkbox(&mut on, title.as_str()).changed() {
                                     if on {
@@ -909,7 +957,19 @@ impl NodeCraftApp {
 
     /// The image sources on the open sheet that aren't rows, top to bottom, with their titles:
     /// what an image variable can list.
-    fn image_sources(&self) -> Vec<(NodeId, String)> {
+    fn image_sources(&mut self, revision: u64) -> Sources {
+        if let Some((canvas, seen, sources)) = &self.sheet.sources
+            && *canvas == self.canvas
+            && *seen == revision
+        {
+            return Arc::clone(sources);
+        }
+        let sources = Arc::new(self.read_image_sources());
+        self.sheet.sources = Some((self.canvas, revision, Arc::clone(&sources)));
+        sources
+    }
+
+    fn read_image_sources(&self) -> Vec<(NodeId, String)> {
         let Some(sheet) = self.session.document().canvases().get(&self.canvas) else { return Vec::new() };
         let mut found: Vec<&Node> = sheet
             .nodes()
@@ -1027,12 +1087,48 @@ impl NodeCraftApp {
         }
     }
 
-    /// Places `rows`' results on the project's canvas, right of what it holds, and says so.
+    /// The project's plain canvases, with their titles.
+    fn plain_canvases(&self) -> Vec<(CanvasId, String)> {
+        let canvases = self.session.document().canvases().values();
+        canvases
+            .filter(|canvas| canvas.kind() == nodecraft_graph::CanvasKind::Canvas)
+            .map(|canvas| (canvas.id(), if canvas.title().trim().is_empty() { "Canvas".to_owned() } else { line(canvas.title()) }))
+            .collect()
+    }
+
+    /// Where results are sent: the canvas picked, else the plain canvas open before the sheet,
+    /// else the project's first plain canvas.
+    pub(super) fn place_target(&self) -> Option<CanvasId> {
+        let canvases = self.session.document().canvases();
+        let plain = |id: &CanvasId| canvases.get(id).is_some_and(|canvas| canvas.kind() == nodecraft_graph::CanvasKind::Canvas);
+        self.sheet.target.filter(plain).or(self.sheet.last_plain.filter(plain)).or_else(|| home_canvas(self.session.document()).filter(plain))
+    }
+
+    /// Which canvas Send puts results on, when the project has more than one.
+    fn target_picker(&mut self, ui: &mut egui::Ui) {
+        let canvases = self.plain_canvases();
+        if canvases.len() < 2 {
+            return;
+        }
+        let current = self.place_target();
+        let shown = canvases.iter().find(|(id, _)| Some(*id) == current).map(|(_, title)| title.clone()).unwrap_or_default();
+        egui::ComboBox::from_id_salt("sheet_place_target")
+            .selected_text(format!("to {shown}"))
+            .show_ui(ui, |ui| {
+                for (id, title) in &canvases {
+                    if ui.selectable_label(Some(*id) == current, title).clicked() {
+                        self.sheet.target = Some(*id);
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The canvas results are sent to");
+    }
+
+    /// Places `rows`' results on the target canvas, right of what it holds, and says so.
     fn place_results(&mut self, rows: Vec<NodeId>) -> Result<(), Error> {
+        let target = self.place_target().ok_or_else(|| Error::new(ErrorKind::Unsupported, "the project has no canvas to send results to"))?;
         let document = self.session.document();
-        let target = home_canvas(document)
-            .filter(|id| document.canvases().get(id).is_some_and(|canvas| canvas.kind() == nodecraft_graph::CanvasKind::Canvas))
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, "the project has no canvas to send results to"))?;
         let title = document.canvases().get(&target).map(|canvas| line(canvas.title())).unwrap_or_default();
         let seed = self.sheet_seed()?;
         let placed = self.session.dispatch("sheet.place", &json!({"canvas": self.canvas, "seed": seed, "rows": rows, "target": target}))?;
@@ -1082,7 +1178,7 @@ fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32)
 }
 
 /// What a grid tile shows of `node`'s active result: its first image, else the start of its text.
-fn preview_of(node: &Node, chars: usize) -> Preview {
+pub(super) fn preview_of(node: &Node, chars: usize) -> Preview {
     let (images, _) = nodecraft_engine::split::image_rows(node);
     if let Some(asset) = images.first().and_then(|row| row.first()) {
         return Preview::Image((*asset).clone());

@@ -192,7 +192,15 @@ fn describe_rows(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "references": references,
                 "result": result,
                 "generation": row.active,
-                "output": row.outputs.first().map(|port| port.name.as_str()),
+                // The first media output (what export and placement are usually after), else
+                // the first output; `outputs` lists them all.
+                "output": row
+                    .outputs
+                    .iter()
+                    .find(|port| !matches!(port.port_type.modality, nodecraft_types::Modality::Text | nodecraft_types::Modality::Style))
+                    .or_else(|| row.outputs.first())
+                    .map(|port| port.name.as_str()),
+                "outputs": row.outputs.iter().map(|port| port.name.as_str()).collect::<Vec<_>>(),
                 "results": row.history.len(),
                 "position": position,
                 "stale": stale.contains(&row.id),
@@ -599,7 +607,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "sheet.rows",
             "List a sheet's rows",
             schema(&["canvas"], json!({"canvas": uuid()})),
-            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, generation: active result id|null, output: first output name, results: results in the row's history, position: the active one's place in it (1 is the oldest)|null, stale, expansion: null|{values: {name: text|{node}}, copy}}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Each run of a row adds a result to its history and makes it active; history.previous/history.next/history.select change which one is active, and export.local_plan/export.local_run with sources [{node: row, port: output}] write the active results to a folder. Read-only.",
+            "{canvas} -> {canvas, title, rows: [{id, kind, title, model, prompt, references: [{node, port, shared}], result: none|complete|partial, generation: active result id|null, output: the first media output's name (else the first output's), outputs: every output's name, results: results in the row's history, position: the active one's place in it (1 is the oldest)|null, stale, expansion: null|{values: {name: text|{node}}, copy}}], shared: [NodeId]}; rows top to bottom. A shared reference is wired into every row. Each run of a row adds a result to its history and makes it active; history.previous/history.next/history.select change which one is active, and export.local_plan/export.local_run with sources [{node: row, port: output}] write the active results to a folder. Read-only.",
             describe_rows
         ),
         spec!(

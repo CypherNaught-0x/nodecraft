@@ -21,20 +21,27 @@
   output's modality whose parameter is the value), so they feed other cards at once, never run and
   are never stale. Every item of a list result is its own card. Cards are laid out four across in
   the sheet's row order, from `pos` or, without it, right of everything the canvas holds
-  (480 points past the rightmost card, level with the topmost; the origin on an empty canvas).
+  (480 points past the rightmost card's left edge, level with the topmost). Nodes carry no size,
+  so this assumes cards about the default 320 points wide. When that grid would leave the canvas
+  the cards go below everything instead (one row spacing under the lowest card, level with the
+  leftmost), and failing that at the origin; only an explicit `pos` is refused for leaving it.
   Each card records `{sheet, row, generation, port, item, asset}` (the asset's blake3 hash, null
   for text) as JSON text under node config `nodecraft.sheet_result`, so a placed result can always
   be traced to the row and run it came from even after the row is re-run or removed. Placement is
-  one changeset and one undo step; ids derive from the caller's `seed`. Rows without a result are
-  skipped and reported; placing nothing, a sheet or technique as the target, more than 100 cards,
+  one changeset and one undo step; ids derive from the caller's `seed`. Rows without a result, or
+  whose values can't become source cards, are skipped and reported once each, with the first
+  reason; placing nothing, a sheet or technique as the target, more than 100 cards,
   a grid that would leave the canvas, or a document the session can't edit is refused. The view
-  sends to the project's first plain canvas and stays on the sheet.
+  sends to the plain canvas open before the sheet (else the project's first), offers a picker
+  when the project has more than one plain canvas, and stays on the sheet.
 - **Export reuses #98 and #966; there is no sheet export command.** Programmatic callers
   export rows' active results with `export.local_plan`/`export.local_run`, naming each row with
-  the `output` `sheet.rows` reports (`{node: row, port: output}`): the folder authority, naming,
+  the `output` `sheet.rows` reports (its first media output; `outputs` lists every one) (`{node: row, port: output}`): the folder authority, naming,
   collision policy and refusals are #98's, and the web build and platforms without the
   descriptor-relative writer refuse as they do there. In the desktop shell, "Export N" (the
-  selected rows with a result) or "Export all" (every row with one) asks for a folder in the
+  selected rows with a result) or "Export all" (every row with one, also when none of the selected
+  rows has a result) asks, for at most 256 rows (that save's limit on nodes; more is disabled with
+  the reason), for a folder in the
   shell's own dialog and opens the shared workflow-result save (`export.results_plan`/
   `export.results_start`, #966) with those rows, starting on their active results only. That
   flow authorizes only the folder the person chose (the same `ExportHost` #98 defines), previews
