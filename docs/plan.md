@@ -317,12 +317,13 @@ See [provider availability](providers.md#retired-apis) before reviving this work
 - Provider-agnostic LLM tool loop; Anthropic Claude as the default backend, local models
   supported.
 
-### 2.7 Collaboration (later, designed for from day one)
+### 2.7 Collaboration
 
-- Every mutation is already a serialisable changeset (§4.3), so live sync is "ship changesets",
-  not a rewrite. Plan: CRDT document (`yrs`/Yjs-compatible or `automerge`) behind the
-  `graph` changeset API, a small relay server, presence (named cursors, avatars, selections),
-  shared comments, share links with roles (view / comment / edit), private canvases.
+Desktop and browser peers share canvas edits through `nodecraft-cli relay`. The engine maps the
+project to a yrs document and applies remote changes through the same graph API as local edits.
+Share links grant view, comment or edit access. Named pointers and selections show who is working
+where, and private canvases stay out of the room. See [live sharing](architecture.md#live-sharing-119)
+and [relay setup](install.md#live-sharing-in-the-browser).
 
 ---
 
@@ -469,7 +470,7 @@ UI / CLI / MCP / agent ──► engine.dispatch(CommandId, params)
 ```
 
 Job results come back as events and are applied as `AddGeneration` changesets, so history, undo,
-autosave and future collaboration all see them the same way.
+autosave and collaboration all see them the same way.
 
 ### 4.4 Execution engine (`exec`)
 
@@ -794,7 +795,22 @@ M7's feature and exit-criterion checklist:
 
 ### M10 sharing and collaboration
 
-The milestone close-out tracks the two-user editing demo (#381).
+M10's feature and exit-criterion checklist (#381 closes the documentation follow-up):
+
+- [x] Browser preview with project files, keys stored per site, supported runs and recovery
+  (#118, #717). Provider servers and background option fetching (#721).
+- [x] CRDT document mirror, bounded relay and desktop Share/Join (#119, #698). Browser WebSocket
+  transport (#699), paced large-asset transfer on desktop (#700), and asset queue, retry and
+  cancellation fixes (#842, #855, #880).
+- [x] Named presence and selections (#120). View/comment/edit links, signed comments, revocation
+  and private canvases (#121).
+- [x] Deck presentation, slide editor and sorter, PDF/PNG export, per-deck fonts and remapped
+  sources on copy (#122, #692–#695).
+- [x] Exit criterion. The [real relay integration test](../apps/nodecraft-cli/tests/relay.rs)
+  has two peers edit the same canvas, checks convergence and then verifies a late joiner.
+  The [desktop sharing tests](../crates/ui-egui/src/app/sharing/tests.rs) also cover opening and
+  joining a live room through the app host on loopback.
+- [x] Close the M10 documentation follow-up (#381).
 
 ---
 

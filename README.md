@@ -64,9 +64,9 @@ the inputs, settings and connections beside the work instead of hiding them in a
   and source media as FCPXML in a ZIP. Native playback and rendering use installed
   [FFmpeg and ffprobe](docs/install.md#optional-ffmpeg-tools).
 - **Present and share**: turn a selection into a Deck, edit its slides and export PDF or PNG.
-  Live sessions carry edits, images, discussions, pointers and selections between desktop and
-  browser clients through a relay; internet deployment needs the transport setup described in
-  [`ROADMAP.md`](ROADMAP.md#what-does-not-work-yet).
+  Use **Share** on desktop or in the browser to work on a canvas together. A relay carries edits,
+  images, discussions and named pointers. Links grant view, comment or edit access, and private
+  canvases stay out of the room. See [the relay setup](docs/install.md#live-sharing-in-the-browser).
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
@@ -284,7 +284,7 @@ and checklists for adding commands, node kinds and providers.
 | M7 | Video and audio playback, Timeline, providers | done. Four clips with fades and sound render through the Timeline |
 | M8 | 3D viewer, capture, PDF, providers | partial |
 | M9 | Agent, MCP, control, serve | desktop agent and command-line automation available with follow-up work open |
-| M10 | Browser, live collaboration and decks | feature work complete and close-out open |
+| M10 | Browser, live collaboration and decks | done |
 
 Full detail, including what does not work yet: [`ROADMAP.md`](ROADMAP.md).
 
