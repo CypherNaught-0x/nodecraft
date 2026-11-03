@@ -789,5 +789,8 @@ builds them from settings, and refuses a set but unusable URL instead of falling
 default host. `engine::custom_endpoints` holds the list of providers that accept a base URL;
 the settings command schema and the browser panel are generated from it. It also holds the
 quote pass that keeps a custom endpoint from ever being free, and the quote binding of each
-routed adapter's URL. The routing binding captures a digest of the URL when the adapter is built.
-See [the decision](decisions/2026-11-03-custom-base-urls.md).
+routed adapter's URL. The routing binding captures a digest of the URL when the adapter is built,
+and `jobs` settles a job on such a binding at no less than its estimate. A keychain account
+whose key is set up for a custom base URL never reaches a provider's own API: other adapters
+sharing it are refused (`custom_endpoints::shared_key_conflict`), and `keys.test` sends nothing
+for it (`KeyTestHost::providers`). See [the decision](decisions/2026-11-03-custom-base-urls.md).

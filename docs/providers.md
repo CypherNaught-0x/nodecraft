@@ -22,7 +22,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
-| **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`; a `0` counts as no report, and the header is read from this profile only); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
+| **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
@@ -90,9 +90,11 @@ to do, and a node routed to it is refused before planning, so no request is sent
 ### Custom endpoints (base URLs)
 
 OpenAI chat, Anthropic chat and OpenAI Images can be served from another server that speaks the
-same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). Set the base URL, including the
-API's version path, under `[providers.base_urls]` in `config.toml`. In the browser, use the
-Providers panel's **Custom endpoints** fields (`providers.settings_set {base_urls}`):
+same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). On the desktop and in the CLI, set
+the base URL, including the API's version path, under `[providers.base_urls]` in `config.toml`.
+The desktop app reads this table when it starts, so restart it after editing the file. In the
+browser, only OpenAI chat can take a base URL: use the Providers panel's **Custom endpoints**
+field (`providers.settings_set {base_urls}`).
 
 ```toml
 [providers.base_urls]
@@ -101,23 +103,42 @@ anthropic = "https://gateway.example/v1"   # chat: /messages
 openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edits
 ```
 
-- With no entry, or a blank one, the provider uses its own API, unchanged.
-- The key is the provider's own keychain account (`openai` or `anthropic`). It is sent only to
-  the configured host, and never across a redirect to another origin. Put the key the server
-  expects there, such as a LiteLLM virtual key. `keys.test` still checks the key against the
-  provider's own API.
-- A base URL must be HTTPS, or plain HTTP to a local or private IP address or `localhost`.
-  Other schemes, remote HTTP, credentials, queries and fragments are refused with a message
-  that never repeats the address. If a base URL is set but refused, that provider's adapter
-  isn't built: its runs are refused, and nothing goes to the default host instead.
-- Catalog models keep their id, the `provider_model` sent to the server, and their catalog
-  price. A step that would be quoted free is quoted as unknown-price on a custom endpoint: a
-  run with a budget cap is blocked, and an uncapped run needs the unknown-price consent. The
-  quote binds the base URL, so changing it means quoting again.
-- A custom server is assumed to ignore idempotency keys, so a lost or failed request is never
-  sent again automatically. The job keeps its charge, unresolved, for reconciliation. Its
-  `x-litellm-response-cost` header isn't read: spend is settled at the catalog's rates.
-- The server must know the catalog's model names (`provider_model`, such as
+- With no entry, or a blank one, the provider uses its own API, and nothing about it changes.
+- **The key.** The provider's own keychain account holds the key (`openai` or `anthropic`); put
+  the key the server expects there, such as a LiteLLM virtual key. Requests go to the configured
+  host, and the key is dropped when a redirect leaves its origin. While any provider has a base
+  URL, NodeCraft never sends that account's key to a provider's own API:
+  - another adapter that reads the same account but has no base URL of its own is refused. With
+    `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
+    (`openai-audio`, which takes no base URL) can't run until the entry is removed;
+  - `keys.test` answers *unverifiable* for that account and sends nothing;
+  - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses.
+- **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
+  private (RFC 1918) or link-local IPv4 address, a link-local or unique local IPv6 address, or
+  `localhost`. Carrier-grade NAT (`100.64.0.0/10`, which includes Tailscale's addresses) and
+  tunnelled IPv6 forms need HTTPS. Other schemes, credentials, queries and fragments are refused
+  with a message that never repeats the address.
+- **No fallback.** If an entry is set but can't be used, the provider's adapter isn't built: its
+  runs are refused, and nothing goes to the default host instead. That holds for an entry that
+  isn't text, and for a key spelled like a provider's with other case or `_` (such as `OpenAI`);
+  both are kept as written. Other unknown keys are kept and ignored. If the settings file, or
+  its whole `[providers]` section, can't be read, NodeCraft reports it at startup and uses
+  defaults, which brings back every provider's own API; fix it before running. In the browser, a damaged
+  stored record refuses every custom endpoint until you save again.
+- **The browser.** Its `fetch` follows redirects itself and drops only `Authorization` across
+  origins, so Anthropic's `x-api-key` could follow a redirect to another host. OpenAI Images
+  needs a no-redirect transport the browser doesn't have. Both are therefore desktop and CLI
+  only.
+- **Price.** Catalog models keep their id, the `provider_model` sent to the server, and their
+  catalog price. A step that would be quoted free is quoted as unknown-price: a run with a
+  budget cap is blocked, and an uncapped run needs the unknown-price consent. The quote binds
+  the base URL, so changing it means quoting again. A finished job is charged at least its
+  estimate: the server's reported tokens can raise the charge, never lower it, and its
+  `x-litellm-response-cost` header isn't read.
+- **Retries.** A custom server is assumed to ignore idempotency keys, so a lost or failed
+  request is never sent again automatically. The job keeps its charge, unresolved, for
+  reconciliation.
+- **Model names.** The server must know the catalog's model names (`provider_model`, such as
   `gpt-4.1-mini-2025-04-14`). For LiteLLM, add them as model aliases.
 
 The rules are recorded in
