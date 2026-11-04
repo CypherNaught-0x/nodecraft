@@ -131,7 +131,7 @@ fn run(limit: u32, prompts: usize) -> Arc<Service> {
     let provider = Arc::clone(s.plugins().provider(PROVIDER).unwrap());
     let mut setup = crate::provider_setup::ProviderSetup::default();
     let http: Arc<dyn nodecraft_providers::http::Http> = service.clone();
-    assert_eq!(setup.ensure(PROVIDER, |a| broker(a, &provider, &keys, http.clone())), &Readiness::Ready);
+    assert_eq!(setup.ensure(PROVIDER, |a| broker(a, &provider, &keys, http.clone(), GrantCheck::this_window())), &Readiness::Ready);
     let routing = setup.routing([(CARD, PROVIDER)]).unwrap();
     s.set_provider_routing(routing).unwrap();
 

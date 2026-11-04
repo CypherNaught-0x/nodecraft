@@ -121,7 +121,7 @@ fn a_granted_provider_offers_its_models_on_the_card_for_their_output() {
     keys.set(&Account::new("plugin.io.example.acme:api.acme.example").unwrap(), &Secret::new("plugin-fixture-key-not-real").unwrap()).unwrap();
     let provider = Arc::clone(s.plugins().provider(PROVIDER).unwrap());
     let mut setup = crate::provider_setup::ProviderSetup::default();
-    assert_eq!(setup.ensure(PROVIDER, |a| broker(a, &provider, &keys, Arc::new(Counting::default()))), &Readiness::Ready);
+    assert_eq!(setup.ensure(PROVIDER, |a| broker(a, &provider, &keys, Arc::new(Counting::default()), GrantCheck::this_window())), &Readiness::Ready);
     s.set_provider_routing(setup.routing([(CARD, PROVIDER)]).unwrap()).unwrap();
     let quote = s.dispatch("run.quote", &json!({"canvas": CANVAS, "mode": "selected", "nodes": [CARD]})).unwrap();
     assert_eq!(quote["allowed"], true, "{quote}");
@@ -157,7 +157,7 @@ fn a_withdrawn_grant_takes_the_models_away_and_its_broker_sends_nothing() {
     assert_eq!(account, "plugin.io.example.acme:api.acme.example");
     keys.set(&Account::new(&account).unwrap(), &Secret::new("plugin-fixture-key-not-real").unwrap()).unwrap();
     let http = Arc::new(Counting::default());
-    let broker = broker(PROVIDER, &held, &keys, http.clone()).unwrap();
+    let broker = broker(PROVIDER, &held, &keys, http.clone(), GrantCheck::this_window()).unwrap();
 
     // The same grant again keeps the provider runs hold.
     s.set_plugins(PluginSnapshot::of(&store)).unwrap();
@@ -186,7 +186,7 @@ fn a_broker_needs_the_plugins_own_key() {
     let keys = MemoryStore::default();
     // A key kept for another account is not this plugin's.
     keys.set(&Account::new("plugin.io.example.other:api.acme.example").unwrap(), &Secret::new("plugin-fixture-key-not-real").unwrap()).unwrap();
-    match broker(PROVIDER, provider, &keys, Arc::new(Counting::default())) {
+    match broker(PROVIDER, provider, &keys, Arc::new(Counting::default()), GrantCheck::this_window()) {
         Err(Readiness::NeedsKey { account }) => assert_eq!(account, "plugin.io.example.acme:api.acme.example"),
         Err(other) => panic!("{other:?}"),
         Ok(_) => panic!("built without a key"),
@@ -232,6 +232,10 @@ impl nodecraft_providers::http::Http for Counting {
         *self.0.lock().unwrap() += 1;
         Box::pin(async { Err(ProviderError::new(nodecraft_providers::ErrorKind::Network, "offline")) })
     }
+    fn send_no_redirect(&self, request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        self.send(request)
+    }
 }
 
 mod concurrency;
+mod grants;

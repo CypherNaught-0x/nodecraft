@@ -13,12 +13,18 @@
 //! (the broker sets its scheduler lane's cap), and every broker built for it shares one
 //! [`RequestGate`], so all runs and jobs followed after a restart together keep that many
 //! requests in flight at most.
+//!
+//! Before each paid submit, and each poll, cancel or download, the broker asks a [`GrantCheck`]
+//! whether the grant it was published under still holds. On the desktop that reads the store's
+//! grants afresh, so a grant revoked in another NodeCraft window sharing the store stops new work
+//! here at once, before this window has read the store again.
 use crate::plugin_runtime::PluginStamp;
 use crate::secrets::{Account, SecretStore};
 use nodecraft_catalog::{InputRole, ModeSpec, ModelDescriptor, Price, Pricing, model::is_id};
 use nodecraft_plugin::id::PLUGIN_PREFIX;
 use nodecraft_plugin::manifest::{Capability, RegistrationKind, Runtime};
 use nodecraft_plugin_store::Package;
+use nodecraft_plugin_store::StoreBackend;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
 use nodecraft_providers::broker::{Broker, RequestGate, Template};
@@ -33,6 +39,50 @@ pub const MODE: &str = "generate";
 const PROMPT: &str = "prompt";
 /// The most catalog models one package publishes; templates past it are left out.
 pub const MAX_PACKAGE_MODELS: usize = 256;
+
+/// Whether the grant a plugin provider was published under still holds, asked right before the
+/// broker sends anything.
+#[derive(Clone)]
+pub struct GrantCheck(Option<Holds>);
+
+/// Whether a stamp's grant holds, as the store says.
+type Holds = Arc<dyn Fn(&PluginStamp) -> bool + Send + Sync>;
+
+impl std::fmt::Debug for GrantCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "GrantCheck(store)" } else { "GrantCheck(this window)" })
+    }
+}
+
+impl Default for GrantCheck {
+    fn default() -> Self {
+        Self::this_window()
+    }
+}
+
+impl GrantCheck {
+    /// Only what this window last read of the store: a session store no other window shares
+    /// (the browser's), or a test's.
+    pub fn this_window() -> Self {
+        Self(None)
+    }
+
+    /// Reads the grants the store `open` opens keeps each time it is asked: the stamp's grant
+    /// must be the live one for its digest, at its epoch. A store that can't be opened, or grants
+    /// that can't be read, hold nothing.
+    pub fn store<B: StoreBackend, F: Fn() -> Result<B, nodecraft_types::Error> + Send + Sync + 'static>(open: F) -> Self {
+        Self(Some(Arc::new(move |stamp: &PluginStamp| {
+            open()
+                .and_then(|backend| nodecraft_plugin_store::grants::read(&backend))
+                .is_ok_and(|grants| grants.holds(&stamp.package, &stamp.digest, stamp.epoch))
+        })))
+    }
+
+    /// Whether `stamp`'s grant still holds.
+    pub fn holds(&self, stamp: &PluginStamp) -> bool {
+        self.0.as_ref().is_none_or(|check| check(stamp))
+    }
+}
 
 /// One granted provider template.
 #[derive(Debug)]
@@ -140,12 +190,13 @@ pub fn models(id: &str, provider: &PluginProvider) -> Vec<ModelDescriptor> {
 }
 
 /// The broker for provider `id`, reading its credential from `keys`. It sends nothing once
-/// `provider` is revoked.
+/// `provider` is revoked, or once `grants` says its grant no longer holds.
 pub fn broker(
     id: &str,
     provider: &Arc<PluginProvider>,
     keys: &dyn SecretStore,
     http: Arc<dyn Http>,
+    grants: GrantCheck,
 ) -> Result<Arc<dyn Provider>, crate::provider_setup::Readiness> {
     use crate::provider_setup::Readiness;
     let key = match provider.key_account() {
@@ -156,7 +207,7 @@ pub fn broker(
     let held = Arc::clone(provider);
     let broker = Broker::new(id, provider.template.clone(), key, http)
         .map_err(|e| Readiness::Failed(e.message))?
-        .granted(Arc::new(move || !held.is_revoked()))
+        .granted(Arc::new(move || !held.is_revoked() && grants.holds(&held.stamp)))
         .gated(Arc::clone(&provider.gate));
     Ok(Arc::new(broker))
 }

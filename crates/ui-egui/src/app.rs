@@ -758,8 +758,17 @@ impl NodeCraftApp {
         let mut plugin_problem = None;
         let mut plugins = None;
         if let Some(dir) = store.dir().map(|d| d.join("plugins")) {
+            let store_dir = dir.join("store");
             match Self::register_plugins(&mut services, dir) {
-                Ok(worker) => plugins = Some((worker, None)),
+                Ok(worker) => {
+                    plugins = Some((worker, None));
+                    // Brokers read the store's grants before each request, so a revoke in another
+                    // window sharing it stops them at once (#174).
+                    if let Some(runs) = &mut runs {
+                        let check = move || nodecraft_plugin_store::FolderBackend::new(store_dir.clone());
+                        runs.set_plugin_grants(nodecraft_engine::plugin_providers::GrantCheck::store(check));
+                    }
+                }
                 Err(error) => {
                     log::warn!("plugin packages unavailable: {}", error.message);
                     plugin_problem = Some(format!("Plugin packages are unavailable: {}", error.message));
@@ -1035,6 +1044,9 @@ impl NodeCraftApp {
         }
         let changes = worker.changes();
         if *seen == Some(changes) {
+            // The worker reads the store again for changes another window made (#174); look
+            // again after its next read even while nothing else repaints.
+            ctx.request_repaint_after(nodecraft_engine::plugin_cmds::worker::REREAD);
             return;
         }
         let (changes, loaded, plugins) = worker.published();

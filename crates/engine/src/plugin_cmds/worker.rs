@@ -4,8 +4,15 @@ use super::*;
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
     atomic::{AtomicU64, Ordering},
-    mpsc::{SyncSender, TrySendError, sync_channel},
+    mpsc::{RecvTimeoutError, SyncSender, TrySendError, sync_channel},
 };
+use std::time::Duration;
+
+/// How often an open store is read again for changes another NodeCraft window made, such as a
+/// revoked grant (#174). A read that finds the index and grants unchanged publishes nothing.
+pub const REREAD: Duration = Duration::from_secs(5);
+/// A store's index and grants as read, to tell whether either changed.
+type StoreBytes = (Option<Vec<u8>>, Option<Vec<u8>>);
 
 /// Total retained operations, including unread completions, per registered host.
 pub const MAX_PENDING: usize = 16;
@@ -155,7 +162,16 @@ impl PluginWorker {
     /// `factory`, including native directory/index initialization, runs on the first request.
     /// A normal initialization error can be retried by a later explicit request. A backend panic
     /// stops this worker: no accepted operation is automatically replayed.
-    pub fn spawn<B, F>(mut factory: F, host: PluginHost) -> Result<Arc<Self>, Error>
+    pub fn spawn<B, F>(factory: F, host: PluginHost) -> Result<Arc<Self>, Error>
+    where
+        B: StoreBackend + Send + 'static,
+        F: FnMut() -> Result<Store<B>, Error> + Send + 'static,
+    {
+        Self::spawn_rereading(factory, host, REREAD)
+    }
+
+    /// [`Self::spawn`], reading an open store again every `every` for changes made elsewhere.
+    pub fn spawn_rereading<B, F>(mut factory: F, host: PluginHost, every: Duration) -> Result<Arc<Self>, Error>
     where
         B: StoreBackend + Send + 'static,
         F: FnMut() -> Result<Store<B>, Error> + Send + 'static,
@@ -174,8 +190,18 @@ impl PluginWorker {
         std::thread::Builder::new()
             .name("nodecraft-plugins".into())
             .spawn(move || {
-                let mut store = None;
-                for job in inbox {
+                let mut store: Option<Store<B>> = None;
+                // The index and grants the last timed read published from.
+                let mut seen: Option<StoreBytes> = None;
+                loop {
+                    let (job, timed) = match inbox.recv_timeout(every) {
+                        Ok(job) => (job, false),
+                        // Only a store a request has opened is read again: until then nothing
+                        // was published from it.
+                        Err(RecvTimeoutError::Timeout) if store.is_some() => (Job { id: String::new(), request: Value::Null }, true),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
                     if job.id.is_empty() {
                         if lock(&shared).stopped {
                             break;
@@ -186,7 +212,11 @@ impl PluginWorker {
                             }
                             let store = store.as_mut().ok_or_else(stopped)?;
                             store.refresh()?;
-                            publish(&publishing, store);
+                            let now = (store.backend().read_index()?, store.backend().read_grants()?);
+                            if !timed || seen.as_ref() != Some(&now) {
+                                publish(&publishing, store);
+                            }
+                            seen = Some(now);
                             Ok::<(), Error>(())
                         }));
                         if refreshed.is_err() {
