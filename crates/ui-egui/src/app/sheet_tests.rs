@@ -660,9 +660,18 @@ fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
     h.step();
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.step();
-    frames_until(&mut h, |_| std::fs::read_dir(dir.path()).unwrap().count() >= 2);
-    let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    names.sort();
+    let names_in = |dir: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    // The save stages its files in a hidden folder first, so wait for the finished set rather
+    // than an entry count (the staging folder alone used to satisfy `>= 2`).
+    frames_until(&mut h, |_| {
+        let names = names_in(dir.path());
+        names.iter().any(|name| name == "workflow-results.json") && !names.iter().any(|name| name.starts_with(".nodecraft-results-"))
+    });
+    let names = names_in(dir.path());
     assert!(names.iter().any(|name| name == "workflow-results.json"), "{names:?}");
     assert_eq!(names.iter().filter(|name| name.ends_with(".png")).count(), 1, "{names:?}");
 }
