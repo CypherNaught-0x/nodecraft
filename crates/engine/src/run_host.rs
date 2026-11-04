@@ -910,11 +910,13 @@ impl RunHost {
             let _ = self.cancel(key);
         }
         // Every accepted run starts now, before this pump records anything (see `Inbox`).
-        while start {
-            let next = lock(&self.inbox).waiting.pop_front();
-            let Some(prepared) = next else { break };
-            if let Err(error) = self.start(session, prepared, &mut notices) {
-                notices.push(RunNotice::Refused { reason: error.message });
+        if start {
+            loop {
+                let next = lock(&self.inbox).waiting.pop_front();
+                let Some(prepared) = next else { break };
+                if let Err(error) = self.start(session, prepared, &mut notices) {
+                    notices.push(RunNotice::Refused { reason: error.message });
+                }
             }
         }
         let mut settled = false;
