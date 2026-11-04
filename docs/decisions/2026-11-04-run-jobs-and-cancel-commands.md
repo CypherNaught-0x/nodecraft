@@ -17,6 +17,17 @@ but it couldn't see the training's progress or stop it.
   - A provider that refuses to cancel, or can't, keeps its job followed to its end, and
     `run.jobs` reports `cancel_refused` with the status the queue panel shows.
   - A job not yet sent is never sent.
+- **Losing a paid result takes an explicit yes.** A job that was already sent is cancelled only
+  with `accept_loss: true`. Without it, the refusal says the result may be billed and lost, and
+  that getting it again means paying again. A job not yet sent needs nothing: nothing can be
+  lost. This matters because external MCP agents have no approval step of their own. The
+  contrast is `run.held_discard` (#369), which lets go of a result already in hand and stays
+  human-only. A cancel stops spending on a result not yet received, so an agent may make it, but
+  only by saying in its own request that it accepts the loss.
+- **`may_be_billed` alongside `may_have_been_charged`.** `may_have_been_charged` means "ended
+  without a kept result and may still be billed". It is false for a job that is running or done.
+  `may_be_billed` is true for any job that reached the provider and wasn't proven refused, so an
+  agent tallying spend counts those.
 - **Agent-callable, both.** Neither spends money, and stopping work can only lower what a run
   costs. Agents may already start paid runs through `run.start`, so an agent that can start one
   must be able to stop it. The one cost of a cancel is a result that is already paid for but not

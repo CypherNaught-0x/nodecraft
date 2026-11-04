@@ -73,3 +73,21 @@ fn headless_agent_commands_never_need_a_live_host_capability() {
     }
     assert!(missing.is_empty(), "need a host capability without actionable not-ready guidance: {missing:?}");
 }
+
+/// #167: standalone `nodecraft-cli mcp` runs no jobs, so the run job commands say where they run.
+#[test]
+fn headless_run_job_commands_say_where_jobs_run() {
+    let session = blank_session(ProjectId::from_bytes([81; 16]), CanvasId::from_bytes([82; 16])).unwrap();
+    let mut server = McpServer::new(session, Box::new(|| [83; 16]));
+    let listed = call(&mut server, "command_list", json!({"query":"run.jobs"}));
+    let commands = listed["structuredContent"]["commands"].as_array().unwrap();
+    let jobs = commands.iter().find(|c| c["id"] == "run.jobs").unwrap();
+    assert_eq!(jobs["ready"], false);
+    assert!(jobs["not_ready_because"].as_str().unwrap().contains("nodecraft-cli mcp --bridge"), "{jobs}");
+    for (id, params) in [("run.jobs", json!({})), ("run.cancel", json!({"run":1,"job":1}))] {
+        let result = call(&mut server, "command_run", json!({"id":id,"params":params}));
+        assert_eq!(result["isError"], true, "{id}");
+        let text = result["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("running app's runs") && text.contains("nodecraft-cli mcp --bridge"), "{id}: {text}");
+    }
+}

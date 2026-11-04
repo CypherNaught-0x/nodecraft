@@ -686,9 +686,14 @@ fn a_training_is_followed_and_cancelled_through_run_jobs_and_run_cancel() {
     let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
     let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap_or_else(|| panic!("{listed}"));
     assert_eq!((job["state"].clone(), job["sent"].clone(), job["model"].clone()), (json!("running"), json!(true), json!("mock-style")), "{job}");
-    assert_eq!(job["may_have_been_charged"], false, "a running job isn't charged yet");
-    let key = json!({"run": job["run"], "job": job["job"]});
-    assert_eq!(f.session.dispatch("run.cancel", &json!({"run": 999, "job": 1})).unwrap_err().kind, nodecraft_types::ErrorKind::NotFound);
+    assert_eq!(job["may_be_billed"], true, "a sent training may be billed while it runs: {job}");
+    assert_eq!(job["may_have_been_charged"], false, "it hasn't ended without its result: {job}");
+    let mut key = json!({"run": job["run"], "job": job["job"]});
+    assert_eq!(f.session.dispatch("run.cancel", &json!({"run": 999, "job": 1, "accept_loss": true})).unwrap_err().kind, nodecraft_types::ErrorKind::NotFound);
+    // A sent training is cancelled only once the agent accepts that its result may be billed and lost.
+    let refused = f.session.dispatch("run.cancel", &key).unwrap_err();
+    assert!(refused.message.contains("accept_loss") && refused.message.contains("paying again"), "{refused:?}");
+    key["accept_loss"] = json!(true);
     let asked = f.session.dispatch("run.cancel", &key).unwrap();
     assert_eq!((asked["cancelling"].clone(), asked["may_be_billed"].clone()), (json!(true), json!(true)), "{asked}");
     let notices = drain(&mut f);
@@ -713,7 +718,7 @@ fn run_jobs_reports_a_cancel_the_provider_refuses() {
     let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
     let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
     assert!(job["fraction"].is_number(), "progress is listed where the provider says: {job}");
-    f.session.dispatch("run.cancel", &json!({"run": job["run"], "job": job["job"]})).unwrap();
+    f.session.dispatch("run.cancel", &json!({"run": job["run"], "job": job["job"], "accept_loss": true})).unwrap();
     drain(&mut f);
     let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
     let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();

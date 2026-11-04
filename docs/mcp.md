@@ -200,10 +200,14 @@ own provider records (#325), as does `usage.resolve_charge` for what a reconcile
 agents can still review those charges with `usage.ownership`, `usage.unsettled` and
 `usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`.
-Agents follow the host's jobs with `run.jobs` (state, queue position and progress where the
-provider says, and whether a job may have been charged) and stop one with `run.cancel` (#167):
-neither spends money, and a cancel is no refund, since a job already sent may still be billed and a
-provider that can't stop it is followed to its end. The
+Agents follow the host's jobs with `run.jobs` and stop one with `run.cancel` (#167). `run.jobs`
+gives state, queue position and progress where the provider says, `may_be_billed` (it reached the
+provider and wasn't proven refused, finished or not: count these when tallying spend) and
+`may_have_been_charged` (it ended without a kept result, failed or cancelled, and may still be
+billed). Neither command spends money. A job not yet sent is cancelled as asked; one already sent is
+cancelled only with `accept_loss: true`, since a cancel is no refund: its result may be billed and
+lost, and getting it again means paying again. A provider that can't stop it is followed to its end.
+Standalone `nodecraft-cli mcp` runs no jobs; connect to the app with `--bridge`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
 see what is installed with `plugins.list` (#172), which names a package's reload file only by its

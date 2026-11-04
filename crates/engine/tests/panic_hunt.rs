@@ -25,6 +25,11 @@ fn panic_hunt() {
     // keep the real synchronous memory store and private file acquisition fixture.
     nodecraft_engine::plugin_cmds::register_plugin_worker(&mut result_services, worker).unwrap();
     let mut results = Session::new(original.clone()).unwrap().with_services(result_services);
+    // run.jobs and run.cancel reach a real run host's job board.
+    let mut run_services = nodecraft_engine::commands::Services::default();
+    let run_host = runs::host();
+    run_host.register(&mut run_services).unwrap();
+    let mut runs_session = Session::new(original.clone()).unwrap().with_services(run_services);
     let ids: Vec<_> = session.registry().specs().map(|spec| spec.id).collect();
     let mut deep = Value::Null;
     for _ in 0..128 {
@@ -95,7 +100,13 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"ids":vec![common::node_id(1);257],"revision":0,"name":"text","value":null}));
     corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(1)],"revision":0,"name":"text","value":null}));
     for id in ids {
-        let session = if matches!(id, "plugins.result" | "plugins.forget") { &mut results } else { &mut session };
+        let session = if matches!(id, "plugins.result" | "plugins.forget") {
+            &mut results
+        } else if matches!(id, "run.jobs" | "run.cancel") {
+            &mut runs_session
+        } else {
+            &mut session
+        };
         for params in &corpus {
             let before = session.document().clone();
             let revision = session.revision();
@@ -1238,5 +1249,32 @@ fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
         }
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
+    }
+}
+
+/// A run host whose runtime runs nothing, for the commands that only read or queue on it.
+mod runs {
+    use nodecraft_exec::driver::{Runtime, TaskFuture};
+    use std::sync::{Arc, Mutex};
+
+    struct Idle;
+    impl Runtime for Idle {
+        fn spawn(&self, _: TaskFuture<()>) {}
+        fn sleep(&self, _: u64) -> TaskFuture<()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    pub(super) fn host() -> nodecraft_engine::run_host::RunHost {
+        let budget = nodecraft_engine::jobs::JobBudget {
+            log: Arc::new(Mutex::new(Default::default())),
+            budgets: Arc::new(Mutex::new(Default::default())),
+            session: "panic-hunt".into(),
+            wall_clock_ms: Arc::new(|| 0),
+        };
+        nodecraft_engine::run_host::RunHost::new(Arc::new(Idle), budget)
     }
 }
