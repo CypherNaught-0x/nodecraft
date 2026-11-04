@@ -18,31 +18,48 @@ pub(super) struct StaleBadges {
     pub(super) unchecked: Option<(NodeId, String)>,
 }
 
+/// At most this many bytes of the failing card's name are shown.
+const MAX_NAME: usize = 128;
+
 /// The hover text for the report's first unhashable card, or `None` when there is none or the
-/// diagnostic is malformed: every field is checked and the reason bounded and sanitised, as the
-/// palette's summary does.
-pub(super) fn unchecked(report: &serde_json::Value) -> Option<(NodeId, String)> {
+/// report is malformed: every field is checked and the reason bounded and sanitised, as the
+/// palette's summary does. `name` gives a card's title (or kind label); the engine's reason
+/// already carries the failing card's id, so the hover names it by title, never by id again.
+pub(super) fn unchecked(report: &serde_json::Value, name: impl Fn(NodeId) -> Option<String>) -> Option<(NodeId, String)> {
     let diagnostic = report.get("unknown").filter(|d| !d.is_null())?;
+    let total = report.get("unknown_total").and_then(serde_json::Value::as_u64).filter(|n| *n >= 1)?;
     let uuid = |field: &str| diagnostic.get(field).and_then(serde_json::Value::as_str).filter(|s| s.len() == 36)?.parse::<NodeId>().ok();
     let node = uuid("node")?;
     let cause = uuid("cause")?;
     let category = diagnostic.get("kind").and_then(serde_json::Value::as_str).and_then(kind)?;
     let reason = diagnostic.get("reason").and_then(serde_json::Value::as_str).filter(|s| s.len() <= MAX_REASON)?;
-    let others = report.get("unknown_total").and_then(serde_json::Value::as_u64).map_or(0, |n| n.saturating_sub(1));
     let mut text = String::new();
     text.push_str("Can't check whether this result matches its inputs, so it may be out of date. ");
     if cause == node {
         text.push_str("This card");
+    } else if let Some(title) = name(cause).filter(|t| !t.trim().is_empty()) {
+        text.push_str("Upstream card \u{201c}");
+        let mut bytes = 0;
+        for c in title.chars() {
+            bytes += c.len_utf8();
+            if bytes > MAX_NAME {
+                text.push('\u{2026}');
+                break;
+            }
+            normalized(&mut text, c.encode_utf8(&mut [0; 4])).ok()?;
+        }
+        text.push('\u{201d}');
     } else {
-        text.push_str("Input node ");
-        text.push_str(&cause.to_string());
+        text.push_str("An upstream card");
     }
     text.push_str(" failed (");
     text.push_str(category);
     text.push_str("): ");
     normalized(&mut text, reason).ok()?;
-    if others > 0 {
-        text.push_str(&format!("\n{others} more checked results can't be checked either; List stale results counts them."));
+    match total.saturating_sub(1) {
+        0 => {}
+        1 => text.push_str("\n1 more result can't be checked either; List stale results reports them."),
+        others => text.push_str(&format!("\n{others} more results can't be checked either; List stale results reports them.")),
     }
     Some((node, text))
 }
@@ -63,7 +80,14 @@ impl NodeCraftApp {
                     .and_then(serde_json::Value::as_array)
                     .map(|nodes| nodes.iter().take(MAX_BADGES).filter_map(|id| serde_json::from_value::<NodeId>(id.clone()).ok()).collect())
                     .unwrap_or_default(),
-                unchecked(&report),
+                unchecked(&report, |id| {
+                    let node = self.session.document().canvases().get(&self.canvas)?.nodes().get(&id)?;
+                    Some(if node.title.is_empty() {
+                        self.session.kinds().get(&node.kind).ok().map_or_else(|| node.kind.clone(), |kind| kind.descriptor().label.clone())
+                    } else {
+                        node.title.clone()
+                    })
+                }),
             ),
             Err(_) => (BTreeSet::new(), None),
         };
