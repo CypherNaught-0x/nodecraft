@@ -911,12 +911,20 @@ impl RunHost {
         // While a background save writes, recording a result (or adopting its media) would wait
         // for the disk on this, the UI thread (#367). Finished work stays in its mailbox, held by
         // nobody, and is absorbed on the first pump after the save settles; nothing is refused
-        // or held for it.
+        // or held for it. What touches no document still goes on: a submitted job's handle is
+        // journalled (so a crash meanwhile follows it instead of sending it again) and progress
+        // reports reach the queue panel.
         let deferred = session.file_status().saving;
         let recent = &mut self.recent;
         let charged = &mut self.charged;
         self.runs.retain_mut(|active| {
             if deferred {
+                note_submitted(active);
+                let mut mailbox = lock(&active.mailbox);
+                // Absorbing again later is harmless: streamed text is taken as it is absorbed.
+                active.jobs.absorb_reports(&mut mailbox.reports);
+                drop(mailbox);
+                journal_changed |= std::mem::take(&mut active.journal_changed);
                 return true;
             }
             // Read first: everything the driver reported before it returned is then absorbed.
@@ -933,7 +941,8 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
-        let (resumed, handled) = if deferred { (Vec::new(), false) } else { self.resumes.absorb(session, &self.budget, &self.results, &mut notices) };
+        let (resumed, handled) =
+            if deferred { (Vec::new(), self.resumes.note_submitted()) } else { self.resumes.absorb(session, &self.budget, &self.results, &mut notices) };
         journal_changed |= handled;
         for ended in resumed {
             settled = true;

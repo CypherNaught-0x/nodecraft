@@ -4,8 +4,9 @@
 //! held by nobody, neither refused nor recorded into the document the save snapshotted, until
 //! the save settles. Then it is recorded as usual. The UI thread holds no lock the save's thread
 //! needs: the save is parked inside the storage's write while the test thread reads, pumps and
-//! answers commands. And a change from a caller that must not block (`dispatch_without_waiting`)
-//! is refused as busy while the save writes, rather than waiting for it.
+//! answers commands. The job's handle still reaches the run journal while the save is parked.
+//! And a change from a caller that must not block (`dispatch_without_waiting`) is refused as
+//! busy while the save writes, rather than waiting for it.
 #![cfg(not(target_arch = "wasm32"))]
 use nodecraft_engine::{
     Session,
@@ -119,6 +120,8 @@ fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
     let binding = routing.bind_default(Arc::new(mock.clone())).unwrap();
     routing.select(N, "anthropic", binding.target()).unwrap();
     session.set_provider_routing(routing).unwrap();
+    let journal = nodecraft_engine::run_journal::MemoryJournal::default();
+    host.open_journal(Box::new(journal.clone())).unwrap();
     host.install(&mut session);
 
     // The run is accepted and started; then ⌘S starts a background save whose write stalls.
@@ -128,8 +131,9 @@ fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
     let amounts: serde_json::Map<_, _> = quote["totals"].as_object().unwrap().iter().map(|(c, t)| (c.clone(), t["micros"].clone())).collect();
     let mut start = request;
     start["accept"] = json!({"token": quote["token"], "partial": false, "unpriced_jobs": 0, "amounts": amounts});
+    // Accepted, waiting in the host's inbox: it starts on the first pump, during the save.
     session.dispatch("run.start", &start).unwrap();
-    let mut notices = host.pump(&mut session);
+    let mut notices = Vec::new();
     let (entered, parked) = mpsc::channel();
     let (go, wait) = mpsc::channel();
     *storage.hold.lock().unwrap() = Some((entered, wait));
@@ -166,6 +170,9 @@ fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
         std::thread::sleep(Duration::from_millis(2));
     }
     assert!(mock.polls() >= 3, "the provider was polled while the save was parked");
+    // The paid job's handle was journalled meanwhile: a crash now follows it rather than
+    // sending it again under its staged key.
+    assert!(journal.saved().is_some_and(|saved| saved.submitted.len() == 1), "the handle is in the run journal");
     assert_eq!(mock.requests().len(), 1);
     assert!(frames > 3 && slowest < Duration::from_secs(1), "{frames} frames, slowest {slowest:?}");
     assert!(!freed.load(Ordering::SeqCst), "no frame waited for the disk");

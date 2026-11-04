@@ -201,11 +201,10 @@ impl Resumes {
 
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
     /// ended. Returns how each ended, and whether a job sent again got a handle to save.
-    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> (Vec<Ended>, bool) {
-        let (outcomes, mut reports, submitted) = {
-            let mut mailbox = lock(&self.mailbox);
-            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports), std::mem::take(&mut mailbox.submitted))
-        };
+    /// Takes in the handles resumed jobs were submitted under, and their progress reports,
+    /// without recording anything; whether a handle came (the journal must be saved).
+    pub(super) fn note_submitted(&mut self) -> bool {
+        let submitted = std::mem::take(&mut lock(&self.mailbox).submitted);
         let mut handled = false;
         for (id, handle) in submitted {
             if let Some((entry, _)) = self.live.get_mut(&id) {
@@ -215,6 +214,16 @@ impl Resumes {
                 handled = true;
             }
         }
+        let mut mailbox = lock(&self.mailbox);
+        self.jobs.absorb_reports(&mut mailbox.reports);
+        handled
+    }
+    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> (Vec<Ended>, bool) {
+        let handled = self.note_submitted();
+        let (outcomes, mut reports) = {
+            let mut mailbox = lock(&self.mailbox);
+            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports))
+        };
         self.jobs.absorb_reports(&mut reports);
         let mut ended = Vec::new();
         for (id, outcome) in outcomes {
