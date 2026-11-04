@@ -324,16 +324,33 @@ impl SpaceInventory {
 /// A classic-format file (every project small enough for the classic wire) has each of its
 /// assets copied and verified in the workspace before it is decoded, then a checkpoint of the
 /// copy written; neither is known before the file is read. Checked against the space left now.
-pub fn check_open_copies(index: &crate::zip_index::ArchiveIndex, capability: crate::StorageCapability, probe: &SpaceProbe) -> Result<(), Error> {
+pub fn check_open_copies(
+    index: &crate::zip_index::ArchiveIndex,
+    context: &crate::AssetContext,
+    capability: crate::StorageCapability,
+    probe: &SpaceProbe,
+) -> Result<(), Error> {
     if capability != crate::StorageCapability::StreamingV2 || probe.recovery_free.is_none() || !crate::archive::is_classic_wire(index.version()) {
         return Ok(());
     }
-    let copies = index
+    let assets: Vec<_> = index
         .entries()
         .iter()
-        .filter(|entry| matches!(entry.name, crate::zip_index::EntryName::Asset(_)))
-        .try_fold(0u64, |total, entry| total.checked_add(entry.data.byte_len()).ok_or_else(overflow))?;
-    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?.check(probe)
+        .filter_map(|entry| match entry.name {
+            crate::zip_index::EntryName::Asset(hash) => Some((hash, entry.data.byte_len())),
+            crate::zip_index::EntryName::Manifest => None,
+        })
+        .collect();
+    // An asset this workspace already verified (the same media in the open project) is reused,
+    // not copied. Another verification running means it can't be told: no refusal then.
+    let hashes: Vec<_> = assets.iter().map(|(hash, _)| *hash).collect();
+    let Some(verified) = context.verified_among(&hashes)? else { return Ok(()) };
+    let copies = assets
+        .iter()
+        .zip(verified)
+        .filter(|(_, verified)| !verified)
+        .try_fold(0u64, |total, ((_, bytes), _)| total.checked_add(*bytes).ok_or_else(overflow))?;
+    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?.with_cleanup_debt(context.cleanup_debt()?).check(probe)
 }
 /// The check an open makes once it has found that the file needs rewriting (#367): the
 /// rewritten archive of `snapshot` (estimated without reading its media), the media copies it

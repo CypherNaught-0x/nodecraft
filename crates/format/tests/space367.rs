@@ -101,13 +101,24 @@ fn a_classic_open_checks_its_asset_copies_once_the_file_is_read() {
     let file = bytes.len() as u64;
     let range = AssetRange::new(Arc::new(MemorySource::new(bytes)), 0, file).unwrap();
     let index = ArchiveIndex::read(&range, &TransferCancel::default(), &StreamMetrics::default()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let context = AssetContext::native(NativeAssetWorkspace::new(dir.path(), DiskQuota::default()).unwrap());
     let probe = |free| SpaceProbe { recovery_free: Some(free), ..SpaceProbe::default() };
     // Four 100 kB copies and a checkpoint of the file, each with its slack.
     let needed = 400_000 + file + 80 + 2 * nodecraft_format::space::EXTENT_SLACK;
-    assert!(check_open_copies(&index, StorageCapability::StreamingV2, &probe(needed)).is_ok());
-    let error = check_open_copies(&index, StorageCapability::StreamingV2, &probe(needed - 1)).unwrap_err();
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed)).is_ok());
+    let error = check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed - 1)).unwrap_err();
     assert!(error.message.contains("open this project") && error.message.contains("current project is unchanged"), "{}", error.message);
     // Unknown space, or a host that doesn't copy, never refuses.
-    assert!(check_open_copies(&index, StorageCapability::StreamingV2, &SpaceProbe::default()).is_ok());
-    assert!(check_open_copies(&index, StorageCapability::SmallV1, &probe(1)).is_ok());
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &SpaceProbe::default()).is_ok());
+    assert!(check_open_copies(&index, &context, StorageCapability::SmallV1, &probe(1)).is_ok());
+    // Media this workspace already holds verified (the open project has them) aren't copied.
+    let mut held = AssetStore::with_context(context.clone());
+    for n in 0..4u8 {
+        let body: Arc<[u8]> = Arc::from(vec![n; 100_000]);
+        held.import_stream(&AssetRange::new(Arc::new(MemorySource::new(body)), 0, 100_000).unwrap(), &TransferCancel::default(), &StreamMetrics::default())
+            .unwrap();
+    }
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(file + 80 + 2 * nodecraft_format::space::EXTENT_SLACK)).is_ok());
+    drop(held);
 }

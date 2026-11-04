@@ -51,9 +51,9 @@ pub use asset_store::{PreviewAssetRead, PreviewReadError, SealedAsset};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes, image_header_meta};
 pub use checkpoint_plan::CheckpointPlan;
 pub use frame_plan::{FramePlan, MAX_STREAM_JOURNAL_BYTES, MAX_STREAM_TAIL_BYTES, RecordedAssets};
-#[cfg(not(target_arch = "wasm32"))]
-pub use storage::NativeStorage;
 pub use storage::{LoadedProject, MemoryStorage, PreparedSnapshot, ProjectAccess, ProjectStorage, StorageLocation};
+#[cfg(not(target_arch = "wasm32"))]
+pub use storage::{NativeStorage, SpaceReport};
 
 fn invalid(message: &'static str) -> nodecraft_types::Error {
     nodecraft_types::Error::new(nodecraft_types::ErrorKind::InvalidInput, message)

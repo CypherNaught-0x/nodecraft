@@ -118,6 +118,14 @@ impl AssetContext {
         }
         Ok(crate::disk_quota::DiskUsage::default())
     }
+    /// Which of `hashes` already have a verified copy here, so decoding them copies nothing
+    /// (#367). `None` when another verification holds the store and it can't be told.
+    pub(crate) fn verified_among(&self, hashes: &[Blake3]) -> Result<Option<Vec<bool>>, Error> {
+        let Ok(_operation) = self.operation() else { return Ok(None) };
+        self.prune_cache()?;
+        let cache = self.0.cache.lock().map_err(|_| unavailable())?;
+        Ok(Some(hashes.iter().map(|hash| cache.get(hash).is_some_and(|record| record.identity.strong_count() != 0)).collect()))
+    }
     /// Bytes of private files earlier cleanup couldn't delete: still on disk and still charged
     /// until the handle pinning them closes or NodeCraft restarts (#367).
     pub fn cleanup_debt(&self) -> Result<u64, Error> {

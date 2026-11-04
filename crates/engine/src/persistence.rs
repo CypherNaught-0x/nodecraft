@@ -87,12 +87,16 @@ impl Control {
 fn write(
     storage: &mut dyn ProjectStorage,
     snapshot: &Snapshot,
+    retained: &BTreeSet<Blake3>,
     capability: StorageCapability,
     location: &StorageLocation,
     control: &Control,
     metrics: &StreamMetrics,
 ) -> Result<Published, Error> {
     let cancel = &control.cancel;
+    // Spill history-only roots before replacing any base or output destination (#367: here, on
+    // the job's thread and under its cancel, not on the caller's).
+    snapshot.assets.verify_retained(retained, cancel, metrics)?;
     let archive = ArchivePlan::prepare(snapshot, capability, cancel, metrics)?;
     let checkpoint = CheckpointPlan::new(archive)?;
     let adopted = CheckpointState::prepare(&checkpoint)?;
@@ -340,15 +344,14 @@ impl Persistence {
         let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
         // Before anything is written, history spills included (#367).
         self.preflight_save(document, assets, retained, epoch, &location)?;
-        // Spill history-only roots before replacing any base or output destination.
-        assets.verify_retained(retained, &TransferCancel::default(), &self.metrics)?;
         let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
+        let retained = retained.clone();
         let control = Control::new(FilePhase::Preparing);
         let (capability, metrics) = (self.capability, self.metrics.clone());
         let work = {
             let control = control.clone();
             move |storage: &mut dyn ProjectStorage| {
-                let result = guard(|| write(storage, &snapshot, capability, &location, &control, &metrics));
+                let result = guard(|| write(storage, &snapshot, &retained, capability, &location, &control, &metrics));
                 Outcome::Saved { location, epoch, state, result }
             }
         };

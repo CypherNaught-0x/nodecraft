@@ -172,3 +172,71 @@ fn an_agents_cancelled_background_save_leaves_the_file_unchanged_and_a_racing_op
     assert!(status.dirty && status.operation.is_none());
     assert_eq!(x(&server), 5.0);
 }
+
+/// Signals that the write was reached, then waits for the go-ahead.
+type Hold = (std::sync::mpsc::Sender<()>, std::sync::mpsc::Receiver<()>);
+/// Memory storage whose next save is held inside the write, on the job's thread.
+#[derive(Clone, Default)]
+struct Slow {
+    memory: Shared,
+    hold: Arc<Mutex<Option<Hold>>>,
+}
+impl ProjectStorage for Slow {
+    fn load(&mut self, l: &StorageLocation) -> Result<Vec<u8>, Error> {
+        self.memory.load(l)
+    }
+    fn save(&mut self, l: &StorageLocation, b: &[u8]) -> Result<(), Error> {
+        let hold = self.hold.lock().unwrap().take();
+        if let Some((entered, go)) = hold {
+            entered.send(()).unwrap();
+            go.recv().unwrap();
+        }
+        self.memory.save(l, b)
+    }
+    fn checkpoint(&mut self, b: &[u8]) -> Result<(), Error> {
+        self.memory.checkpoint(b)
+    }
+    fn append(&mut self, b: &[u8]) -> Result<(), Error> {
+        self.memory.append(b)
+    }
+}
+struct Threads;
+impl SaveRunner for Threads {
+    fn spawn(&self, job: SaveJob) -> Result<(), SaveJob> {
+        std::thread::spawn(move || job.run());
+        Ok(())
+    }
+}
+
+#[test]
+fn an_agents_cancel_during_a_save_already_writing_reports_the_save_truthfully() {
+    let base = tempfile::tempdir().unwrap();
+    let work = base.path().join("work");
+    std::fs::create_dir_all(&work).unwrap();
+    let file = std::fs::canonicalize(&work).unwrap().join("writing.ncraft");
+    let path = file.to_str().unwrap().to_owned();
+    let storage = Slow::default();
+    let mut session =
+        Session::with_sendable_storage(Snapshot { project: project(), assets: AssetStore::default(), epoch: 0 }, Box::new(storage.clone())).unwrap();
+    session.set_save_runner(Arc::new(Threads));
+    session.dispatch("file.save_as", &json!({"location": path})).unwrap();
+    std::fs::write(&file, b"").unwrap();
+    let roots = FileRoots::new(std::slice::from_ref(&work), std::slice::from_ref(&work)).unwrap();
+    let mut server = McpServer::with_host(Window { session, roots }, Box::new(|| [7; 16]));
+    assert_eq!(run(&mut server, "node.move", movement(7))["isError"], false);
+    let (entered, held) = std::sync::mpsc::channel();
+    let (go, wait) = std::sync::mpsc::channel();
+    *storage.hold.lock().unwrap() = Some((entered, wait));
+    assert_eq!(run(&mut server, "file.save", json!({"background": true}))["isError"], false);
+    // The job's thread is inside the write: past the point a cancel can stop.
+    held.recv().unwrap();
+    assert_eq!(run(&mut server, "file.cancel", json!({}))["isError"], false);
+    go.send(()).unwrap();
+    // The next request waits for the save, then runs: the file holds the moved node.
+    assert_eq!(run(&mut server, "node.move", movement(8))["isError"], false);
+    let written = storage.memory.0.lock().unwrap().files.get(&StorageLocation::Path(file.clone())).cloned().unwrap();
+    let saved = nodecraft_format::decode(&written).unwrap().project;
+    assert_eq!(saved.canvases()[&CANVAS].nodes()[&NODE].pos.x, 7.0, "the save went through despite the late cancel");
+    assert_eq!(x(&server), 8.0);
+    assert!(server.session().unwrap().file_status().dirty, "only the later move is unsaved");
+}
