@@ -28,7 +28,7 @@ use nodecraft_plugin_store::Package;
 use nodecraft_plugin_store::StoreBackend;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
-use nodecraft_providers::broker::{Broker, ByteBudget, RequestGate, Template};
+use nodecraft_providers::broker::{Broker, ByteBudget, RequestGate, Standing, Template};
 use nodecraft_providers::http::Http;
 use nodecraft_types::Modality;
 use std::sync::Arc;
@@ -46,8 +46,9 @@ pub const MAX_PACKAGE_MODELS: usize = 256;
 #[derive(Clone)]
 pub struct GrantCheck(Option<Holds>);
 
-/// Whether a stamp's grant holds, as the store says.
-type Holds = Arc<dyn Fn(&PluginStamp) -> bool + Send + Sync>;
+/// Whether a stamp's grant holds, as the store says: `Ok(false)` when it doesn't, an error when
+/// the store can't be read just now.
+type Holds = Arc<dyn Fn(&PluginStamp) -> Result<bool, nodecraft_types::Error> + Send + Sync>;
 
 impl std::fmt::Debug for GrantCheck {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -68,20 +69,31 @@ impl GrantCheck {
         Self(None)
     }
 
-    /// Reads the grants the store `open` opens keeps each time it is asked: the stamp's grant
-    /// must be the live one for its digest, at its epoch. A store that can't be opened, or grants
-    /// that can't be read, hold nothing.
+    /// Reads the store folder at `root` each time it is asked (`store::standing_at`): the
+    /// stamp's digest must be its package's active, enabled version and its grant the live one,
+    /// at its epoch. Nothing is created and no lock is taken; each file is read only up to its
+    /// own limit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn folder(root: std::path::PathBuf) -> Self {
+        Self(Some(Arc::new(move |stamp: &PluginStamp| nodecraft_plugin_store::store::standing_at(&root, &stamp.package, &stamp.digest, stamp.epoch))))
+    }
+
+    /// Reads the grants of the store `open` opens each time it is asked: the stamp's grant must
+    /// be the live one for its digest, at its epoch.
     pub fn store<B: StoreBackend, F: Fn() -> Result<B, nodecraft_types::Error> + Send + Sync + 'static>(open: F) -> Self {
         Self(Some(Arc::new(move |stamp: &PluginStamp| {
-            open()
-                .and_then(|backend| nodecraft_plugin_store::grants::read(&backend))
-                .is_ok_and(|grants| grants.holds(&stamp.package, &stamp.digest, stamp.epoch))
+            open().and_then(|backend| nodecraft_plugin_store::grants::read(&backend)).map(|grants| grants.holds(&stamp.package, &stamp.digest, stamp.epoch))
         })))
     }
 
-    /// Whether `stamp`'s grant still holds.
-    pub fn holds(&self, stamp: &PluginStamp) -> bool {
-        self.0.as_ref().is_none_or(|check| check(stamp))
+    /// What stands of `stamp`'s grant: withdrawn when the store says it no longer holds, and
+    /// unknown (asked again later, never taken as a revoke) when the store can't be read.
+    pub fn standing(&self, stamp: &PluginStamp) -> Standing {
+        match self.0.as_ref().map(|check| check(stamp)) {
+            None | Some(Ok(true)) => Standing::Granted,
+            Some(Ok(false)) => Standing::Withdrawn,
+            Some(Err(_)) => Standing::Unknown,
+        }
     }
 }
 
@@ -212,7 +224,7 @@ pub fn broker(
     let held = Arc::clone(provider);
     let broker = Broker::new(id, provider.template.clone(), key, http)
         .map_err(|e| Readiness::Failed(e.message))?
-        .granted(Arc::new(move || !held.is_revoked() && grants.holds(&held.stamp)))
+        .standing(Arc::new(move || if held.is_revoked() { Standing::Withdrawn } else { grants.standing(&held.stamp) }))
         .gated(Arc::clone(&provider.gate))
         .budgeted(Arc::clone(&provider.bytes));
     Ok(Arc::new(broker))

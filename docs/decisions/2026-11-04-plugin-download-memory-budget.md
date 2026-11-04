@@ -10,7 +10,7 @@ allocation and an abort, and nothing let a plugin package's jobs share one ceili
 - **64 MiB per job.** One plugin job's downloads hold at most 64 MiB together, and so does any
   single output. That covers images and short clips. Built-in adapters keep their own limits.
 - **128 MiB per package.** All the providers of one package share a `ByteBudget`, room for two
-  jobs. A job takes its whole 64 MiB before its first download, all or nothing, and gives it back
+  jobs' reply bytes (counted once; see the last point for the brief copy on top). A job takes its whole 64 MiB before its first download, all or nothing, and gives it back
   when its outputs leave the broker. Jobs never hold part of what they need while they wait, so
   they can't deadlock. Room is always taken before a request slot, never while holding one. A job
   whose wait is dropped holds nothing.

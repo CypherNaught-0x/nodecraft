@@ -21,6 +21,7 @@ use nodecraft_engine::{
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
+    run_journal::PluginGrant,
     secrets::SecretStore,
     settings::ProviderSettings,
 };
@@ -509,9 +510,15 @@ impl Runs {
                 if !self.plugins_known {
                     continue;
                 }
-                let granted = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).is_some();
-                if !granted {
+                let current = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).map(|p| PluginGrant::of(&p.stamp));
+                let Some(current) = current else {
                     self.host.abandon(project, &adapter, "its plugin is no longer enabled or granted");
+                    continue;
+                };
+                // Only jobs sent under the grant that stands now are followed; the broker checks
+                // that grant against the store before every poll.
+                self.host.abandon_other_grants(project, &adapter, &current);
+                if !self.host.waiting_targets(project).contains(&target) {
                     continue;
                 }
             }
@@ -1116,6 +1123,7 @@ mod plugin_maker_tests {
             recipe: None,
             launches: 0,
             staged: None,
+            plugin: None,
         };
         let journal = nodecraft_engine::run_journal::FileJournal::at(path.clone());
         journal.save(&Journal { version: JOURNAL_VERSION, usage, submitted: vec![job] }).unwrap();

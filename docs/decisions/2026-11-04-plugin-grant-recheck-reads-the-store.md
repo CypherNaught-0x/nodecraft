@@ -1,22 +1,44 @@
 ## 2026-11-04 · A plugin broker rechecks its grant in the store before each request (#174)
 
-**Problem.** A broker refused to send only once its window had read the plugin store again and
-flagged the provider revoked. Windows share one store folder, so a grant revoked in one window
-left the others submitting paid jobs until they were restarted. `Grants::holds` existed for a
-precommit recheck but nothing called it.
+**Problem.** A broker refused to send only once its own window had read the plugin store again
+and flagged the provider revoked. Windows share one store folder, so a grant revoked (or a
+package disabled) in one window left the others submitting paid jobs until they restarted.
+`Grants::holds` existed for a precommit recheck, but nothing called it.
 
 **Decision.**
 
-- **Recheck in the store, every request.** The broker's grant callback asks a `GrantCheck` before
-  every paid submit, poll, cancel and download. On the desktop it reads `grants.json` afresh and
-  requires `holds(package, digest, epoch)` for the stamp the provider was published under. A
-  revoke or re-grant anywhere moves the epoch, so an old stamp never holds again.
-- **No lock, fail closed.** The read skips the store's transaction lock: grants are replaced
-  atomically, so it sees the old or the new file, and a check never waits behind another window's
-  import. Grants that can't be read hold nothing. The file is at most 1 MiB and is usually a few
-  KiB, so the read is cheap enough for every request.
+- **Recheck in the store, every request.** Before every paid submit, poll, cancel and download,
+  the broker asks a `GrantCheck`. On the desktop that calls `store::standing_at`, which reads the
+  folder afresh. The provider's stamp passes only if:
+  - its digest is the package's active, *enabled* version in `index.json`;
+  - `Grants::holds(package, digest, epoch)` is true in `grants.json`.
+
+  So a disable, update, rollback, uninstall, revoke or re-grant in any window ends the stamp, and
+  an old stamp never holds again.
+- **Cheap, and fails closed without losing billed work.** The check takes no lock: both files are
+  replaced atomically, so each read sees an old or a new file whole. It creates no folders. It
+  reads each file only up to its own limit (4 MiB for the index, 1 MiB for grants). It has three
+  outcomes:
+  - **Granted:** the request goes ahead.
+  - **Withdrawn:** the store was read and the stamp doesn't stand. The request is refused (`Auth`),
+    polls included.
+  - **Unknown:** the store can't be read just now (a lock, a file mid-replace, damage, oversize).
+    Nothing new is sent. A submit is refused with nothing sent, and a poll or download of a job
+    already sent fails transiently (`Busy`), so it is tried again rather than abandoned with
+    billed outputs lost.
 - **The window catches up as well.** The plugin worker reads an open store again every 5 s
-  (`plugin_cmds::worker::REREAD`). It publishes only when the index or grants bytes changed. The
-  catalog and the revoked flags then follow, and restored jobs learn that their plugin is gone.
+  (`plugin_cmds::worker::REREAD`).
+  - It compares the index and grants bytes first, without the lock, and publishes only when they
+    changed.
+  - It reads those bytes before reading the store, so a write landing in between can only make
+    the next read publish again, never leave a change unpublished.
+  - The catalog, the revoked flags and restored jobs then follow.
+- **Restored jobs keep their grant.** The run journal records, for each plugin job, the package
+  digest and grant epoch it was sent under (an additive field). After a restart a job is followed
+  only if that is the grant its provider is published under now. Otherwise it is given up as
+  possibly charged, and its estimate settles as unresolved. A plugin job saved by an earlier
+  build, with no grant recorded, is given up the same way. An older build reading a journal that
+  holds a plugin job refuses the journal (it denies unknown fields), so downgrading with plugin
+  jobs pending loses them from the journal; their charges stay in the usage log.
 - **The browser keeps its own view.** Its store lives in memory for one page and no other window
   shares it, so `GrantCheck::this_window()` relies on the in-memory flag only.

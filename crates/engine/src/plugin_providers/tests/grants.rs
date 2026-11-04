@@ -24,7 +24,7 @@ fn install(store: &mut Store<FolderBackend>) -> String {
 
 fn store_check(root: &Path) -> GrantCheck {
     let root: PathBuf = root.to_path_buf();
-    GrantCheck::store(move || FolderBackend::new(root.clone()))
+    GrantCheck::folder(root)
 }
 
 fn job() -> ProviderJob {
@@ -74,16 +74,42 @@ fn a_revoke_in_another_window_stops_this_windows_broker_before_its_next_request(
     assert_eq!(*http.0.lock().unwrap(), 1);
 }
 
+/// Grants that can't be read (a lock, a file being replaced, damage, or more than a grants file
+/// may hold) are not a revoke: nothing new is sent, and a job already sent is followed again
+/// later rather than given up, since it may be billed.
 #[test]
-fn grants_that_cannot_be_read_hold_nothing() {
+fn grants_that_cannot_be_read_send_nothing_new_but_keep_a_sent_job() {
     let dir = tempfile::tempdir().unwrap();
     let mut first = open(dir.path());
     install(&mut first);
     let provider = Arc::clone(PluginSnapshot::of(&first).provider(PROVIDER).unwrap());
-    std::fs::write(dir.path().join("grants.json"), b"{ not grants").unwrap();
+    let handle = nodecraft_providers::JobHandle { remote_id: "j-1".into(), data: json!({"model": "acme/v1"}) };
+    let oversized = vec![b' '; nodecraft_plugin_store::grants::MAX_GRANTS_BYTES + 2];
+    for bytes in [b"{ not grants".to_vec(), oversized] {
+        std::fs::write(dir.path().join("grants.json"), &bytes).unwrap();
+        let http = Arc::new(Counting::default());
+        let broker = broker(PROVIDER, &provider, &keys(), http.clone(), store_check(dir.path())).unwrap();
+        let refused = block_on(broker.submit(&job())).unwrap_err();
+        assert!(refused.message.contains("can't be read") && refused.message.contains("nothing was sent"), "{}", refused.message);
+        assert!(refused.kind.is_transient(), "a submit refused this way may be tried again");
+        let poll = block_on(broker.poll(&handle)).unwrap_err();
+        assert!(poll.kind.is_transient() && !poll.message.contains("withdrawn"), "a sent job is followed again later: {poll:?}");
+        assert_eq!(*http.0.lock().unwrap(), 0);
+    }
+}
+
+#[test]
+fn a_package_disabled_in_another_window_stops_this_windows_broker() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut first = open(dir.path());
+    install(&mut first);
+    let provider = Arc::clone(PluginSnapshot::of(&first).provider(PROVIDER).unwrap());
     let http = Arc::new(Counting::default());
     let broker = broker(PROVIDER, &provider, &keys(), http.clone(), store_check(dir.path())).unwrap();
-    assert!(block_on(broker.submit(&job())).unwrap_err().message.contains("withdrawn"));
+    // A disable leaves the grant live; only the index changes.
+    open(dir.path()).disable(&id()).unwrap();
+    let error = block_on(broker.submit(&job())).unwrap_err();
+    assert!(error.message.contains("withdrawn"), "{}", error.message);
     assert_eq!(*http.0.lock().unwrap(), 0);
 }
 
@@ -111,4 +137,72 @@ fn a_windows_worker_reads_the_store_again_and_withdraws_a_provider_revoked_elsew
 
     open(dir.path()).revoke(&grant).unwrap();
     published(&worker, false);
+}
+
+/// A store whose index another window rewrites (disabling the package) at the `flip`th index
+/// read, wherever in the worker's timed read that falls.
+struct Flipping {
+    enabled: Vec<u8>,
+    disabled: Vec<u8>,
+    grants: Option<Vec<u8>>,
+    objects: std::collections::BTreeMap<nodecraft_plugin::PackageDigest, Vec<u8>>,
+    reads: std::sync::atomic::AtomicUsize,
+    flip: usize,
+}
+
+impl nodecraft_plugin_store::StoreBackend for Flipping {
+    fn read_index(&self) -> Result<Option<Vec<u8>>, nodecraft_types::Error> {
+        let n = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Ok(Some(if n + 1 >= self.flip { self.disabled.clone() } else { self.enabled.clone() }))
+    }
+    fn write_index(&mut self, _: &[u8]) -> Result<(), nodecraft_types::Error> {
+        Ok(())
+    }
+    fn read_object(&self, digest: &nodecraft_plugin::PackageDigest) -> Result<Vec<u8>, nodecraft_types::Error> {
+        self.objects.get(digest).cloned().ok_or_else(|| nodecraft_types::Error::new(nodecraft_types::ErrorKind::NotFound, "missing"))
+    }
+    fn write_object(&mut self, _: &nodecraft_plugin::PackageDigest, _: &[u8]) -> Result<(), nodecraft_types::Error> {
+        Ok(())
+    }
+    fn remove_object(&mut self, _: &nodecraft_plugin::PackageDigest) -> Result<(), nodecraft_types::Error> {
+        Ok(())
+    }
+    fn list_objects(&self) -> Result<Vec<nodecraft_plugin::PackageDigest>, nodecraft_types::Error> {
+        Ok(self.objects.keys().copied().collect())
+    }
+    fn read_grants(&self) -> Result<Option<Vec<u8>>, nodecraft_types::Error> {
+        Ok(self.grants.clone())
+    }
+}
+
+/// Whichever read the other window's write lands between, the worker's timed reads end up
+/// publishing the disabled package: what it last saw is never newer than what it published.
+#[test]
+fn a_disable_landing_mid_read_is_always_published() {
+    let mut store = granted(&priced("40000"), &[ORIGIN, "https://cdn.acme.example"]);
+    let enabled = store.backend().index.clone().unwrap();
+    store.disable(&id()).unwrap();
+    let disabled = store.backend().index.clone().unwrap();
+    let (grants, objects) = (store.backend().grants.clone(), store.backend().objects.clone());
+    for flip in 1..=10 {
+        let backend = Flipping {
+            enabled: enabled.clone(),
+            disabled: disabled.clone(),
+            grants: grants.clone(),
+            objects: objects.clone(),
+            reads: Default::default(),
+            flip,
+        };
+        let mut backend = Some(backend);
+        let host = PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() };
+        let factory =
+            move || backend.take().map(Store::open).unwrap_or_else(|| Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Internal, "opened twice")));
+        let worker = PluginWorker::spawn_rereading(factory, host, Duration::from_millis(5)).unwrap();
+        assert!(worker.refresh());
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !(worker.loaded() && worker.plugins().1.provider(PROVIDER).is_none()) {
+            assert!(Instant::now() < deadline, "flip at read {flip}: the disable was never published");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
 }

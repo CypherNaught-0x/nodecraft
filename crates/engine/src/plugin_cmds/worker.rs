@@ -211,11 +211,16 @@ impl PluginWorker {
                                 store = Some(factory()?);
                             }
                             let store = store.as_mut().ok_or_else(stopped)?;
-                            store.refresh()?;
+                            // Read before the store is: a write landing between the two reads
+                            // then leaves `seen` older than what was published, so the next read
+                            // publishes again, never the other way round. Unchanged bytes skip
+                            // the store's lock and the publish altogether.
                             let now = (store.backend().read_index()?, store.backend().read_grants()?);
-                            if !timed || seen.as_ref() != Some(&now) {
-                                publish(&publishing, store);
+                            if timed && seen.as_ref() == Some(&now) {
+                                return Ok(());
                             }
+                            store.refresh()?;
+                            publish(&publishing, store);
                             seen = Some(now);
                             Ok::<(), Error>(())
                         }));

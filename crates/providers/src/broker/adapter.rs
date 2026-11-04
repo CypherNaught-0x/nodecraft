@@ -41,9 +41,29 @@ fn unsupported(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::UnsupportedInput, message)
 }
 
+/// The store's grants couldn't be read just now: transient, so it is asked again.
+fn unreadable(then: &str) -> ProviderError {
+    ProviderError::new(ErrorKind::Busy, format!("the plugin store's grants can't be read right now; {then}"))
+}
+
 fn malformed(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, message)
 }
+
+/// What the host knows, right before a request, of the grant a broker runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    Granted,
+    /// Revoked, disabled, updated or removed: nothing more is sent, not even a poll.
+    Withdrawn,
+    /// The store couldn't be read just now (a lock, a file being replaced). Nothing new is
+    /// sent; a job already sent is followed again shortly rather than given up, since it may be
+    /// billed and its result is still wanted.
+    Unknown,
+}
+
+/// Asked right before each request.
+pub type StandingCheck = Arc<dyn Fn() -> Standing + Send + Sync>;
 
 /// A plugin's provider, run by the host from its template. Constructing it sends nothing.
 pub struct Broker {
@@ -52,7 +72,7 @@ pub struct Broker {
     key: Option<Secret>,
     http: Arc<dyn Http>,
     /// Whether the grant it runs under still stands; asked right before a paid request.
-    granted: Arc<dyn Fn() -> bool + Send + Sync>,
+    granted: StandingCheck,
     /// Slots for the template's requests at once, shared with every broker for this provider.
     gate: Arc<RequestGate>,
     /// Bytes its jobs' downloads may hold at once, shared with its package's other providers.
@@ -74,7 +94,7 @@ impl Broker {
         };
         let gate = RequestGate::new(concurrency(&template));
         let bytes = ByteBudget::new(MAX_PACKAGE_BYTES);
-        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true), gate, bytes })
+        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| Standing::Granted), gate, bytes })
     }
 
     /// This broker sending through `gate`, shared with the brokers built for the same provider
@@ -108,7 +128,12 @@ impl Broker {
 
     /// This broker sending a paid request only while `granted` says its grant stands.
     pub fn granted(self, granted: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
-        Self { granted, ..self }
+        self.standing(Arc::new(move || if granted() { Standing::Granted } else { Standing::Withdrawn }))
+    }
+
+    /// This broker asking `check` what stands before each request.
+    pub fn standing(self, check: StandingCheck) -> Self {
+        Self { granted: check, ..self }
     }
 
     fn key(&self) -> &str {
@@ -164,10 +189,11 @@ impl Broker {
     /// Refuses once the grant is withdrawn: a job sent before then is no longer followed, so
     /// the plugin reaches no origin, with or without the credential, after that.
     fn still_granted(&self) -> Result<(), ProviderError> {
-        if (self.granted)() {
-            return Ok(());
+        match (self.granted)() {
+            Standing::Granted => Ok(()),
+            Standing::Withdrawn => Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; the host no longer contacts its service")),
+            Standing::Unknown => Err(unreadable("this is tried again")),
         }
-        Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; the host no longer contacts its service"))
     }
 
     async fn create(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Submission, ProviderError> {
@@ -176,8 +202,10 @@ impl Broker {
         // asked again after it.
         let slot = self.gate.acquire().await;
         // The last moment the job can still be refused without being sent.
-        if !(self.granted)() {
-            return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent"));
+        match (self.granted)() {
+            Standing::Granted => {}
+            Standing::Withdrawn => return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent")),
+            Standing::Unknown => return Err(unreadable("nothing was sent")),
         }
         // Everything local is done. This service has no documented list of replies that create
         // no job, so from here every failure may hide one it bills.
@@ -246,7 +274,8 @@ impl Broker {
     /// `done` with every link fetched into bytes; no output may carry the credential.
     async fn fetch(&self, done: Completed) -> Result<Completed, ProviderError> {
         // Room for the whole job, taken before anything is fetched and kept until the outputs
-        // are handed over, so the package's jobs never hold more than its budget together.
+        // are handed over. The budget counts reply bytes once; while one output is copied into the
+        // shared buffer it is briefly held twice, so the true peak is up to one output more.
         let _room = if done.outputs.iter().any(|o| matches!(o, Output::Url { .. })) { Some(self.bytes.acquire_many(MAX_JOB_BYTES).await) } else { None };
         let mut outputs = Vec::with_capacity(done.outputs.len());
         let mut budget = MAX_JOB_BYTES;

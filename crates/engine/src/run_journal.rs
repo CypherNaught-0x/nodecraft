@@ -70,6 +70,26 @@ pub struct Submitted {
     /// The request its adapter staged before sending it, while no handle is known (#664).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub staged: Option<StagedSubmit>,
+    /// For a plugin provider's job, the grant it was sent under (#174): after a restart it is
+    /// followed only if that same grant still stands. A plugin job saved without one (by an
+    /// earlier NodeCraft) is given up rather than followed under whatever grant stands now.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginGrant>,
+}
+
+/// Which grant of which package version a plugin job was sent under.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PluginGrant {
+    pub package: String,
+    pub digest: String,
+    pub epoch: u64,
+}
+
+impl PluginGrant {
+    pub fn of(stamp: &crate::plugin_runtime::PluginStamp) -> Self {
+        Self { package: stamp.package.as_str().to_owned(), digest: stamp.digest.to_string(), epoch: stamp.epoch }
+    }
 }
 
 impl Submitted {

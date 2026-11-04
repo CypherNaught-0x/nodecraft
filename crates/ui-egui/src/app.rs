@@ -765,8 +765,7 @@ impl NodeCraftApp {
                     // Brokers read the store's grants before each request, so a revoke in another
                     // window sharing it stops them at once (#174).
                     if let Some(runs) = &mut runs {
-                        let check = move || nodecraft_plugin_store::FolderBackend::new(store_dir.clone());
-                        runs.set_plugin_grants(nodecraft_engine::plugin_providers::GrantCheck::store(check));
+                        runs.set_plugin_grants(nodecraft_engine::plugin_providers::GrantCheck::folder(store_dir));
                     }
                 }
                 Err(error) => {

@@ -510,6 +510,27 @@ impl RunHost {
         self.publish_following();
     }
 
+    /// Gives up the restored jobs of plugin provider `adapter` in `project` that weren't sent
+    /// under `current`, the grant its provider is published under now (#174): a job sent under an
+    /// older grant, version or epoch, or saved without its grant, isn't followed under this one.
+    /// Each is reported as possibly charged and settled as unresolved, as [`Self::abandon`] does.
+    pub fn abandon_other_grants(&mut self, project: ProjectId, adapter: &str, current: &crate::run_journal::PluginGrant) {
+        let (gone, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|entry| entry.project == project && entry.target.adapter() == adapter && entry.plugin.as_ref() != Some(current));
+        self.parked = waiting;
+        for entry in gone {
+            settle_unresolved(&self.budget, &entry);
+            let why = match entry.plugin {
+                Some(_) => "its plugin was updated or granted again since it was sent; it may have been charged",
+                None => "it was saved without the grant its plugin ran under, so it isn't followed under today's; it may have been charged",
+            };
+            self.held.push(RunNotice::Failed { canvas: entry.canvas, node: entry.node, reason: format!("it couldn't be followed after a restart: {why}") });
+            self.journal_changed = true;
+        }
+        self.publish_following();
+    }
+
     /// Whether restored jobs are waiting for [`Self::resume`].
     pub fn has_waiting(&self) -> bool {
         !self.parked.is_empty()
@@ -1267,6 +1288,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
                 recipe: active.run.resume_recipe(session.kinds(), spec.id),
                 launches: 0,
                 staged: None,
+                plugin: session.plugins().provider(queued.provider.target().adapter()).map(|p| crate::run_journal::PluginGrant::of(&p.stamp)),
             };
             lock(&active.templates).insert(spec.id, template);
             active.preparation.register(spec.id, Arc::clone(&active.asset_source), outputs.clone());

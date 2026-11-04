@@ -1,6 +1,6 @@
 //! What a hostile plugin service can make the host hold in memory (#174): one job's downloads
 //! are capped at 64 MiB, and the jobs of one package share a byte budget, so however many jobs
-//! finish at once their downloads never hold more than it.
+//! finish at once their downloads are admitted only within it.
 
 use std::sync::{Arc, Mutex};
 use std::time::Duration;

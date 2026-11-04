@@ -135,7 +135,9 @@ pub struct PluginsPanel {
     session_only: bool,
 }
 
-/// The strings in a JSON array, at most [`MAX_ITEMS`].
+/// Publisher claims shown before the rest fold away.
+const SHOWN_CLAIMS: usize = 6;
+
 /// The publisher's claims in a rights answer, as lines to show.
 fn claim_lines(v: Option<&Value>) -> Vec<String> {
     let mut lines = Vec::new();
@@ -157,6 +159,7 @@ fn claim_lines(v: Option<&Value>) -> Vec<String> {
     lines
 }
 
+/// The strings in a JSON array, at most [`MAX_ITEMS`].
 fn strings(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(MAX_ITEMS).map(str::to_owned).collect()).unwrap_or_default()
 }
@@ -660,8 +663,17 @@ impl PluginsPanel {
             if !consent.claims.is_empty() {
                 ui.add_space(t.control_gap);
                 ui.label(egui::RichText::new("Its publisher says (NodeCraft can't check this):").color(t.text));
-                for line in &consent.claims {
+                for line in consent.claims.iter().take(SHOWN_CLAIMS) {
                     ui.label(egui::RichText::new(line).color(t.text_muted));
+                }
+                // A package with many models keeps the Grant button in reach.
+                if consent.claims.len() > SHOWN_CLAIMS {
+                    let more = consent.claims.len() - SHOWN_CLAIMS;
+                    egui::CollapsingHeader::new(format!("{more} more")).id_salt("plugin-claims").show(ui, |ui| {
+                        for line in consent.claims.iter().skip(SHOWN_CLAIMS) {
+                            ui.label(egui::RichText::new(line).color(t.text_muted));
+                        }
+                    });
                 }
             }
             let mut grant = false;

@@ -105,12 +105,21 @@ fn limited(limit: u32) -> String {
 /// Runs a batch of `prompts` into one card on the plugin provider allowing `limit` at once, and
 /// returns the service.
 fn run(limit: u32, prompts: usize) -> Arc<Service> {
-    let (service, _) = run_on(Service::default(), limit, prompts, RetryPolicy { max_attempts: 1, ..Default::default() });
+    let (service, _) = run_on(Service::default(), limit, prompts, RetryPolicy { max_attempts: 1, ..Default::default() }, None);
     service
 }
 
 /// [`run`] against `service`, retrying as `retry` says; the service and the run's jobs.
-fn run_on(service: Service, limit: u32, prompts: usize, retry: RetryPolicy) -> (Arc<Service>, Vec<crate::run_jobs::JobView>) {
+/// With `journal`, the run journal is kept there and every saved job's plugin grant is noted in
+/// `saved`.
+fn run_on(
+    service: Service,
+    limit: u32,
+    prompts: usize,
+    retry: RetryPolicy,
+    journal: Option<(&crate::run_journal::MemoryJournal, &mut Vec<Option<crate::run_journal::PluginGrant>>)>,
+) -> (Arc<Service>, Vec<crate::run_jobs::JobView>) {
+    let mut journal = journal;
     let budget = JobBudget {
         log: Arc::new(Mutex::new(UsageLog::default())),
         budgets: Arc::new(Mutex::new(Budgets::default())),
@@ -126,6 +135,9 @@ fn run_on(service: Service, limit: u32, prompts: usize, retry: RetryPolicy) -> (
     s.set_plugins(PluginSnapshot::of(&granted(&limited(limit), &[ORIGIN, PNG_ORIGIN]))).unwrap();
     let mut host = host;
     host.install(&mut s);
+    if let Some((store, _)) = &journal {
+        host.open_journal(Box::new((*store).clone())).unwrap();
+    }
 
     s.dispatch("node.create", &json!({"canvas": CANVAS, "id": CARD, "kind": nodecraft_nodes::generation::KIND, "pos": {"x": 0, "y": 0}})).unwrap();
     let preview = s.dispatch("node.model_preview", &json!({"canvas": CANVAS, "nodes": [CARD], "model": MODEL})).unwrap();
@@ -159,6 +171,9 @@ fn run_on(service: Service, limit: u32, prompts: usize, retry: RetryPolicy) -> (
     let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         notices.extend(host.pump(&mut s));
+        if let Some((store, saved)) = &mut journal {
+            saved.extend(store.saved().into_iter().flat_map(|j| j.submitted).map(|entry| entry.plugin));
+        }
         if !host.is_busy() {
             break;
         }
@@ -192,8 +207,21 @@ fn a_template_allowing_one_runs_its_jobs_one_at_a_time() {
 #[test]
 fn a_lost_submit_reply_is_sent_once_and_ends_as_possibly_charged() {
     let retry = RetryPolicy { max_attempts: 3, base_delay_ms: 1, max_delay_ms: 1 };
-    let (service, jobs) = run_on(Service { lose_replies: true, ..Service::default() }, 2, 1, retry);
+    let (service, jobs) = run_on(Service { lose_replies: true, ..Service::default() }, 2, 1, retry, None);
     assert_eq!(*service.submitted.lock().unwrap(), 1, "sent once, never again under the claimed key");
     let [job] = jobs.as_slice() else { panic!("{jobs:?}") };
     assert!(job.may_have_been_charged(), "{job:?}");
+}
+
+/// #174: a plugin job is journaled with the grant it was sent under, so a restart follows it only
+/// under that grant.
+#[test]
+fn a_plugin_job_is_journaled_with_the_grant_it_was_sent_under() {
+    let store = crate::run_journal::MemoryJournal::default();
+    let mut saved = Vec::new();
+    run_on(Service::default(), 2, 2, RetryPolicy { max_attempts: 1, ..Default::default() }, Some((&store, &mut saved)));
+    let expected = PluginSnapshot::of(&granted(&limited(2), &[ORIGIN, PNG_ORIGIN])).provider(PROVIDER).map(|p| crate::run_journal::PluginGrant::of(&p.stamp));
+    assert!(expected.is_some());
+    assert!(!saved.is_empty(), "the running jobs were journaled");
+    assert!(saved.iter().all(|grant| *grant == expected), "{saved:?}");
 }
