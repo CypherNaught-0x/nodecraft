@@ -261,8 +261,28 @@ impl NodeCraftApp {
         {
             log::warn!("the open could not be cancelled before quitting: {}", error.message);
         }
-        if let Some(Err(error)) = self.session.finish_file() {
-            log::warn!("project not saved: {}", error.message);
+        let saving = self.session.file_status().saving;
+        match self.session.finish_file() {
+            Some(Err(error)) if saving => log::warn!("project not saved: {}", error.message),
+            Some(Err(error)) => log::warn!("the file operation running at quit didn't finish: {}", error.message),
+            _ => {}
+        }
+        // Run results that arrived while the save wrote waited for it (#367): take them in now,
+        // before the journal's state is decided, so the recovery journal holds them. Not while
+        // the startup question is undecided: its answer may still replace the document.
+        if saving
+            && !self.recovery_deciding()
+            && let Some(runs) = &mut self.runs
+        {
+            let _ = runs.tick(&mut self.session, self.canvas);
+            // Media a result brings are adopted off this thread; wait a moment for them, bounded.
+            for _ in 0..50 {
+                if !runs.is_preparing_results() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                let _ = runs.tick(&mut self.session, self.canvas);
+            }
         }
         let status = self.session.file_status();
         let untouched = status.location.is_none() && !self.session.can_undo() && !self.session.can_redo();
