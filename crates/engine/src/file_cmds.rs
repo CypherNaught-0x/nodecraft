@@ -35,18 +35,23 @@ pub struct FileOperation {
 pub enum FileOperationKind {
     Save,
     Open,
+    /// Adopting work recovered from an earlier session's journal (#367): its media are copied
+    /// into this session's workspace and its recovery checkpoint written.
+    Recover,
 }
 /// Where a background file operation is. Phases only move forward.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilePhase {
-    /// Snapshotting the document and sealing its assets into the archive plan (save).
+    /// Snapshotting the document and sealing its assets into the archive plan (save), or copying
+    /// recovered media into this session's workspace and sealing them (recover).
     Preparing,
     /// Reading and verifying the project file into a private copy (open).
     Reading,
     /// Writing the destination; nothing is replaced until it is complete (save).
     Writing,
     /// Writing the recovery checkpoint. A save's file is already published by now, so it can no
-    /// longer be cancelled. An open still can, until its replacement checkpoint is published.
+    /// longer be cancelled. An open or a recovery still can, until its replacement checkpoint is
+    /// published.
     Checkpointing,
 }
 impl FilePhase {
@@ -64,6 +69,7 @@ impl FileOperationKind {
         match self {
             Self::Save => "save",
             Self::Open => "open",
+            Self::Recover => "recover",
         }
     }
 }
@@ -165,7 +171,7 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: cancel_schema,
             label: "Cancel saving or opening",
             shortcut: None,
-            params_doc: "{}; asks the background save or open to stop. Returns {cancelling: bool}, false when none is running. The operation's outcome says whether it stopped in time: a stopped save leaves the file unchanged, a stopped open keeps the current project.",
+            params_doc: "{}; asks the background save, open or recovery to stop. Returns {cancelling: bool}, false when none is running. The operation's outcome says whether it stopped in time: a stopped save leaves the file unchanged, a stopped open or recovery keeps the current project.",
             enabled: enabled_cancel,
             run: cancel,
         },

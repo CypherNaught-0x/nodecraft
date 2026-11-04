@@ -102,6 +102,12 @@ pub trait ProjectStorage {
     fn space_probe(&self, _location: &StorageLocation) -> crate::space::SpaceProbe {
         crate::space::SpaceProbe::default()
     }
+    /// Free space on the volume holding the recovery journal and its workspace, for work that
+    /// writes only there (adopting recovered work, #367), whatever file it belongs to. `None`
+    /// where it can't be told, and then nothing is checked.
+    fn recovery_free(&self) -> Option<u64> {
+        None
+    }
     fn load(&mut self, location: &StorageLocation) -> Result<Vec<u8>, Error>;
     /// Stage a location without releasing the active destination. Locking/read-only hosts
     /// must implement this protocol; defaults suit writable hosts without location locks.
@@ -321,6 +327,13 @@ pub(crate) mod native {
             };
             let recovery = self.recovery.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
             space::probe(path, recovery)
+        }
+        fn recovery_free(&self) -> Option<u64> {
+            if let Some(report) = &self.space {
+                return report(&StorageLocation::Path(self.recovery.clone())).recovery_free;
+            }
+            let recovery = self.recovery.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or_else(|| Path::new("."));
+            fs4::available_space(recovery).ok()
         }
         fn asset_context(&self) -> Option<AssetContext> {
             Some(self.context.clone())

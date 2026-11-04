@@ -22,6 +22,8 @@ mod azure45;
 mod background749;
 #[path = "background_open.rs"]
 mod background_open;
+#[path = "background_recover367.rs"]
+mod background_recover367;
 #[path = "background_save.rs"]
 mod background_save;
 #[path = "batch_keys517.rs"]

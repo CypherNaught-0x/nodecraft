@@ -253,9 +253,10 @@ impl NodeCraftApp {
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
         // Quitting waits for a save still writing; until it publishes, the project is unsaved.
-        // An open is cancelled instead (#367): waiting would hold the closing window for the
-        // whole read with no way to stop it, and the open project stays as it was.
-        if self.session.file_status().operation.is_some_and(|operation| operation.kind == nodecraft_engine::file_cmds::FileOperationKind::Open)
+        // An open or a recovery is cancelled instead (#367): waiting would hold the closing
+        // window for the whole read with no way to stop it, the open project stays as it was,
+        // and a recovery's kept copy stays to be offered next time.
+        if self.session.file_status().operation.is_some_and(|operation| operation.kind != nodecraft_engine::file_cmds::FileOperationKind::Save)
             && let Err(error) = self.session.dispatch("file.cancel", &json!({}))
         {
             log::warn!("the open could not be cancelled before quitting: {}", error.message);
@@ -284,6 +285,7 @@ impl NodeCraftApp {
         let busy = match status.operation.map(|operation| operation.kind) {
             Some(nodecraft_engine::file_cmds::FileOperationKind::Save) => " (saving…)",
             Some(nodecraft_engine::file_cmds::FileOperationKind::Open) => " (opening…)",
+            Some(nodecraft_engine::file_cmds::FileOperationKind::Recover) => " (recovering…)",
             None => "",
         };
         format!("{name}{dirty}{busy} — NodeCraft")

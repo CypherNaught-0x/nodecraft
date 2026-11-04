@@ -93,7 +93,7 @@ fn recover_brings_the_work_back_unsaved_at_its_file_and_saving_drops_the_copy() 
     assert!(!has_added(&h), "nothing changes before the person decides");
     assert_eq!(dir.kept_files(), 1, "the journal is kept until then");
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h), "the edit is back");
     let status = h.state().session.file_status();
     assert!(status.dirty, "unsaved");
@@ -114,7 +114,7 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
     crash(&dir, false);
     let mut h = launch(&dir, None);
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h));
     // A clean quit before saving.
     h.state_mut().close_storage();
@@ -122,7 +122,7 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
     let mut h = launch(&dir, None);
     assert!(asked(&h), "the recovered work is offered again, not lost");
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h));
     // And a crash after recovering, with more edits, offers the newer copy, which holds both.
     let canvas = h.state().canvas;
@@ -133,7 +133,7 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
     let mut h = launch(&dir, None);
     assert_eq!(dir.kept_files(), 2);
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h) && h.state().session.document().canvases().values().any(|c| c.nodes().len() > 1));
     // Resolving one selected copy does not prove any other snapshot is subsumed.
     drop(h);
@@ -196,7 +196,7 @@ fn keys_and_paste_wait_while_the_question_is_open() {
     assert!(asked(&h));
     // Recovery still works afterwards.
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h));
 }
 
@@ -212,7 +212,7 @@ fn a_damaged_journal_offers_what_replays_and_an_unreadable_one_is_kept() {
     assert!(asked(&h));
     h.get_by_label("Recovery stopped at an incomplete or damaged record. Only complete changes before that point are included.");
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h), "the whole frames before the damage are recovered");
     // Unreadable: nothing replays; the file is kept and named, and not asked about again.
     let dir = Scratch::new("unreadable");
@@ -268,7 +268,7 @@ fn render_recovery_review_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("prompt.png")).unwrap();
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     h.run();
     h.render().unwrap().save(folder.join("recovered.png")).unwrap();
 }
@@ -283,7 +283,7 @@ fn genuine_comments_v2_journal_is_offered_recovered_and_saved_by_the_desktop() {
     assert!(asked(&h));
     assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().changes, 3);
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert_eq!(*h.state().session.document(), expected);
     assert!(h.state().session.document().canvases().values().any(|canvas| !canvas.comments().is_empty()));
     h.state_mut().session.dispatch("file.save_as", &json!({"location":dir.project().to_str().unwrap()})).unwrap();
@@ -346,7 +346,7 @@ fn resolving_project_b_recover_and_save_keeps_project_a_exact_copy() {
     assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project, expected_b);
     let selected = h.state().recovery.as_ref().unwrap().kept.clone();
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
     h.run();
     assert!(a_copy.exists(), "A's never-recovered work must survive saving B");
@@ -383,7 +383,7 @@ fn recovered_unsaved_copy_survives_programmatic_discard_open_of_same_file() {
     let copy = h.state().recovery.as_ref().unwrap().kept.clone();
     let bytes = std::fs::read(&copy).unwrap();
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert!(has_added(&h));
     h.state_mut().session.dispatch("file.open", &json!({"location":dir.project().to_str().unwrap(),"discard_dirty":true})).unwrap();
     h.run();
@@ -464,7 +464,7 @@ fn incomplete_header_payload_and_checksum_damage_share_truthful_warning_and_pref
         assert_eq!(warning.is_some(), reason.is_some());
         assert!(h.query_by_label_contains("The very last change").is_none());
         h.get_by_label("Recover").click();
-        h.run();
+        settle(&mut h);
         assert!(has_added(&h), "complete prefix survives {kind}");
         assert_eq!(h.state().session.document().canvases().values().any(|canvas| canvas.nodes().contains_key(&second)), reason.is_none());
     }
@@ -519,7 +519,7 @@ fn same_uuid_and_path_divergent_copies_are_not_implicit_ancestors() {
     assert_ne!(fork, old_project);
     assert_eq!(storage::recorded_location(&older), storage::recorded_location(&selected));
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
     h.run();
     assert_eq!(std::fs::read(older).unwrap(), original);
@@ -536,7 +536,7 @@ fn multiple_same_uuid_open_save_calls_between_frames_do_not_save_the_recovered_d
     let copy = h.state().recovery.as_ref().unwrap().kept.clone();
     let bytes = std::fs::read(&copy).unwrap();
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     for path in [&other, &dir.project()] {
         h.state_mut().session.dispatch("file.open", &json!({"location":path.to_str().unwrap(),"discard_dirty":true})).unwrap();
         h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
@@ -554,7 +554,7 @@ fn recovered_replacement_and_save_as_between_frames_keeps_the_original_copy() {
     let copy = h.state().recovery.as_ref().unwrap().kept.clone();
     let bytes = std::fs::read(&copy).unwrap();
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     let mut replacement = Snapshot { project: h.state().session.document().clone(), assets: h.state().session.assets().clone(), epoch: 0 };
     nodecraft_graph::Change::SetProjectTitle { title: "Different adopted work".into() }.apply(&mut replacement.project).unwrap();
     h.state_mut().session.recover(replacement, None).unwrap();
@@ -632,6 +632,10 @@ fn modal_navigation_inputs_and_choice_frame_do_not_leak_to_the_canvas() {
         h.step();
         assert!(h.state().recovery.is_none(), "choice input {kind}");
         assert_eq!(h.state().view.zoom, view.zoom);
+        // The recovery restores on the save thread (#367); its progress window owns input
+        // until then, and the recovered project is shown once it has.
+        settle(&mut h);
+        assert_eq!(h.state().view.zoom, view.zoom);
         let settled = h.state().view;
         for _ in 0..12 {
             h.step();
@@ -685,7 +689,7 @@ fn native_streaming_offer_above_classic_asset_cap_recovers_and_saves_without_res
     assert!(asked(&h));
     assert!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.assets.get(&hash).is_none());
     h.get_by_label("Recover").click();
-    h.run();
+    settle(&mut h);
     assert_eq!(h.state().session.document(), &project);
     let lease = h.state().session.assets().open_verified(&reference, &cancel, &metrics).unwrap();
     assert_eq!(lease.byte_len(), length as u64);
@@ -812,7 +816,10 @@ fn a_failed_background_last_save_open_keeps_the_copy_and_the_project_and_asks_ag
     );
     assert!(asked(&h), "the person can still recover the work");
     h.get_by_label("Recover").click();
-    h.run();
+    h.step();
+    // Recover restores on the same runner (#367).
+    gate.release();
+    settle(&mut h);
     assert!(has_added(&h), "and the kept work comes back");
 }
 
@@ -923,7 +930,9 @@ fn startup_open_and_a_recovery_offer_ask_only_once_the_open_has_settled() {
     assert!(asked(&h), "the offer follows the open");
     assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
     h.get_by_label("Recover").click();
-    h.run();
+    h.step();
+    gate.release();
+    settle(&mut h);
     assert!(has_added(&h));
 }
 
@@ -964,4 +973,111 @@ fn a_newer_format_last_save_keeps_the_advice_to_update_and_the_copy() {
         )
     );
     assert!(asked(&h));
+}
+
+/// Frame time past the progress window's delay, the job still held.
+fn past_progress_delay(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..((crate::app::file_dialogs::progress::SHOW_AFTER * 60.0) as usize + 4) {
+        h.step();
+    }
+}
+
+#[test]
+fn recover_restores_in_the_background_behind_its_progress_window() {
+    let dir = Scratch::new("recover-background-367");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let held = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(held.clone());
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    h.get_by_label("Recover").click();
+    h.step();
+    h.step();
+    assert!(held.held() == 1, "the media copies and the checkpoint run on the save runner, not in the frame");
+    assert!(!has_added(&h), "nothing is replaced before the checkpoint publishes");
+    assert!(!asked(&h), "the question is answered; the progress window owns the window");
+    assert!(h.state().recovery_deciding(), "queued runs stay paused while it restores");
+    assert!(h.state().window_title().contains("(recovering…)"), "{}", h.state().window_title());
+    past_progress_delay(&mut h);
+    assert!(h.query_by_label("Recovering unsaved work…").is_some());
+    h.get_by_label("Copying the recovered work's media…");
+    // Keys and pointer meanwhile reach nothing behind it.
+    let revision = h.state().session.revision();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.step();
+    assert_eq!(h.state().session.revision(), revision);
+    held.release();
+    settle(&mut h);
+    assert!(h.query_by_label("Recovering unsaved work…").is_none());
+    assert!(has_added(&h), "the edit is back");
+    let status = h.state().session.file_status();
+    assert!(status.dirty && status.operation.is_none());
+    assert_eq!(status.location, Some(StorageLocation::Path(dir.project())));
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Recovered a.ncraft")), "{:?}", h.state().notice);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "kept until the recovered work is saved");
+    assert!(!h.state().recovery_deciding());
+    h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+    h.run();
+    assert_eq!(dir.kept_files(), 0, "saving the recovered work resolves its copy");
+}
+
+#[test]
+fn cancelling_a_background_recovery_keeps_the_copy_and_asks_again() {
+    let dir = Scratch::new("recover-cancel-367");
+    crash(&dir, false);
+    let mut h = launch(&dir, None);
+    let held = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(held.clone());
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    let current = h.state().session.document().clone();
+    h.get_by_label("Recover").click();
+    past_progress_delay(&mut h);
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    assert!(h.state().session.file_status().operation.is_some_and(|operation| operation.cancel_requested));
+    h.get_by_label("Cancelling… the current step finishes first.");
+    held.release();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &current, "the current project is unchanged");
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is byte for byte");
+    let notice = h.state().notice.clone().unwrap_or_default();
+    assert!(notice.starts_with("Recovering was cancelled.") && notice.contains("kept as"), "{notice}");
+    assert!(asked(&h), "Recover is still one click away");
+    // Asked again, it recovers on the app's own save thread.
+    h.state_mut().session.set_save_runner(Arc::new(crate::app::storage::ThreadSaves));
+    h.get_by_label("Recover").click();
+    settle(&mut h);
+    assert!(has_added(&h));
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Recovered")));
+}
+
+#[test]
+fn a_session_replaced_while_recovering_keeps_the_copy_and_drops_the_question() {
+    let dir = Scratch::new("recover-replaced-367");
+    crash(&dir, false);
+    let mut h = launch(&dir, None);
+    let held = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(held.clone());
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    h.get_by_label("Recover").click();
+    h.step();
+    assert!(held.held() == 1);
+    // The host replaces the session (a joined share, say) while the job is still held.
+    let replacement = nodecraft_engine::Session::new(h.state().session.document().clone()).unwrap();
+    let canvas = h.state().canvas;
+    h.state_mut().replace_session(replacement, canvas).unwrap();
+    settle(&mut h);
+    assert!(!asked(&h), "the question went with the session it was asked over");
+    assert!(!has_added(&h));
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy stays for the next launch");
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("kept as")), "{:?}", h.state().notice);
+    // The old session's job, run late, changes nothing the window shows.
+    held.release();
+    h.run();
+    assert!(!has_added(&h));
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes);
 }
