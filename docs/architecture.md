@@ -696,9 +696,10 @@ imposing the archive's smaller manifest ceiling on every edit.
 ## Optional native video sidecar
 
 `media/video` provides the standalone bounded native FFmpeg service described in
-[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
-tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
-is separate. Feature-on wasm exposes an Unsupported host setup path.
+[media-video.md](media-video.md). Native app builds enable the library feature and discover
+installed tools. The UI uses the service for card previews and playback, and the engine uses
+it for Timeline and video-action renders. The library depends on external Rust crates and
+invokes FFmpeg and ffprobe as processes. WebAssembly exposes an Unsupported host setup path.
 
 ## Selected-node formatting
 

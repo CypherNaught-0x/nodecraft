@@ -491,10 +491,12 @@ browser. HTTP via `reqwest` (works on both).
 
 - **Images:** `image` crate (+ `fast_image_resize`); thumbnails per content hash; GPU textures
   cached and evicted by LRU budget.
-- **Video:** FFmpeg via a sidecar process (`ffmpeg-sidecar`-style) behind the `video` feature
-  on desktop; decode frames for previews/scrubbing, encode for timeline renders and actions.
-  Pure-Rust paths (e.g. `rav1e`/`re_mp4` style) evaluated later; browser uses WebCodecs.
-- **Audio:** `symphonia` decode, `rodio`/`cpal` playback, waveform thumbnails.
+- **Video:** the optional library feature `nodecraft-media/video` provides bounded FFmpeg
+  processes. The native app enables it through its dependencies and discovers installed
+  FFmpeg and ffprobe for previews, scrubbing, Timeline renders and video actions.
+- **Audio:** the native host uses FFmpeg for bounded PCM decode and `cpal` for sound card
+  playback, with cached waveform thumbnails. Browser playback and native FFmpeg operations
+  are unsupported. See [native media](media-video.md).
 - **3D:** `gltf` import/export (+ OBJ), wgpu viewer as an egui paint callback, offscreen render
   for photo/turntable/sheet capture.
 - **PDF:** page rendering and text extraction through `craft-pdf` (pure Rust, from craft-libs;
@@ -672,7 +674,7 @@ scripts (`packaging/env.sh`, `packaging/{macos,windows,linux}/…`, modelled on 
 | Licence | MIT OR Apache-2.0 | Same as the Craft suite and craft-libs |
 | Shared libraries | craft-libs (`craft-ui`, `craft-settings`, `craft-atomic`, `craft-quit`, `craft-pdf`), pinned by rev | Shared look and behaviour with the Craft apps; fixes land upstream once |
 | Multi-user work | `/claim` bot + draft-PR claims (CONTRIBUTING.md) | Lets several people and agents pick issues without collisions |
-| Video | FFmpeg sidecar behind a feature | Only realistic route to broad codec support today; keeps core pure Rust |
+| Video | Bounded installed FFmpeg and ffprobe processes, enabled in native builds | Broad codec support without linking FFmpeg into NodeCraft |
 | Custom actions | LLM-written WGSL with declared params | Sandboxed by construction, GPU fast, parameters become sliders |
 | Persistence | Local `.ncraft` + content-addressed assets | Offline, portable, dedupes variations; cloud sync is an add-on |
 | Distribution | GitHub releases from our own workflow modelled on the shared Craft one: desktop installers, CLI with integrated MCP server, wasm web bundle | Same artifact names as the other Craft apps; releases don't wait for signing |
@@ -767,7 +769,32 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   (#173); a session-only store in the browser (#823); structured property tests over hostile
   archives and failing operation sequences (#824).
 - [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
-- [ ] Close the M4 documentation follow-up (#375), then GitHub can mark its milestone closed.
+- [x] Close the M4 documentation follow-up (#375).
+
+### M7 video and audio
+
+M7's feature and exit-criterion checklist:
+
+- [x] Native video card playback and scrubbing (#105), audio waveforms and playback (#106)
+  and playback while minimized (#666). Installed FFmpeg and ffprobe support native preview,
+  actions and rendering (#107, #411). Audio and video durations are probed at import (#572, #608).
+- [x] Explicit video actions and Timeline renders (#108, #109). Timeline includes captions
+  (#574), layered picture and audio tracks (#576), clip placement, speed and snapping (#577),
+  source version tracking (#578), and staged filter scripts with short relative paths (#642).
+- [x] Timeline interchange exports the cut and source media (#166). Cross-editor import
+  verification and cancellable background export remain separate follow-up work (#643).
+- [x] ComfyUI video/audio workflows (#110), Generate video and audio cards (#559, #672),
+  fal video modes (#607) and provider-specific video editing (#179).
+- [x] Gemini Omni video (#17), Veo on Google Cloud (#742), Seedance (#18), Kling (#19),
+  ElevenLabs (#20), Google TTS (#21), prompt-length quotes (#673) and desktop ElevenLabs
+  voice choices and streamed speech previews (#670, #671, #875).
+- [x] Exit criterion: four picture clips with sound and fades rendered through the Timeline
+  run host. See the [four-clip render check](media-video.md#m7-four-clip-render-check).
+- [x] M7 documentation close-out (#378).
+
+### M10 sharing and collaboration
+
+The milestone close-out tracks the two-user editing demo (#381).
 
 ---
 
