@@ -891,6 +891,17 @@ impl RunHost {
 
     /// Starts accepted runs and absorbs finished work. UI thread; never blocks on a provider.
     pub fn pump(&mut self, session: &mut Session) -> Vec<RunNotice> {
+        self.pump_with(session, true)
+    }
+    /// The last pump before [`Self::shut_down`], when quitting (#367): records work that has
+    /// finished (results that waited for a save, say) and starts nothing. From here on nothing
+    /// new is sent either, so recording a result can't send a paid job downstream; an accepted
+    /// run still waiting stays unstarted, as at any quit.
+    pub fn pump_for_quit(&mut self, session: &mut Session) -> Vec<RunNotice> {
+        lock(&self.journal).closing = true;
+        self.pump_with(session, false)
+    }
+    fn pump_with(&mut self, session: &mut Session, start: bool) -> Vec<RunNotice> {
         let mut notices = std::mem::take(&mut self.held);
         // Cancels asked through `run.cancel` (#167), as the queue panel's would be. One that ended
         // meanwhile has nothing left to stop.
@@ -899,7 +910,7 @@ impl RunHost {
             let _ = self.cancel(key);
         }
         // Every accepted run starts now, before this pump records anything (see `Inbox`).
-        loop {
+        while start {
             let next = lock(&self.inbox).waiting.pop_front();
             let Some(prepared) = next else { break };
             if let Err(error) = self.start(session, prepared, &mut notices) {

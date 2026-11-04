@@ -96,9 +96,17 @@ fn history(session: &Session) -> usize {
     session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap().history.len()
 }
 
-#[test]
-fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
-    // A builtin text model, answered by the mock provider after a few polls: no network.
+/// A text card on a builtin model, answered by the mock provider after a few polls (no
+/// network), a run host with a journal, and the run quoted and accepted, still to be started.
+struct Fixture {
+    session: Session,
+    host: RunHost,
+    mock: MockProvider,
+    storage: Stalling,
+    journal: nodecraft_engine::run_journal::MemoryJournal,
+    start: serde_json::Value,
+}
+fn fixture() -> Fixture {
     let catalog = GenerationCatalog::builtin().unwrap();
     let kinds = catalog.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([69; 16]), "Pumped").unwrap();
@@ -124,13 +132,19 @@ fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
     host.open_journal(Box::new(journal.clone())).unwrap();
     host.install(&mut session);
 
-    // The run is accepted and started; then ⌘S starts a background save whose write stalls.
     let request = json!({"canvas": C, "mode": "selected", "nodes": [N]});
     let quote = session.dispatch("run.quote", &request).unwrap();
     assert_eq!(quote["allowed"], true, "{quote}");
     let amounts: serde_json::Map<_, _> = quote["totals"].as_object().unwrap().iter().map(|(c, t)| (c.clone(), t["micros"].clone())).collect();
     let mut start = request;
     start["accept"] = json!({"token": quote["token"], "partial": false, "unpriced_jobs": 0, "amounts": amounts});
+    Fixture { session, host, mock, storage, journal, start }
+}
+
+#[test]
+fn the_run_pump_keeps_going_while_a_save_is_parked_in_a_disk_write() {
+    // The run is accepted; then ⌘S starts a background save whose write stalls.
+    let Fixture { mut session, mut host, mock, storage, journal, start } = fixture();
     // Accepted, waiting in the host's inbox: it starts on the first pump, during the save.
     session.dispatch("run.start", &start).unwrap();
     let mut notices = Vec::new();
@@ -263,4 +277,19 @@ fn a_change_that_must_not_wait_is_refused_while_a_save_writes_and_lands_once_it_
     // Outside a save it is plain dispatch.
     session.dispatch_without_waiting("node.move", &moved(40)).unwrap();
     session.settle_without_waiting().unwrap();
+}
+
+/// The pump at quit records and starts nothing (#367 review): an accepted run still waiting
+/// isn't started, so nothing is sent or charged as the window closes.
+#[test]
+fn the_quit_pump_starts_no_run() {
+    let Fixture { mut session, mut host, mock, start, .. } = fixture();
+    session.dispatch("run.start", &start).unwrap();
+    for _ in 0..20 {
+        host.pump_for_quit(&mut session);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(mock.requests().is_empty(), "nothing was sent");
+    assert!(host.running().is_empty(), "the accepted run wasn't started");
+    host.shut_down();
 }

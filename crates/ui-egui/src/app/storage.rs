@@ -274,14 +274,15 @@ impl NodeCraftApp {
             && !self.recovery_deciding()
             && let Some(runs) = &mut self.runs
         {
-            let _ = runs.tick(&mut self.session, self.canvas);
+            // Records only: nothing starts or is sent at quit.
+            runs.record_for_quit(&mut self.session);
             // Media a result brings are adopted off this thread; wait a moment for them, bounded.
             for _ in 0..50 {
                 if !runs.is_preparing_results() {
                     break;
                 }
                 std::thread::sleep(std::time::Duration::from_millis(10));
-                let _ = runs.tick(&mut self.session, self.canvas);
+                runs.record_for_quit(&mut self.session);
             }
         }
         let status = self.session.file_status();
