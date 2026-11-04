@@ -475,8 +475,12 @@ fn the_inventory_covers_measured_saves() {
     // Opening a classic-format file: its private copy, a verified copy of each asset (checked
     // once the copy is read), and its checkpoint.
     let file_bytes = std::fs::metadata(&source).unwrap().len();
-    let open_needed =
-        SpaceInventory::open(file_bytes).unwrap().with_verified_copies(30 * 200 * 1024).needed(nodecraft_format::space::Volume::Recovery).unwrap();
+    let open_needed = SpaceInventory::open(file_bytes)
+        .unwrap()
+        .with_journal_replaced(std::fs::metadata(dir.path().join("journal")).unwrap().len())
+        .with_verified_copies(30 * 200 * 1024)
+        .needed(nodecraft_format::space::Volume::Recovery)
+        .unwrap();
     let open_growth = peak_growth(dir.path(), || {
         session.dispatch("file.open", &json!({"location": source.to_str().unwrap(), "discard_dirty": true})).unwrap();
     });

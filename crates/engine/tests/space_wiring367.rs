@@ -251,7 +251,11 @@ fn a_streaming_project_calibrates_the_copies_term() {
     let file_bytes = std::fs::metadata(&path).unwrap().len();
     let mut session = session(&dir.path().join("journal"), None);
     // An open's first check; a streaming file's second (classic copies) adds nothing.
-    let open_needed = SpaceInventory::open(file_bytes).unwrap().needed(Volume::Recovery).unwrap();
+    let open_needed = SpaceInventory::open(file_bytes)
+        .unwrap()
+        .with_journal_replaced(std::fs::metadata(dir.path().join("journal")).unwrap().len())
+        .needed(Volume::Recovery)
+        .unwrap();
     let open_measured = peak_growth(dir.path(), || {
         open(&mut session, &path).unwrap();
     });

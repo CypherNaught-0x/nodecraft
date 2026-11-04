@@ -55,6 +55,10 @@ pub enum Extent {
     CompactionPack,
     /// An older-format (or identity-migrated) file rewritten in the current format while opening.
     Rewrite,
+    /// On Windows, the second copy of the new checkpoint while it replaces the journal: the
+    /// staged checkpoint stays on disk until the replace completes, beside the journal already
+    /// holding the new content, while the old journal's space comes back.
+    CheckpointReplace,
 }
 impl Extent {
     pub const fn name(self) -> &'static str {
@@ -66,6 +70,7 @@ impl Extent {
             Self::VerifiedCopies => "verified copies of the project's media",
             Self::CompactionPack => "compacted media pack",
             Self::Rewrite => "project rewritten in the current format",
+            Self::CheckpointReplace => "recovery checkpoint while it replaces the journal",
         }
     }
 }
@@ -213,6 +218,19 @@ impl SpaceInventory {
     pub fn with_compaction(mut self, bytes: u64) -> Self {
         if bytes > 0 {
             self.items.push(SpaceItem { transient: true, ..SpaceItem::new(Extent::CompactionPack, Volume::Recovery, bytes, Phase::Housekeeping) });
+        }
+        self
+    }
+    /// Accounts for replacing a recovery journal of `journal_bytes` with the new checkpoint.
+    /// Where the replace briefly keeps both copies of the checkpoint (Windows, measured in CI),
+    /// the second copy, less the old journal it frees, is charged at publication. Elsewhere the
+    /// replace is an atomic rename and nothing is added.
+    #[must_use]
+    pub fn with_journal_replaced(mut self, journal_bytes: u64) -> Self {
+        let checkpoint = self.items.iter().filter(|item| item.extent == Extent::Checkpoint).map(|item| item.bytes).sum::<u64>();
+        let extra = checkpoint.saturating_sub(journal_bytes);
+        if cfg!(windows) && extra > 0 {
+            self.items.push(SpaceItem::new(Extent::CheckpointReplace, Volume::Recovery, extra, Phase::Publish));
         }
         self
     }
@@ -548,5 +566,15 @@ mod tests {
         let destination = SpaceProbe { destination_free: Some(1), recovery_free: None, shared: false, existing_bytes: None };
         assert!(!indebted.check(&destination).unwrap_err().message.contains("temporary files"));
         assert!(SpaceInventory::save(GB, None).unwrap().with_verified_copies(u64::MAX).needed(Volume::Recovery).is_err());
+    }
+
+    #[test]
+    fn replacing_the_journal_doubles_the_checkpoint_only_where_the_replace_keeps_both() {
+        let save = SpaceInventory::save(GB, None).unwrap();
+        let replaced = save.clone().with_journal_replaced(GB / 4);
+        let extra = if cfg!(windows) { 3 * GB / 4 + 80 + EXTENT_SLACK } else { 0 };
+        assert_eq!(replaced.needed_on_one_volume().unwrap(), save.needed_on_one_volume().unwrap() + extra);
+        // A journal at least as big as the new checkpoint frees all of the second copy's room.
+        assert_eq!(save.clone().with_journal_replaced(2 * GB), save);
     }
 }

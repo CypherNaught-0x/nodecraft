@@ -16,6 +16,16 @@ and cleanup debt.
   asset, as `Extent::VerifiedCopies`: they stay, since the archive is written from them. In the
   calibration below the term was 0 (imports and opens verify as they go); it guards the cases
   where they haven't.
+- **On Windows the new checkpoint briefly exists twice.** Windows CI measured the first
+  calibration save 8,826 B above its estimate, and the per-file evidence showed why: at the peak
+  the staged checkpoint (`.seed…craft_tmp`, 6,162,500 B) was still on disk beside the journal,
+  which already held the new checkpoint (6,163,482 B, up from the old journal's 5,958,048 B).
+  The replace keeps the staged copy until it completes, while the old journal's space comes
+  back. So on Windows the inventory charges, at publication, a second copy of the checkpoint
+  less the journal it replaces (`Extent::CheckpointReplace`, via
+  `SpaceInventory::with_journal_replaced`, used by the save and open preflights). Elsewhere the
+  replace is an atomic rename and nothing is added, so macOS and Linux estimates are unchanged.
+  The checks inside an open don't add it; their first check already did.
 - **The compaction pack is transient.** When the workspace holds 24 or more backing files (each
   copy is one), output packs every verified backing into one file, then frees the originals. The
   pack (cached bytes plus the new copies) is charged during housekeeping only: once written it
@@ -78,7 +88,7 @@ and cleanup debt.
 
   | Operation | Estimate | Measured peak growth | File written |
   |---|---|---|---|
-  | Classic: Save As from the importing session | 18,683,948 B before the journal tail was counted (now higher by the tail) | 12.3–18.5 MB over runs on macOS (a reviewer measured 18,487,340 B); 18,692,774 B on Windows CI | 6,162,420 B (archive estimate exact) |
+  | Classic: Save As from the importing session | 18,683,948 B (on Windows about 18,953,936 B with the checkpoint replace) | 12.3–18.5 MB over runs on macOS (a reviewer measured 18,487,340 B); 18,692,774 B on Windows CI | 6,162,420 B (archive estimate exact) |
   | Classic: open in a new session | 18,665,528 B (first check, then copies + checkpoint) | 18,335,812–18,468,920 B | |
   | Classic: Save As from the opened session | 18,683,948 B | 18,487,340 B | 6,162,420 B |
   | Streaming: open in a new session | 109,188,644 B | 109,057,572 B | |

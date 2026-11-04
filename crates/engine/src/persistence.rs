@@ -415,8 +415,10 @@ impl Persistence {
         // Unknown housekeeping (the store is busy verifying, say) adds nothing rather than a guess.
         let output = assets.output_space(document, retained).ok().flatten().unwrap_or_default();
         // Saving over an existing file frees it at publication, before the checkpoint.
-        let mut inventory =
-            SpaceInventory::save(bytes, probe.existing_bytes)?.with_verified_copies(output.verified_copies).with_cleanup_debt(output.cleanup_debt);
+        let mut inventory = SpaceInventory::save(bytes, probe.existing_bytes)?
+            .with_verified_copies(output.verified_copies)
+            .with_journal_replaced(self.journal_bytes)
+            .with_cleanup_debt(output.cleanup_debt);
         if let Some(pack) = output.compaction {
             inventory = inventory.with_compaction(pack);
         }
@@ -432,7 +434,7 @@ impl Persistence {
         let probe = guard(|| Ok(storage.space_probe(location)))?;
         let Some(bytes) = probe.existing_bytes else { return Ok(()) };
         let debt = guard(|| Ok(storage.asset_context()))?.and_then(|context| context.cleanup_debt().ok()).unwrap_or(0);
-        SpaceInventory::open(bytes)?.with_cleanup_debt(debt).check(&probe)
+        SpaceInventory::open(bytes)?.with_journal_replaced(self.journal_bytes).with_cleanup_debt(debt).check(&probe)
     }
     fn idle(&self) -> Result<(), Error> {
         match self.pending.as_ref().map(|pending| pending.kind) {
