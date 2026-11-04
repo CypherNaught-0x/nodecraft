@@ -91,6 +91,11 @@ pub trait ProjectStorage {
         cancel.check()?;
         self.append(plan.small_bytes()?)
     }
+    /// The recovery journal's size on disk now, for the space inventory's journal replace
+    /// (#367). `None` where there is no journal file or it can't be told.
+    fn journal_bytes(&self) -> Option<u64> {
+        None
+    }
     /// Free space on the volumes a save to, or an open of, `location` writes to, for the
     /// advisory preflight in [`crate::space`] (#367). Hosts without a filesystem (the browser,
     /// memory) report nothing, and nothing is checked. Must not block on the location itself.
@@ -209,8 +214,18 @@ pub(crate) mod native {
         journal: Arc<durability::SharedJournal>,
         worker: Option<JoinHandle<()>>,
         context: AssetContext,
+        /// Replaces the platform's free-space report ([`Self::set_space_probe`]).
+        space: Option<SpaceReport>,
     }
+    /// A host's own free-space report for a location (#367).
+    pub type SpaceReport = Arc<dyn Fn(&StorageLocation) -> crate::space::SpaceProbe + Send + Sync>;
     impl NativeStorage {
+        /// Reports free space through `report` instead of asking the OS, for every check this
+        /// storage makes: the preflights and the checks inside an open. For hosts that budget
+        /// their own volumes (a quota'd sandbox, say) and for tests that simulate a full drive.
+        pub fn set_space_probe(&mut self, report: SpaceReport) {
+            self.space = Some(report);
+        }
         /// Bounded startup maintenance only; a scan-window limit does not mean the parent is clean.
         pub fn workspace_maintenance_report(&self) -> Option<crate::native_workspace::SweepReport> {
             self.context.0.workspace.as_ref().map(crate::NativeAssetWorkspace::maintenance_report)
@@ -233,7 +248,7 @@ pub(crate) mod native {
             workspace.install_journal(&journal)?;
             let worker = Self::start_worker(&journal, interval)?;
             worker.thread().unpark();
-            Ok(Self { recovery, lock, destinations: destinations::Destinations::new(), journal, worker: Some(worker), context })
+            Ok(Self { recovery, lock, destinations: destinations::Destinations::new(), journal, worker: Some(worker), context, space: None })
         }
         fn start_worker(journal: &Arc<durability::SharedJournal>, interval: Duration) -> Result<JoinHandle<()>, Error> {
             let state = journal.clone();
@@ -273,7 +288,7 @@ pub(crate) mod native {
             let worker = start(&journal)?;
             claim.commit();
             worker.thread().unpark();
-            Ok(Self { recovery, lock, destinations: destinations::Destinations::new(), journal, worker: Some(worker), context })
+            Ok(Self { recovery, lock, destinations: destinations::Destinations::new(), journal, worker: Some(worker), context, space: None })
         }
         pub fn recover(&self) -> Result<crate::journal::Recovered, Error> {
             self.recover_with(&TransferCancel::default(), &StreamMetrics::default())
@@ -294,7 +309,13 @@ pub(crate) mod native {
         fn capability(&self) -> StorageCapability {
             StorageCapability::StreamingV2
         }
+        fn journal_bytes(&self) -> Option<u64> {
+            std::fs::metadata(&self.recovery).ok().filter(std::fs::Metadata::is_file).map(|metadata| metadata.len())
+        }
         fn space_probe(&self, location: &StorageLocation) -> crate::space::SpaceProbe {
+            if let Some(report) = &self.space {
+                return report(location);
+            }
             let StorageLocation::Path(path) = location else {
                 return crate::space::SpaceProbe::default();
             };
@@ -310,8 +331,12 @@ pub(crate) mod native {
                 let file = File::open(path).map_err(|_| io_error("cannot open project; check location and permissions"))?;
                 let workspace = self.context.0.workspace.as_ref().ok_or_else(|| io_error("native asset workspace is unavailable"))?;
                 let (sealed, index) = workspace.freeze_archive(file, cancel, metrics)?;
+                // What decoding writes is known only now; check it fits first (#367).
+                crate::space::check_open_copies(&index, &self.context, self.capability(), &self.space_probe(location))?;
                 let snapshot = crate::decode_indexed(&index, self.context.clone())?;
                 let archive = if index.version() < crate::archive::VERSION {
+                    // The rewrite is known only now; check it fits before writing it (#367).
+                    crate::space::check_rewrite(&snapshot, self.capability(), &self.space_probe(location))?;
                     ArchivePlan::prepare(&snapshot, self.capability(), cancel, metrics)?
                 } else {
                     ArchivePlan::from_native_open(sealed, &snapshot)?
@@ -560,4 +585,4 @@ pub(crate) mod native {
     }
 }
 #[cfg(not(target_arch = "wasm32"))]
-pub use native::NativeStorage;
+pub use native::{NativeStorage, SpaceReport};

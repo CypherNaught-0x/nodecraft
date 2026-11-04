@@ -462,6 +462,17 @@ impl Session {
         session.persistence = Some(persistence);
         Ok(session)
     }
+    /// The disk-space inventory a save to `location` (or the current file) would be checked
+    /// against, and the free space reported for it (#367): what hosts can show before saving,
+    /// and what calibration compares with real writes. `None` when nothing would be checked.
+    pub fn save_space(
+        &mut self,
+        location: Option<StorageLocation>,
+    ) -> Result<Option<(nodecraft_format::space::SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
+        let roots = self.retained_assets()?;
+        let Some(storage) = self.persistence.as_mut() else { return Ok(None) };
+        storage.next_save_inventory(&self.document, &self.assets, &roots, location)
+    }
     pub fn assets(&self) -> &AssetStore {
         &self.assets
     }

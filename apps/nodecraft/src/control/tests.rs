@@ -228,6 +228,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
 
 mod files423;
 mod host360;
+mod race367;
 mod search;
 mod shell367;
 

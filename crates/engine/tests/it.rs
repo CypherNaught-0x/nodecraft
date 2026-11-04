@@ -127,6 +127,8 @@ mod paid_image_edit421;
 mod perf152;
 #[path = "perf_clock370.rs"]
 mod perf_clock370;
+#[path = "persistence_faults367.rs"]
+mod persistence_faults367;
 #[path = "project_identity879.rs"]
 mod project_identity879;
 #[path = "prompt_assist582.rs"]
@@ -165,6 +167,8 @@ mod soul_handles180;
 mod soul_training680;
 #[path = "space_preflight367.rs"]
 mod space_preflight367;
+#[path = "space_wiring367.rs"]
+mod space_wiring367;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
 #[path = "stability36.rs"]
