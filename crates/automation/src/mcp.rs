@@ -213,6 +213,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.held",
     "run.held_retry",
     "run.held_place",
+    // Seeing and stopping jobs never spends money (#167): an agent that can start a paid run can
+    // stop it. A cancel is no refund, and run.jobs says when a job may still be billed.
+    "run.jobs",
+    "run.cancel",
     "share.links",
     "share.link_revoke",
     "share.stop",

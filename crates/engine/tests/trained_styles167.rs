@@ -677,3 +677,46 @@ fn a_training_the_provider_will_not_cancel_says_so_and_keeps_its_billed_style() 
     assert_eq!(style.mime.param("family"), Some("flux-1"));
 }
 
+/// #167: an agent follows a training and stops it through commands, as the queue panel does.
+#[test]
+fn a_training_is_followed_and_cancelled_through_run_jobs_and_run_cancel() {
+    let mut f = fixture_with(trainer(u32::MAX, None));
+    start_training(&mut f, "the training is with the provider", |f| train_job(f).is_some_and(|v| v.sent && !v.state.is_final()));
+    f.host.pump(&mut f.session);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!((job["state"].clone(), job["sent"].clone(), job["model"].clone()), (json!("running"), json!(true), json!("mock-style")), "{job}");
+    assert_eq!(job["may_have_been_charged"], false, "a running job isn't charged yet");
+    let key = json!({"run": job["run"], "job": job["job"]});
+    assert_eq!(f.session.dispatch("run.cancel", &json!({"run": 999, "job": 1})).unwrap_err().kind, nodecraft_types::ErrorKind::NotFound);
+    let asked = f.session.dispatch("run.cancel", &key).unwrap();
+    assert_eq!((asked["cancelling"].clone(), asked["may_be_billed"].clone()), (json!(true), json!(true)), "{asked}");
+    let notices = drain(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Cancelled { node, .. } if *node == TRAIN)), "{notices:?}");
+    assert_eq!(f.mock.cancelled().len(), 1, "the provider was asked to stop");
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert_eq!((job["state"].clone(), job["may_have_been_charged"].clone()), (json!("cancelled"), json!(true)), "{job}");
+    assert!(job["status"].as_str().is_some_and(|s| s.contains("cost unresolved")), "a cancel is no refund: {job}");
+    assert_eq!(f.session.dispatch("run.cancel", &key).unwrap_err().kind, nodecraft_types::ErrorKind::Conflict, "an ended job can't be cancelled");
+    not_ready(&mut f);
+}
+
+#[test]
+fn run_jobs_reports_a_cancel_the_provider_refuses() {
+    use nodecraft_providers::{ErrorKind, mock::MockFailure};
+    let mut f = fixture_with(trainer(2000, Some(MockFailure::Cancel(ErrorKind::UnsupportedInput))));
+    start_training(&mut f, "the training is running", |f| {
+        train_job(f).is_some_and(|v| matches!(v.state, nodecraft_engine::run_jobs::JobState::Running { fraction: Some(_), .. }))
+    });
+    f.host.pump(&mut f.session);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert!(job["fraction"].is_number(), "progress is listed where the provider says: {job}");
+    f.session.dispatch("run.cancel", &json!({"run": job["run"], "job": job["job"]})).unwrap();
+    drain(&mut f);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert_eq!((job["state"].clone(), job["cancel_refused"].clone()), (json!("done"), json!(true)), "{job}");
+    assert_eq!(job["status"], "Finished; the provider refused to cancel");
+}
