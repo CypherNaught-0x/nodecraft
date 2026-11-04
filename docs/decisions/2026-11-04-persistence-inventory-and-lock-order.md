@@ -23,7 +23,9 @@ and cleanup debt.
   The replace keeps the staged copy until it completes, while the old journal's space comes
   back. So on Windows the inventory charges, at publication, a second copy of the checkpoint
   less the journal it replaces (`Extent::CheckpointReplace`, via
-  `SpaceInventory::with_journal_replaced`, used by the save and open preflights). Elsewhere the
+  `SpaceInventory::with_journal_replaced`, used by the save and open preflights, with the
+  journal's size on disk from `ProjectStorage::journal_bytes`; the session's logical journal
+  count overstates the file, and an unknown size charges the whole second copy). Elsewhere the
   replace is an atomic rename and nothing is added, so macOS and Linux estimates are unchanged.
   The checks inside an open don't add it; their first check already did.
 - **The compaction pack is transient.** When the workspace holds 24 or more backing files (each

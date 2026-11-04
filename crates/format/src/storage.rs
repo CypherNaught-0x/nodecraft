@@ -91,6 +91,11 @@ pub trait ProjectStorage {
         cancel.check()?;
         self.append(plan.small_bytes()?)
     }
+    /// The recovery journal's size on disk now, for the space inventory's journal replace
+    /// (#367). `None` where there is no journal file or it can't be told.
+    fn journal_bytes(&self) -> Option<u64> {
+        None
+    }
     /// Free space on the volumes a save to, or an open of, `location` writes to, for the
     /// advisory preflight in [`crate::space`] (#367). Hosts without a filesystem (the browser,
     /// memory) report nothing, and nothing is checked. Must not block on the location itself.
@@ -303,6 +308,9 @@ pub(crate) mod native {
         }
         fn capability(&self) -> StorageCapability {
             StorageCapability::StreamingV2
+        }
+        fn journal_bytes(&self) -> Option<u64> {
+            std::fs::metadata(&self.recovery).ok().filter(std::fs::Metadata::is_file).map(|metadata| metadata.len())
         }
         fn space_probe(&self, location: &StorageLocation) -> crate::space::SpaceProbe {
             if let Some(report) = &self.space {

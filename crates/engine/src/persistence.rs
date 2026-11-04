@@ -417,7 +417,8 @@ impl Persistence {
         // Saving over an existing file frees it at publication, before the checkpoint.
         let mut inventory = SpaceInventory::save(bytes, probe.existing_bytes)?
             .with_verified_copies(output.verified_copies)
-            .with_journal_replaced(self.journal_bytes)
+            // The journal file as it is on disk; unknown counts as none (the larger charge).
+            .with_journal_replaced(guard(|| Ok(self.store.get()?.journal_bytes()))?.unwrap_or(0))
             .with_cleanup_debt(output.cleanup_debt);
         if let Some(pack) = output.compaction {
             inventory = inventory.with_compaction(pack);
@@ -434,7 +435,8 @@ impl Persistence {
         let probe = guard(|| Ok(storage.space_probe(location)))?;
         let Some(bytes) = probe.existing_bytes else { return Ok(()) };
         let debt = guard(|| Ok(storage.asset_context()))?.and_then(|context| context.cleanup_debt().ok()).unwrap_or(0);
-        SpaceInventory::open(bytes)?.with_journal_replaced(self.journal_bytes).with_cleanup_debt(debt).check(&probe)
+        let journal = guard(|| Ok(storage.journal_bytes()))?.unwrap_or(0);
+        SpaceInventory::open(bytes)?.with_journal_replaced(journal).with_cleanup_debt(debt).check(&probe)
     }
     fn idle(&self) -> Result<(), Error> {
         match self.pending.as_ref().map(|pending| pending.kind) {

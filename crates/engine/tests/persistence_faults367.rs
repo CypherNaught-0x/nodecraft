@@ -228,6 +228,9 @@ impl ProjectStorage for HeldNative {
     fn append_plan(&mut self, p: &FramePlan, c: &TransferCancel, m: &StreamMetrics) -> Result<(), Error> {
         self.native.append_plan(p, c, m)
     }
+    fn journal_bytes(&self) -> Option<u64> {
+        self.native.journal_bytes()
+    }
     fn space_probe(&self, l: &StorageLocation) -> SpaceProbe {
         self.native.space_probe(l)
     }
