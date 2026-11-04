@@ -4,6 +4,8 @@
 
 #[path = "azure_openai.rs"]
 mod azure_openai;
+#[path = "bedrock.rs"]
+mod bedrock;
 #[path = "gemini_record_shapes.rs"]
 mod gemini_record_shapes;
 #[path = "live_bfl.rs"]

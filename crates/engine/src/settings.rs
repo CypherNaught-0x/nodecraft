@@ -130,6 +130,10 @@ pub struct ProviderSettings {
     pub litellm_url: Option<String>,
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
+    /// Amazon Bedrock AWS Region code (such as `us-east-1`) for its `bedrock-runtime` OpenAI
+    /// route; the Bedrock API key uses account `bedrock`. No AWS credentials are read from the
+    /// environment or profiles.
+    pub bedrock_region: Option<String>,
     /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
     /// provider id, such as `openai = "http://127.0.0.1:4000/v1"` for a LiteLLM proxy. Only the
     /// providers [`crate::custom_endpoints::PROVIDERS`] lists take one; the URL is checked when the
@@ -155,16 +159,17 @@ struct ReadProviderSettings {
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
     azure_openai_url: Option<String>,
+    bedrock_region: Option<String>,
     #[serde(deserialize_with = "crate::custom_endpoints::lenient_base_urls")]
     base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url, base_urls } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url, bedrock_region, base_urls } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, base_urls, ..Self::with_comfyui(url, &install_salt) },
-            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, base_urls, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, bedrock_region, base_urls, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, bedrock_region, base_urls, install_salt },
         }
     }
 }
@@ -1001,6 +1006,20 @@ mod tests {
             assert!(report.section_errors.is_empty(), "{report:?}");
             let settings = store.get().providers.clone();
             assert_eq!(settings.azure_openai_url.as_deref(), Some("https://demo.openai.azure.com/openai/v1"));
+            let restored: ProviderSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+            assert_eq!(restored, settings);
+        }
+    }
+
+    #[test]
+    fn bedrock_region_survives_settings_roundtrip_and_legacy_comfy_migration() {
+        for legacy in ["", "comfyui_url = 'http://localhost:8188'\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_config(dir.path(), &format!("[providers]\n{legacy}bedrock_region = 'us-west-2'\n"));
+            let (store, report) = open_in(dir.path());
+            assert!(report.section_errors.is_empty(), "{report:?}");
+            let settings = store.get().providers.clone();
+            assert_eq!(settings.bedrock_region.as_deref(), Some("us-west-2"));
             let restored: ProviderSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
             assert_eq!(restored, settings);
         }

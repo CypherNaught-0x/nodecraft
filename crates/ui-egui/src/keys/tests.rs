@@ -206,6 +206,22 @@ fn azure_quick_pick_stores_the_separate_provider_account() {
 }
 
 #[test]
+fn bedrock_quick_pick_stores_the_separate_provider_account() {
+    let store = Arc::new(MemoryStore::default());
+    let mut h = harness(sync_state(Arc::clone(&store), &[]));
+    h.run();
+    h.get_by_label("bedrock").click();
+    h.run();
+    type_into(&mut h, "Key", KEY);
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(store.get(&Account::new("bedrock").unwrap()).unwrap().is_some());
+    assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
+    assert!(h.state().panel.key.is_empty());
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
+}
+
+#[test]
 fn bad_input_is_reported_without_echoing_the_key() {
     let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
     h.run();

@@ -63,6 +63,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "deepgram" => Some("deepgram"),
         "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
+        "bedrock" => Some("bedrock"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
@@ -308,6 +309,21 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
                 Readiness::NotSetUp(why.into())
             })?;
             let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
+            Arc::new(llm(endpoint, env))
+        }
+        // Bedrock's OpenAI-compatible route (#46): a Region code and a Bedrock API key from the
+        // keychain. No AWS credential discovery (environment, profiles, instance metadata).
+        "bedrock" => {
+            let region = env.settings.bedrock_region.as_deref().map(str::trim).filter(|region| !region.is_empty()).ok_or_else(|| {
+                let why = if cfg!(target_arch = "wasm32") {
+                    "Amazon Bedrock needs a custom browser host to supply its AWS Region; the built-in browser cannot configure it"
+                } else {
+                    "set bedrock_region in provider settings to an AWS Region code such as us-east-1"
+                };
+                Readiness::NotSetUp(why.into())
+            })?;
+            nodecraft_providers::llm::validate_bedrock_region(region).map_err(|error| Readiness::NotSetUp(error.message))?;
+            let endpoint = Endpoint::bedrock(region, ApiKey::from(&needs_key(env.keys, "bedrock")?)).map_err(adapter_error)?;
             Arc::new(llm(endpoint, env))
         }
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),

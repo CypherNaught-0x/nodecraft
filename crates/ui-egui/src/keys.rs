@@ -57,6 +57,7 @@ pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this
 const PRESETS: &[&str] = &[
     "openai",
     "azure-openai",
+    "bedrock",
     "anthropic",
     "openrouter",
     "litellm",

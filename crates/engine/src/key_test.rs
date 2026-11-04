@@ -244,6 +244,8 @@ mod tests {
             ("fal", NO_CHECK),
             ("magnific", NO_CHECK),
             ("kling", NO_CHECK),
+            // bedrock-runtime has no OpenAI model list, and its other routes need a Region (#46).
+            ("bedrock", NO_CHECK),
             ("google-cloud", NO_CHECK),
             ("comfyui:gpu-box:8188", NO_CHECK),
         ] {
