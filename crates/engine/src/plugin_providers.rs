@@ -25,7 +25,6 @@ use nodecraft_catalog::{InputRole, ModeSpec, ModelDescriptor, Price, Pricing, mo
 use nodecraft_plugin::id::PLUGIN_PREFIX;
 use nodecraft_plugin::manifest::{Capability, RegistrationKind, Runtime};
 use nodecraft_plugin_store::Package;
-use nodecraft_plugin_store::StoreBackend;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
 use nodecraft_providers::broker::{Broker, ByteBudget, RequestGate, Standing, Template};
@@ -76,14 +75,6 @@ impl GrantCheck {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn folder(root: std::path::PathBuf) -> Self {
         Self(Some(Arc::new(move |stamp: &PluginStamp| nodecraft_plugin_store::store::standing_at(&root, &stamp.package, &stamp.digest, stamp.epoch))))
-    }
-
-    /// Reads the grants of the store `open` opens each time it is asked: the stamp's grant must
-    /// be the live one for its digest, at its epoch.
-    pub fn store<B: StoreBackend, F: Fn() -> Result<B, nodecraft_types::Error> + Send + Sync + 'static>(open: F) -> Self {
-        Self(Some(Arc::new(move |stamp: &PluginStamp| {
-            open().and_then(|backend| nodecraft_plugin_store::grants::read(&backend)).map(|grants| grants.holds(&stamp.package, &stamp.digest, stamp.epoch))
-        })))
     }
 
     /// What stands of `stamp`'s grant: withdrawn when the store says it no longer holds, and

@@ -193,16 +193,6 @@ fn text(m: &mut BTreeMap<String, Json>, key: &str) -> Result<String, Error> {
     }
 }
 
-/// Every grant `backend` holds, read without the store's lock, so a check right before paid or
-/// outward work never waits on another window's import. Grants are replaced atomically, so this
-/// reads either the old grants or the new ones whole. None yet means none granted.
-pub fn read<B: crate::StoreBackend + ?Sized>(backend: &B) -> Result<Grants, Error> {
-    match backend.read_grants()? {
-        Some(bytes) => decode(&bytes),
-        None => Ok(Grants::default()),
-    }
-}
-
 pub(crate) fn decode(bytes: &[u8]) -> Result<Grants, Error> {
     let Json::Object(mut root) = archive::parse(bytes, GRANTS_LIMITS)? else { return Err(damaged()) };
     let version = match root.remove("grants_version") {

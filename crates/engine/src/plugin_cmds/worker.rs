@@ -48,9 +48,11 @@ struct Published {
     loaded: bool,
 }
 
-/// Publishes what `store` may run now, if that changed.
-fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
-    let (next, complete) = crate::plugin_runtime::PluginSnapshot::read(store);
+/// Publishes what `store` may run now, if that changed; whether the store could be read. One that
+/// couldn't (grants unreadable, or busy in another window) publishes nothing: the plugins already
+/// published stay, and only a store read in full may withdraw one (#174).
+fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) -> bool {
+    let Ok((next, complete)) = crate::plugin_runtime::PluginSnapshot::read_store(store) else { return false };
     // Only snapshots are stored under this lock, so a poisoned one still holds a whole one.
     let mut published = published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if published.loaded != complete || !published.plugins.same(&next) {
@@ -58,6 +60,7 @@ fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
         published.plugins = next;
         published.loaded = complete;
     }
+    true
 }
 
 fn stopped() -> Error {
@@ -220,8 +223,10 @@ impl PluginWorker {
                                 return Ok(());
                             }
                             store.refresh()?;
-                            publish(&publishing, store);
-                            seen = Some(now);
+                            // A read that couldn't be finished is tried again on the next tick.
+                            if publish(&publishing, store) {
+                                seen = Some(now);
+                            }
                             Ok::<(), Error>(())
                         }));
                         if refreshed.is_err() {
@@ -248,7 +253,7 @@ impl PluginWorker {
                         let store = store.as_mut().ok_or_else(stopped)?;
                         let result = handle(store, &host, &job.request);
                         // Whatever the request did, what may run is published from the store.
-                        publish(&publishing, store);
+                        let _ = publish(&publishing, store);
                         result
                     }));
                     match result {

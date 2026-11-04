@@ -5,7 +5,7 @@
 #![cfg(not(target_arch = "wasm32"))]
 use super::*;
 use crate::plugin_cmds::{PluginHost, PluginWorker};
-use nodecraft_plugin_store::FolderBackend;
+use nodecraft_plugin_store::{FolderBackend, StoreBackend};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
@@ -74,28 +74,68 @@ fn a_revoke_in_another_window_stops_this_windows_broker_before_its_next_request(
     assert_eq!(*http.0.lock().unwrap(), 1);
 }
 
-/// Grants that can't be read (a lock, a file being replaced, damage, or more than a grants file
-/// may hold) are not a revoke: nothing new is sent, and a job already sent is followed again
-/// later rather than given up, since it may be billed.
+/// Grants that can't be read (a file being replaced, damage, more than a grants file may hold)
+/// or a store busy in another window's request are not a revoke. Nothing new is sent, a job
+/// already sent is followed again later rather than given up (it may be billed), and the window's
+/// own reread of the store publishes nothing that would withdraw the provider.
 #[test]
 fn grants_that_cannot_be_read_send_nothing_new_but_keep_a_sent_job() {
     let dir = tempfile::tempdir().unwrap();
-    let mut first = open(dir.path());
-    install(&mut first);
-    let provider = Arc::clone(PluginSnapshot::of(&first).provider(PROVIDER).unwrap());
+    install(&mut open(dir.path()));
+    let original = std::fs::read(dir.path().join("grants.json")).unwrap();
+    // The window: a worker rereading the store every 20 ms, and a session following it as the
+    // app's frame does.
+    let root = dir.path().to_path_buf();
+    let host = PluginHost { trust: None, taken: BTreeSet::new(), bindings: BTreeSet::new() };
+    let worker = PluginWorker::spawn_rereading(move || Store::open(FolderBackend::new(root.clone())?), host, Duration::from_millis(20)).unwrap();
+    assert!(worker.refresh());
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while worker.plugins().1.provider(PROVIDER).is_none() {
+        assert!(Instant::now() < deadline, "the provider was never published");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let mut s = session(PluginSnapshot::default());
+    let mut seen = worker.changes();
+    s.set_plugins(worker.plugins().1).unwrap();
+    let provider = Arc::clone(s.plugins().provider(PROVIDER).unwrap());
+    let follow = |s: &mut Session, seen: &mut u64| {
+        // Several rereads, each followed as the app's frame follows them.
+        let until = Instant::now() + Duration::from_millis(200);
+        while Instant::now() < until {
+            if worker.changes() != *seen {
+                *seen = worker.changes();
+                s.set_plugins(worker.plugins().1).unwrap();
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    };
     let handle = nodecraft_providers::JobHandle { remote_id: "j-1".into(), data: json!({"model": "acme/v1"}) };
     let oversized = vec![b' '; nodecraft_plugin_store::grants::MAX_GRANTS_BYTES + 2];
-    for bytes in [b"{ not grants".to_vec(), oversized] {
+    let mut retouched = original.clone();
+    retouched.push(b'\n');
+    for (bytes, busy) in [(b"{ not grants".to_vec(), false), (oversized, false), (retouched, true)] {
+        // Busy: another window holds the store's lock while the grants change under it.
+        let lock = busy.then(|| FolderBackend::new(dir.path().to_path_buf()).unwrap().transaction().unwrap());
         std::fs::write(dir.path().join("grants.json"), &bytes).unwrap();
+        follow(&mut s, &mut seen);
+        let now = s.plugins().provider(PROVIDER).expect("the provider is still published");
+        assert!(Arc::ptr_eq(now, &provider) && !provider.is_revoked(), "an unreadable or busy store withdraws nothing");
         let http = Arc::new(Counting::default());
         let broker = broker(PROVIDER, &provider, &keys(), http.clone(), store_check(dir.path())).unwrap();
-        let refused = block_on(broker.submit(&job())).unwrap_err();
-        assert!(refused.message.contains("can't be read") && refused.message.contains("nothing was sent"), "{}", refused.message);
-        assert!(refused.kind.is_transient(), "a submit refused this way may be tried again");
         let poll = block_on(broker.poll(&handle)).unwrap_err();
         assert!(poll.kind.is_transient() && !poll.message.contains("withdrawn"), "a sent job is followed again later: {poll:?}");
-        assert_eq!(*http.0.lock().unwrap(), 0);
+        if !busy {
+            let refused = block_on(broker.submit(&job())).unwrap_err();
+            assert!(refused.message.contains("can't be read") && refused.message.contains("nothing was sent"), "{}", refused.message);
+            assert!(refused.kind.is_transient(), "a submit refused this way may be tried again");
+            assert_eq!(*http.0.lock().unwrap(), 0);
+        }
+        drop(lock);
+        std::fs::write(dir.path().join("grants.json"), &original).unwrap();
     }
+    // Once the store reads again, the same grant still stands.
+    follow(&mut s, &mut seen);
+    assert!(!provider.is_revoked());
 }
 
 #[test]

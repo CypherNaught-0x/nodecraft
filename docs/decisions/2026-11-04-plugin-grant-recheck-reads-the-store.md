@@ -27,7 +27,9 @@ package disabled) in one window left the others submitting paid jobs until they 
     already sent fails transiently (`Busy`), so it is tried again rather than abandoned with
     billed outputs lost.
 - **The window catches up as well.** The plugin worker reads an open store again every 5 s
-  (`plugin_cmds::worker::REREAD`).
+  (`plugin_cmds::worker::REREAD`). Only a store read in full may withdraw a provider: when the
+  grants can't be read or the store is busy in another window, the worker publishes nothing and
+  tries again on the next tick.
   - It compares the index and grants bytes first, without the lock, and publishes only when they
     changed.
   - It reads those bytes before reading the store, so a write landing in between can only make
@@ -37,8 +39,13 @@ package disabled) in one window left the others submitting paid jobs until they 
   digest and grant epoch it was sent under (an additive field). After a restart a job is followed
   only if that is the grant its provider is published under now. Otherwise it is given up as
   possibly charged, and its estimate settles as unresolved. A plugin job saved by an earlier
-  build, with no grant recorded, is given up the same way. An older build reading a journal that
-  holds a plugin job refuses the journal (it denies unknown fields), so downgrading with plugin
-  jobs pending loses them from the journal; their charges stay in the usage log.
+  build, with no grant recorded, is given up the same way.
+- **Downgrading with a plugin job pending loses the run journal.** Older builds read the journal
+  with unknown fields refused, so a journal holding a plugin job's grant is damaged to them.
+  `RunHost::open_journal` sets the whole file aside (the desktop's `runs.json` becomes `runs.json.damaged`). That drops
+  every pending paid job, of every provider, and the whole usage log: spend history and open
+  reservations. They can be recovered only by hand, from the set-aside file. The project file is
+  unaffected. This is the same property the `staged` field (#664) already has; the field is
+  written only for plugin jobs, so a journal without one reads as before.
 - **The browser keeps its own view.** Its store lives in memory for one page and no other window
   shares it, so `GrantCheck::this_window()` relies on the in-memory flag only.
