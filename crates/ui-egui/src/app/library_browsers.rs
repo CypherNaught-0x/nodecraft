@@ -181,6 +181,9 @@ struct Page<T> {
     entries: Vec<T>,
     total: usize,
     offset: usize,
+    /// Styles only: SOUL 2 cards in the project that name a Soul ID.
+    #[serde(default)]
+    soul_id_uses: usize,
 }
 
 enum Listing {
@@ -197,6 +200,8 @@ struct Key {
     params: String,
     project: ProjectId,
     revision: u64,
+    /// The Soul ID list in use: a refresh installs a new one without a new revision.
+    lists: Option<nodecraft_types::OptionListId>,
 }
 
 /// The browsers' filters and the page last listed.
@@ -267,7 +272,7 @@ pub(super) struct ImportReport {
 }
 
 /// What the style verdicts were checked against.
-type VerdictKey = (ProjectId, u64, CanvasId, Option<NodeId>);
+type VerdictKey = (ProjectId, u64, Option<nodecraft_types::OptionListId>, CanvasId, Option<NodeId>);
 /// Per style card: the card it can go into, or why not.
 type Verdicts = std::collections::HashMap<NodeId, Result<NodeId, String>>;
 
@@ -601,7 +606,13 @@ impl NodeCraftApp {
             }
             Tab::Styles => ("library.styles", json!({"offset": offset, "limit": PAGE})),
         };
-        let key = Key { command, params: format!("{params}#{stamp}"), project: self.session.document().id(), revision: self.session.revision() };
+        let key = Key {
+            command,
+            params: format!("{params}#{stamp}"),
+            project: self.session.document().id(),
+            revision: self.session.revision(),
+            lists: nodecraft_engine::soul_ids::lists_stamp(self.session.option_lists()),
+        };
         if self.library.browsers.listed.as_ref().is_some_and(|(old, _)| *old == key) {
             return;
         }
@@ -786,7 +797,7 @@ pub(super) fn show(
     }
     let mut ticks = Vec::new();
     let mut offset = *browsers.offset();
-    let key = (session.document().id(), session.revision(), canvas, selected);
+    let key = (session.document().id(), session.revision(), nodecraft_engine::soul_ids::lists_stamp(session.option_lists()), canvas, selected);
     if browsers.verdicts.as_ref().is_none_or(|(old, _)| *old != key) {
         browsers.verdicts = Some((key, Default::default()));
     }
@@ -925,6 +936,10 @@ pub(super) fn show(
             if page.total == 0 {
                 ui.label(egui::RichText::new("No trained styles yet. Add a Train style card and run it.").color(t.text_muted));
             }
+            if page.soul_id_uses > 0 {
+                let cards = if page.soul_id_uses == 1 { "1 SOUL 2 card names".to_owned() } else { format!("{} SOUL 2 cards name", page.soul_id_uses) };
+                ui.label(egui::RichText::new(format!("{cards} a Soul ID: it runs only on the Higgsfield account that trained it")).small().color(t.text_muted));
+            }
             for entry in &page.entries {
                 let name = if !entry.title.trim().is_empty() { entry.title.as_str() } else { entry.trainer.as_deref().unwrap_or("Train style") };
                 ui.horizontal(|ui| {
@@ -956,6 +971,9 @@ pub(super) fn show(
                                 .small()
                                 .color(t.danger),
                             );
+                        }
+                        Some("unreadable") => {
+                            ui.label(egui::RichText::new("Its descriptor is missing or doesn't name a Soul ID; train it again").small().color(t.danger));
                         }
                         Some("unchecked") => {
                             ui.label(egui::RichText::new("Not checked on this account yet; Refresh option lists checks it").small().color(t.text_muted));

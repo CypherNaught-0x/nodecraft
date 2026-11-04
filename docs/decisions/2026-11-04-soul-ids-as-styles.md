@@ -12,7 +12,8 @@ would change it.
 
 - **Family checks keep it away from LoRA models.** A style goes into a card only through
   `style.use`/`style.card`, and only when the model's catalog `style_family` is the style's
-  family. No model declares `soul-2`, so a Soul ID never reaches a FLUX LoRA's style input and a
+  family. No generation model declares `soul-2` (only the trainer, `higgsfield.soul-id-trainer`,
+  does), so a Soul ID never reaches a FLUX LoRA's style input and a
   LoRA never reaches SOUL 2. The fal adapter also refuses any descriptor that isn't its own FLUX
   trainer's. Nothing converts an identity into a LoRA or substitutes raw images for it.
 - **The handle can be told apart.** `nodecraft_engine::soul_ids` decides it from the asset's type
@@ -27,14 +28,20 @@ would change it.
 **What marks it as provider-bound (this change).**
 
 - `library.styles` reports `portable: false`, the `soul_id`, and `available`. The last is
-  `listed`, `unlisted` or `unchecked` against the account whose Soul IDs were last fetched, plus
-  an `account_bound` count for the project. The Styles tab says the identity is bound to the
+  `listed`, `unlisted` or `unchecked` against the account whose Soul IDs were last fetched, or
+  `unreadable` when the descriptor is missing or names no id. The result also carries an
+  `account_bound` count of Soul IDs and a `soul_id_uses` count of SOUL 2 cards naming one. The
+  Styles tab reads it again when a refresh installs a new list, not only on a new revision. The Styles tab says the identity is bound to the
   account that trained it, and shows "Unavailable on this account" when the fetched list doesn't
   have it.
 - `history.export` and the folder exports (`export.local_plan`/`run`, Export to folder cards)
   refuse a Soul ID with a reason. It is never written out as if it were a portable file. My
   library and `library.attach` already refuse styles.
-- The Share live panel says the project uses Soul IDs that work only on the training account. A
+- The shared technique library reports `account_bound` per version (`library.list`, `library.add`,
+  `library.place`), and the Library panel notes it. The Soul ID is kept, never stripped.
+- The Share live panel says the project uses Soul IDs that work only on the training account.
+  `share.status` doesn't report it, since the live service builds that answer. Agents read the
+  counts from `library.styles`. A
   shared or reopened project keeps the handle and every card setting. Nothing is cleared.
 - On another account, a fetched list blocks the run as "not one of the available options". With
   no list (no key, offline, not refreshed), the adapter's free `GET /v1/custom-references/{id}`
@@ -50,8 +57,8 @@ would change it.
 - A second backend with account-bound identities. A per-family check would no longer be enough,
   and the descriptor would need an explicit binding field (a new `nodecraft_style` version) or a
   separate resource type.
-- A model that takes a Soul ID as a wired input, or SOUL 2 image-to-image with scene images (a
-  follow-up issue; its request shape is unverified). If the identity has to travel with other
+- A model that takes a Soul ID as a wired input, or SOUL 2 image-to-image with scene images
+  (#1043; its request shape is unverified). If the identity has to travel with other
   inputs, a typed input may fit better than a parameter.
 - A need to rename, delete or move identities between accounts from NodeCraft. Higgsfield
   documents none of these.

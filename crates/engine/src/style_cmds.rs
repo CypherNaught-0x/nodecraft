@@ -124,6 +124,10 @@ fn takers<'a>(catalog: Option<&'a GenerationCatalog>, kind: &'a str, family: &'a
 /// " Models that take it: a, b." naming the first catalog models of `kind` that take `family`
 /// styles, or a hint to retrain when none do.
 fn alternatives(catalog: Option<&GenerationCatalog>, kind: &str, family: &str) -> String {
+    // A Soul ID goes in as a SOUL 2 card's Soul ID, not into a style input.
+    if family == crate::soul_ids::FAMILY {
+        return " A Soul ID is used on a Higgsfield SOUL 2 card, where it sets the card's Soul ID".into();
+    }
     let ids: Vec<&str> = takers(catalog, kind, family).map(|m| m.id.as_str()).take(NAMED_MODELS).collect();
     if ids.is_empty() {
         " No model of this card's kind takes it; train the style again for one that does".into()
@@ -279,6 +283,8 @@ fn use_soul_id(c: &Context<'_>, p: &UseParams, style: Option<&AssetRef>, target:
     let set = json!({"canvas": p.canvas, "id": p.target, "name": crate::soul_ids::PARAM, "value": value});
     match crate::node_cmds::parameter(c, &set)? {
         Effect::Edit { changes, gesture, .. } => {
+            // As every edit here: one a viewer may not make is refused up front.
+            c.preview_changes(&changes)?;
             Ok(Effect::Edit { changes, result: json!({"edge": null, "replaced": [], "param": crate::soul_ids::PARAM, "soul_id": id}), gesture })
         }
         _ => Err(invalid("the Soul ID can't be set on this card")),
@@ -315,9 +321,16 @@ fn card(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         Some(id) => takers(catalog, KIND, family)
             .find(|m| m.id == id)
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("that model doesn't take {family} styles.{}", alternatives(catalog, KIND, family))))?,
-        None => takers(catalog, KIND, family)
-            .next()
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("no image model here takes {family} styles; train the style again for one that does")))?,
+        None => takers(catalog, KIND, family).next().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                if family == crate::soul_ids::FAMILY {
+                    "a Soul ID isn't wired into a new card: add a Higgsfield SOUL 2 card and use the Soul ID on it, which sets its Soul ID".to_owned()
+                } else {
+                    format!("no image model here takes {family} styles; train the style again for one that does")
+                },
+            )
+        })?,
     };
     let mut supplied = ParamValues::new();
     supplied.insert(MODEL.into(), Value::Text(model.id.clone()));

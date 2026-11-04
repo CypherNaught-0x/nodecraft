@@ -139,7 +139,8 @@ fn place(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let mut node = c.kinds.get(technique::ID)?.instantiate_instance(p.id, interface.config()?, &ParamValues::new())?;
     node.pos = p.pos;
     node.title = info.name.clone();
-    let result = json!({"id": p.id, "technique": info.id, "version": info.version, "canvas": version.id(), "copied": !changes.is_empty()});
+    let result = json!({"id": p.id, "technique": info.id, "version": info.version, "canvas": version.id(), "copied": !changes.is_empty(),
+        "account_bound": crate::soul_ids::canvas_handles(&version).uses});
     changes.push(Change::AddNode { canvas: p.canvas, node });
     let changes = Changeset::new(changes);
     c.preview_changes(&changes)?;
@@ -197,7 +198,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "library.list",
             "List the technique library",
             schema(&[], json!({})),
-            "{} -> {techniques: [{technique, version, name, description, category, tags, inputs, outputs, nodes}]}; the versions kept in the library every project shares, by technique and version.",
+            "{} -> {techniques: [{technique, version, name, description, category, tags, inputs, outputs, nodes, account_bound}]}; the versions kept in the library every project shares, by technique and version. `account_bound` counts its Higgsfield SOUL 2 cards that name a Soul ID: they keep it, but it runs only on the account that trained it.",
             list,
             enabled
         ),
@@ -225,7 +226,7 @@ pub fn specs() -> Vec<CommandSpec> {
                 json!({"canvas": uuid(), "technique": uuid(), "version": number(), "id": uuid(), "copy": uuid(),
                     "pos": {"type": "object", "required": ["x", "y"], "additionalProperties": false, "properties": {"x": coordinate(), "y": coordinate()}}})
             ),
-            "{canvas, technique: TechniqueId, version, id: new NodeId, pos: {x, y}, copy: new CanvasId} -> {id, technique, version, canvas, copied}; one technique node running that version, as one undo step. A project without that version gets a copy of it from the library as canvas `copy` (`copied` true); one that has it uses its own. Read library.list first: placing uses the library as last read.",
+            "{canvas, technique: TechniqueId, version, id: new NodeId, pos: {x, y}, copy: new CanvasId} -> {id, technique, version, canvas, copied, account_bound}; one technique node running that version, as one undo step. A project without that version gets a copy of it from the library as canvas `copy` (`copied` true); one that has it uses its own. Read library.list first: placing uses the library as last read.",
             place,
             enabled_edit
         ),

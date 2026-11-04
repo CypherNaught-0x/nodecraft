@@ -195,7 +195,16 @@ fn a_soul_id_is_used_on_a_soul_2_card_as_its_soul_id_and_never_on_a_lora_model()
     // Family checks keep a Soul ID off a LoRA model's style input and a LoRA off SOUL 2.
     let lora = s.dispatch("style.use", &using(MARA, FLUX)).unwrap_err();
     assert!(lora.message.contains("soul-2"), "{}", lora.message);
+    assert!(lora.message.contains("Higgsfield SOUL 2 card") && !lora.message.contains("train the style again"), "{}", lora.message);
+    let card =
+        s.dispatch("style.card", &json!({"canvas": C, "style": MARA, "id": NodeId::from_bytes([41; 16]), "edge": edge, "pos": {"x": 0, "y": 0}})).unwrap_err();
+    assert!(card.message.contains("SOUL 2 card") && !card.message.contains("train the style again"), "{}", card.message);
     assert!(s.dispatch("style.use", &using(INK, SOUL)).is_err());
+
+    // A viewer may not set it.
+    s.set_access(nodecraft_engine::access::Access::new(nodecraft_sync::Role::View, Some("Viewer".into())).unwrap());
+    assert!(s.enabled("style.use", &using(MARA, SOUL)).is_err(), "enabled refuses a viewer as run does");
+    s.set_access(nodecraft_engine::access::Access::new(nodecraft_sync::Role::Owner, Some("Owner".into())).unwrap());
 
     // An account whose list doesn't have it can't be given it.
     account(&mut s, &[OTHER_ID]);
@@ -336,6 +345,7 @@ fn a_project_opened_on_another_account_keeps_its_soul_id_and_says_it_is_unavaila
     let mut s = reopen(&saved);
     assert_eq!(soul_param(&s), Some(Value::Text(SOUL_ID.into())), "the card's Soul ID survives the file");
     assert_eq!(entry(&styles(&mut s), MARA)["soul_id"], SOUL_ID, "and so does the trained identity");
+    assert_eq!(styles(&mut s)["soul_id_uses"], 1, "the SOUL 2 card naming it is counted too");
     assert_eq!(nodecraft_engine::soul_ids::handles(s.document()), nodecraft_engine::soul_ids::Handles { identities: 1, uses: 1 });
 
     // The other account's list doesn't have it: the identities view says so, and the run is
@@ -379,4 +389,37 @@ fn without_a_fetched_list_the_adapter_refuses_a_soul_id_the_account_lacks_before
         assert_eq!(soul_param(&s), Some(Value::Text(SOUL_ID.into())), "the card keeps its Soul ID");
         assert!(s.document().canvases().get(&C).unwrap().nodes().get(&MARA).unwrap().active.is_some(), "and the identity its card holds");
     }
+}
+
+#[test]
+fn a_technique_using_a_soul_id_says_so_in_the_shared_library_and_when_placed() {
+    let store = nodecraft_engine::library::MemoryLibrary::default();
+    // Routed to Higgsfield, as publishing plans the run; nothing is sent.
+    let silent = Arc::new(Account { reference: (500, json!({})), requests: Mutex::default() });
+    let (mut s, _host) = hosted(session(Some(SOUL_ID)), silent.clone());
+    nodecraft_engine::library::install(&mut s, Box::new(store.clone())).unwrap();
+    let technique = nodecraft_types::TechniqueId::from_bytes([60; 16]);
+    let published = CanvasId::from_bytes([61; 16]);
+    let publish = json!({"canvas": C, "published": published, "seed": NodeId::from_bytes([62; 16]), "technique": technique, "name": "Portrait",
+        "outputs": [{"node": SOUL, "name": "Portrait"}]});
+    s.dispatch("technique.publish", &publish).unwrap();
+    let added = s.dispatch("library.add", &json!({"canvas": published})).unwrap();
+    assert_eq!(added["technique"]["account_bound"], 1, "{added}");
+    let listed = s.dispatch("library.list", &json!({})).unwrap();
+    assert_eq!(listed["techniques"][0]["account_bound"], 1, "{listed}");
+
+    // Placed in another project, it keeps the Soul ID (never stripped) and says it is bound.
+    let mut other = session(None);
+    nodecraft_engine::library::install(&mut other, Box::new(store)).unwrap();
+    other.dispatch("library.list", &json!({})).unwrap();
+    let placed = other
+        .dispatch(
+            "library.place",
+            &json!({"canvas": C, "technique": technique, "version": 1, "id": NodeId::from_bytes([63; 16]), "pos": {"x": 0, "y": 0}, "copy": CanvasId::from_bytes([64; 16])}),
+        )
+        .unwrap();
+    assert_eq!((placed["copied"].clone(), placed["account_bound"].clone()), (json!(true), json!(1)), "{placed}");
+    let copy = other.document().canvases().get(&CanvasId::from_bytes([64; 16])).unwrap();
+    assert!(copy.nodes().values().any(|n| n.params.get("custom_reference_id") == Some(&Value::Text(SOUL_ID.into()))), "the setting travels as it was");
+    assert!(silent.requests.lock().unwrap().is_empty());
 }

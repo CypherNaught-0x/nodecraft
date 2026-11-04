@@ -7,7 +7,7 @@
 //! project holds. Exports refuse to write one out as a file ([`ACCOUNT_BOUND`]), the Library and
 //! the share panel say what it is, and nothing here changes the document.
 use nodecraft_format::AssetStore;
-use nodecraft_graph::Project;
+use nodecraft_graph::{Canvas, Project};
 use nodecraft_nodes::generation::{MODEL, STYLE_KIND, is_generation};
 use nodecraft_types::{AssetRef, OptionKey, OptionLists, OptionLookup, Value};
 
@@ -73,6 +73,13 @@ pub fn availability(lists: Option<&OptionLists>, id: &str) -> Availability {
     }
 }
 
+/// Which fetch of the Soul ID list `lists` holds: a new value each time a list is installed, so
+/// a view that shows availability knows to read it again (a refresh changes no revision).
+pub fn lists_stamp(lists: Option<&OptionLists>) -> Option<nodecraft_types::OptionListId> {
+    let key = OptionKey { owner: SOUL_MODEL, source: nodecraft_providers::higgsfield::SOUL_IDS, scope: None };
+    lists.and_then(|lists| lists.view(key)).map(nodecraft_types::OptionList::identity)
+}
+
 /// The account-bound handles a project holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Handles {
@@ -90,8 +97,16 @@ impl Handles {
 
 /// Counts the Soul ID handles on every canvas of `project`.
 pub fn handles(project: &Project) -> Handles {
+    project.canvases().values().fold(Handles::default(), |found, canvas| {
+        let here = canvas_handles(canvas);
+        Handles { identities: found.identities.saturating_add(here.identities), uses: found.uses.saturating_add(here.uses) }
+    })
+}
+
+/// Counts the Soul ID handles on one canvas, such as a technique version.
+pub fn canvas_handles(canvas: &Canvas) -> Handles {
     let mut found = Handles::default();
-    for node in project.canvases().values().flat_map(|canvas| canvas.nodes().values()) {
+    for node in canvas.nodes().values() {
         if node.kind == STYLE_KIND {
             if crate::style_cmds::active_style(node).is_some_and(bound) {
                 found.identities = found.identities.saturating_add(1);

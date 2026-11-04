@@ -176,7 +176,8 @@ fn the_styles_tab_marks_soul_ids_and_the_provider_and_uses_a_style_on_the_select
     // A Soul ID is a handle to one account's identity, not a style kept as a file.
     assert!(h.query_by_label("Kept by higgsfield: only that account can use it").is_none());
     assert!(h.query_by_label("Bound to the Higgsfield account that trained it: not a portable file, and not exported").is_some());
-    assert!(h.query_by_label("Not checked on this account yet; Refresh option lists checks it").is_some(), "no Soul ID list fetched");
+    // The fixture's descriptor names no Higgsfield reference, so no account can check it.
+    assert!(h.query_by_label("Its descriptor is missing or doesn't name a Soul ID; train it again").is_some());
     let uses: Vec<_> = h.query_all_by_label("Use on selected card").collect();
     assert_eq!(uses.len(), 3);
     assert!(uses.iter().all(|button| button.accesskit_node().is_disabled()), "nothing is selected");
@@ -402,14 +403,17 @@ fn a_soul_id_is_set_on_a_selected_soul_2_card_and_marked_unavailable_on_another_
     let mut lists = nodecraft_types::OptionLists::default();
     let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
     lists.set(key, vec![nodecraft_types::Choice { value: "0b5d7c2a-8f1e-4c3b-9a6d-2e4f8a1c3b5d".into(), label: "Someone else".into() }]).unwrap();
+    assert!(h.query_by_label_contains("Not checked on this account yet").is_some());
+    let revision = h.state().session.revision();
+    // Only the lists change, as a refresh finishing does: no new revision.
     h.state_mut().session.swap_resource(Some(lists));
-    // The listing is read again on the next change; an edit stands in for a refresh finishing.
-    h.state_mut().session.dispatch("node.title", &json!({"canvas": on, "id": SOUL_2, "title": "Portrait"})).unwrap();
+    assert_eq!(h.state().session.revision(), revision);
     for _ in 0..4 {
         h.run();
     }
     assert!(h.query_by_label_contains("Unavailable on this account").is_some(), "the identity is marked unavailable on this account");
-    assert!(h.get_by_label("Use on selected card").accesskit_node().is_disabled());
+    assert!(h.query_by_label_contains("Not checked on this account yet").is_none(), "the stale state is gone");
+    assert!(h.get_by_label("Use on selected card").accesskit_node().is_disabled(), "the verdict follows the lists too");
 }
 
 #[test]

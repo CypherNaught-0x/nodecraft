@@ -40,6 +40,9 @@ struct Kept {
     name: String,
     #[serde(default)]
     description: String,
+    /// Cards in it that name a Soul ID, which works only on the account that trained it.
+    #[serde(default)]
+    account_bound: usize,
 }
 
 #[derive(Deserialize)]
@@ -202,6 +205,13 @@ impl NodeCraftApp {
                     });
                     if !k.description.is_empty() {
                         ui.label(egui::RichText::new(sheet_view::line(&k.description)).small().color(t.text_muted));
+                    }
+                    if k.account_bound > 0 {
+                        ui.label(
+                            egui::RichText::new("Uses a Higgsfield Soul ID: it runs only on the account that trained it, in any project")
+                                .small()
+                                .color(t.text_muted),
+                        );
                     }
                 }
                 if let Some(listing) = &self.library.shaders {

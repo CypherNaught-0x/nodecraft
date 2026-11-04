@@ -490,7 +490,8 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             // A Soul ID is a handle to one account's identity, never a portable file: say which
             // id it names and whether the account whose list was fetched has it.
             let soul_id = style.filter(|_| bound).and_then(|s| crate::soul_ids::id(c.assets, s));
-            let available = bound.then(|| soul_id.as_deref().map_or(crate::soul_ids::Availability::Unchecked, |id| crate::soul_ids::availability(lists, id)));
+            // A descriptor that is missing or doesn't name an id can't be checked on any account.
+            let available = bound.then(|| soul_id.as_deref().map_or("unreadable", |id| crate::soul_ids::availability(lists, id).as_str()));
             listed.push(json!({
                 "canvas": canvas.id(),
                 "canvas_title": canvas.title(),
@@ -506,13 +507,16 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "kept_by": descriptor.as_ref().map(|d| d.provider.clone()),
                 "portable": !bound,
                 "soul_id": soul_id,
-                "available": available.map(crate::soul_ids::Availability::as_str),
+                "available": available,
             }));
         }
     }
     let total = listed.len();
     let entries: Vec<Json> = listed.into_iter().skip(offset).take(limit).collect();
-    Ok(Effect::None { result: json!({"styles": entries, "total": total, "offset": offset, "limit": limit, "account_bound": account_bound}) })
+    Ok(Effect::None {
+        result: json!({"styles": entries, "total": total, "offset": offset, "limit": limit, "account_bound": account_bound,
+        "soul_id_uses": crate::soul_ids::handles(c.document).uses}),
+    })
 }
 
 // Enabled checks only the request, so asking (as the palette does every frame) never walks
@@ -584,7 +588,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: styles_schema,
-            params_doc: "{query?, offset?: 0, limit?: 1-200 (50)} -> {styles: [{canvas, canvas_title, id, title, trainer, ready, family, identity, trigger, kept_by, portable, soul_id, available}], total, offset, limit, account_bound}; every Train style card on every canvas of the open project. `identity` marks a Soul ID (family soul-2); `kept_by` names the provider that holds the weights or identity: the project keeps only a handle that provider's account can use. A Soul ID is `portable: false`: it works only on the Higgsfield account that trained it, and exports refuse to write it out as a file. `soul_id` is the id it names; `available` is listed, unlisted (the account whose Soul IDs were last fetched doesn't have it) or unchecked (no list fetched), null for other styles. `account_bound` counts the Soul IDs on every canvas, whatever the query. Read-only. Wire one into a card on its canvas with style.use; style.list checks it against a card.",
+            params_doc: "{query?, offset?: 0, limit?: 1-200 (50)} -> {styles: [{canvas, canvas_title, id, title, trainer, ready, family, identity, trigger, kept_by, portable, soul_id, available}], total, offset, limit, account_bound, soul_id_uses}; every Train style card on every canvas of the open project. `identity` marks a Soul ID (family soul-2); `kept_by` names the provider that holds the weights or identity: the project keeps only a handle that provider's account can use. A Soul ID is `portable: false`: it works only on the Higgsfield account that trained it, and exports refuse to write it out as a file. `soul_id` is the id it names; `available` is listed, unlisted (the account whose Soul IDs were last fetched doesn't have it), unchecked (no list fetched) or unreadable (its descriptor is missing or names no Soul ID), null for other styles. `account_bound` counts the Soul IDs on every canvas, whatever the query, and `soul_id_uses` the SOUL 2 cards that name a Soul ID (picked or set), with or without a Train style card here. Read-only. Wire one into a card on its canvas with style.use; style.list checks it against a card.",
             enabled: enabled_styles,
             run: styles,
         },
