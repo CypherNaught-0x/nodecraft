@@ -48,6 +48,44 @@ enum Phase {
         after: AfterOpen,
     },
 }
+/// Why a background open didn't replace the project, so each purpose can say it in its own words.
+pub(super) enum OpenFailed {
+    /// The person (or an agent) cancelled it before it published.
+    Cancelled,
+    /// It failed with this message (an engine or admission error, one sentence or clause).
+    Error(String),
+    /// It finished without confirming the project opened.
+    Unconfirmed,
+    /// The host replaced the session, or the open ended without an outcome.
+    Unfinished,
+}
+impl OpenFailed {
+    fn from_error(error: &Error) -> Self {
+        // The engine's own wording for an open its cancel stopped before publishing.
+        if error.kind == ErrorKind::Conflict && error.message.starts_with("opening was cancelled") {
+            Self::Cancelled
+        } else {
+            Self::Error(error.message.clone())
+        }
+    }
+    /// The reason as a lower-case clause without advice or a closing full stop, to follow a colon.
+    pub(super) fn clause(&self) -> String {
+        match self {
+            Self::Cancelled => "it was cancelled".to_owned(),
+            Self::Error(message) => {
+                // The cause only: advice after a semicolon would repeat what the notice says.
+                let message = message.split(';').next().unwrap_or_default().trim().trim_end_matches('.');
+                let mut chars = message.chars();
+                chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
+            }
+            Self::Unconfirmed => "it didn't confirm it opened".to_owned(),
+            Self::Unfinished => "it didn't finish".to_owned(),
+        }
+    }
+}
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| "The project".to_owned(), |name| name.to_string_lossy().into_owned())
+}
 /// What a background open was started for, which decides what its outcome does (#367).
 pub(super) enum AfterOpen {
     /// File > Open, a recent project, or the open after "Save changes before opening?".
@@ -274,13 +312,22 @@ impl NodeCraftApp {
     fn open_selected(&mut self, path: PathBuf, discard: bool) {
         self.start_background_open(path, discard, AfterOpen::File);
     }
-    /// The startup open (#367): the window has drawn a frame, every service is installed, and
-    /// the progress window shows at once rather than after [`progress::SHOW_AFTER`], since
-    /// the open is all this window is doing.
-    pub(super) fn begin_startup_open(&mut self) {
-        if let Some(path) = self.files.startup.take() {
-            self.start_background_open(path, true, AfterOpen::Startup);
+    /// The startup open (#367), started before anything else can reach the session: the host
+    /// calls it first in its frame logic, ahead of the control channel, MCP and the agent, so a
+    /// command sent meanwhile is refused as busy ("still opening") rather than applied to the
+    /// sample project and then discarded. Should something have changed the sample project all
+    /// the same, the file isn't opened over it. The progress window shows at once rather than
+    /// after [`progress::SHOW_AFTER`], since the open is all this window is doing.
+    pub fn begin_startup_open(&mut self) {
+        let Some(path) = self.files.startup.take() else { return };
+        if self.session.can_undo() || self.session.can_redo() {
+            self.notice = Some(format!(
+                "{} wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.",
+                file_name(&path)
+            ));
+            return;
         }
+        self.start_background_open(path, true, AfterOpen::Startup);
     }
     pub(super) fn start_background_open(&mut self, path: PathBuf, discard: bool, after: AfterOpen) {
         let result = admitted(&path, false).and_then(|location| {
@@ -297,27 +344,43 @@ impl NodeCraftApp {
             }
             // The runner refused the job and it ran inline.
             Ok(result) if flag(&result, "opened") => self.open_settled(path, after, Ok(()), true),
-            Ok(_) => self.open_settled(path, after, Err("The project did not confirm it opened; the current project was kept.".into()), true),
-            Err(error) => self.open_settled(path, after, Err(error), true),
+            Ok(_) => self.open_settled(path, after, Err(OpenFailed::Unconfirmed), true),
+            Err(error) => self.open_settled(path, after, Err(OpenFailed::Error(error)), true),
         }
     }
     /// A background open's outcome, for what it was started for. `same_session` is false when
     /// the host replaced the session while it ran; nothing of the old one is touched then.
-    fn open_settled(&mut self, path: PathBuf, after: AfterOpen, outcome: Result<(), String>, same_session: bool) {
+    fn open_settled(&mut self, path: PathBuf, after: AfterOpen, outcome: Result<(), OpenFailed>, same_session: bool) {
         match (after, outcome) {
             (AfterOpen::File | AfterOpen::Startup, Ok(())) => self.file_opened(path),
-            (AfterOpen::File, Err(error)) => self.notice = Some(error),
-            (AfterOpen::Startup, Err(error)) => {
-                let error = error.trim_end_matches('.');
-                self.notice =
-                    Some(format!("That project couldn't be opened: {error}. The new project can still be saved; use File > Open to choose another file."));
+            (AfterOpen::File, Err(failed)) => {
+                self.notice = Some(match failed {
+                    OpenFailed::Cancelled => format!("Opening {} was cancelled; the current project is unchanged.", file_name(&path)),
+                    OpenFailed::Error(message) => message,
+                    OpenFailed::Unconfirmed => "The project did not confirm it opened; the current project was kept.".into(),
+                    OpenFailed::Unfinished => "The project didn't finish opening. Open it again.".into(),
+                });
+            }
+            (AfterOpen::Startup, Err(OpenFailed::Cancelled)) => {
+                self.notice = Some(format!("Opening {} was cancelled; the new project is open instead.", file_name(&path)));
+            }
+            (AfterOpen::Startup, Err(failed)) => {
+                self.notice = Some(format!(
+                    "{} couldn't be opened: {}. The new project is open instead and can be saved; File > Open opens another file.",
+                    file_name(&path),
+                    failed.clause()
+                ));
             }
             (AfterOpen::LastSave(offer), Ok(())) => {
                 self.file_opened(path);
                 self.started_from_last_save(&offer);
             }
-            (AfterOpen::LastSave(offer), Err(error)) => self.last_save_not_opened(*offer, &error, same_session),
+            (AfterOpen::LastSave(offer), Err(failed)) => self.last_save_not_opened(*offer, &failed, same_session),
         }
+    }
+    /// Whether a "Start from last save" open is running: its question isn't answered yet.
+    pub(super) fn last_save_opening(&self) -> bool {
+        self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Opening { after: AfterOpen::LastSave(_), .. }))
     }
     fn file_opened(&mut self, path: PathBuf) {
         self.after_file_open();
@@ -386,8 +449,9 @@ impl NodeCraftApp {
             let same_session = Arc::ptr_eq(&stamp.session, &self.session.view_identity());
             let outcome = match result {
                 Ok(_) if opened && same_session => Ok(()),
-                Ok(_) => Err("The project did not confirm it opened; the current project was kept.".to_owned()),
-                Err(error) => Err(error.message),
+                Ok(_) if same_session => Err(OpenFailed::Unconfirmed),
+                Ok(_) => Err(OpenFailed::Unfinished),
+                Err(error) => Err(OpenFailed::from_error(&error)),
             };
             self.open_settled(path, after, outcome, same_session);
             self.clear_file_input(ctx);
@@ -498,7 +562,7 @@ impl NodeCraftApp {
                     self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening { path, after } });
                 } else {
                     // The host replaced the session, or the open ended without an outcome.
-                    self.open_settled(path, after, Err("The project didn't finish opening. Open it again.".into()), same_session);
+                    self.open_settled(path, after, Err(OpenFailed::Unfinished), same_session);
                 }
                 self.file_progress(ctx);
             }

@@ -30,6 +30,9 @@ impl Shell {
 
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The project named at startup starts opening before any request is pumped, so one sent
+        // meanwhile is refused as busy instead of landing on the sample project (#367).
+        self.app.begin_startup_open();
         if let Some(window) = &mut self.storage_window {
             window.pump(&mut self.app, ctx);
         }

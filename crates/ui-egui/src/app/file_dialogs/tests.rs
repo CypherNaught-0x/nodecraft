@@ -1094,8 +1094,13 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     let mut h = harness(app);
     // The startup open runs in the background from the first frame (#367).
     settle(&mut h);
-    assert!(h.state().notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
-    assert!(h.state().notice.as_deref().unwrap().contains("can still be saved"));
+    let notice = h.state().notice.clone().unwrap();
+    assert!(
+        notice.starts_with("broken.ncraft couldn't be opened: ")
+            && notice.ends_with(". The new project is open instead and can be saved; File > Open opens another file.")
+            && notice.matches(". ").count() == 1,
+        "one cause, one piece of advice: {notice}"
+    );
     assert!(h.state().session.file_status().available);
     h.state_mut().notice = None;
     let ctx = h.ctx.clone();
@@ -1233,7 +1238,7 @@ fn cancelling_a_held_open_keeps_the_current_project_and_its_file() {
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(initial)));
     assert!(!h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("opening was cancelled"), "{:?}", h.state().notice);
+    assert_eq!(h.state().notice.as_deref(), Some("Opening target.ncraft was cancelled; the current project is unchanged."));
     assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
     // The current project still journals and saves.
     add(h.state_mut(), 93);

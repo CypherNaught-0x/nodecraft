@@ -252,14 +252,24 @@ impl NodeCraftApp {
 
     /// The last save didn't open (it failed, was cancelled, or the open ended without an
     /// outcome): the copy is untouched, and the question is asked again in this session.
-    pub(super) fn last_save_not_opened(&mut self, offer: RecoveryOffer, error: &str, same_session: bool) {
+    pub(super) fn last_save_not_opened(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
         let name = offer.kept_name();
-        let error = error.trim_end_matches('.');
         log::warn!("recovery: the last save didn't open; kept {name}");
-        self.notice = Some(format!("The last save wasn't opened ({error}). Unsaved work was kept as {name} in the recovery folder."));
+        self.notice = Some(match failed {
+            super::file_dialogs::OpenFailed::Cancelled => {
+                format!("Opening the last save was cancelled. Unsaved work was kept as {name} in the recovery folder.")
+            }
+            failed => format!("The last save couldn't be opened: {}. Unsaved work was kept as {name} in the recovery folder.", failed.clause()),
+        });
         if same_session && self.recovery.is_none() {
             self.recovery = Some(offer);
         }
+    }
+
+    /// Whether the startup question is still being decided: asked, or its "Start from last
+    /// save" open still running (whose failure asks it again).
+    pub(super) fn recovery_deciding(&self) -> bool {
+        self.recovery.is_some() || self.last_save_opening()
     }
 
     /// Every frame: keeps the record of which file this session has open beside its journal

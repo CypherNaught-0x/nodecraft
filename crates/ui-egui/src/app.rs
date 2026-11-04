@@ -1351,14 +1351,14 @@ impl NodeCraftApp {
         let recovery_owns_input = self.web_recovery_owns_input();
         #[cfg(not(target_arch = "wasm32"))]
         {
-            // The project named at startup opens once the window is up (#367).
+            // For hosts that draw without calling `logic` first (tests); a no-op once started.
             self.begin_startup_open();
             self.poll_save(ui.ctx());
             let t = *self.theme.tokens();
             self.recovery_dialog(ui.ctx(), &t);
             self.track_recovery();
             // Not while the startup question is open: its answer may replace the document.
-            if self.recovery.is_none() {
+            if !self.recovery_deciding() {
                 self.live_recompute(ui.ctx());
             }
         }
@@ -3622,6 +3622,9 @@ impl NodeCraftApp {
 
 impl eframe::App for NodeCraftApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Before anything else can reach the session (#367); a no-op once started.
+        #[cfg(not(target_arch = "wasm32"))]
+        self.begin_startup_open();
         self.tick_keys(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         {

@@ -754,6 +754,7 @@ fn start_from_last_save_held(test: &str) -> Held367 {
     // The click's frame still drew the question; the next one doesn't.
     h.step();
     assert!(!asked(&h), "the question waits behind the open");
+    assert!(h.state().recovery_deciding(), "runs stay paused: a failed open asks the question again");
     Held367 { dir, h, gate, copy, bytes, before }
 }
 /// Steps until the progress window has appeared (it waits a moment, so quick opens don't flash).
@@ -789,6 +790,8 @@ fn start_from_last_save_removes_the_copy_only_after_the_background_open_succeeds
     assert!(!copy.exists() && !storage::location_file(&copy).exists(), "discarded once the open succeeded");
     assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
     assert!(!asked(&h));
+    assert!(!h.state().recovery_deciding(), "decided: runs may go on");
+    assert_eq!(h.state().files.projects.recent(), vec![dir.project().to_str().unwrap()], "listed once");
 }
 
 #[test]
@@ -802,7 +805,11 @@ fn a_failed_background_last_save_open_keeps_the_copy_and_the_project_and_asks_ag
     assert!(storage::location_file(&copy).exists());
     assert_eq!(h.state().session.document(), &before, "the project is as it was");
     let notice = h.state().notice.clone().unwrap();
-    assert!(notice.starts_with("The last save wasn't opened") && notice.contains("kept as session.journal.unrecovered-1"), "{notice}");
+    assert!(
+        notice.starts_with("The last save couldn't be opened: ")
+            && notice.ends_with("Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."),
+        "{notice}"
+    );
     assert!(asked(&h), "the person can still recover the work");
     h.get_by_label("Recover").click();
     h.run();
@@ -822,7 +829,10 @@ fn cancelling_a_background_last_save_open_keeps_the_copy_and_the_project_and_ask
     settle(&mut h);
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().unwrap().contains("opening was cancelled"), "{:?}", h.state().notice);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("Opening the last save was cancelled. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder.")
+    );
     assert!(asked(&h));
     // The question works as before: start from the last save again, this time letting it finish.
     h.get_by_label("Start from last save").click();
@@ -890,7 +900,7 @@ fn a_last_save_open_the_runner_refuses_runs_inline_and_drops_the_copy_after_it()
     h.step();
     assert!(copy.exists());
     assert!(h.state().recovery.is_some(), "asked again");
-    assert!(h.state().notice.as_deref().unwrap().starts_with("The last save wasn't opened"));
+    assert!(h.state().notice.as_deref().unwrap().starts_with("The last save couldn't be opened: "));
 }
 
 #[test]

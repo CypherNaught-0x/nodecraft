@@ -161,8 +161,13 @@ fn a_bad_startup_path_keeps_saving_working_and_says_why() {
     let dir = Scratch::new("badpath");
     let mut h = harness(app(&dir.0, Some(dir.0.join("missing.ncraft"))));
     settle(&mut h);
-    let notice = h.state().notice.clone().unwrap_or_default();
-    assert!(notice.starts_with("That project couldn't be opened:") && notice.contains("can still be saved"), "the open failure is reported: {notice}");
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "missing.ncraft couldn't be opened: the selected project cannot be found or inspected. The new project is open instead and can be saved; File > Open opens another file."
+        ),
+        "the open failure is reported"
+    );
     assert!(h.state().session.file_status().available, "and the window can still save");
     assert!(h.state().session.file_status().location.is_none());
 }
@@ -381,8 +386,7 @@ fn cancelling_the_startup_open_keeps_the_new_project_and_says_so() {
     held_job(&runner).run();
     settle(&mut h);
     assert_eq!(h.state().session.document(), &starter, "the cancelled open replaced nothing");
-    let notice = h.state().notice.clone().unwrap_or_default();
-    assert!(notice.starts_with("That project couldn't be opened: opening was cancelled"), "{notice}");
+    assert_eq!(h.state().notice.as_deref(), Some("Opening big.ncraft was cancelled; the new project is open instead."));
     let status = h.state().session.file_status();
     assert!(status.available && status.location.is_none() && status.operation.is_none());
     assert!(h.state().files.projects.recent().is_empty());
@@ -431,4 +435,39 @@ fn render_startup_open367_evidence() {
     held_job(&runner).run();
     settle(&mut h);
     h.render().unwrap().save(output.join("startup-cancelled-notice.png")).unwrap();
+}
+
+#[test]
+fn a_command_before_the_first_frame_is_refused_while_the_startup_open_runs_and_never_dropped() {
+    let dir = Scratch::new("startup-race367");
+    let file = saved_project(&dir.0, "raced.ncraft", 94);
+    // As the desktop shell does: the startup open starts first in the frame's logic, then the
+    // control channel, MCP and the agent are pumped.
+    let mut first = app(&dir.0, Some(file.clone()));
+    let runner = Arc::new(Held::default());
+    first.session.set_save_runner(runner.clone());
+    first.begin_startup_open();
+    let canvas = first.canvas;
+    let node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([95; 16]), "source.text");
+    let error = first.session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Busy);
+    assert!(error.message.contains("still opening") && error.message.contains("file.cancel"), "{}", error.message);
+    held_job(&runner).run();
+    let mut h = harness(first);
+    settle(&mut h);
+    assert!(holds(h.state(), 94), "the file opened: {:?}", h.state().notice);
+    // A host that edits before starting the open: the edit is kept, not opened over.
+    let dir = Scratch::new("startup-race-kept367");
+    let file = saved_project(&dir.0, "kept.ncraft", 96);
+    let mut second = app(&dir.0, Some(file));
+    add_text(&mut second, 97);
+    let edited = second.session.document().clone();
+    let mut h = harness(second);
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &edited, "the edit survives");
+    assert!(!holds(h.state(), 96));
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("kept.ncraft wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.")
+    );
 }
