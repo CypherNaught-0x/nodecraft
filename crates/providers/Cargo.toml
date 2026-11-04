@@ -19,8 +19,9 @@ http = ["dep:reqwest"]
 llm = []
 # Synchronous OpenAI speech synthesis and file transcription.
 openai-audio = []
-# Direct Google text through the existing OpenAI-compatible chat client.
-gemini-llm = ["llm"]
+# Direct Google text through the existing OpenAI-compatible chat client, and video to text through
+# the Interactions API with inline base64 video (#84).
+gemini-llm = ["llm", "dep:base64"]
 # Direct Hugging Face text through the existing OpenAI-compatible chat client.
 huggingface = ["llm"]
 # ComfyUI servers (local or remote) through the `comfy` protocol crate, with live progress over
