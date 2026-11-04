@@ -16,8 +16,10 @@ which left these two opens inline.
   from that first frame rather than after 0.3 s: the open is all the window is doing, and the
   sample project behind it would otherwise flash. Its outcome settles like any background open:
   on success the file's canvas shows and it joins the recent list; a failure says
-  "x.ncraft couldn't be opened: <cause>. The new project is open instead…", and a cancel
-  "Opening x.ncraft was cancelled; the new project is open instead."
+  "x.ncraft couldn't be opened: <the engine's message, with its advice>. The new project is open
+  instead and can be saved.", and a cancel "Opening x.ncraft was cancelled; the new project is
+  open instead." A shell test drives `eframe::App::logic` with a control request queued before
+  the first frame and checks it is refused as busy and the file opens.
 - **"Start from last save" discards the copy only after the open has succeeded.** The choice
   starts a background open and moves the offer into the open's pending step. Only a successful
   outcome for this session removes the selected copy and its location record. A failure, a

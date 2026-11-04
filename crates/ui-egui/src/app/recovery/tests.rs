@@ -942,3 +942,26 @@ fn render_last_save367_evidence() {
     settle(&mut h);
     h.render().unwrap().save(output.join("last-save-cancelled-asks-again.png")).unwrap();
 }
+
+#[test]
+fn a_newer_format_last_save_keeps_the_advice_to_update_and_the_copy() {
+    let Held367 { dir, mut h, gate, copy, bytes, .. } = start_from_last_save_held("last-save-future367");
+    // A newer NodeCraft saved over the file since the crash.
+    {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.project()).unwrap());
+        zip.start_file("project.json", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        zip.write_all(br#"{"version":99,"epoch":1,"project":{}}"#).unwrap();
+        zip.finish().unwrap();
+    }
+    gate.release();
+    settle(&mut h);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "The last save couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."
+        )
+    );
+    assert!(asked(&h));
+}

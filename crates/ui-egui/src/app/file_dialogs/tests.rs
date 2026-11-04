@@ -1097,7 +1097,7 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     let notice = h.state().notice.clone().unwrap();
     assert!(
         notice.starts_with("broken.ncraft couldn't be opened: ")
-            && notice.ends_with(". The new project is open instead and can be saved; File > Open opens another file.")
+            && notice.ends_with(". The new project is open instead and can be saved.")
             && notice.matches(". ").count() == 1,
         "one cause, one piece of advice: {notice}"
     );

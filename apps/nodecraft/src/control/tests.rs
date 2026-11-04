@@ -229,6 +229,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
 mod files423;
 mod host360;
 mod search;
+mod shell367;
 
 #[test]
 fn live_navigation_is_judged_a_read_and_moves_nothing() {

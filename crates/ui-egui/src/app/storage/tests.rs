@@ -164,7 +164,7 @@ fn a_bad_startup_path_keeps_saving_working_and_says_why() {
     assert_eq!(
         h.state().notice.as_deref(),
         Some(
-            "missing.ncraft couldn't be opened: the selected project cannot be found or inspected. The new project is open instead and can be saved; File > Open opens another file."
+            "missing.ncraft couldn't be opened: the selected project cannot be found or inspected; choose another file. The new project is open instead and can be saved."
         ),
         "the open failure is reported"
     );
@@ -469,5 +469,30 @@ fn a_command_before_the_first_frame_is_refused_while_the_startup_open_runs_and_n
     assert_eq!(
         h.state().notice.as_deref(),
         Some("kept.ncraft wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.")
+    );
+}
+
+/// A project file in a format version this build doesn't know, as a newer NodeCraft would write.
+fn future_format(path: &Path) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("project.json", stored).unwrap();
+    zip.write_all(br#"{"version":99,"epoch":1,"project":{}}"#).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn a_newer_format_at_startup_keeps_the_advice_to_update() {
+    let dir = Scratch::new("startup-future367");
+    let file = dir.0.join("future.ncraft");
+    future_format(&file);
+    let mut h = harness(app(&dir.0, Some(file)));
+    settle(&mut h);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "future.ncraft couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. The new project is open instead and can be saved."
+        )
     );
 }

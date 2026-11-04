@@ -68,18 +68,18 @@ impl OpenFailed {
             Self::Error(error.message.clone())
         }
     }
-    /// The reason as a lower-case clause without advice or a closing full stop, to follow a colon.
+    /// The reason, with any advice it carries ("…; update NodeCraft"), as a clause to follow a
+    /// colon: lower-case first letter, no closing full stop.
     pub(super) fn clause(&self) -> String {
         match self {
             Self::Cancelled => "it was cancelled".to_owned(),
             Self::Error(message) => {
-                // The cause only: advice after a semicolon would repeat what the notice says.
-                let message = message.split(';').next().unwrap_or_default().trim().trim_end_matches('.');
+                let message = message.trim().trim_end_matches('.');
                 let mut chars = message.chars();
                 chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
             }
             Self::Unconfirmed => "it didn't confirm it opened".to_owned(),
-            Self::Unfinished => "it didn't finish".to_owned(),
+            Self::Unfinished => "the open ended without a result".to_owned(),
         }
     }
 }
@@ -365,11 +365,7 @@ impl NodeCraftApp {
                 self.notice = Some(format!("Opening {} was cancelled; the new project is open instead.", file_name(&path)));
             }
             (AfterOpen::Startup, Err(failed)) => {
-                self.notice = Some(format!(
-                    "{} couldn't be opened: {}. The new project is open instead and can be saved; File > Open opens another file.",
-                    file_name(&path),
-                    failed.clause()
-                ));
+                self.notice = Some(format!("{} couldn't be opened: {}. The new project is open instead and can be saved.", file_name(&path), failed.clause()));
             }
             (AfterOpen::LastSave(offer), Ok(())) => {
                 self.file_opened(path);

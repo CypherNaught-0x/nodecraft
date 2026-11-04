@@ -33,5 +33,5 @@ futures = { workspace = true }
 winresource = "0.1"
 
 [dev-dependencies]
-egui_kittest = { workspace = true }
+egui_kittest = { workspace = true, features = ["eframe"] }
 tempfile = { workspace = true }
