@@ -468,3 +468,55 @@ fn a_reply_waits_for_a_background_save_instead_of_spending_turns_on_busy() {
     assert_eq!(title(&app), "Sea");
     assert_eq!(script.sent.lock().unwrap().len(), 2);
 }
+
+/// During a background open (or recovery) every change is refused too (#367): the agent's
+/// replies wait in the worker, and Approve waits until the open has finished rather than
+/// running the approved steps into busy refusals.
+#[test]
+fn approval_and_replies_wait_for_a_background_open() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(base.path().join("settings")));
+    let storage = nodecraft_ui_egui::app::storage::StorageSetup { recovery: base.path().join("settings/recovery/session.journal"), open: None };
+    let mut app = NodeCraftApp::with_settings_and_storage(&ctx, store, Some(storage)).unwrap();
+    let node = first_node(&app);
+    let file = base.path().join("agent-open.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+    let (mut panel, script) = panel(AgentSettings::default());
+    panel.input = "Call it Sea".into();
+    panel.apply(vec![Intent::Ask], &mut app, &ctx);
+    let rename = json!({"id": "node.title", "params": {"canvas": app.canvas, "id": node, "title": "Sea"}});
+    script.release.send(tool("command_run", rename)).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| p.agent().status() == Status::Waiting);
+    // The same file opens again in the background, its job held.
+    let gate = Arc::new(Gate::default());
+    app.session.set_save_runner(gate.clone());
+    assert_eq!(
+        app.session.dispatch("file.open", &json!({"location": file.to_str().unwrap(), "discard_dirty": true, "background": true})).unwrap()["opening"],
+        true
+    );
+    let title = |app: &NodeCraftApp| app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&node).unwrap().title.clone();
+    panel.apply(vec![Intent::Approve], &mut app, &ctx);
+    for _ in 0..20 {
+        panel.logic(&mut app, &ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(panel.agent().status(), Status::Waiting, "the approval is still to be given");
+    assert_ne!(title(&app), "Sea");
+    assert_eq!(script.sent.lock().unwrap().len(), 1, "no turn was spent on a busy refusal");
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(app.session.poll_file().unwrap().unwrap()["opened"], true);
+    panel.apply(vec![Intent::Approve], &mut app, &ctx);
+    assert_eq!(title(&app), "Sea", "approved on the opened project");
+    script.release.send(say("Renamed.")).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| said(p, "Renamed."));
+    assert_eq!(script.sent.lock().unwrap().len(), 2);
+}
