@@ -12,7 +12,10 @@ fn stale_palette_action_is_available_without_empty_params() {
 }
 
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use nodecraft_graph::{Edge, Endpoint, Generation, Port};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
 use nodecraft_types::{Blake3, EdgeId, GenerationId, Modality, PortType};
@@ -547,4 +550,85 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     h.state_mut().view.zoom = 1.0;
     h.run();
     assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("Retain this public unsaved draft"));
+}
+
+const UNCHECKED: &str = "Inputs can't be checked";
+/// The whole text of the badge's tooltip (a label's text is its accessible value).
+fn tooltip(h: &Harness<'static, NodeCraftApp>) -> String {
+    h.get_by_label_contains("Can't check whether").accesskit_node().value().unwrap_or_default()
+}
+/// The diagnostic fixture with its two consumers spread apart, so neither card covers the
+/// other's badge, and the first one's badge hovered until its tooltip shows.
+fn unchecked_scene(h: &mut Harness<'static, NodeCraftApp>) -> String {
+    for (n, x) in [(1u8, 0.0), (20, 0.0), (21, 380.0)] {
+        let y = if n == 1 { 0.0 } else { 260.0 };
+        h.state_mut().session.dispatch("node.move", &json!({"canvas":C,"id":id(n),"pos":{"x":x,"y":y}})).unwrap();
+    }
+    h.run();
+    let badge = h.get_by_label(UNCHECKED).rect();
+    h.hover_at(badge.center());
+    for _ in 0..60 {
+        h.step();
+    }
+    h.run();
+    format!("Input node {0} failed (unsupported): upstream source {0} is invalid: Choose a supported source", id(1))
+}
+#[test]
+fn an_unhashable_card_shows_cant_check_with_its_reason_on_hover() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    let reason = unchecked_scene(&mut h);
+    assert_eq!(h.query_all_by_label(UNCHECKED).count(), 1, "the report names only the first unhashable card");
+    assert_eq!(h.state().stale_badges.as_ref().and_then(|b| b.unchecked.as_ref()).map(|(n, _)| *n), Some(id(20)));
+    assert!(h.query_by_label(STALE).is_none(), "an unhashable result is not offered a refresh");
+    let tip = tooltip(&h);
+    assert!(tip.contains(&reason), "{tip}");
+    assert!(tip.contains("\n1 more checked results can't be checked either"), "{tip}");
+    // Once the source is valid again, the next revision's check shows the result is stale.
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.run();
+    assert!(h.query_by_label(UNCHECKED).is_none());
+    assert!(h.query_by_label_contains("Can't check whether").is_none());
+    assert_eq!(h.query_all_by_label(STALE).count(), 2);
+}
+const STALE: &str = "Stale result: refresh";
+#[test]
+fn the_unchecked_hover_is_bounded_sanitised_and_refuses_malformed_diagnostics() {
+    let report = |reason: &str| json!({"nodes":[],"unknown_total":1,"unknown":{"node":id(20),"cause":id(20),"kind":"invalid_input","reason":reason}});
+    let (node, text) = super::stale_badges::unchecked(&report("Bad\n\u{202e}value\u{2066}\t")).unwrap();
+    assert_eq!(node, id(20));
+    assert!(text.contains("This card failed (invalid_input): Bad  value  "), "{text}");
+    assert!(!text.chars().any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')));
+    assert!(!text.contains("more checked results"));
+    let longest = super::stale_badges::unchecked(&report(&"é".repeat(256))).unwrap().1;
+    assert!(longest.len() <= 1536);
+    assert!(super::stale_badges::unchecked(&report(&"x".repeat(513))).is_none());
+    assert!(super::stale_badges::unchecked(&json!({"nodes":[],"unknown_total":0,"unknown":null})).is_none());
+    assert!(super::stale_badges::unchecked(&json!({})).is_none());
+    for (field, value) in [("node", json!("bad")), ("cause", json!("x".repeat(36))), ("kind", json!("hostile_kind")), ("reason", json!(7))] {
+        let mut bad = report("Reason");
+        bad["unknown"][field] = value;
+        assert!(super::stale_badges::unchecked(&bad).is_none(), "{field}");
+    }
+}
+#[test]
+#[ignore = "native GPU evidence; set NODECRAFT_STALE254_RENDER_ROOT"]
+fn unchecked_badge_native_capture() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_STALE254_RENDER_ROOT").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut app, _, _) = diagnostic();
+        app.theme = theme;
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .with_size(Vec2::new(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        let reason = unchecked_scene(&mut h);
+        let tip = tooltip(&h);
+        assert!(tip.contains(&reason), "{tip}");
+        h.render().unwrap().save(root.join(format!("{theme:?}-unchecked-badge.png"))).unwrap();
+    }
 }

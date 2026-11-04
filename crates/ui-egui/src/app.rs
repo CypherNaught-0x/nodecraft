@@ -2041,6 +2041,8 @@ impl NodeCraftApp {
                         if mask_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, drift, t) && !canvas_blocks {
                             mask_request = Some(node.id);
                         }
+                    } else if let Some((_, hover)) = self.stale_badges.as_ref().and_then(|badges| badges.unchecked.as_ref()).filter(|(id, _)| *id == node.id) {
+                        stale_badges::unchecked_badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, hover, t);
                     } else if !running
                         && self.stale_badges.as_ref().is_some_and(|badges| badges.nodes.contains(&node.id))
                         && stale_badges::badge(ui, &tag_painter, &self.view, viewport, r.rect, node.id, t)

@@ -5,7 +5,7 @@ use nodecraft_types::ProjectId;
 use std::sync::Arc;
 
 const MAX_TEXT: usize = 1536;
-const MAX_REASON: usize = 512;
+pub(super) const MAX_REASON: usize = 512;
 const MALFORMED: &str = "The staleness report could not be displayed safely.";
 
 pub(super) struct StaleSnapshot {
@@ -33,21 +33,23 @@ impl StaleSnapshot {
             && app.session.document().canvases().contains_key(&app.canvas)
     }
 }
-fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
+pub(super) fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
     if text.len().checked_add(value.len()).is_none_or(|n| n > MAX_TEXT) {
         return Err(MALFORMED);
     }
     text.push_str(value);
     Ok(())
 }
-fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
+/// Appends `value` with control and bidirectional-override characters blanked, within `MAX_TEXT`.
+pub(super) fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
     for c in value.chars() {
         let c = if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c };
         append(text, c.encode_utf8(&mut [0; 4]))?;
     }
     Ok(())
 }
-fn kind(value: &str) -> Option<&'static str> {
+/// The error kinds the report may name; anything else is refused.
+pub(super) fn kind(value: &str) -> Option<&'static str> {
     Some(match value {
         "invalid_input" => "invalid_input",
         "unsupported" => "unsupported",
