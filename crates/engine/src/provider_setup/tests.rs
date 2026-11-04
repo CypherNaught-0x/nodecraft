@@ -105,6 +105,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     for account in [
         "openai",
         "azure-openai",
+        "bedrock",
         "anthropic",
         "replicate",
         "runway",
@@ -127,8 +128,11 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings =
-        ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt") };
+    let settings = ProviderSettings {
+        azure_openai_url: Some("https://demo.openai.azure.com".into()),
+        bedrock_region: Some("us-east-1".into()),
+        ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt")
+    };
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
@@ -297,6 +301,44 @@ fn azure_uses_its_own_keychain_account_and_preserves_the_catalog_deployment() {
     assert!(!format!("{:?}", requests[0]).contains(KEY));
     let invalid = ProviderSettings { azure_openai_url: Some(format!("https://user:{KEY}@demo.openai.azure.com")), ..Default::default() };
     assert!(!make("azure-openai", &env(&keys, &http, &invalid)).err().unwrap().message("azure-openai").unwrap().contains(KEY));
+}
+
+#[test]
+fn bedrock_uses_its_own_keychain_account_region_and_catalog_model() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert_eq!(key_account("bedrock"), Some("bedrock"));
+    for region in [None, Some(""), Some("  ")] {
+        let settings = ProviderSettings { bedrock_region: region.map(Into::into), ..Default::default() };
+        assert!(matches!(make("bedrock", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(_))), "{region:?}");
+    }
+    for region in ["US-EAST-1", "eu-central", "useast1", "us-east-1/../x", "cn-north-1", "us-east-1.evil.example"] {
+        let settings = ProviderSettings { bedrock_region: Some(region.into()), ..Default::default() };
+        let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("{region} must refuse") };
+        assert!(!why.contains(region), "{why}");
+    }
+    let settings = ProviderSettings { bedrock_region: Some(" us-west-2 ".into()), ..Default::default() };
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock".into() }));
+    const KEY: &str = "bedrock-public-fixture-46";
+    keys.set(&Account::new("bedrock").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit(), "a lost Bedrock reply may already be billed");
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-46".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "openai.gpt-oss-120b-1:0");
+    assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    assert!(requests[0].secret_headers.iter().any(|name| name == "authorization"));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
 }
 
 #[test]
