@@ -189,9 +189,8 @@ impl LiveCommands<'_> {
 }
 /// A save or open asked for from a surface the window answers on its UI thread runs on the save
 /// runner (#367), whatever `background` it gave: the reply is `{saving:true}` or `{opening:true}`,
-/// and `file.status` (or the next change, refused as busy until then) tells when it has finished.
-/// `None` for every other command, and for parameters that aren't an object (dispatch refuses
-/// them as it would).
+/// and `file.status` tells when it has finished and how (`last`). `None` for every other command,
+/// and for parameters that aren't an object (dispatch refuses them as it would).
 fn in_background(id: &str, params: &serde_json::Value) -> Option<serde_json::Value> {
     if !matches!(id, "file.save" | "file.save_as" | "file.open") {
         return None;

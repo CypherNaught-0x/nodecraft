@@ -941,6 +941,7 @@ impl Session {
             services: &self.services,
             phase,
             file: self.file_status(),
+            file_last: self.persistence.as_ref().and_then(crate::persistence::Persistence::last),
             execution: &self.execution,
             perf: &self.perf,
             access: &self.access,

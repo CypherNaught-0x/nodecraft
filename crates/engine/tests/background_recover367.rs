@@ -466,3 +466,33 @@ fn a_cancelled_native_recovery_leaves_the_live_journal_byte_for_byte() {
     drop(session);
     assert_eq!(NativeStorage::new(journal).unwrap().recover().unwrap().snapshot.project, current);
 }
+
+/// `file.status` lets a client follow a background operation it was answered for at once
+/// (#367): what is running, then how it ended, with the failure's own error; no path.
+#[test]
+fn file_status_reports_the_running_operation_and_how_the_last_one_ended() {
+    let gate = Arc::new(Gate::default());
+    let (mut session, storage) = memory_session(gate.clone());
+    let status = session.dispatch("file.status", &json!({})).unwrap();
+    assert_eq!(status["operation"], serde_json::Value::Null);
+    assert_eq!(status["last"], serde_json::Value::Null);
+    assert_eq!(status["titled"], false);
+    session.recover_in_background(recovered(), Some(StorageLocation::from_command("/projects/secret-name.ncraft".into()).unwrap())).unwrap();
+    let status = session.dispatch("file.status", &json!({})).unwrap();
+    assert_eq!(status["operation"]["kind"], "recover", "{status}");
+    assert_eq!(status["operation"]["phase"], "preparing");
+    storage.0.lock().unwrap().fail_checkpoint = true;
+    gate.release();
+    // Read before the host polls: the outcome is reported once it has settled.
+    assert!(session.poll_file().unwrap().is_err());
+    let status = session.dispatch("file.status", &json!({})).unwrap();
+    assert_eq!(status["operation"], serde_json::Value::Null);
+    assert_eq!(status["last"], json!({"kind": "recover", "ok": false, "error": {"kind": "internal", "message": "injected recovery write failure"}}));
+    // A save that works replaces it.
+    storage.0.lock().unwrap().fail_checkpoint = false;
+    session.dispatch("file.save_as", &json!({"location": "/projects/secret-name.ncraft"})).unwrap();
+    let status = session.dispatch("file.status", &json!({})).unwrap();
+    assert_eq!(status["last"], json!({"kind": "save", "ok": true}));
+    assert_eq!((status["titled"].clone(), status["dirty"].clone()), (json!(true), json!(false)));
+    assert!(!status.to_string().contains("secret-name"), "no path: {status}");
+}

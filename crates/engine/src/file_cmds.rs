@@ -22,6 +22,14 @@ pub struct FileStatus {
     pub operation: Option<FileOperation>,
 }
 
+/// How a finished file operation ended: its kind, and the error it failed with (actionable, and
+/// like every engine error free of private paths), `None` when it succeeded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileOutcome {
+    pub kind: FileOperationKind,
+    pub error: Option<Error>,
+}
+
 /// A background file operation's progress, as `file.status`-style readers see it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FileOperation {
@@ -143,6 +151,33 @@ fn save_as(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
 fn enabled_open(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     open(c, v).map(|_| ())
 }
+/// `file.status`: what a client needs to follow a save or open it asked for (#367). Pure read;
+/// it names no path (a client knows the location it gave, and the person's own file isn't the
+/// agent's to learn), only whether the project has one.
+fn status(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
+    if !value.is_null() {
+        params::<Empty>(value)?;
+    }
+    let f = &c.file;
+    let operation = f.operation.map(|o| serde_json::json!({"kind": o.kind.name(), "phase": o.phase.name(), "cancel_requested": o.cancel_requested}));
+    let last = c.file_last.as_ref().map(|last| match &last.error {
+        None => serde_json::json!({"kind": last.kind.name(), "ok": true}),
+        Some(error) => serde_json::json!({"kind": last.kind.name(), "ok": false, "error": {"kind": error.kind, "message": error.message}}),
+    });
+    let result = serde_json::json!({
+        "available": f.available,
+        "dirty": f.dirty,
+        "titled": f.location.is_some(),
+        "read_only": f.read_only,
+        "recovery_required": f.recovery_required,
+        "operation": operation,
+        "last": last,
+    });
+    Ok(Effect::None { result })
+}
+fn enabled_status(c: &Context<'_>, v: &Value) -> Result<(), Error> {
+    status(c, v).map(|_| ())
+}
 fn enabled_cancel(c: &Context<'_>, v: &Value) -> Result<(), Error> {
     cancel(c, v).map(|_| ())
 }
@@ -174,6 +209,16 @@ pub fn specs() -> Vec<CommandSpec> {
             params_doc: "{}; asks the background save, open or recovery to stop. Returns {cancelling: bool}, false when none is running. The operation's outcome says whether it stopped in time: a stopped save leaves the file unchanged, a stopped open or recovery keeps the current project.",
             enabled: enabled_cancel,
             run: cancel,
+        },
+        CommandSpec {
+            id: "file.status",
+            alternate_shortcuts: &[],
+            input_schema: cancel_schema,
+            label: "Project file status",
+            shortcut: None,
+            params_doc: "{}; read-only. Returns {available, dirty, titled, read_only, recovery_required: bool, operation: null or {kind: save|open|recover, phase, cancel_requested}, last: null or {kind, ok: bool, error?: {kind, message}}}: the save, open or recovery still running, and how the last one in this session ended. Names no path. A client whose save or open replied saving or opening at once reads here when it has finished and why it failed.",
+            enabled: enabled_status,
+            run: status,
         },
         CommandSpec {
             id: "file.save",

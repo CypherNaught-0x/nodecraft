@@ -114,10 +114,14 @@ The window never writes a project file on its own thread for a client (#367): `f
 `file.save_as` and `file.open` run in the background whatever `background` says, and reply
 `{saving:true}` or `{opening:true}` at once. Until that operation has finished, another file
 command, and any command that would change the project, is refused as `busy` naming
-`file.cancel`; reads still answer. Retry it after a moment (the refusal ends as soon as the
-operation does), or stop the operation with `file.cancel`. There is no separate status command:
-the first change that isn't refused is the sign it has finished. The same holds for MCP and the
-in-canvas agent. `nodecraft-cli control` below has no save thread and answers saves as before.
+`file.cancel`; reads still answer. `file.status` (read-only) says whether a save, open or
+recovery is still running (`operation`: kind, phase, whether a cancel was asked) and how the last
+one ended (`last`: kind, `ok`, and the error when it failed, such as a full disk or a file that
+can't be read), plus `dirty`, `titled`, `read_only` and `recovery_required`. It names no path.
+Poll it after a save or open, or stop the operation with `file.cancel`. The same holds for MCP
+through the bridge. The in-canvas agent has no allowed folders, so it can't save or open at all;
+it can read `file.status`. `nodecraft-cli control` below has no save thread and answers saves as
+before.
 
 ## Headless stdio
 

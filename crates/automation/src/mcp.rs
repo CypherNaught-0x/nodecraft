@@ -89,6 +89,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "file.save",
     "file.save_as",
     "file.cancel",
+    // Read-only, names no path: how a background save or open the agent asked for went (#367).
+    "file.status",
     "node.add",
     "node.create",
     "node.create_connected",

@@ -44,6 +44,10 @@ fn a_control_client_saves_and_opens_projects_inside_the_allowed_folders() {
     assert_eq!(reply["result"]["saving"], true, "{reply}");
     settle(&mut app, &ctx);
     assert!(saved.is_file(), "the project file is on disk");
+    // The client learns how it went from `file.status`.
+    let status = run(&mut app, "file.status", json!({})).unwrap();
+    assert_eq!(status["result"]["last"], json!({"kind": "save", "ok": true}), "{status}");
+    assert_eq!(status["result"]["operation"], Value::Null);
     let title = app.session.document().title().to_owned();
     assert_eq!(run(&mut app, "file.save", json!({})).unwrap()["result"]["saving"], true);
     settle(&mut app, &ctx);
