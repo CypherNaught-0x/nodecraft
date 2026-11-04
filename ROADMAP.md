@@ -20,7 +20,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | 🟡 feature work complete with close-out (#381) open | 16/17 |
+| 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 17/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 26/29 |
 
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
@@ -215,6 +215,14 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   staleness hashing and router resolution exist and are tested end to end against the mock
   provider.
 
+- **Live sharing** lets people edit the same canvas through `nodecraft-cli relay` (#119).
+  Open **Share** on desktop or in the browser to start a room or join with a link. Desktop Join
+  opens a window, while browser Join uses the current tab and asks you to resolve unsaved work
+  first (#698, #699). Links grant view, comment or edit access with expiry and revocation (#121).
+  Private canvases stay out of the room. Named cursors, selection outlines and initials show
+  who is working where (#120). Desktop peers can transfer large assets in parts (#700).
+  Browser peers keep assets within the tab's memory limits.
+
 ## What does not work yet
 
 The honest list, because "it's in the repo" and "you can use it" are different claims:
@@ -258,17 +266,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   interchange is available on desktop, with Final Cut Pro and DaVinci Resolve import checks and
   background export improvements tracked separately (#643).
 
-- **Live sharing works from the desktop app and the browser.** Sessions are shared through `nodecraft-cli relay`
-  (#119), with every edit merged and images passed along. Share links let someone view, comment
-  on or edit a shared project, with signed discussions and expiry and revocation (`share.link_*`,
-  #121), and canvases kept private (`canvas.set_private`) stay out of the room. The app's Share
-  chip shares a project and shows its join link on request; Join opens a shared project in a new
-  window, and a dropped connection reconnects on its own (`share.start`, `share.join`,
-  `share.stop`, `share.status`, #698). Everyone in a shared project sees the others' pointers
-  with their names, outlines round the cards they have selected, and their initials beside the
-  Share chip, which take you to them (#120). The browser shares and joins through the page's
-  WebSocket, joining in the same tab (#699). The relay speaks plain `ws://`; the desktop client
-  has no TLS, and a browser page served over https reaches it only as `wss://` through a TLS proxy.
+- **Relay transport and storage differ by client.** The relay serves plain `ws://`.
+  Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
+  remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
+  local development and remote access. The relay holds rooms in memory.
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100) and typed nested descriptor records/lists (#528) remain open. HTTP serve
@@ -302,6 +303,10 @@ The near-term order follows the remaining open issues, not an already-finished w
    For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
 
 ## Milestone log
+
+- **2026-11-03** — M10 closed with #381. Desktop and browser Share and Join, role-scoped links,
+  presence, bounded asset transfer and deck editing/export are in the app. The real relay
+  integration test covers two peers editing one canvas and a late joiner.
 
 - **2026-10-16** — M0 closed: workspace, lints, `xtask layers`/`wasm`, CI, docs, themed canvas,
   release pipeline. `v0.1.0-rc.1` was built and published as a pre-release with installers for
