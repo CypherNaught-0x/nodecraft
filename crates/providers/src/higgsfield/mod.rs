@@ -177,6 +177,18 @@ pub struct SoulIds {
     pub skipped: usize,
 }
 
+/// The Soul ID a trained descriptor names, as the trainer writes it (#680): Higgsfield's, from
+/// the Soul ID trainer, for SOUL 2, its weights the documented
+/// `{API}/v1/custom-references/{id}` of a UUID. `None` for any other style, so a hand-edited or
+/// foreign descriptor never becomes an id a request names. Lowercased, as requests send it.
+pub fn soul_id(style: &nodecraft_media::style::Style) -> Option<String> {
+    if style.provider != "higgsfield" || style.trainer != SOUL_TRAINER || style.family != SOUL_FAMILY {
+        return None;
+    }
+    let id = style.weights.strip_prefix(API)?.strip_prefix("/v1/custom-references/")?;
+    request::uuid(id).then(|| id.to_ascii_lowercase())
+}
+
 /// Where a Soul ID's training stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum Training {

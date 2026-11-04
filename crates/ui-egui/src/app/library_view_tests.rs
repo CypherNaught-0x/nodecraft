@@ -160,3 +160,51 @@ fn library96_visual() {
         h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
 }
+
+/// A Higgsfield account that is never reached: publishing plans the run but sends nothing.
+struct Unreachable;
+impl nodecraft_providers::Http for Unreachable {
+    fn send(
+        &self,
+        _: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::Network, "offline")) })
+    }
+    fn send_no_redirect(
+        &self,
+        _: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::Network, "offline")) })
+    }
+}
+
+#[test]
+fn a_library_version_using_a_soul_id_says_it_runs_only_on_the_training_account() {
+    let store = MemoryLibrary::default();
+    let mut h = harness_on(&store);
+    let app = h.state_mut();
+    let canvas = app.canvas;
+    let soul = NodeId::from_bytes([77; 16]);
+    let values = [
+        ("model".to_owned(), Value::Text("higgsfield.soul-2".into())),
+        ("prompt".to_owned(), Value::Text("a portrait".into())),
+        ("custom_reference_id".to_owned(), Value::Text("7c9e6679-7425-40de-944b-e07fc1f90ae7".into())),
+    ]
+    .into();
+    let node = app.session.kinds().get("generation.image").unwrap().instantiate_instance(soul, BTreeMap::new(), &values).unwrap();
+    app.session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
+    let mut routing = nodecraft_engine::provider_routing::ProviderRouting::new();
+    let key = nodecraft_providers::secrets::Secret::new("fixture-key-id-0003:fixture-secret-not-real-0003").unwrap();
+    let higgsfield = nodecraft_providers::higgsfield::Higgsfield::new(key, std::sync::Arc::new(Unreachable));
+    let binding = routing.bind_default(std::sync::Arc::new(higgsfield)).unwrap();
+    routing.select(soul, "higgsfield", binding.target()).unwrap();
+    app.session.set_provider_routing(routing).unwrap();
+    let params = json!({"canvas": canvas, "published": V1, "seed": NodeId::from_bytes([41; 16]), "technique": T,
+        "name": "Portrait", "outputs": [{"node": soul, "name": "Portrait"}]});
+    app.session.dispatch("technique.publish", &params).unwrap();
+    app.session.dispatch("library.add", &json!({"canvas": V1})).unwrap();
+    h.run();
+    open_panel(&mut h);
+    h.run();
+    assert!(h.query_by_label_contains("Uses a Higgsfield Soul ID").is_some(), "the library entry says it is account-bound");
+}

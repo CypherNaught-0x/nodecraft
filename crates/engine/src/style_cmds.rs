@@ -91,6 +91,28 @@ fn fits<'a>(catalog: Option<&GenerationCatalog>, target: &'a Node, family: &str)
     }
 }
 
+/// How `target` takes a style: wired into its style input, or, for a Soul ID on a SOUL 2 card,
+/// as the card's Soul ID (`custom_reference_id`), the value its picker sets (#180).
+enum Takes<'a> {
+    Wire(&'a Port),
+    SoulId,
+}
+
+/// Whether `target` is a SOUL 2 card and `family` a Soul ID's: SOUL 2 takes its identity as a
+/// parameter, not a wire, so a Soul ID never reaches a LoRA model's style input and a LoRA never
+/// reaches SOUL 2.
+fn soul_target(target: &Node, family: &str) -> bool {
+    family == crate::soul_ids::FAMILY && is_generation(&target.kind) && model(target) == Some(crate::soul_ids::SOUL_MODEL)
+}
+
+/// What `target` would take a style of `family` as, or why it can't.
+fn takes<'a>(catalog: Option<&GenerationCatalog>, target: &'a Node, family: &str) -> Result<Takes<'a>, Error> {
+    if target.kind != STYLE_KIND && soul_target(target, family) {
+        return Ok(Takes::SoulId);
+    }
+    fits(catalog, target, family).map(Takes::Wire)
+}
+
 /// The catalog models of `kind` that take `family` styles, in catalog order.
 fn takers<'a>(catalog: Option<&'a GenerationCatalog>, kind: &'a str, family: &'a str) -> impl Iterator<Item = &'a GenerationModel> {
     catalog
@@ -102,6 +124,10 @@ fn takers<'a>(catalog: Option<&'a GenerationCatalog>, kind: &'a str, family: &'a
 /// " Models that take it: a, b." naming the first catalog models of `kind` that take `family`
 /// styles, or a hint to retrain when none do.
 fn alternatives(catalog: Option<&GenerationCatalog>, kind: &str, family: &str) -> String {
+    // A Soul ID goes in as a SOUL 2 card's Soul ID, not into a style input.
+    if family == crate::soul_ids::FAMILY {
+        return " A Soul ID is used on a Higgsfield SOUL 2 card, where it sets the card's Soul ID".into();
+    }
     let ids: Vec<&str> = takers(catalog, kind, family).map(|m| m.id.as_str()).take(NAMED_MODELS).collect();
     if ids.is_empty() {
         " No model of this card's kind takes it; train the style again for one that does".into()
@@ -142,7 +168,7 @@ pub fn offers(canvas: &Canvas, catalog: Option<&GenerationCatalog>, target: &Nod
         .filter(|n| n.kind == STYLE_KIND)
         .map(|n| {
             let verdict = match active_style(n).and_then(family) {
-                Some(family) => fits(catalog, target, family).map(|_| ()),
+                Some(family) => takes(catalog, target, family).map(|_| ()),
                 None => Err(invalid("train this style first")),
             };
             let label = if n.title.trim().is_empty() { model(n).unwrap_or("Train style").to_owned() } else { n.title.clone() };
@@ -187,7 +213,7 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             });
             if let Some(target) = target {
                 let verdict = match family {
-                    Some(family) => fits(c.resources.get::<GenerationCatalog>(), target, family).map(|_| ()),
+                    Some(family) => takes(c.resources.get::<GenerationCatalog>(), target, family).map(|_| ()),
                     None => Err(invalid("train this style first")),
                 };
                 entry["compatible"] = json!(verdict.is_ok());
@@ -218,7 +244,10 @@ fn use_style(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let family = style.and_then(family).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this Train style card has no trained style yet; run it first"))?;
     let out = port(&card.outputs, Modality::Style).ok_or_else(|| invalid("this Train style card has no style output"))?;
     let target = canvas.nodes().get(&p.target).ok_or_else(|| not_found("document entity"))?;
-    let input = fits(c.resources.get::<GenerationCatalog>(), target, family)?;
+    let input = match takes(c.resources.get::<GenerationCatalog>(), target, family)? {
+        Takes::Wire(input) => input,
+        Takes::SoulId => return use_soul_id(c, &p, style, target),
+    };
     let from = Endpoint { node: p.style, port: out.name.clone() };
     let mut replaced: Vec<EdgeId> = canvas.edges().values().filter(|e| e.to.node == p.target && e.to.port == input.name).map(|e| e.id).collect();
     replaced.sort();
@@ -232,6 +261,34 @@ fn use_style(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let changes = Changeset::new(changes);
     c.preview_changes(&changes)?;
     Ok(Effect::Edit { changes, result: json!({"edge": p.edge, "replaced": replaced}), gesture: None })
+}
+
+/// Sets a SOUL 2 card's Soul ID to the one a Soul ID training made, as picking it would: one
+/// undo step through `node.param_set`'s checks. Refused when the account whose Soul IDs were last
+/// fetched doesn't have it, since only the account that trained it can use it.
+fn use_soul_id(c: &Context<'_>, p: &UseParams, style: Option<&AssetRef>, target: &Node) -> Result<Effect, Error> {
+    let id = style
+        .and_then(|style| crate::soul_ids::id(c.assets, style))
+        .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this Soul ID's descriptor is missing or doesn't name a Higgsfield Soul ID; train it again"))?;
+    if matches!(target.params.get(crate::soul_ids::PARAM), Some(Value::Text(current)) if current.trim().eq_ignore_ascii_case(&id)) {
+        return Err(Error::new(ErrorKind::Conflict, "this card already uses that Soul ID"));
+    }
+    if crate::soul_ids::availability(c.resources.get::<nodecraft_types::OptionLists>(), &id) == crate::soul_ids::Availability::Unlisted {
+        return Err(Error::new(
+            ErrorKind::InvalidInput,
+            "this Soul ID isn't among the Higgsfield account's ready Soul IDs: it may belong to another account, still be training, or have failed. Only the account that trained it can use it",
+        ));
+    }
+    let value = serde_json::to_value(Value::Text(id.clone())).map_err(|_| invalid("the Soul ID can't be written"))?;
+    let set = json!({"canvas": p.canvas, "id": p.target, "name": crate::soul_ids::PARAM, "value": value});
+    match crate::node_cmds::parameter(c, &set)? {
+        Effect::Edit { changes, gesture, .. } => {
+            // As every edit here: one a viewer may not make is refused up front.
+            c.preview_changes(&changes)?;
+            Ok(Effect::Edit { changes, result: json!({"edge": null, "replaced": [], "param": crate::soul_ids::PARAM, "soul_id": id}), gesture })
+        }
+        _ => Err(invalid("the Soul ID can't be set on this card")),
+    }
 }
 
 #[derive(Deserialize)]
@@ -264,9 +321,16 @@ fn card(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         Some(id) => takers(catalog, KIND, family)
             .find(|m| m.id == id)
             .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("that model doesn't take {family} styles.{}", alternatives(catalog, KIND, family))))?,
-        None => takers(catalog, KIND, family)
-            .next()
-            .ok_or_else(|| Error::new(ErrorKind::Unsupported, format!("no image model here takes {family} styles; train the style again for one that does")))?,
+        None => takers(catalog, KIND, family).next().ok_or_else(|| {
+            Error::new(
+                ErrorKind::Unsupported,
+                if family == crate::soul_ids::FAMILY {
+                    "a Soul ID isn't wired into a new card: add a Higgsfield SOUL 2 card and use the Soul ID on it, which sets its Soul ID".to_owned()
+                } else {
+                    format!("no image model here takes {family} styles; train the style again for one that does")
+                },
+            )
+        })?,
     };
     let mut supplied = ParamValues::new();
     supplied.insert(MODEL.into(), Value::Text(model.id.clone()));
@@ -338,7 +402,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: use_schema,
-            params_doc: "{canvas, style: Train style card NodeId, target: generation card NodeId, edge: new EdgeId} -> {edge, replaced: [EdgeId]}; wires the style card's trained style into the target's style input as one undo step, replacing any style wired there. Refused unless the style card has a trained style and the target's model takes styles of its family; the refusal names models that would. It does not run: run the target as usual, which shows its cost first.",
+            params_doc: "{canvas, style: Train style card NodeId, target: generation card NodeId, edge: new EdgeId} -> {edge, replaced: [EdgeId], param?, soul_id?}; wires the style card's trained style into the target's style input as one undo step, replacing any style wired there. Refused unless the style card has a trained style and the target's model takes styles of its family; the refusal names models that would. A Soul ID (family soul-2) on a Higgsfield SOUL 2 card instead sets the card's Soul ID (`custom_reference_id`, as its picker does) and `edge` is unused (null in the result); refused when the account whose Soul IDs were last fetched doesn't list it. It does not run: run the target as usual, which shows its cost first.",
             enabled: enabled_use,
             run: use_style,
         },

@@ -358,6 +358,10 @@ fn resolve(
         Ok((value, _)) => value,
         Err(error) => return refused(held.clone(), &error.message),
     };
+    // A Soul ID's descriptor names one account's identity; it isn't a file to hand on (#180).
+    if crate::soul_ids::bound_value(selected) {
+        return refused(held, crate::soul_ids::ACCOUNT_BOUND);
+    }
     let (asset, mime, bytes, hash) = match media_for(c.assets, selected) {
         Ok(resolved) => resolved,
         Err(reason) => return refused(held.clone(), reason),
@@ -504,7 +508,7 @@ fn request_schema() -> Value {
 const PLAN_DOC: &str = "Preview a batch local export without writing anything. Params: {canvas:uuid, sources:[{node:uuid, \
     port:string, item?:int}], destination:string, template?:string, on_collision?:skip|overwrite|numbered, \
     format?:{mode:original|convert|vectorise, mime?:string}}. A source's active generation is its payload; history \
-    is never exported, and a text result is refused exactly as history.export refuses it. Returns each file's name \
+    is never exported, and a text result or a Soul ID (bound to the account that trained it) is refused exactly as history.export refuses it. Returns each file's name \
     with the node and generation it came from, and why any source cannot be written. Names are predicted from the \
     batch alone: whether a file already exists in the folder is only checked when the export runs. Pass-through \
     only: no conversion is performed or implied.";

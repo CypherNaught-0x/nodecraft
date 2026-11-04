@@ -549,10 +549,18 @@ draws more than a page.
   narrows it to one card.
 - **Styles** (`library.styles`) lists every Train style card on every canvas: its family and
   trigger, a **Soul ID** mark (`accent`) for a trained identity, and "Kept by provider": the
-  weights or the identity stay with that provider and only that account can use the handle.
+  weights or the identity stay with that provider and only that account can use the handle. A
+  Soul ID instead says it is bound to the Higgsfield account that trained it and is not exported,
+  and, against the account whose Soul IDs were last fetched, "Unavailable on this account"
+  (`danger`) or "Not checked on this account yet" (`text_muted`); a Soul ID whose descriptor is
+  missing says so and to train it again (`danger`). A muted line counts the SOUL 2 cards that name
+  a Soul ID picked from the account's list, even when no Train style card exists.
   **Use on selected card** wires a style on the open canvas into the selected card
-  (`style.use`), disabled with the reason when the card can't take it; a style on another canvas
-  offers **Open its canvas**.
+  (`style.use`), or sets a SOUL 2 card's Soul ID, disabled with the reason when the card can't
+  take it; a style on another canvas offers **Open its canvas**. The **Share live** panel adds a
+  muted note when the project uses Soul IDs: others see them, but runs on another account are
+  refused. A technique in the **Library** whose cards name a Soul ID carries a "Uses a Higgsfield
+  Soul ID" note: it runs only on the account that trained it, in any project.
 
 **Ticking entries.** In Assets and History, each entry's title is a tick box; up to 32 entries
 per tab can be ticked across pages (the ticks are forgotten when the project or canvas changes,
