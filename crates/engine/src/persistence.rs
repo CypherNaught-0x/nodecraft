@@ -128,6 +128,9 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
         let document = project_identity::prepare(snapshot, scope)?;
         let checkpoint = if document.migration.is_some() {
             let capability = guard(|| Ok(storage.capability()))?;
+            // Rewriting under the new identity is known only now: check it fits first (#367).
+            let probe = guard(|| Ok(storage.space_probe(location)))?;
+            nodecraft_format::space::check_rewrite(&document.snapshot, capability, &probe)?;
             CheckpointPlan::new(ArchivePlan::prepare(&document.snapshot, capability, cancel, metrics)?)?
         } else {
             checkpoint
@@ -336,7 +339,7 @@ impl Persistence {
         let location = location.or_else(|| self.location.clone()).ok_or_else(|| Error::new(ErrorKind::Conflict, "save_as needs an explicit location"))?;
         let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
         // Before anything is written, history spills included (#367).
-        self.preflight_save(document, assets, epoch, &location)?;
+        self.preflight_save(document, assets, retained, epoch, &location)?;
         // Spill history-only roots before replacing any base or output destination.
         assets.verify_retained(retained, &TransferCancel::default(), &self.metrics)?;
         let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
@@ -357,9 +360,18 @@ impl Persistence {
     }
     /// The advisory disk-space check before a save (#367): refuses only when the platform
     /// reports less free space than the save's inventory needs, and stays out of the way when it
-    /// can't tell. A save that passes can still run out of room; that write error is handled
-    /// where it happens, before the destination is replaced.
-    fn preflight_save(&mut self, document: &Project, assets: &AssetStore, epoch: u64, location: &StorageLocation) -> Result<(), Error> {
+    /// can't tell. The inventory adds what the save writes in the private workspace before the
+    /// archive: copies of media not yet verified there (history roots included) and the pack
+    /// compaction writes. A save that passes can still run out of room; that write error is
+    /// handled where it happens, before the destination is replaced.
+    fn preflight_save(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        epoch: u64,
+        location: &StorageLocation,
+    ) -> Result<(), Error> {
         if self.capability != StorageCapability::StreamingV2 {
             return Ok(());
         }
@@ -369,17 +381,27 @@ impl Persistence {
         }
         // An estimate that can't be made leaves the real error to the save itself.
         let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(()) };
+        // Unknown housekeeping (the store is busy verifying, say) adds nothing rather than a guess.
+        let output = assets.output_space(document, retained).ok().flatten().unwrap_or_default();
         // Saving over an existing file frees it at publication, before the checkpoint.
-        SpaceInventory::save(bytes, probe.existing_bytes)?.check(&probe)
+        let mut inventory =
+            SpaceInventory::save(bytes, probe.existing_bytes)?.with_verified_copies(output.verified_copies).with_cleanup_debt(output.cleanup_debt);
+        if let Some(pack) = output.compaction {
+            inventory = inventory.with_compaction(pack);
+        }
+        inventory.check(&probe)
     }
-    /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint.
+    /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint. An
+    /// older-format file's rewrite is checked inside the open, once it is known.
     fn preflight_open(&mut self, location: &StorageLocation) -> Result<(), Error> {
         if self.capability != StorageCapability::StreamingV2 {
             return Ok(());
         }
-        let probe = guard(|| Ok(self.store.get()?.space_probe(location)))?;
+        let storage = self.store.get()?;
+        let probe = guard(|| Ok(storage.space_probe(location)))?;
         let Some(bytes) = probe.existing_bytes else { return Ok(()) };
-        SpaceInventory::open(bytes)?.check(&probe)
+        let debt = guard(|| Ok(storage.asset_context()))?.and_then(|context| context.cleanup_debt().ok()).unwrap_or(0);
+        SpaceInventory::open(bytes)?.with_cleanup_debt(debt).check(&probe)
     }
     fn idle(&self) -> Result<(), Error> {
         match self.pending.as_ref().map(|pending| pending.kind) {

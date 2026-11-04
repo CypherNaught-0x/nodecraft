@@ -46,7 +46,7 @@ mod v2;
 pub use archive::{MAX_ARCHIVE_BYTES, MAX_MANIFEST_BYTES, Snapshot, decode, decode_indexed, encode, validate_current_project, validate_v1_project};
 pub use archive_plan::{ArchivePlan, StorageCapability};
 pub use asset_context::AssetContext;
-pub use asset_store::{AssetDescriptor, VerifiedAsset, VerifiedReader};
+pub use asset_store::{AssetDescriptor, OutputSpace, VerifiedAsset, VerifiedReader};
 pub use asset_store::{PreviewAssetRead, PreviewReadError, SealedAsset};
 pub use assets::{AssetStore, MAX_ASSET_BYTES, MAX_ASSETS, MAX_TOTAL_ASSET_BYTES, assets_in_changes, image_header_meta};
 pub use checkpoint_plan::CheckpointPlan;

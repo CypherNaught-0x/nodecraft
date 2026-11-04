@@ -310,8 +310,12 @@ pub(crate) mod native {
                 let file = File::open(path).map_err(|_| io_error("cannot open project; check location and permissions"))?;
                 let workspace = self.context.0.workspace.as_ref().ok_or_else(|| io_error("native asset workspace is unavailable"))?;
                 let (sealed, index) = workspace.freeze_archive(file, cancel, metrics)?;
+                // What decoding writes is known only now; check it fits first (#367).
+                crate::space::check_open_copies(&index, self.capability(), &self.space_probe(location))?;
                 let snapshot = crate::decode_indexed(&index, self.context.clone())?;
                 let archive = if index.version() < crate::archive::VERSION {
+                    // The rewrite is known only now; check it fits before writing it (#367).
+                    crate::space::check_rewrite(&snapshot, self.capability(), &self.space_probe(location))?;
                     ArchivePlan::prepare(&snapshot, self.capability(), cancel, metrics)?
                 } else {
                     ArchivePlan::from_native_open(sealed, &snapshot)?

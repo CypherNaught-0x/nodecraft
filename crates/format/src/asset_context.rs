@@ -118,6 +118,15 @@ impl AssetContext {
         }
         Ok(crate::disk_quota::DiskUsage::default())
     }
+    /// Bytes of private files earlier cleanup couldn't delete: still on disk and still charged
+    /// until the handle pinning them closes or NodeCraft restarts (#367).
+    pub fn cleanup_debt(&self) -> Result<u64, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(workspace) = &self.0.workspace {
+            return workspace.quota().cleanup_retained_bytes();
+        }
+        Ok(0)
+    }
     pub fn retained_usage(&self) -> Result<(usize, u64), Error> {
         let ledger = self.0.ledger.lock().map_err(|_| unavailable())?;
         Ok((ledger.retained.len(), ledger.bytes))
