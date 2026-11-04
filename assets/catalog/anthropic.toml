@@ -9,7 +9,8 @@
 # `tokens_per_page` and the input rate (#591); the run's measured usage is what the provider charges.
 # Reading (checked 2026-11-03, models overview comparison table): every model here has a 1M-token
 # context window and 128K max output on the synchronous Messages API, declared as `reads` on each
-# text mode. Planning refuses a prompt clearly longer than the window before it is sent.
+# text mode. A card's prompt (1 MiB at most) can't come near these windows, so an over-long
+# request is refused by the API itself; the planner's own check only matters for small windows.
 # These models reject sampling parameters (temperature, top_p), so none is offered.
 # max_tokens: 1..128000 (synchronous Messages API max output); the Messages API requires a value,
 # and the default 16000 matches the adapter's DEFAULT_MAX_TOKENS.

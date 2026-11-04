@@ -4,7 +4,8 @@
 # Account tiers and thinking usage prevent this adapter from promising an exact dollar quote.
 # Reading (checked 2026-11-03, model page, "September 2026"): input token limit 1,048,576, output
 # token limit 65,536; inputs text, image, video, audio and PDF. Google states an input limit, so
-# `context_tokens` is the input limit here: planning refuses a prompt clearly longer than it.
+# `context_tokens` is the input limit here. A card's prompt (1 MiB at most) can't come near it, so
+# an over-long request is refused by Google, not by planning.
 [[model]]
 id = "gemini-llm.3.8-flash"
 provider = "gemini-llm"
@@ -27,7 +28,11 @@ reads = { context_tokens = 1048576, max_output_tokens = 65536 }
 # https://ai.google.dev/api/interactions-api
 # - up to 10 videos a request (Gemini 2.5 and later); sent inline, the whole request under 20 MB
 #   (the guide's lower figure; its table also says 100 MB). No Files API upload yet.
-# - MP4, MPEG, MPG, MOV, AVI, FLV, WebM, WMV, 3GPP; a QuickTime file is sent as `video/mov`.
+#   `video_bytes` is 14,990,000: base64 makes that 19,986,668 bytes, leaving about 13 KB for the
+#   prompt and JSON, so the quote refuses any set of videos that can't fit; a long prompt can
+#   still push a request over, which the adapter refuses before sending.
+# - MP4, MPEG, MPG, MOV, AVI, FLV, WebM, WMV, 3GPP (`video_types`); NodeCraft's `video/quicktime`
+#   is listed too and sent as `video/mov`. Other types are refused while planning.
 # - frames sampled at 1 a second by default ("static" processing); 1M-context models read up to
 #   3 hours at the default (low) media resolution, so at most 10,800 frames. About 100 tokens a
 #   second of video at that resolution, billed as input on top of the prompt.
@@ -35,7 +40,9 @@ reads = { context_tokens = 1048576, max_output_tokens = 65536 }
 id = "video-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "video", modality = "video", min = 1, max = 10 }]
-reads = { context_tokens = 1048576, max_output_tokens = 65536, frames = { every_ms = 1000, max = 10800 } }
+reads = { context_tokens = 1048576, max_output_tokens = 65536, frames = { every_ms = 1000, max = 10800 }, video_bytes = 14990000, video_types = [
+  "video/mp4", "video/mpeg", "video/mpg", "video/mov", "video/quicktime", "video/avi", "video/x-flv", "video/webm", "video/wmv", "video/3gpp",
+] }
 
 [[model.params.params]]
 name = "max_tokens"

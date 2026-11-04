@@ -32,13 +32,14 @@ use std::{
 
 const C: CanvasId = CanvasId::from_bytes([84; 16]);
 const WATCHER: NodeId = NodeId::from_bytes([1; 16]);
-const CLIP: NodeId = NodeId::from_bytes([2; 16]);
 const MODEL: &str = "fixture.watcher";
 /// An MP4 file's first bytes: enough to be stored and sent as one; nothing here decodes it.
 const MP4: &[u8] = b"\0\0\0\x20ftypisom\0\0\x02\0isomiso2avc1mp41";
+/// A WebM file's first bytes, likewise.
+const WEBM: &[u8] = b"\x1A\x45\xDF\xA3\x9f\x42\x82\x84webm";
 
 /// A text model with a small context window on its text mode and a video mode that reads a
-/// frame a second, at most a minute of video.
+/// frame a second, at most a minute of MP4 or WebM, 40 bytes of video a request.
 fn catalog() -> Catalog {
     Catalog::from_toml(&format!(
         r#"[[model]]
@@ -62,7 +63,7 @@ inputs = [
   {{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }},
   {{ role = "video", modality = "video", min = 1, max = 2 }},
 ]
-reads = {{ context_tokens = 1000, frames = {{ every_ms = 1000, max = 60 }} }}
+reads = {{ context_tokens = 1000, frames = {{ every_ms = 1000, max = 60 }}, video_types = ["video/mp4", "video/webm"], video_bytes = 40 }}
 "#
     ))
     .unwrap()
@@ -125,19 +126,34 @@ fn fixture(prompt: &str, clip: Option<(&str, Option<u64>)>) -> Fixture {
     let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
     session.set_provider_routing(routing).unwrap();
     if let Some((mime, duration_ms)) = clip {
-        let hash = session.import_asset(MP4).unwrap();
-        let asset = Value::Media(AssetRef { hash, mime: mime.parse().unwrap(), meta: MediaMeta { duration_ms, ..Default::default() } });
-        let source = session.kinds().get("source.video").unwrap().instantiate_instance(CLIP, Default::default(), &[("asset".into(), asset)].into()).unwrap();
-        session.dispatch("node.add", &json!({"canvas":C,"node":source})).unwrap();
-        let edge = Edge {
-            id: EdgeId::from_bytes([3; 16]),
-            from: Endpoint { node: CLIP, port: "out".into() },
-            to: Endpoint { node: WATCHER, port: "video".into() },
-            order: 0,
-        };
-        session.dispatch("edge.connect", &json!({"canvas":C,"edge":edge})).unwrap();
+        wire_clip(&mut session, 2, mime, duration_ms);
     }
     Fixture { session, captured, mock }
+}
+
+/// Wires another stored video, card `[n; 16]`, into the watcher's video role.
+fn wire_clip(session: &mut Session, n: u8, mime: &str, duration_ms: Option<u64>) {
+    let hash = session.import_asset(if mime == "video/webm" { WEBM } else { MP4 }).unwrap();
+    let asset = Value::Media(AssetRef { hash, mime: mime.parse().unwrap(), meta: MediaMeta { duration_ms, ..Default::default() } });
+    let id = NodeId::from_bytes([n; 16]);
+    let source = session.kinds().get("source.video").unwrap().instantiate_instance(id, Default::default(), &[("asset".into(), asset)].into()).unwrap();
+    session.dispatch("node.add", &json!({"canvas":C,"node":source})).unwrap();
+    let edge = Edge {
+        id: EdgeId::from_bytes([n + 100; 16]),
+        from: Endpoint { node: id, port: "out".into() },
+        to: Endpoint { node: WATCHER, port: "video".into() },
+        order: u32::from(n),
+    };
+    session.dispatch("edge.connect", &json!({"canvas":C,"edge":edge})).unwrap();
+}
+
+/// `run.start` with the blocked quote's own token: refused, and nothing is handed on.
+fn start_refused(f: &mut Fixture) {
+    let q = f.session.dispatch("run.quote", &request()).unwrap();
+    let mut start = request();
+    start["accept"] = json!({"token":q["token"],"partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
+    assert!(f.session.dispatch("run.start", &start).is_err(), "nor can it start with the quote's token");
+    assert!(f.captured.lock().unwrap().is_empty() && f.mock.requests().is_empty(), "nothing reached the host or the provider");
 }
 
 fn request() -> serde_json::Value {
@@ -220,7 +236,7 @@ fn a_video_longer_than_the_mode_reads_is_refused_before_anything_is_sent() {
     let mut f = fixture("Describe the clip", Some(("video/mp4", Some(61_000))));
     let reason = blocked(&mut f);
     assert!(reason.contains(&WATCHER.to_string()), "names the card: {reason}");
-    assert!(reason.contains("the video video is 61 s long") && reason.contains("at most 60 s") && reason.contains("trim it first"), "{reason}");
+    assert!(reason.contains("a video on video is 61 s long") && reason.contains("at most 60 s") && reason.contains("trim it first"), "{reason}");
     assert!(f.mock.requests().is_empty());
     // A video whose length isn't known goes through; the provider checks it.
     let mut f = fixture("Describe the clip", Some(("video/mp4", None)));
@@ -235,12 +251,33 @@ fn a_prompt_clearly_past_the_declared_window_is_refused_before_it_is_quoted_or_s
     assert!(nodecraft_providers::is_context_limit_text(&reason), "reads as a context refusal: {reason}");
     assert!(reason.contains(&WATCHER.to_string()) && reason.contains(MODEL) && reason.contains("reads at most 4"), "names the card and model: {reason}");
     assert!(reason.contains(nodecraft_providers::CONTEXT_LIMIT_FIX), "says what to do: {reason}");
-    let mut start = request();
-    start["accept"] = json!({"token":"none","partial":false,"unpriced_jobs":0,"amounts":{"USD":10_000}});
-    assert!(f.session.dispatch("run.start", &start).is_err(), "nor can it start");
-    assert!(f.captured.lock().unwrap().is_empty() && f.mock.requests().is_empty(), "nothing reached the host or the provider");
+    start_refused(&mut f);
     // At the window it runs: the estimate refuses only what is clearly over.
     let mut f = fixture(&"x".repeat(24), None);
     assert!(matches!(run(&mut f), Value::Text(_)));
     assert_eq!(f.mock.requests().len(), 1);
+}
+
+#[test]
+fn a_video_type_the_mode_doesnt_list_is_refused_before_it_is_quoted() {
+    let mut f = fixture("Describe the clip", Some(("video/x-matroska", Some(5_000))));
+    let reason = blocked(&mut f);
+    assert!(reason.contains(&WATCHER.to_string()), "names the card: {reason}");
+    assert!(reason.contains("doesn't read video/x-matroska") && reason.contains("video/mp4, video/webm"), "says what it reads: {reason}");
+    start_refused(&mut f);
+    let mut f = fixture("Describe the clip", Some(("video/webm", Some(5_000))));
+    assert!(matches!(run(&mut f), Value::Text(_)), "a listed type runs");
+}
+
+#[test]
+fn videos_larger_together_than_the_mode_sends_are_refused_in_the_quote_and_at_start() {
+    // One 32-byte video fits the 40 bytes the mode sends; a second makes 64.
+    let mut f = fixture("Describe the clips", Some(("video/mp4", Some(5_000))));
+    wire_clip(&mut f.session, 3, "video/mp4", Some(5_000));
+    let reason = blocked(&mut f);
+    assert!(reason.starts_with(&format!("node {WATCHER} [video_too_large]")), "{reason}");
+    assert!(reason.contains("64 bytes") && reason.contains("the 40 this model sends"), "{reason}");
+    start_refused(&mut f);
+    let mut f = fixture("Describe the clip", Some(("video/mp4", Some(5_000))));
+    assert!(matches!(run(&mut f), Value::Text(_)), "one video fits");
 }

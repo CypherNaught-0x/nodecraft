@@ -77,8 +77,8 @@ pub struct GenerationMode {
     /// How it reads wired PDFs, when it takes them (#591).
     pub document: Option<DocumentUse>,
     /// What a text mode promises about reading its inputs (#84): its context window, and how it
-    /// samples a wired video. Planning refuses a prompt clearly past the window and a video
-    /// longer than the frames it reads, before anything is quoted or sent.
+    /// samples a wired video. Planning refuses a prompt clearly past the window, and a video of
+    /// a type it doesn't list or longer than the frames it reads, before anything is quoted.
     pub reads: Option<ReadingUse>,
 }
 impl GenerationMode {
@@ -702,6 +702,7 @@ fn media_fits<'a>(model: &GenerationModel, mode: &GenerationMode, media: impl It
     }
     if let Some(reads) = &mode.reads {
         for (role, asset) in media.filter(|(_, asset)| Modality::Video.accepts_mime(asset.mime.essence())) {
+            reads.video_type_fits(role, asset.mime.essence())?;
             reads.frames_fit(role, asset.meta.duration_ms)?;
         }
     }

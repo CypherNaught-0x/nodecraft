@@ -33,7 +33,7 @@ pub use ids::*;
 pub use money::{Currency, Money, Rounding};
 pub use provider::{EMPTY_TARGET_SELECTION, ProviderTarget, TargetChoice, TargetSelection};
 pub use reading_use::{
-    BYTES_PER_TOKEN_AT_MOST, CONTEXT_LIMIT, CONTEXT_LIMIT_FIX, FrameSampling, MAX_DECLARED_TOKENS, MAX_FRAME_EVERY_MS, MAX_FRAMES, ReadingUse,
+    BYTES_PER_TOKEN_AT_MOST, CONTEXT_LIMIT, CONTEXT_LIMIT_FIX, FrameSampling, MAX_DECLARED_TOKENS, MAX_FRAME_EVERY_MS, MAX_FRAMES, MAX_VIDEO_TYPES, ReadingUse,
 };
 pub use scalar::{Integer, Number, Unsigned};
 pub use schema::{BorrowedResolvedParams, Choice, ParamControl, ParamSchema, ParamSpec, ParamValues, ResolvedParams, ValidatedParamSchema, VisibleIf};

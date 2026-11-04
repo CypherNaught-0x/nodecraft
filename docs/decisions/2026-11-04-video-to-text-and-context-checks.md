@@ -24,13 +24,24 @@ left open.
   model and the transcription models stay undeclared: their limits depend on the deployment or
   route, or are not published as a context window.
 - **Planning refuses a prompt clearly past the window, before quoting or sending.**
-  `GenerationMode` carries the mode's `reads`. The estimate is a low one: the composed prompt's
-  bytes over six (`types::BYTES_PER_TOKEN_AT_MOST`; tokenizers average about 2.5 to 4 bytes a
-  token on ordinary text), and media count for nothing, so it never refuses a prompt that might
-  fit and only catches what is clearly over. The message starts with the shared
-  `types::CONTEXT_LIMIT` text (now defined in `types` and re-exported by `providers`), so hosts
-  label it "too long for the model" just like a provider's refusal, and names the model; the
-  quote's blocked reason names the card. Anything closer to the limit is left to the provider's
-  own refusal, which is already mapped to the same message.
+  `GenerationMode` carries the mode's `reads`. The estimate is a low one for ordinary text: the
+  composed prompt's bytes over six (`types::BYTES_PER_TOKEN_AT_MOST`; Anthropic documents about
+  2.5 characters a token), and media count for nothing, so it only catches what is clearly over.
+  The message starts with the shared `types::CONTEXT_LIMIT` text (now defined in `types` and
+  re-exported by `providers`), so hosts label it "too long for the model" like a provider's
+  refusal, and names the model; the quote's blocked reason names the card.
+- **It never fires for today's built-in models.** A card's composed prompt is at most 1 MiB
+  (`compose_text`), about 175,000 tokens by this estimate, and every declared built-in window is
+  over a million tokens. The check matters only for models declaring windows under about 175K
+  tokens (custom catalogs, smaller models later). Built-in models rely on the provider's
+  refusal: the Anthropic and OpenAI-compatible routes map theirs to the context-limit message.
+  The Gemini video route can't: Google documents no token-limit error for the Interactions API
+  (its error list has no such code), so a refusal there reports the HTTP status and Google's
+  documented error `code`, and video tokens aren't estimated.
+- **Video type and size are refused at quote time.** The mode declares `reads.video_types` (the
+  reference's list plus NodeCraft's `video/quicktime`) and `reads.video_bytes` (14,990,000 for
+  Gemini, what fits a request under 20 MB after base64). Planning refuses an unlisted type;
+  `run.quote` and `run.start` refuse wired videos whose stored sizes total more, before anything
+  is reserved or sent. The adapter still checks the exact request.
 - **A video longer than the declared frames is refused while planning** when its length is
   known, as audio past its limit is. A video of unknown length goes through.

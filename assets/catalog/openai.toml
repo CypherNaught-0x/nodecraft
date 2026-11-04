@@ -12,9 +12,10 @@
 # https://developers.openai.com/api/docs/guides/images-vision (checked 2026-10-21): PNG, JPEG,
 # WebP, non-animated GIF.
 
-# Reading (checked 2026-11-03, each model's page): declared as `reads` on each text mode. Planning
-# refuses a prompt clearly longer than the context window before it is sent; GPT-6.1 Sol and
-# GPT-6 Luna also cap input at 922,000 tokens, which `reads` has no field for.
+# Reading (checked 2026-11-03, each model's page): declared as `reads` on each text mode. A card's
+# prompt (1 MiB at most) can't come near these windows, so an over-long request is refused by the
+# API itself; the planner's own check only matters for small windows. GPT-6.1 Sol and GPT-6 Luna
+# also cap input at 922,000 tokens, which `reads` has no field for.
 # GPT-6.1 Sol: 2 USD / 1M input, 10 USD / 1M output; context window 1,050,000; max output 128,000; Chat Completions
 # supported without tools. https://developers.openai.com/api/docs/models/gpt-6.1-sol (verified 2026-10-21)
 # A prompt over 272K input tokens bills the whole request at 1.5x (output 15 USD / 1M); the quote
@@ -151,7 +152,8 @@ default = { type = "unsigned", value = "16000" }
 
 # GPT-4.1 mini (snapshot gpt-4.1-mini-2025-04-14): 0.40 USD / 1M input, 1.60 USD / 1M output;
 # context window 1,047,576 (https://developers.openai.com/api/docs/models/gpt-4.1-mini, the
-# page lists it for the model, naming this snapshot its default; checked 2026-11-03);
+# page lists it for the model, naming this snapshot its default, and marks the model and the
+# snapshot deprecated; checked 2026-11-03);
 # max output 32,768; non-reasoning, so temperature (0..2, Chat Completions) applies.
 # https://developers.openai.com/api/docs/models/gpt-4.1-mini (verified 2026-10-21)
 [[model]]

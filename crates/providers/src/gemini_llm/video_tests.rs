@@ -166,6 +166,25 @@ fn gemini84_video_replies_are_read_honestly() {
     let body = r#"{"status":"completed","steps":[{"type":"model_output","content":[{"type":"text","text":"ok"}]}],"usage":{"total_input_tokens":"many"}}"#;
     let Submission::Finished(done) = block_on(provider(Fixture::new(200, body)).submit(&job(vec![video("video/mp4", MP4)]))).unwrap() else { panic!() };
     assert_eq!((done.outputs, done.usage.input_tokens), (vec![Output::Text("ok".into())], None));
+    // Google's documented error code is shown; its message never is.
+    let body = r#"{"error":{"code":"invalid_request","message":"public fixture: Describe the clip"}}"#;
+    let refused = block_on(provider(Fixture::new(400, body)).submit(&job(vec![video("video/mp4", MP4)]))).unwrap_err();
+    assert!(refused.message.contains("HTTP 400, invalid_request") && !refused.message.contains("Describe"), "{refused:?}");
+    let odd = r#"{"error":{"code":"Not A Code; see https://x","message":"m"}}"#;
+    assert!(block_on(provider(Fixture::new(400, odd)).submit(&job(vec![video("video/mp4", MP4)]))).unwrap_err().message.contains("(HTTP 400)"));
+    // Thought tokens count as output only when the total shows them apart.
+    let reply =
+        |usage: &str| format!(r#"{{"status":"completed","steps":[{{"type":"model_output","content":[{{"type":"text","text":"ok"}}]}}],"usage":{usage}}}"#);
+    for (usage, output) in [
+        (r#"{"total_input_tokens":10,"total_output_tokens":5,"total_thought_tokens":7,"total_tokens":22}"#, Some(12)),
+        (r#"{"total_input_tokens":10,"total_output_tokens":12,"total_thought_tokens":7,"total_tokens":22}"#, Some(12)),
+        (r#"{"total_input_tokens":10,"total_output_tokens":5,"total_thought_tokens":7}"#, Some(5)),
+    ] {
+        let Submission::Finished(done) = block_on(provider(Fixture::new(200, &reply(usage))).submit(&job(vec![video("video/mp4", MP4)]))).unwrap() else {
+            panic!()
+        };
+        assert_eq!(done.usage.output_tokens, output, "{usage}");
+    }
     for (status, kind) in [
         (400, ErrorKind::UnsupportedInput),
         (401, ErrorKind::Auth),

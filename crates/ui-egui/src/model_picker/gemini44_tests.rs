@@ -75,7 +75,7 @@ fn gemini84_a_wired_video_offers_gemini_and_its_details_say_how_it_reads() {
         h.step();
     }
     h.get_by_label("video-to-text to text");
-    h.get_by_label("Reads up to 1048576 tokens; answers up to 65536 tokens; video: a frame every second, at most 10800 frames");
+    h.get_by_label("Reads up to 1048576 tokens; answers up to 65536 tokens; video: a frame every second, at most 10800 frames; videos up to 14.9 MB together");
     h.get_by_label("Gemini 3.8 Flash").click();
     h.run();
     assert_eq!(h.state().outcome, Outcome::Chosen("gemini-llm.3.8-flash".into()));

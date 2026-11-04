@@ -137,6 +137,9 @@ impl ModelDescriptor {
         if (reads.timestamps || reads.speakers) && !takes(Modality::Audio) && !takes(Modality::Video) {
             return Err(invalid(id, &format!("mode `{}`: timestamps and speaker labels need an audio or video input", mode.id)));
         }
+        if (!reads.video_types.is_empty() || reads.video_bytes.is_some()) && !takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: `video_types` and `video_bytes` need a video input", mode.id)));
+        }
         Ok(())
     }
 

@@ -101,7 +101,7 @@ pub fn body(job: &ProviderJob, max_tokens: u64) -> Result<Vec<u8>, ProviderError
         let part = base64_len(bytes.len()).and_then(|n| n.checked_add(42 + mime.len()));
         length = length.zip(part).and_then(|(a, b)| a.checked_add(b));
     }
-    let length = length.and_then(|n| n.checked_add(2)).filter(|n| *n <= MAX_REQUEST_BYTES).ok_or_else(|| {
+    let length = length.and_then(|n| n.checked_add(2)).filter(|n| *n < MAX_REQUEST_BYTES).ok_or_else(|| {
         invalid(format!(
             "the wired videos are too large to send inline: Gemini takes requests under {} MB; use shorter or smaller videos",
             MAX_REQUEST_BYTES / 1_000_000
@@ -157,6 +157,45 @@ struct Step<'a> {
 struct Tokens {
     total_input_tokens: Option<u64>,
     total_output_tokens: Option<u64>,
+    total_thought_tokens: Option<u64>,
+    total_tokens: Option<u64>,
+}
+impl Tokens {
+    /// The reference doesn't say whether `total_output_tokens` includes thinking, which Google
+    /// bills as output. Thought tokens are added only when `total_tokens` shows they are counted
+    /// apart (input, output and thought fit within the total); otherwise output stands alone.
+    fn usage(&self) -> Usage {
+        let output = match (self.total_input_tokens, self.total_output_tokens, self.total_thought_tokens, self.total_tokens) {
+            (Some(input), Some(output), Some(thought), Some(total))
+                if input.checked_add(output).and_then(|n| n.checked_add(thought)).is_some_and(|n| n <= total) =>
+            {
+                output.checked_add(thought)
+            }
+            (_, output, ..) => output,
+        };
+        Usage { input_tokens: self.total_input_tokens, output_tokens: output, ..Usage::default() }
+    }
+}
+#[derive(Deserialize)]
+struct ErrorBody<'a> {
+    #[serde(borrow)]
+    error: Option<ErrorDetail<'a>>,
+}
+#[derive(Deserialize)]
+struct ErrorDetail<'a> {
+    #[serde(borrow)]
+    code: Option<Cow<'a, str>>,
+}
+
+/// Google's documented error `code` (`invalid_request`, `quota_exceeded`, …), when the body
+/// carries a short snake_case one; never the message, which may quote the request.
+fn error_code(body: &[u8]) -> Option<String> {
+    if body.len() > 64 * 1024 {
+        return None;
+    }
+    let parsed: ErrorBody<'_> = serde_json::from_slice(body).ok()?;
+    let code = parsed.error?.code?;
+    (!code.is_empty() && code.len() <= 40 && code.bytes().all(|b| b.is_ascii_lowercase() || b == b'_')).then(|| code.into_owned())
 }
 #[derive(Deserialize)]
 struct Reply<'a> {
@@ -184,7 +223,10 @@ pub fn error(reply: &HttpResponse) -> ProviderError {
         503 => ErrorKind::Busy,
         _ => ErrorKind::Server,
     };
-    let mut e = ProviderError::new(kind, format!("the Gemini video request failed (HTTP {}); it may have been billed", reply.status));
+    // Google documents no token-limit error for this API, so a refusal can't be told apart as a
+    // context-window one; its documented code is shown instead.
+    let code = error_code(&reply.body).map(|code| format!(", {code}")).unwrap_or_default();
+    let mut e = ProviderError::new(kind, format!("the Gemini video request failed (HTTP {}{code}); it may have been billed", reply.status));
     e.retry_after_ms = reply
         .header("retry-after")
         .filter(|s| s.len() <= 16)
@@ -240,7 +282,6 @@ pub fn parse(reply: &HttpResponse) -> Result<Completed, ProviderError> {
     if answer.is_empty() {
         return Err(malformed("Gemini returned no answer about the video"));
     }
-    let usage = parsed.usage.and_then(|raw| serde_json::from_str::<Tokens>(raw.get()).ok());
-    let usage = usage.map_or_else(Usage::default, |t| Usage { input_tokens: t.total_input_tokens, output_tokens: t.total_output_tokens, ..Usage::default() });
+    let usage = parsed.usage.and_then(|raw| serde_json::from_str::<Tokens>(raw.get()).ok()).map_or_else(Usage::default, |t| t.usage());
     Ok(Completed { outputs: vec![Output::Text(answer)], usage })
 }

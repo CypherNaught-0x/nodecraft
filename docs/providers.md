@@ -1915,13 +1915,15 @@ whole.
 - **Types:** `video/mp4`, `video/mpeg`, `video/mpg`, `video/mov`, `video/avi`, `video/x-flv`,
   `video/webm`, `video/wmv` and `video/3gpp`, the reference's list. NodeCraft names QuickTime
   files `video/quicktime`; they are sent as `video/mov`, Google's name for that container (the
-  one mapping that is ours, not Google's). Anything else, Matroska included, is refused before
-  the request is built.
+  one mapping that is ours, not Google's). The mode lists these in `reads.video_types`, so
+  planning refuses any other type, Matroska included, before the run is quoted.
 - **Size:** the whole request, base64 included, must be under 20 MB, so about 14.9 MB of video
   in all. The guide says inline data suits requests under 20 MB and to use the Files API above
   that; its table also says 100 MB, and the lower figure is kept. Larger videos need a Files API
-  upload, which is not implemented. A refusal names the limit and is made before anything is
-  sent; the engine's own media cap still bounds what is read from the asset store.
+  upload, which is not implemented. The mode declares `reads.video_bytes = 14990000` (what fits
+  after base64, with about 13 KB left for the prompt), so `run.quote` and `run.start` refuse
+  wired videos whose stored sizes total more, before anything is reserved or sent. The adapter
+  checks the exact request again (a long prompt can still push it over) before sending.
 - **Frames:** Google samples a video at one frame a second by default and says models with a 1M
   context read up to 3 hours at the default (low) media resolution. The catalog declares
   `frames = { every_ms = 1000, max = 10800 }`, so planning refuses a video whose known length
@@ -1929,13 +1931,18 @@ whole.
   agentic processing are not offered. Timestamps and speaker labels are not declared.
 - **Cost and failure:** the video is billed as input tokens (about 100 a second at the default
   resolution) on top of the prompt; pricing stays by usage. Once sent, a lost or failed reply
-  says it may have been billed and is never replayed. A reply that is not `completed`, has a
+  says it may have been billed and is never replayed. Google documents no token-limit error for
+  the Interactions API, so a refusal shows the HTTP status and Google's documented error `code`
+  (never its message); it is not recognised as a context-window refusal, and video tokens are
+  not counted by planning's own context check. A reply that is not `completed`, has a
   non-text output or an unknown step type is refused whole, with no partial answer kept.
 
 Contract checked 2026-11-03: [video understanding](https://ai.google.dev/gemini-api/docs/video-understanding),
 [Interactions reference](https://ai.google.dev/api/interactions-api),
-[compatibility API](https://ai.google.dev/gemini-api/docs/openai) (both `ai.google.dev` pages
-now redirect to `aistudio.google.com/docs`). Not verified live: no paid request has been sent,
+[compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[API errors](https://aistudio.google.com/docs/api-errors). The guide and compatibility pages now
+redirect to `aistudio.google.com/docs/…`, the reference to
+`aistudio.google.com/api-reference/interactions-api`. Not verified live: no paid request has been sent,
 so whether a reply echoes the input video in its steps (the adapter allows a 32 MiB reply in
 case it does) is unconfirmed.
 
