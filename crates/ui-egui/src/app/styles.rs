@@ -31,9 +31,8 @@ pub(super) fn menu(
     node: &Node,
 ) -> Option<StyleAction> {
     if node.kind == nodecraft_nodes::generation::STYLE_KIND {
-        let r = ui
-            .add_enabled(style_cmds::trained(assets, node), egui::Button::new("New image card with this style"))
-            .on_disabled_hover_text("Run this card to train its style (again, if its file is missing) first");
+        let why = style_cmds::unready(assets, node).unwrap_or_else(|| "Run this card to train its style first".into());
+        let r = ui.add_enabled(style_cmds::trained(assets, node), egui::Button::new("New image card with this style")).on_disabled_hover_text(why);
         if r.clicked() {
             ui.close();
             return Some(StyleAction::Card(node.id));

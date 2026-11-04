@@ -501,6 +501,8 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "title": node.title,
                 "trainer": trainer,
                 "ready": family.is_some() && present,
+                // What to do when it isn't: the same reason style.list gives.
+                "reason": crate::style_cmds::unready(c.assets, node),
                 "family": family,
                 "identity": family == Some(SOUL_ID_FAMILY),
                 "trigger": descriptor.as_ref().map(|d| d.trigger.clone()),

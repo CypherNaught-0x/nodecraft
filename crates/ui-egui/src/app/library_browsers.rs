@@ -173,6 +173,9 @@ struct StyleEntry {
     /// For a Soul ID: listed, unlisted or unchecked against the account last fetched.
     #[serde(default)]
     available: Option<String>,
+    /// Why it isn't ready: not trained yet, or its file is missing.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -952,7 +955,7 @@ pub(super) fn show(
                 facts.extend(entry.family.iter().map(|family| format!("for {family}")));
                 facts.extend(entry.trigger.iter().filter(|t| !t.trim().is_empty()).map(|trigger| format!("trigger “{}”", sheet_view::line(trigger))));
                 if !entry.ready {
-                    facts.push("not trained yet".into());
+                    facts.push(entry.reason.as_deref().map_or_else(|| "not trained yet".to_owned(), sheet_view::line));
                 }
                 ui.label(egui::RichText::new(facts.join(" · ")).small().color(t.text_muted));
                 if entry.identity {

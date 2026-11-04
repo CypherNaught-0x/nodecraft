@@ -153,6 +153,12 @@ fn alternatives(catalog: Option<&GenerationCatalog>, kind: &str, family: &str) -
     }
 }
 
+/// Why the style of Train style card `node` can't be used yet (train it, or train it again
+/// because its file is missing), or `None` when it can.
+pub fn unready(assets: &nodecraft_format::AssetStore, node: &Node) -> Option<String> {
+    verdict(assets, node, |_| Ok(())).err().map(|e| e.message)
+}
+
 /// Whether `node` is a Train style card with a trained style, naming its family, whose file is
 /// in `assets`.
 pub fn trained(assets: &nodecraft_format::AssetStore, node: &Node) -> bool {

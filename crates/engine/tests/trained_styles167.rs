@@ -488,7 +488,7 @@ fn reopened_run(session: &mut Session, host: &mut RunHost, card: NodeId) -> Vec<
 }
 
 #[test]
-fn a_saved_project_opened_without_its_provider_keeps_its_styles_and_says_what_to_set_up() {
+fn a_saved_project_opened_without_its_provider_keeps_its_styles_and_runs_nothing_until_set_up() {
     let f = styled();
     let saved = configuration(&f.session);
     let (mut session, mut host) = reopen(&f, None, None);
@@ -501,11 +501,16 @@ fn a_saved_project_opened_without_its_provider_keeps_its_styles_and_says_what_to
     assert_eq!(session.dispatch("library.styles", &json!({})).unwrap()["styles"][0]["ready"], true);
 
     // Nothing runs while the provider is missing, and nothing is sent.
-    match reopened_quote(&mut session, PAINT) {
-        Err(error) => assert!(!error.message.is_empty()),
-        Ok(q) => assert_eq!(q["allowed"], false, "{q}"),
-    }
-    // The app routes cards through its provider setup, which says what to do.
+    let refused = match reopened_quote(&mut session, PAINT) {
+        Err(error) => error.message,
+        Ok(q) => {
+            assert_eq!(q["allowed"], false, "{q}");
+            q.to_string()
+        }
+    };
+    assert!(refused.contains("provider route is not configured"), "the reopened session refuses the run itself: {refused}");
+    // The engine's own refusal names only the missing route; the app routes cards through its
+    // provider setup, whose refusal says what to set up.
     let mut setup = nodecraft_engine::provider_setup::ProviderSetup::default();
     setup.ensure("mock", |_| Err(nodecraft_engine::provider_setup::Readiness::NeedsKey { account: "mock".into() }));
     let why = setup.routing([(PAINT, "mock")]).err().expect("an unready provider routes nothing").message;
@@ -547,6 +552,10 @@ fn a_saved_project_missing_its_style_file_keeps_the_configuration_and_says_to_tr
     assert!(reason.contains("missing") && reason.contains("train"), "{listed}");
     let library = session.dispatch("library.styles", &json!({})).unwrap();
     assert_eq!(library["styles"][0]["ready"], false, "the styles browser agrees: {library}");
+    assert!(library["styles"][0]["reason"].as_str().is_some_and(|r| r.contains("missing")), "and says why: {library}");
+    let card = json!({"canvas": C, "style": TRAIN, "id": NodeId::from_bytes([61; 16]), "edge": EdgeId::from_bytes([62; 16]), "pos": {"x": 0, "y": 400}});
+    let refused_card = session.dispatch("style.card", &card).unwrap_err();
+    assert!(refused_card.message.contains("missing"), "{refused_card:?}");
     let use_it = json!({"canvas": C, "style": TRAIN, "target": PAINT, "edge": EdgeId::from_bytes([60; 16])});
     let refused = session.dispatch("style.use", &use_it).unwrap_err();
     assert!(refused.message.contains("missing"), "{refused:?}");
@@ -558,7 +567,7 @@ fn a_saved_project_missing_its_style_file_keeps_the_configuration_and_says_to_tr
         _ => None,
     });
     let reason = reason.unwrap_or_else(|| panic!("the painter fails: {notices:?}"));
-    assert!(reason.contains("doesn't have") && reason.contains("run the card that made it again"), "{reason}");
+    assert!(reason.contains("doesn't have") && reason.contains("re-import its source"), "{reason}");
     let view = host.jobs().into_iter().find(|v| v.node == PAINT).unwrap();
     assert!(!view.sent && !view.may_have_been_charged(), "{view:?}");
     assert!(mock.requests().is_empty(), "nothing was sent");
@@ -667,3 +676,4 @@ fn a_training_the_provider_will_not_cancel_says_so_and_keeps_its_billed_style() 
     let style = result(node(&f.session, TRAIN));
     assert_eq!(style.mime.param("family"), Some("flux-1"));
 }
+

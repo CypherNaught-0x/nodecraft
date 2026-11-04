@@ -951,7 +951,8 @@ trigger word before a prompt that doesn't already contain it. It accepts only de
 trainer made for `flux-1` whose weights are on `fal.media`; any other is refused before the
 request. The trainer is priced 2 USD per 1000 steps (dated 2026-10-21); FLUX with a style is
 by usage (fal prices it per megapixel). Two things are not yet verified by a live run: whether fal accepts a data-URI zip
-for training, and whether every trained weights link is a plain `fal.media` link. A link on
+for training (fal's file-input documentation says "You can pass a Base64 data URI as a file input",
+but not for this trainer's archive in particular), and whether every trained weights link is a plain `fal.media` link. A link on
 another host or with a query is refused after the training was paid for, and nothing is kept.
 
 Billable units (#437): fal may send `X-Fal-Billable-Units`, documented only as the "billing units
