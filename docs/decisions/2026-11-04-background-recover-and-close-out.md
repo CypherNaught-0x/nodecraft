@@ -61,11 +61,14 @@ changes from the control channel and MCP waiting for a save on the UI thread.
   wait for it (`settle_for_edit`), on whatever thread made it. In the desktop that is the UI
   thread, so an agent's edit during a long save held the window for as long as the disk took. Now:
   - *Surfaces save and open in the background.* A `file.save`, `file.save_as` or `file.open`
-    from the control channel, MCP or the agent runs on the save runner whatever its
-    `background` says (`LiveCommands`), so a plain save from a client no longer writes on the UI
-    thread; while any save or open runs, another one from them is refused as `Busy` naming
-    `file.cancel` (also in `enabled`, after settling a save that has finished). There is no
-    status command: the first change that isn't refused shows it has finished.
+    from the control channel or MCP runs on the save runner whatever its `background` says
+    (`LiveCommands`), so a plain save from a client no longer writes on the UI thread; while any
+    save or open runs, another one is refused as `Busy` naming `file.cancel` (also in `enabled`,
+    after settling a save that has finished). The in-canvas agent has no allowed folders and is
+    refused file commands entirely. A new read-only `file.status` reports the operation in
+    flight and how the last one ended (`last`, with the error when it failed), plus `dirty`,
+    `titled`, `read_only` and `recovery_required`; it names no path, since the person's own file
+    isn't a client's to learn.
   - *Surfaces are refused.* `Session::dispatch_without_waiting` is dispatch, except that where it
     would wait for a save still writing it refuses as `Busy` ("the project is still being saved;
     try again when the save finishes, or cancel it with file.cancel"); a save that has already
@@ -80,11 +83,13 @@ changes from the control channel and MCP waiting for a save on the UI thread.
     is journalled (a crash meanwhile follows the job instead of sending it again under its staged
     key, which a provider ignoring the key would charge twice) and progress reports reach the
     queue panel. Live recompute leaves a finished round in its channel, live sharing leaves the
-    worker's reports queued, and the agent leaves the model's replies in its worker (each change
-    a reply asks for would be refused as busy and retried as a paid turn), each taken in once the
-    save has settled. The person's own input is already owned by the progress window.
-  - *Quitting during a save* waits for it as before, then pumps the run host (bounded, while
-    results' media are still being adopted) before deciding whether the recovery journal can be
+    worker's reports queued, and the agent leaves the model's replies in its worker while any
+    save, open or recovery runs (each change a reply asks for would be refused as busy and
+    retried as a paid turn), with Approve disabled meanwhile; each is taken in once the operation
+    has settled. The person's own input is already owned by the progress window.
+  - *Quitting during a save* waits for it as before, then runs a record-only pump
+    (`RunHost::pump_for_quit`: it starts no accepted run and, with the host closing, sends
+    nothing downstream; bounded while results' media are still being adopted) before deciding whether the recovery journal can be
     closed, so results that waited for the save are in the journal rather than lost with the run
     host.
   - *Kept:* the engine's `dispatch` still waits for direct callers (CLI and tests, which have no
