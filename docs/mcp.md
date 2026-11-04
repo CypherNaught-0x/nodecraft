@@ -121,8 +121,12 @@ menus and shortcuts are unaffected.
 
 Limits: the check happens when the command arrives. A program that can change the folders
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
-`file.cancel` cancels any background save or open, including one the person started outside the
-folders. Opening checks that the project's folder is writable for recovery, which briefly creates
+`file.cancel` cancels any background save, open or recovery, including one the person started
+outside the folders. In the desktop app a save or open asked for through MCP
+runs in the background whatever `background` says: it replies `{saving:true}` or `{opening:true}`
+at once. While any save or open is still running (the agent's or the person's), another file
+command or a command that would change the project is refused as `busy`, naming `file.cancel`,
+rather than held until the disk finishes; retry once it is done (see `docs/control.md`). Opening checks that the project's folder is writable for recovery, which briefly creates
 a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
 refused with `busy` before anything is written; the message gives the sizes needed and free.
 
