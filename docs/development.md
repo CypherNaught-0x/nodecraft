@@ -254,7 +254,7 @@ rather than reusing an old recorder-only nanosecond estimate.
 | `cargo xtask ci --quick [--base REF]` | fmt, clippy, layers and the changed packages' tests without the slow ones ([Quick and full](#quick-and-full)) |
 | `cargo xtask slow-tests [--threshold SECS]` | time every test and regenerate the slow-test block of `.config/nextest.toml` |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
-| `cargo xtask shared -- <cargo args>` | run any cargo command in the shared build directory; `shared --clean` empties it ([Sharing one build directory](#sharing-one-build-directory)) |
+| `cargo xtask shared -- <cargo args>` | run a supported Cargo command in the shared build directory, or remove the owned cache with `shared --clean` ([Sharing one build directory](#sharing-one-build-directory)) |
 
 `xtask` resolves the invoking workspace at runtime with Cargo's
 [`locate-project --workspace`](https://doc.rust-lang.org/cargo/commands/cargo-locate-project.html),
@@ -276,23 +276,31 @@ unrelated/outside directory fails instead of falling back. Selecting a workspace
 
 Every worktree's own `target/` costs about 15 GB, and most of that is the same third-party
 dependencies in every checkout. When several worktrees build on one machine and disk is short, set
-`NODECRAFT_SHARED_TARGET` to one absolute directory for all of them:
+`NODECRAFT_SHARED_TARGET` to one absolute, dedicated directory with an existing parent. Keep it
+outside Git checkouts, and start with a new or empty directory. Use the same directory only from
+worktrees with the updated shared-cache protocol. Earlier caches lack the ownership marker, so
+choose a fresh path when moving from the original #1033 implementation. The path must be valid
+UTF-8 and omit braces reserved for Cargo directory templates.
 
 ```sh
+mkdir -p "$HOME/.cache"
 export NODECRAFT_SHARED_TARGET="$HOME/.cache/nodecraft-target"
 export CARGO_INCREMENTAL=0
 cargo xtask ci --quick                                   # also ci, wasm, catalog-check, slow-tests
-cargo xtask shared -- test -p nodecraft-engine --test panic_hunt -- --ignored   # any other cargo command
+cargo xtask shared -- test -p nodecraft-engine --test panic_hunt -- --ignored
 cargo xtask shared -- run -p nodecraft                   # holds the lock while the app runs
-cargo xtask shared --clean                               # empty it (waits for the lock)
+cargo xtask shared --clean                               # remove the owned cache
 ```
 
-Do not point `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR` or `build.target-dir` at the shared
-directory. `cargo xtask` builds xtask there before xtask can take the lock, and xtask refuses to
-run from inside it. Each worktree's own `target/` then holds only xtask, about 200 MB.
-`shared --` refuses `cargo clean`, which would delete the lock. It also refuses `--target-dir`, and
-`--manifest-path`, which can build another workspace whose crates are not invalidated. `perf` keeps
-building in the worktree's own `target/`.
+Reserve `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR` and the corresponding
+Cargo config for isolated builds. Cargo builds the outer xtask before xtask can take the lock.
+Each worktree's own `target/` then holds only xtask, about 200 MB. Run `perf collect` outside a
+shared command so it uses an isolated target.
+
+`shared --` accepts explicit workspace commands such as `build`, `check`, `test`, `run`, `bench`
+and `doc`, along with `fmt`, `clippy` and `nextest`. xtask invokes those three extensions directly.
+Aliases, arbitrary extensions, `clean` and arguments that override the workspace, build or target
+directory are refused. Select a toolchain on the outer Cargo command.
 
 To keep the app running without holding the lock, copy the binary out first:
 `cargo xtask shared -- build -p nodecraft`, then copy
@@ -301,13 +309,19 @@ checkout relink it underneath, and on Windows a running `.exe` makes other check
 
 What xtask does with the directory:
 
-- **One build at a time.** xtask holds an exclusive lock on it for the whole command (all of `ci`,
-  for instance). A second checkout prints `waiting for … (in use by <checkout>)` and continues when
-  the first finishes. An xtask started inside a held command, such as a test that runs the xtask
-  binary, shares its parent's lock. It proves this with a random token that the live holder writes
-  beside the lock and withdraws when it finishes, so an inherited variable never skips the lock
-  later. Before deleting anything, xtask also takes Cargo's own per-profile lock, so a cargo still
-  running from a killed xtask finishes first.
+- **One build at a time.** xtask holds a permanent sibling lock for the whole command. That
+  reservation also prevents a second shared cache from being placed below the first. xtask passes
+  the shared paths to the intended Cargo command without exporting them to its descendants.
+  A nested `cargo xtask` launcher and the commands it starts use an isolated workspace target.
+  Start explicit `shared` commands from outside a managed build.
+- **Cleanup and recovery.** `shared --clean` waits for the lock and removes the owned directory.
+  Leave the sibling `*.nodecraft-shared.lock` file in place so waiting worktrees keep using the
+  same reservation. Interrupted wrappers, signaled Cargo children and failed waits leave
+  `.nodecraft-build-active` behind. On Windows, any failed Cargo exit leaves the marker because
+  external termination can report the same status as an ordinary failure. Both reuse and
+  cleanup refuse a marked cache. Confirm that any Cargo, compiler and build-script processes
+  from that build have stopped. Then remove the marker from the owned cache and run
+  `cargo xtask shared --clean` to rebuild from an empty cache.
 - **Never another checkout's code.** Cargo names a workspace crate's artifacts the same in every
   checkout and judges freshness by file times, so a plain shared `CARGO_TARGET_DIR` can link
   another checkout's code without rebuilding. The directory records the checkout that built last.
@@ -321,8 +335,8 @@ What xtask does with the directory:
   profiles still each keep their own copy of what they link, so keep building through
   `cargo xtask ci`, and use `shared --clean` when the directory grows.
 
-The decision is recorded in
-[`decisions/2026-11-03-shared-build-directory.md`](decisions/2026-11-03-shared-build-directory.md).
+The safety policy is recorded in
+[`decisions/2026-11-04-shared-cache-safety.md`](decisions/2026-11-04-shared-cache-safety.md).
 
 ## Build provenance
 
