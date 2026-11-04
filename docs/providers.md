@@ -1398,7 +1398,7 @@ labelled without the tag, once it is ready.
 `soul-2` (`docs/decisions/2026-11-04-soul-ids-as-styles.md`), but unlike a style whose weights are
 a file it names an identity only the training account can use. `library.styles` marks it
 `portable: false` with the id it names and whether the account whose Soul IDs were last fetched
-lists it (`listed`, `unlisted` or `unchecked`). `history.export` and the folder exports refuse to
+lists it (`listed`, `unlisted` or `unchecked`; `unreadable` when its descriptor is missing or names no Soul ID). `history.export` and the folder exports refuse to
 write it out as a file, and the Share live panel says the project's Soul IDs work only on the
 account that trained them. **Use on selected card** (`style.use`) on a SOUL 2 card sets the card's
 Soul ID to it, as the picker does, rather than wiring it; family checks keep it off LoRA models.

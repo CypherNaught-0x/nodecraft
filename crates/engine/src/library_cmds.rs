@@ -206,7 +206,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "library.add",
             "Add a technique to the library",
             schema(&["canvas"], json!({"canvas": uuid()})),
-            "{canvas: CanvasId of a published version} -> {added, technique}; keeps a copy of that version in the library, with its inputs' examples but no other results. `added` is false when the library already has that version. A version holding media, or running other techniques, can't be added yet.",
+            "{canvas: CanvasId of a published version} -> {added, technique} (`technique` is a `library.list` entry, with `account_bound`: how many of its cards name a provider-bound Soul ID); keeps a copy of that version in the library, with its inputs' examples but no other results. `added` is false when the library already has that version. A version holding media, or running other techniques, can't be added yet.",
             add,
             enabled
         ),
