@@ -625,3 +625,51 @@ fn render_live_work_limit_and_recovery() {
         h.render().unwrap().save(root.join(format!("{palette:?}-recovered.png"))).unwrap();
     }
 }
+
+/// Holds each background job until the test runs it, as a slow disk would.
+#[derive(Default)]
+struct Gate367(std::sync::Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+impl nodecraft_engine::save_runner::SaveRunner for Gate367 {
+    fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+        self.0.lock().unwrap().push(job);
+        Ok(())
+    }
+}
+
+/// A live round that finishes while a background save writes (#367) waits for the save instead
+/// of recording on the UI thread, which would wait for the disk there: frames go on, and the
+/// result lands once the save has settled.
+#[test]
+fn a_live_result_waits_for_a_background_save_and_frames_go_on() {
+    let dir = tempfile::tempdir().unwrap();
+    let setup = crate::app::storage::StorageSetup { recovery: dir.path().join("session.journal"), open: None };
+    let (session, canvas, _, _) = NodeCraftApp::storage_session(setup).unwrap();
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    let source = *app.session.document().canvases().get(&canvas).unwrap().nodes().keys().next().unwrap();
+    app.session.dispatch("node.create", &json!({"canvas": canvas, "id": REPLACE, "kind": "text.replace", "pos": {"x": 420, "y": 0}})).unwrap();
+    for (name, value) in [("find", "forest"), ("replacement", "sea")] {
+        app.session.dispatch("node.param_set", &json!({"canvas": canvas, "id": REPLACE, "name": name, "value": Value::Text(value.into())})).unwrap();
+    }
+    let gate = Arc::new(Gate367::default());
+    app.session.set_save_runner(gate.clone());
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.step();
+    // The edit that makes the card stale starts a round; the save starts while it runs.
+    let edge = nodecraft_types::EdgeId::from_bytes([78; 16]);
+    let connect = json!({"canvas": canvas, "edge": {"id": edge, "from": {"node": source, "port": "out"}, "to": {"node": REPLACE, "port": "text"}, "order": 0}});
+    h.state_mut().session.dispatch("edge.connect", &connect).unwrap();
+    assert!(until(&mut h, |app| app.live.running.is_some()), "a round started");
+    let file = dir.path().join("live.ncraft");
+    assert_eq!(h.state_mut().session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    // With the save's job held, a frame that recorded would wait forever.
+    let started = std::time::Instant::now();
+    while started.elapsed() < std::time::Duration::from_millis(500) {
+        h.step();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(output(h.state()).is_none(), "nothing is recorded into the state being saved");
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    settle(&mut h, |app| output(app).is_some());
+    assert!(output(h.state()).unwrap().contains("sea"));
+    assert!(h.state().session.file_status().location.is_some(), "the save published");
+}

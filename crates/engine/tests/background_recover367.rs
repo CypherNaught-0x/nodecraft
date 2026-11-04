@@ -435,3 +435,34 @@ fn a_recovery_that_the_recovery_drive_cannot_hold_is_refused_before_it_writes() 
     gate.release();
     assert_eq!(session.poll_file().unwrap().unwrap()["recovered"], true);
 }
+
+/// On native storage, a recovery cancelled before its checkpoint publishes leaves the live
+/// journal file byte for byte (#367). The cancel is taken before the job runs: inside the media
+/// copy it lands at the next chunk (`a_cancel_lands_at_the_next_chunk_and_never_inside_a_blocking_read`).
+#[test]
+fn a_cancelled_native_recovery_leaves_the_live_journal_byte_for_byte() {
+    let dir = tempfile::tempdir().unwrap();
+    let kept = dir.path().join("kept.journal");
+    {
+        let mut earlier = native_session(&kept);
+        let hash = earlier.import_asset(&vec![3u8; 200 * 1024]).unwrap();
+        earlier.dispatch("node.add", &json!({"canvas": C, "node": media(hash)})).unwrap();
+    }
+    let journal = dir.path().join("session.journal");
+    let mut session = native_session(&journal);
+    let gate = Arc::new(Gate::default());
+    session.set_save_runner(gate.clone());
+    let current = session.document().clone();
+    let before = std::fs::read(&journal).unwrap();
+    let found = NativeStorage::new(kept).unwrap().recover().unwrap();
+    session.recover_in_background(found.snapshot, Some(StorageLocation::Path(dir.path().join("a.ncraft")))).unwrap();
+    session.dispatch("file.cancel", &json!({})).unwrap();
+    gate.release();
+    let error = session.poll_file().unwrap().unwrap_err();
+    assert!(error.message.starts_with("recovering was cancelled"), "{}", error.message);
+    assert_eq!(std::fs::read(&journal).unwrap(), before, "the live journal is byte for byte");
+    assert_eq!(session.document(), &current);
+    assert!(!session.file_status().recovery_required);
+    drop(session);
+    assert_eq!(NativeStorage::new(journal).unwrap().recover().unwrap().snapshot.project, current);
+}

@@ -590,3 +590,60 @@ fn an_https_page_reaches_wss_or_this_machine() {
     assert!(can_reach("wss://relay.example/", false, false).is_err());
     assert!(can_reach("ws://relay.example/", false, false).is_ok());
 }
+
+/// A peer's edit that arrives while a background save writes (#367) waits for the save instead
+/// of being taken in on the UI thread, which would wait for the disk there: ticks go on, the
+/// connection stays, and the edit lands once the save has settled.
+#[test]
+fn a_peers_edit_waits_for_a_background_save_and_ticks_go_on() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let dir = tempfile::tempdir().unwrap();
+    let mut owner = {
+        let opened = Rc::clone(&opened);
+        let mut services = Services::default();
+        let open: OpenWindow = Box::new(move |link| {
+            opened.borrow_mut().push(link.to_owned());
+            Ok(())
+        });
+        let sharing = NodeCraftApp::register_sharing(&mut services, open).unwrap();
+        let setup = crate::app::storage::StorageSetup { recovery: dir.path().join("session.journal"), open: None };
+        let (mut app, _, stored) = NodeCraftApp::from_storage_setup(services, Some(setup), "").unwrap();
+        assert!(stored);
+        app.sharing = Some(sharing);
+        app
+    };
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    let mut joiner = app(&opened);
+    joiner.join_live(&egui::Context::default(), &link(&owner)).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| chip(apps[1]) == "Live" && !apps[1].session.document().canvases().is_empty());
+
+    let gate = Arc::new(Gate::default());
+    owner.session.set_save_runner(gate.clone());
+    let file = dir.path().join("shared.ncraft");
+    assert_eq!(owner.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    let note = NodeId::from_bytes([0x71; 16]);
+    text_note(&mut joiner, note);
+    // With the save's job held, a tick that took the edit in would wait forever.
+    let ctx = egui::Context::default();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(500) {
+        owner.tick_sharing(&ctx);
+        joiner.tick_sharing(&ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!holds(&owner, note), "nothing is taken into the state being saved");
+    assert_eq!(chip(&owner), "Live", "the connection stays");
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(owner.session.poll_file().unwrap().unwrap()["saved"], true);
+    until(&mut [&mut owner, &mut joiner], |apps| holds(apps[0], note));
+}
