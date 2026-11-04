@@ -199,12 +199,17 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
             self.app.session.enabled(id, params)
         }
     }
+    /// Answered on the UI thread, so a change never waits for a background save (#367): it is
+    /// refused as busy, naming `file.cancel`, and the client retries.
     fn dispatch(&mut self, id: &str, params: &serde_json::Value) -> Result<serde_json::Value, nodecraft_types::Error> {
         if NodeCraftApp::is_host_command(id) {
             self.navigation_idle()?;
+            if NodeCraftApp::host_command_edits(id) {
+                self.app.session.settle_without_waiting()?;
+            }
             self.app.dispatch_host(self.ctx, id, params)
         } else {
-            self.app.session.dispatch(id, params)
+            self.app.session.dispatch_without_waiting(id, params)
         }
     }
     fn impact(&mut self, id: &str, params: &serde_json::Value) -> Result<nodecraft_engine::impact::Impact, nodecraft_types::Error> {

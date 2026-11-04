@@ -908,9 +908,17 @@ impl RunHost {
         }
         let mut settled = false;
         let mut journal_changed = false;
+        // While a background save writes, recording a result (or adopting its media) would wait
+        // for the disk on this, the UI thread (#367). Finished work stays in its mailbox, held by
+        // nobody, and is absorbed on the first pump after the save settles; nothing is refused
+        // or held for it.
+        let deferred = session.file_status().saving;
         let recent = &mut self.recent;
         let charged = &mut self.charged;
         self.runs.retain_mut(|active| {
+            if deferred {
+                return true;
+            }
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
             settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget, &self.results);
@@ -925,7 +933,7 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
-        let (resumed, handled) = self.resumes.absorb(session, &self.budget, &self.results, &mut notices);
+        let (resumed, handled) = if deferred { (Vec::new(), false) } else { self.resumes.absorb(session, &self.budget, &self.results, &mut notices) };
         journal_changed |= handled;
         for ended in resumed {
             settled = true;
@@ -937,7 +945,9 @@ impl RunHost {
             }
         }
         keep_recent(&mut self.recent, &mut self.charged, self.resumes.jobs.ended.drain(..));
-        act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
+        if !deferred {
+            act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
+        }
         self.estimates.pump(session, &self.runtime, &mut notices);
         if settled {
             lock(&self.journal).reconciled = false;

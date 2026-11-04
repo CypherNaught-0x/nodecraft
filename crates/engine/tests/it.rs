@@ -139,6 +139,8 @@ mod prompt_assist582;
 mod provider_mock;
 #[path = "provider_quotes663.rs"]
 mod provider_quotes663;
+#[path = "pump_during_save367.rs"]
+mod pump_during_save367;
 #[path = "replicate.rs"]
 mod replicate;
 #[path = "request_size307.rs"]

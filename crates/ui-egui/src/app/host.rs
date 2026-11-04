@@ -11,6 +11,11 @@ impl NodeCraftApp {
     pub fn is_host_command(id: &str) -> bool {
         Self::is_navigation_command(id) || Self::is_search_command(id) || tags::is_command(id) || comments::view_command(id) || id == LAYOUT
     }
+    /// Whether host command `id` changes the document (Format selection lays cards out) rather
+    /// than only the view, so a surface that must not block refuses it while a save writes.
+    pub fn host_command_edits(id: &str) -> bool {
+        id == LAYOUT
+    }
     /// Fresh availability of a host command, with its capability scoped to this one query.
     pub fn host_enabled(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<(), Error> {
         if Self::is_navigation_command(id) {
