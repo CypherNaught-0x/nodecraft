@@ -2258,7 +2258,7 @@ impl NodeCraftApp {
                             {
                                 element_library_request = Some(action);
                             }
-                            if let Some(action) = styles::menu(ui, canvas, self.session.generation_catalog().ok(), node) {
+                            if let Some(action) = styles::menu(ui, canvas, self.session.generation_catalog().ok(), self.session.assets(), node) {
                                 style_request = Some(action);
                             }
                             if let Some(action) = technique_menu::menu(ui, self.session.document(), node) {

@@ -32,7 +32,9 @@ pub trait MediaSource {
 }
 impl MediaSource for AssetStore {
     fn size(&self, asset: &AssetRef) -> Result<u64, Error> {
-        self.descriptor(&asset.hash).map(|d| d.bytes).ok_or_else(|| invalid("a media input names an asset this project doesn't have"))
+        self.descriptor(&asset.hash)
+            .map(|d| d.bytes)
+            .ok_or_else(|| invalid("a media input names an asset this project doesn't have; run the card that made it again, or connect another"))
     }
     fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error> {
         if self.size(asset)? > limit {
