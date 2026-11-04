@@ -1880,10 +1880,10 @@ API keys, choose **Gemini 3.8 Flash** on a text generation card, and accept the 
 price before running. No gateway or new SDK is needed. The native host is wired; browser
 provider settings do not expose this adapter yet.
 
-Only text is advertised: at most 64 input turns and 1 MiB total text, with a requested
+Text to text: at most 64 input turns and 1 MiB total text, with a requested
 `max_tokens` between 1 and 65,536 (default 4,096). The host's usual streaming text path is
-supported. Images, PDFs, tools, thought-signature replay, grounding and Interactions state
-are outside this card's scope. Output uses the shared chat response/stream byte caps.
+supported. Images, PDFs, audio, tools, thought-signature replay, grounding and Interactions
+state are outside this card's scope; video goes through the Interactions API (below). Output uses the shared chat response/stream byte caps.
 
 Google returns token usage; this adapter does not infer an exact dollar cost across account
 tiers and thinking usage. Quotes therefore remain explicitly unknown, never free. Lost,
@@ -1900,6 +1900,51 @@ Contract checked 2026-10-24: [compatibility API](https://ai.google.dev/gemini-ap
 [model limits](https://ai.google.dev/gemini-api/docs/models/gemini-3.8-flash),
 [pricing](https://ai.google.dev/gemini-api/docs/pricing). This implements #44 by adapter reuse,
 not a new native `generateContent` or Interactions dialect; #489 remains a separate discussion.
+
+### Video to text (#84)
+
+Wire one to ten videos into the card's **video** input and it answers about them. The
+compatibility endpoint documents text, image and audio parts but no video, so a job that carries
+a video is sent as one stateless Interactions request instead (`POST /v1beta/interactions`, the
+key in `x-goog-api-key`, `store`, `background` and `stream` false), with the prompt first and
+each video inline as base64 (`{"type": "video", "mime_type": …, "data": …}`).
+`max_tokens` is sent as `generation_config.max_output_tokens`, thought summaries are off, and
+the answer is every `model_output` text part in order. It is not streamed: the answer arrives
+whole.
+
+- **Types:** `video/mp4`, `video/mpeg`, `video/mpg`, `video/mov`, `video/avi`, `video/x-flv`,
+  `video/webm`, `video/wmv` and `video/3gpp`, the reference's list. NodeCraft names QuickTime
+  files `video/quicktime`; they are sent as `video/mov`, Google's name for that container (the
+  one mapping that is ours, not Google's). The mode lists these in `reads.video_types`, so
+  planning refuses any other type, Matroska included, before the run is quoted.
+- **Size:** the whole request, base64 included, must be under 20 MB, so about 14.9 MB of video
+  in all. The guide says inline data suits requests under 20 MB and to use the Files API above
+  that; its table also says 100 MB, and the lower figure is kept. Larger videos need a Files API
+  upload, which is not implemented. The mode declares `reads.video_bytes = 14990000` (what fits
+  after base64, with about 13 KB left for the prompt), so `run.quote` and `run.start` refuse
+  wired videos whose stored sizes total more, before anything is reserved or sent. The adapter
+  checks the exact request again (a long prompt can still push it over) before sending.
+- **Frames:** Google samples a video at one frame a second by default and says models with a 1M
+  context read up to 3 hours at the default (low) media resolution. The catalog declares
+  `frames = { every_ms = 1000, max = 10800 }`, so planning refuses a video whose known length
+  is over three hours before quoting it. Clipping, custom frame rates, media resolution and
+  agentic processing are not offered. Timestamps and speaker labels are not declared.
+- **Cost and failure:** the video is billed as input tokens (about 100 a second at the default
+  resolution) on top of the prompt; pricing stays by usage. Once sent, a lost or failed reply
+  says it may have been billed and is never replayed. Google documents no token-limit error for
+  the Interactions API, so a refusal shows the HTTP status and Google's documented error `code`
+  (never its message); it is not recognised as a context-window refusal, and video tokens are
+  not counted by planning's own context check. A reply that is not `completed`, has a
+  non-text output or an unknown step type is refused whole, with no partial answer kept.
+
+Contract checked 2026-11-03: [video understanding](https://ai.google.dev/gemini-api/docs/video-understanding),
+[Interactions reference](https://ai.google.dev/api/interactions-api),
+[compatibility API](https://ai.google.dev/gemini-api/docs/openai),
+[API errors](https://aistudio.google.com/docs/api-errors). The guide and compatibility pages now
+redirect to `aistudio.google.com/docs/…`, the reference to
+`aistudio.google.com/api-reference/interactions-api`. Not verified live: no paid request has been sent,
+so whether a reply echoes the input video in its steps (the adapter allows a 32 MiB reply in
+case it does) is unconfirmed.
 
 
 ## Grok Imagine through fal

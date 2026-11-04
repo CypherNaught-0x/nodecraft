@@ -216,9 +216,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Generation is not finished across every model or surface.** The desktop run host now constructs
   supported catalog adapters and runs authorized generation cards (#409, #362, #83); a listed model
   is not proof that every provider, modality or input mode runs in every host. The text card's
-  turn UI, mentions, streaming and connected-media thumbnails have landed; video to text and
-  built-in models' declared reading capabilities (context window, frames, timestamps, speakers)
-  remain open (#84), and browser provider settings/option lists differ from
+  turn UI, mentions, streaming, connected-media thumbnails, video to text (Gemini 3.8 Flash,
+  inline videos under 20 MB) and built-in models' declared context windows have landed (#84).
+  The built-in windows are far larger than a card's prompt can be, so an over-long request to
+  them is refused by the provider, not by planning; browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
@@ -300,8 +301,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: video to text and declared reading capabilities on text cards (#84);
-   do not mistake a tested adapter for a working mode in every host.
+1. **Finish M3 generation**: ComfyUI workflow field mappings (#948) and the M3 close-out of the
+   README, ROADMAP and docs (#374); do not mistake a tested adapter for a working mode in every host.
 2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
    including provider plugins (#174), then browser option-list parity (#721), and later
    milestone gaps.

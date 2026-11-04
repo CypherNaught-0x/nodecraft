@@ -1180,6 +1180,9 @@ fn reading_capabilities_are_explicit_and_need_the_inputs_they_describe() {
         ("", "reads = { context_tokens = 1000, max_output_tokens = 2000 }", "text", "can't be more than"),
         ("", "reads = { context_tokens = 1000 }", "image", "describes a text answer"),
         ("", "reads = { fps = 1 }", "text", ""),
+        ("", "reads = { video_bytes = 1000 }", "text", "need a video input"),
+        ("", r#"reads = { video_types = ["video/mp4"] }"#, "text", "need a video input"),
+        (VIDEO, r#"reads = { frames = { every_ms = 1000, max = 64 }, video_types = ["image/png"] }"#, "text", "`video_types`"),
     ] {
         let error = watcher(inputs, reads, output).unwrap_err();
         assert!(error.message.contains(reason), "{reads}: {}", error.message);

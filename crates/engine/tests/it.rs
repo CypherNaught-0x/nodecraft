@@ -191,6 +191,8 @@ mod topaz37;
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+#[path = "video_to_text84.rs"]
+mod video_to_text84;
 
 #[path = "deepgram40.rs"]
 mod deepgram40;
