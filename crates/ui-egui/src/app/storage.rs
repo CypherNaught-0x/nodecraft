@@ -189,14 +189,10 @@ impl NodeCraftApp {
         missing_reason: &str,
     ) -> Result<(Self, Option<PathBuf>, bool), Error> {
         match setup.map(Self::storage_session) {
-            Some(Ok((session, canvas, kept, open_error))) => {
+            Some(Ok((session, canvas, kept, open))) => {
                 let mut app = Self::from_session(session.with_services(services), canvas)?;
-                if let Some(error) = open_error {
-                    app.notice = Some(format!(
-                        "That project couldn't be opened: {}. The new project can still be saved; use File > Open to choose another file.",
-                        error.message
-                    ));
-                }
+                // Opened in the background by the first frame, once the window can show it.
+                app.files.startup = open;
                 Ok((app, kept, true))
             }
             failed => {
@@ -219,9 +215,12 @@ impl NodeCraftApp {
             }
         }
     }
-    /// A session over native storage, starting from the sample project or the file in `setup`,
-    /// and the canvas to show, plus where an earlier session's unrecovered journal was kept.
-    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<Error>), Error> {
+    /// A session over native storage, starting from the sample project, and the canvas to show,
+    /// plus where an earlier session's unrecovered journal was kept and the file in `setup` still
+    /// to open. That open is not made here (#367): it runs in the background from the window's
+    /// first frame ([`Self::begin_startup_open`]), so a large project shows its progress and
+    /// can be cancelled instead of holding the window shut.
+    pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<PathBuf>), Error> {
         let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (document, canvas) = Self::starter_document(&kinds)?;
         if let Some(folder) = setup.recovery.parent() {
@@ -233,28 +232,20 @@ impl NodeCraftApp {
         // session checkpoints over it, so keep a copy first (recovery offers it, #408).
         let kept = keep_unrecovered(&setup.recovery, &storage)?;
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
+        // This first checkpoint is of the small sample project, so it stays inline.
         let mut session = Session::with_sendable_storage(snapshot, Box::new(storage))?;
         session.set_save_runner(Arc::new(ThreadSaves));
-        let mut canvas = canvas;
-        let mut opened = Ok(());
-        if let Some(path) = setup.open {
-            // A project that won't open leaves the new one, still saveable, and says why.
-            opened = path
-                .to_str()
-                .ok_or_else(|| Error::new(ErrorKind::InvalidInput, "the project path isn't valid UTF-8"))
-                .and_then(|location| session.dispatch("file.open", &json!({"location": location, "discard_dirty": true})).map(|_| ()));
-            if let Some(first) = super::sheet_view::home_canvas(session.document()) {
-                canvas = first;
-            }
-        }
-        Ok((session, canvas, kept, opened.err()))
+        Ok((session, canvas, kept, setup.open))
     }
 
-    /// [`Self::storage_session`] wrapped in an app with `services`.
+    /// [`Self::storage_session`] wrapped in an app with `services`; the file in `setup` opens
+    /// with the first frame.
     #[cfg(test)]
     pub(super) fn with_services_and_storage(services: nodecraft_engine::commands::Services, setup: StorageSetup) -> Result<Self, Error> {
-        let (session, canvas, _, _) = Self::storage_session(setup)?;
-        Self::from_session(session.with_services(services), canvas)
+        let (session, canvas, _, open) = Self::storage_session(setup)?;
+        let mut app = Self::from_session(session.with_services(services), canvas)?;
+        app.files.startup = open;
+        Ok(app)
     }
 
     /// On a clean quit: when everything is saved, or nothing was done (an untitled project with

@@ -2,6 +2,7 @@ use super::*;
 use crate::app::storage::StorageSetup;
 use egui_kittest::{Harness, kittest::Queryable};
 use serde_json::json;
+use std::sync::Arc;
 
 /// A temp folder per test, removed when the test ends.
 struct Scratch(PathBuf);
@@ -39,6 +40,20 @@ fn launch(dir: &Scratch, open: Option<PathBuf>) -> Harness<'static, NodeCraftApp
     let mut h = Harness::builder().with_size(egui::Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.run();
     h
+}
+
+/// Steps frames until no file operation runs: "Start from last save" opens on the save thread.
+fn settle(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if h.state().session.file_status().operation.is_none() && !h.state().files.owns_input() {
+            h.run();
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the open did not settle");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 fn add_node(h: &mut Harness<'static, NodeCraftApp>) {
@@ -134,7 +149,7 @@ fn recovered_work_not_yet_saved_survives_a_quit_and_is_offered_again() {
         .collect();
     assert!(!others.is_empty());
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert!(!selected.exists());
     for (path, bytes) in others {
         assert_eq!(std::fs::read(path).unwrap(), bytes);
@@ -147,7 +162,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     crash(&dir, true);
     let mut h = launch(&dir, None);
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert!(!has_added(&h));
     let status = h.state().session.file_status();
     assert!(!status.dirty);
@@ -160,7 +175,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     crash(&dir, false);
     let mut h = launch(&dir, None);
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert!(!has_added(&h));
     assert_eq!(h.state().notice.as_deref(), Some("The selected unsaved recovery copy was discarded."));
 }
@@ -352,7 +367,7 @@ fn resolving_project_b_start_last_save_keeps_project_a_exact_copy() {
     assert_eq!(h.state().recovery.as_ref().unwrap().found.as_ref().unwrap().snapshot.project, expected_b);
     let selected = h.state().recovery.as_ref().unwrap().kept.clone();
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert!(a_copy.exists(), "discarding B does not discard A");
     assert_eq!(std::fs::read(&a_copy).unwrap(), a_bytes);
     assert!(!selected.exists());
@@ -474,7 +489,7 @@ fn render_recovery_safety450_evidence() {
     let selected = h.state().recovery.as_ref().unwrap().kept.clone();
     std::fs::remove_file(dir.project()).unwrap();
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     let retained = std::env::var("NODECRAFT_450_EXPECT_RETAINED").unwrap() == "1";
     assert_eq!(selected.exists(), retained);
     h.render().unwrap().save(folder.join("failed-last-save.png")).unwrap();
@@ -558,7 +573,7 @@ fn failed_last_save_open_keeps_the_exact_selected_copy() {
     let doc = h.state().session.document().clone();
     std::fs::remove_file(dir.project()).unwrap();
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert_eq!(std::fs::read(copy).unwrap(), bytes);
     assert_eq!(h.state().session.document(), &doc);
     assert!(h.state().notice.as_ref().unwrap().contains("kept"));
@@ -576,7 +591,7 @@ fn pending_offer_never_overwrites_an_intervening_unsaved_recovery() {
     let expected = replacement.project.clone();
     h.state_mut().session.recover(replacement, None).unwrap();
     h.get_by_label("Start from last save").click();
-    h.run();
+    settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
     assert_eq!(std::fs::read(copy).unwrap(), bytes);
 }
@@ -689,4 +704,264 @@ fn native_streaming_offer_above_classic_asset_cap_recovers_and_saves_without_res
     assert!(loaded.assets.get(&hash).is_none());
     let lease = loaded.assets.open_verified(&reference, &cancel, &metrics).unwrap();
     assert_eq!(lease.byte_len(), length as u64);
+}
+
+/// Holds each file job until the test releases it, as a slow disk would (#367).
+#[derive(Default)]
+struct Gate(std::sync::Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+impl nodecraft_engine::save_runner::SaveRunner for Gate {
+    fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+        self.0.lock().unwrap().push(job);
+        Ok(())
+    }
+}
+impl Gate {
+    fn held(&self) -> usize {
+        self.0.lock().unwrap().len()
+    }
+    fn release(&self) {
+        let jobs = std::mem::take(&mut *self.0.lock().unwrap());
+        jobs.into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    }
+}
+
+/// A crashed, saved project offered at launch, with "Start from last save" clicked over a held
+/// runner: the open is running, nothing has changed yet.
+struct Held367 {
+    dir: Scratch,
+    h: Harness<'static, NodeCraftApp>,
+    gate: Arc<Gate>,
+    copy: PathBuf,
+    bytes: Vec<u8>,
+    before: nodecraft_graph::Project,
+}
+fn start_from_last_save_held(test: &str) -> Held367 {
+    let dir = Scratch::new(test);
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let gate = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(gate.clone());
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    let bytes = std::fs::read(&copy).unwrap();
+    let before = h.state().session.document().clone();
+    h.get_by_label("Start from last save").click();
+    h.step();
+    assert_eq!(gate.held(), 1, "the open runs on the runner");
+    assert!(h.state().session.file_status().operation.is_some());
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy stays while the open runs");
+    assert!(storage::location_file(&copy).exists());
+    assert_eq!(h.state().session.document(), &before);
+    // The click's frame still drew the question; the next one doesn't.
+    h.step();
+    assert!(!asked(&h), "the question waits behind the open");
+    assert!(h.state().recovery_deciding(), "runs stay paused: a failed open asks the question again");
+    Held367 { dir, h, gate, copy, bytes, before }
+}
+/// Steps until the progress window has appeared (it waits a moment, so quick opens don't flash).
+fn until_progress(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..200 {
+        if h.query_by_label("Opening project…").is_some() {
+            // A new window is sized on its first frame; let it settle where clicks land.
+            for _ in 0..4 {
+                h.step();
+            }
+            return;
+        }
+        h.step();
+    }
+    panic!("the progress window never appeared");
+}
+
+#[test]
+fn start_from_last_save_removes_the_copy_only_after_the_background_open_succeeds() {
+    let Held367 { dir, mut h, gate, copy, .. } = start_from_last_save_held("last-save-ok367");
+    until_progress(&mut h);
+    let first = h.ctx.cumulative_frame_nr();
+    for _ in 0..10 {
+        h.step();
+    }
+    assert_eq!(h.ctx.cumulative_frame_nr(), first + 10, "frames go on while the open is held");
+    assert!(copy.exists());
+    gate.release();
+    settle(&mut h);
+    assert!(!has_added(&h), "the last save is open");
+    assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
+    assert!(!h.state().session.file_status().dirty);
+    assert!(!copy.exists() && !storage::location_file(&copy).exists(), "discarded once the open succeeded");
+    assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
+    assert!(!asked(&h));
+    assert!(!h.state().recovery_deciding(), "decided: runs may go on");
+    assert_eq!(h.state().files.projects.recent(), vec![dir.project().to_str().unwrap()], "listed once");
+}
+
+#[test]
+fn a_failed_background_last_save_open_keeps_the_copy_and_the_project_and_asks_again() {
+    let Held367 { dir, mut h, gate, copy, bytes, before } = start_from_last_save_held("last-save-fail367");
+    // The file goes bad between the click and the read, as a disk error would.
+    std::fs::write(dir.project(), b"not a NodeCraft project").unwrap();
+    gate.release();
+    settle(&mut h);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
+    assert!(storage::location_file(&copy).exists());
+    assert_eq!(h.state().session.document(), &before, "the project is as it was");
+    let notice = h.state().notice.clone().unwrap();
+    assert!(
+        notice.starts_with("The last save couldn't be opened: ")
+            && notice.ends_with("Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."),
+        "{notice}"
+    );
+    assert!(asked(&h), "the person can still recover the work");
+    h.get_by_label("Recover").click();
+    h.run();
+    assert!(has_added(&h), "and the kept work comes back");
+}
+
+#[test]
+fn cancelling_a_background_last_save_open_keeps_the_copy_and_the_project_and_asks_again() {
+    let Held367 { dir: _dir, mut h, gate, copy, bytes, before } = start_from_last_save_held("last-save-cancel367");
+    until_progress(&mut h);
+    h.get_by_label("Cancel").click();
+    // The modal button sees the press in one frame and the release in the next.
+    h.step();
+    h.step();
+    assert!(h.state().session.file_status().operation.is_some_and(|operation| operation.cancel_requested));
+    gate.release();
+    settle(&mut h);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("Opening the last save was cancelled. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder.")
+    );
+    assert!(asked(&h));
+    // The question works as before: start from the last save again, this time letting it finish.
+    h.get_by_label("Start from last save").click();
+    h.step();
+    gate.release();
+    settle(&mut h);
+    assert!(!copy.exists());
+    assert!(!has_added(&h));
+}
+
+#[test]
+fn a_late_cancel_reports_the_open_that_finished_and_only_then_drops_the_copy() {
+    let Held367 { dir, mut h, gate, copy, .. } = start_from_last_save_held("last-save-late367");
+    // The open publishes its checkpoint before the cancel arrives: it really happened.
+    gate.release();
+    h.state_mut().session.dispatch("file.cancel", &json!({})).unwrap();
+    settle(&mut h);
+    assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
+    assert!(!has_added(&h));
+    assert!(!copy.exists(), "the project now is the last save, so the copy is resolved");
+    assert!(h.state().notice.as_deref().unwrap().starts_with("Started from the last save"));
+}
+
+#[test]
+fn a_last_save_result_for_a_replaced_session_touches_neither_the_copy_nor_the_new_session() {
+    let Held367 { dir, mut h, gate, copy, bytes, .. } = start_from_last_save_held("last-save-replaced367");
+    // The host swaps the session between frames; the old one's open is still held.
+    let (session, _, _, _) = NodeCraftApp::storage_session(StorageSetup { recovery: dir.0.join("other.journal"), open: None }).unwrap();
+    h.state_mut().session = session;
+    let replaced = h.state().session.document().clone();
+    h.step();
+    gate.release();
+    settle(&mut h);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
+    assert_eq!(h.state().session.document(), &replaced);
+    assert!(h.state().notice.as_deref().unwrap().contains("kept as"), "{:?}", h.state().notice);
+    assert!(!asked(&h), "the question belonged to the replaced session");
+}
+
+#[test]
+fn a_last_save_open_the_runner_refuses_runs_inline_and_drops_the_copy_after_it() {
+    struct Refuses;
+    impl nodecraft_engine::save_runner::SaveRunner for Refuses {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            Err(job)
+        }
+    }
+    let dir = Scratch::new("last-save-inline367");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    h.state_mut().session.set_save_runner(Arc::new(Refuses));
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    h.get_by_label("Start from last save").click();
+    h.step();
+    assert!(!copy.exists());
+    assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
+    // And a failing inline open keeps it.
+    let dir = Scratch::new("last-save-inline-fail367");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    h.state_mut().session.set_save_runner(Arc::new(Refuses));
+    let copy = h.state().recovery.as_ref().unwrap().kept.clone();
+    std::fs::write(dir.project(), b"broken").unwrap();
+    h.get_by_label("Start from last save").click();
+    h.step();
+    assert!(copy.exists());
+    assert!(h.state().recovery.is_some(), "asked again");
+    assert!(h.state().notice.as_deref().unwrap().starts_with("The last save couldn't be opened: "));
+}
+
+#[test]
+fn startup_open_and_a_recovery_offer_ask_only_once_the_open_has_settled() {
+    let dir = Scratch::new("startup-and-offer367");
+    crash(&dir, true);
+    // Relaunch naming the project on the command line, with the open held.
+    let (session, canvas, kept, open) = NodeCraftApp::storage_session(StorageSetup { recovery: dir.journal(), open: Some(dir.project()) }).unwrap();
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.files.startup = open;
+    app.attach_recovery(dir.journal(), kept);
+    let gate = Arc::new(Gate::default());
+    app.session.set_save_runner(gate.clone());
+    let mut h = Harness::builder().with_size(egui::Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.step();
+    assert!(h.query_by_label("Opening project…").is_some());
+    assert!(!asked(&h), "one modal at a time");
+    gate.release();
+    settle(&mut h);
+    assert!(asked(&h), "the offer follows the open");
+    assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
+    h.get_by_label("Recover").click();
+    h.run();
+    assert!(has_added(&h));
+}
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_last_save367_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let Held367 { dir: _dir, mut h, gate, .. } = start_from_last_save_held("last-save-evidence367");
+    until_progress(&mut h);
+    h.render().unwrap().save(output.join("last-save-opening.png")).unwrap();
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    gate.release();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("last-save-cancelled-asks-again.png")).unwrap();
+}
+
+#[test]
+fn a_newer_format_last_save_keeps_the_advice_to_update_and_the_copy() {
+    let Held367 { dir, mut h, gate, copy, bytes, .. } = start_from_last_save_held("last-save-future367");
+    // A newer NodeCraft saved over the file since the crash.
+    {
+        use std::io::Write;
+        let mut zip = zip::ZipWriter::new(std::fs::File::create(dir.project()).unwrap());
+        zip.start_file("project.json", zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored)).unwrap();
+        zip.write_all(br#"{"version":99,"epoch":1,"project":{}}"#).unwrap();
+        zip.finish().unwrap();
+    }
+    gate.release();
+    settle(&mut h);
+    assert_eq!(std::fs::read(&copy).unwrap(), bytes);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "The last save couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."
+        )
+    );
+    assert!(asked(&h));
 }

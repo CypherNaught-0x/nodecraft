@@ -1,14 +1,14 @@
 //! Offering unsaved work back after an unclean exit (#408). At startup a journal holding work
 //! is kept aside (`storage`); here it is replayed and the person decides: **Recover** adopts the
 //! replayed project at the file its session had open (checkpointed at once, unsaved), **Start
-//! from last save** opens that file as last saved, then drops only the selected copy. Nothing is lost silently: the
+//! from last save** opens that file as last saved in the background (#367), then drops only the
+//! selected copy, and only once the open has succeeded. Nothing is lost silently: the
 //! kept copy stays on disk until the recovered work is saved (so quitting first, or crashing
 //! again, offers it again next time), a damaged journal offers what could be replayed and says
 //! so, and one that can't be read is left where it is, with its name.
 use super::{NodeCraftApp, storage};
 use crate::theme::Tokens;
 use nodecraft_format::{Snapshot, StorageLocation};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// What a kept journal held.
@@ -128,6 +128,11 @@ impl NodeCraftApp {
         let Some(offer) = &self.recovery else {
             return;
         };
+        // A background open (at startup, say) owns the window until it settles; its progress
+        // window takes the input meanwhile, and the question is asked once it has finished.
+        if self.session.file_status().operation.is_some() {
+            return;
+        }
         let mut choice = None;
         egui::Modal::new(egui::Id::new("recovery_offer")).show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
@@ -223,27 +228,48 @@ impl NodeCraftApp {
                     self.notice = Some(format!("That work couldn't be recovered ({}). It was kept as {name} in the recovery folder.", error.message));
                 }
             },
-            (Choice::StartFromLastSave, _) => {
-                if let Some(file) = &offer.location {
-                    let opened = file.to_str().ok_or_else(|| "the path isn't valid UTF-8".to_owned()).and_then(|location| {
-                        self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":true})).map(|_| ()).map_err(|error| error.message)
-                    });
-                    if let Err(error) = opened {
-                        self.notice = Some(format!("The last save couldn't be opened ({error}). Unsaved work was kept as {name} in the recovery folder."));
-                        return;
-                    }
-                    self.after_document_replaced();
-                }
-                self.notice = Some(match offer.remove_selected() {
-                    Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
-                    Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
-                    Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
-                });
-            }
+            (Choice::StartFromLastSave, _) => match offer.location.clone() {
+                // The copy stays until the open has succeeded (`started_from_last_save`).
+                Some(file) => self.start_background_open(file, true, super::file_dialogs::AfterOpen::LastSave(Box::new(offer))),
+                None => self.started_from_last_save(&offer),
+            },
             (Choice::Recover | Choice::Keep, _) => {
                 log::warn!("recovery: kept {name}, which can't be replayed");
             }
         }
+    }
+
+    /// "Start from last save" has replaced the document with that file, or there was no file:
+    /// only now is the selected copy discarded.
+    pub(super) fn started_from_last_save(&mut self, offer: &RecoveryOffer) {
+        let name = offer.kept_name();
+        self.notice = Some(match offer.remove_selected() {
+            Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
+            Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
+            Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
+        });
+    }
+
+    /// The last save didn't open (it failed, was cancelled, or the open ended without an
+    /// outcome): the copy is untouched, and the question is asked again in this session.
+    pub(super) fn last_save_not_opened(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
+        let name = offer.kept_name();
+        log::warn!("recovery: the last save didn't open; kept {name}");
+        self.notice = Some(match failed {
+            super::file_dialogs::OpenFailed::Cancelled => {
+                format!("Opening the last save was cancelled. Unsaved work was kept as {name} in the recovery folder.")
+            }
+            failed => format!("The last save couldn't be opened: {}. Unsaved work was kept as {name} in the recovery folder.", failed.clause()),
+        });
+        if same_session && self.recovery.is_none() {
+            self.recovery = Some(offer);
+        }
+    }
+
+    /// Whether the startup question is still being decided: asked, or its "Start from last
+    /// save" open still running (whose failure asks it again).
+    pub(super) fn recovery_deciding(&self) -> bool {
+        self.recovery.is_some() || self.last_save_opening()
     }
 
     /// Every frame: keeps the record of which file this session has open beside its journal
