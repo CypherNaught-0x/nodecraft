@@ -4,8 +4,9 @@
 //! the template's origins on the service's word. The credential goes only to the API origin
 //! ([`authorize`]); outputs are fetched from the output origins without it. The service is
 //! unknown to the host, so no reply proves a submit created nothing: once the paid request is
-//! sent, every failure may hide a billed job, and an ambiguous submit is retried automatically
-//! only when the template names an idempotency header for the key.
+//! sent, every failure may hide a billed job. An ambiguous submit is never sent again
+//! automatically: a template's idempotency header is the publisher's claim, which the host can't
+//! check, so the job ends with a possible charge recorded and the person decides.
 //!
 //! The template's `limits.concurrency` bounds what it is sent at once twice: the most of one
 //! run's jobs it holds ([`Provider::max_jobs_at_once`], the scheduler lane's cap), and the most
@@ -308,10 +309,11 @@ impl Provider for Broker {
         &self.id
     }
 
-    /// Only a template that sends the job's idempotency key lets an ambiguous submit be sent
-    /// again: the service then answers with the job it may already have.
+    /// Never: a template that names an idempotency header only says its service deduplicates by
+    /// the key. A service that ignores it would bill a resent job again while the budget counted
+    /// one, so an ambiguous submit ends the job as possibly charged instead (#174).
     fn retry_ambiguous_submit(&self) -> bool {
-        self.template.idempotency.is_some()
+        false
     }
 
     /// The template's `limits.concurrency`: a run holds no more of its jobs at once.

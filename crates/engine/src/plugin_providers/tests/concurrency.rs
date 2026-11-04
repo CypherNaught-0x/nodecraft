@@ -41,6 +41,8 @@ impl Runtime for Threads {
 /// jobs it held at once.
 #[derive(Default)]
 struct Service {
+    /// Every submit's reply is lost on the way back, after the service took the job.
+    lose_replies: bool,
     jobs: Mutex<BTreeMap<String, usize>>,
     submitted: Mutex<usize>,
     most: Mutex<usize>,
@@ -64,7 +66,11 @@ impl nodecraft_providers::http::Http for Service {
             jobs.insert(id.clone(), 0);
             let mut most = self.most.lock().unwrap();
             *most = (*most).max(jobs.len());
-            answer(200, json(json!({"id": id})))
+            if self.lose_replies {
+                Err(ProviderError::new(nodecraft_providers::ErrorKind::Timeout, "the reply was lost"))
+            } else {
+                answer(200, json(json!({"id": id})))
+            }
         } else if let Some(id) = request.url.strip_prefix(&format!("{ORIGIN}/v1/jobs/")) {
             let mut jobs = self.jobs.lock().unwrap();
             match jobs.get_mut(id) {
@@ -99,13 +105,19 @@ fn limited(limit: u32) -> String {
 /// Runs a batch of `prompts` into one card on the plugin provider allowing `limit` at once, and
 /// returns the service.
 fn run(limit: u32, prompts: usize) -> Arc<Service> {
+    let (service, _) = run_on(Service::default(), limit, prompts, RetryPolicy { max_attempts: 1, ..Default::default() });
+    service
+}
+
+/// [`run`] against `service`, retrying as `retry` says; the service and the run's jobs.
+fn run_on(service: Service, limit: u32, prompts: usize, retry: RetryPolicy) -> (Arc<Service>, Vec<crate::run_jobs::JobView>) {
     let budget = JobBudget {
         log: Arc::new(Mutex::new(UsageLog::default())),
         budgets: Arc::new(Mutex::new(Budgets::default())),
         session: "plugin-concurrency".into(),
         wall_clock_ms: Arc::new(|| 0),
     };
-    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget).with_retry(retry);
     let mut services = Services::default();
     host.register(&mut services).unwrap();
     let mut project = nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([2; 16]), "P").unwrap();
@@ -127,7 +139,8 @@ fn run(limit: u32, prompts: usize) -> Arc<Service> {
 
     let keys = MemoryStore::default();
     keys.set(&Account::new("plugin.io.example.acme:api.acme.example").unwrap(), &Secret::new("plugin-fixture-key-not-real").unwrap()).unwrap();
-    let service = Arc::new(Service::default());
+    let lost = service.lose_replies;
+    let service = Arc::new(service);
     let provider = Arc::clone(s.plugins().provider(PROVIDER).unwrap());
     let mut setup = crate::provider_setup::ProviderSetup::default();
     let http: Arc<dyn nodecraft_providers::http::Http> = service.clone();
@@ -154,8 +167,9 @@ fn run(limit: u32, prompts: usize) -> Arc<Service> {
     }
     assert_eq!(provider.gate.held(), 0, "every request slot was given back");
     let card = s.document().canvases().get(&CANVAS).unwrap().nodes().get(&CARD).unwrap();
-    assert!(card.history.iter().any(|g| Some(g.id) == card.active && g.incomplete.is_none()), "the batch finished: {notices:?}");
-    service
+    let finished = card.history.iter().any(|g| Some(g.id) == card.active && g.incomplete.is_none());
+    assert!(finished != lost, "the batch finished only if its replies came back: {notices:?}");
+    (service, host.jobs())
 }
 
 #[test]
@@ -170,4 +184,16 @@ fn a_template_allowing_one_runs_its_jobs_one_at_a_time() {
     let service = run(1, 2);
     assert_eq!(*service.submitted.lock().unwrap(), 2);
     assert_eq!(*service.most.lock().unwrap(), 1);
+}
+
+/// #174: a submit whose reply is lost may have created a billed job. The template names an
+/// idempotency header, but that is only its publisher's claim, so the host never sends the job
+/// again on its word, even with retries allowed: it is sent once and ends as possibly charged.
+#[test]
+fn a_lost_submit_reply_is_sent_once_and_ends_as_possibly_charged() {
+    let retry = RetryPolicy { max_attempts: 3, base_delay_ms: 1, max_delay_ms: 1 };
+    let (service, jobs) = run_on(Service { lose_replies: true, ..Service::default() }, 2, 1, retry);
+    assert_eq!(*service.submitted.lock().unwrap(), 1, "sent once, never again under the claimed key");
+    let [job] = jobs.as_slice() else { panic!("{jobs:?}") };
+    assert!(job.may_have_been_charged(), "{job:?}");
 }

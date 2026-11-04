@@ -80,6 +80,9 @@ pub struct Consent {
     pub required: Vec<String>,
     pub optional: Vec<String>,
     pub origins: Vec<String>,
+    /// What its provider templates say of their services, one line each: the publisher's word,
+    /// shown so the person can weigh it, never part of the grant (#174).
+    pub claims: Vec<String>,
     /// The optional capabilities ticked.
     pub chosen: BTreeSet<String>,
 }
@@ -133,6 +136,27 @@ pub struct PluginsPanel {
 }
 
 /// The strings in a JSON array, at most [`MAX_ITEMS`].
+/// The publisher's claims in a rights answer, as lines to show.
+fn claim_lines(v: Option<&Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for claim in v.and_then(Value::as_array).into_iter().flatten().take(16) {
+        let provider = claim.get("provider").and_then(Value::as_str).unwrap_or("A provider");
+        for price in claim.get("prices").and_then(Value::as_array).into_iter().flatten().take(64) {
+            let model = price.get("model").and_then(Value::as_str).unwrap_or_default();
+            let money = price.get("price").cloned().and_then(|p| serde_json::from_value::<nodecraft_types::Money>(p).ok());
+            if let Some(money) = money {
+                lines.push(format!("{provider} · {model}: {money} a job"));
+            }
+        }
+        if let Some(header) = claim.get("idempotency_header").and_then(Value::as_str) {
+            lines.push(format!(
+                "{provider}: says its service won't bill twice for a job sent again with the same {header}. NodeCraft never sends a job again on this; a job whose answer is lost is marked as possibly charged."
+            ));
+        }
+    }
+    lines
+}
+
 fn strings(v: Option<&Value>) -> Vec<String> {
     v.and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_str).take(MAX_ITEMS).map(str::to_owned).collect()).unwrap_or_default()
 }
@@ -293,6 +317,7 @@ impl PluginsPanel {
                     required: strings(answer.get("required")),
                     optional: strings(answer.get("optional")),
                     origins: strings(answer.get("origins")),
+                    claims: claim_lines(answer.get("claims")),
                     chosen: BTreeSet::new(),
                 });
             }
@@ -631,6 +656,13 @@ impl PluginsPanel {
             let network = consent.required.iter().chain(consent.chosen.iter()).any(|c| c == "network");
             if network && !consent.origins.is_empty() {
                 ui.label(egui::RichText::new(format!("It may reach: {}", consent.origins.join(", "))).color(t.text_muted));
+            }
+            if !consent.claims.is_empty() {
+                ui.add_space(t.control_gap);
+                ui.label(egui::RichText::new("Its publisher says (NodeCraft can't check this):").color(t.text));
+                for line in &consent.claims {
+                    ui.label(egui::RichText::new(line).color(t.text_muted));
+                }
             }
             let mut grant = false;
             let mut cancel = false;
