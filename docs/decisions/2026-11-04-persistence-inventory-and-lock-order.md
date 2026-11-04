@@ -69,7 +69,7 @@ and cleanup debt.
 - **Calibration** (a modest real project on native storage, measured by sampling the bytes of
   every file under the test's folder while each operation ran, so a peak between samples can be
   missed; the estimate is the one-volume need production compares with free space, computed the
-  way production computes it).
+  way production computes it, through `Session::save_space`).
   - Classic (`persistence_faults367::the_inventory_covers_measured_saves`): 30 assets of
     200 KiB, a 6,162,420-byte file.
   - Streaming (`space_wiring367::a_streaming_project_calibrates_the_copies_term`): 4 assets of
@@ -78,7 +78,7 @@ and cleanup debt.
 
   | Operation | Estimate | Measured peak growth | File written |
   |---|---|---|---|
-  | Classic: Save As from the importing session | 18,683,948 B | 12.3–18.5 MB over runs (a reviewer measured 18,487,340 B) | 6,162,420 B (archive estimate exact) |
+  | Classic: Save As from the importing session | 18,683,948 B before the journal tail was counted (now higher by the tail) | 12.3–18.5 MB over runs on macOS (a reviewer measured 18,487,340 B); 18,692,774 B on Windows CI | 6,162,420 B (archive estimate exact) |
   | Classic: open in a new session | 18,665,528 B (first check, then copies + checkpoint) | 18,335,812–18,468,920 B | |
   | Classic: Save As from the opened session | 18,683,948 B | 18,487,340 B | 6,162,420 B |
   | Streaming: open in a new session | 109,188,644 B | 109,057,572 B | |

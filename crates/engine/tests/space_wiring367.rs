@@ -257,12 +257,8 @@ fn a_streaming_project_calibrates_the_copies_term() {
     });
     let output = session.assets().output_space(session.document(), &std::collections::BTreeSet::new()).unwrap().unwrap();
     let archive = ArchivePlan::estimate_bytes(session.document(), session.assets(), 2, StorageCapability::StreamingV2).unwrap();
-    let mut inventory = SpaceInventory::save(archive, None).unwrap().with_verified_copies(output.verified_copies);
-    if let Some(pack) = output.compaction {
-        inventory = inventory.with_compaction(pack);
-    }
-    let save_needed = inventory.needed_on_one_volume().unwrap();
     let target = dir.path().join("resaved.ncraft");
+    let save_needed = session.save_space(Some(StorageLocation::Path(target.clone()))).unwrap().unwrap().0.needed_on_one_volume().unwrap();
     let save_measured = peak_growth(dir.path(), || {
         session.dispatch("file.save_as", &json!({"location": target.to_str().unwrap()})).unwrap();
     });

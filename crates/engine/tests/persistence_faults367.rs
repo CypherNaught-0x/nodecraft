@@ -352,46 +352,92 @@ fn work_on_a_background_opened_project_recovers_after_its_file_is_deleted() {
     assert_eq!(read_back(dir.path(), &elsewhere), expected);
 }
 
-/// Sums the sizes of every file under `root`.
-fn tree_bytes(root: &std::path::Path) -> u64 {
-    let Ok(entries) = std::fs::read_dir(root) else { return 0 };
-    entries
-        .filter_map(Result::ok)
-        .map(|entry| match entry.metadata() {
-            Ok(metadata) if metadata.is_dir() => tree_bytes(&entry.path()),
-            Ok(metadata) => metadata.len(),
-            Err(_) => 0,
-        })
-        .sum()
+/// Every file under `root` with its size.
+fn tree(root: &std::path::Path, into: &mut std::collections::BTreeMap<std::path::PathBuf, u64>) {
+    let Ok(entries) = std::fs::read_dir(root) else { return };
+    for entry in entries.filter_map(Result::ok) {
+        match entry.metadata() {
+            Ok(metadata) if metadata.is_dir() => tree(&entry.path(), into),
+            Ok(metadata) => {
+                into.insert(entry.path(), metadata.len());
+            }
+            Err(_) => {}
+        }
+    }
 }
-/// Samples the bytes of every file under `root` while `work` runs, returning the peak growth
-/// over the total before it started.
-fn peak_growth(root: &std::path::Path, work: impl FnOnce()) -> u64 {
-    let start = tree_bytes(root);
+fn snapshot(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, u64> {
+    let mut files = std::collections::BTreeMap::new();
+    tree(root, &mut files);
+    files
+}
+/// The bytes of every file under `root`, once two readings 20 ms apart agree, so writes still
+/// settling from earlier work (a journal's last records, say) aren't charged to what follows.
+fn settled(root: &std::path::Path) -> std::collections::BTreeMap<std::path::PathBuf, u64> {
+    let mut last = snapshot(root);
+    for _ in 0..100 {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        let now = snapshot(root);
+        if now == last {
+            break;
+        }
+        last = now;
+    }
+    last
+}
+/// Peak growth, and which files made it, as the calibration's evidence.
+struct Growth {
+    bytes: u64,
+    files: String,
+}
+/// Samples every file under `root` while `work` runs: the peak growth over the settled total
+/// before it started, and the files that differed from that baseline at the peak.
+fn peak_growth(root: &std::path::Path, work: impl FnOnce()) -> Growth {
+    let start = settled(root);
+    let start_total: u64 = start.values().sum();
     let done = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let sampler = {
         let (root, done) = (root.to_path_buf(), done.clone());
         std::thread::spawn(move || {
-            let mut peak = 0;
-            while !done.load(std::sync::atomic::Ordering::Acquire) {
-                peak = peak.max(tree_bytes(&root));
+            let mut peak = (0, std::collections::BTreeMap::new());
+            loop {
+                let finished = done.load(std::sync::atomic::Ordering::Acquire);
+                let now = snapshot(&root);
+                let total: u64 = now.values().sum();
+                if total > peak.0 {
+                    peak = (total, now);
+                }
+                if finished {
+                    return peak;
+                }
             }
-            peak.max(tree_bytes(&root))
         })
     };
     work();
     done.store(true, std::sync::atomic::Ordering::Release);
-    sampler.join().unwrap().saturating_sub(start)
+    let (total, at_peak) = sampler.join().unwrap();
+    let mut files = String::new();
+    for (path, bytes) in &at_peak {
+        let before = start.get(path).copied().unwrap_or(0);
+        if *bytes != before {
+            let name = path.strip_prefix(root).unwrap_or(path).display();
+            files.push_str(&format!("\n  {name}: {before} -> {bytes}"));
+        }
+    }
+    for (path, before) in &start {
+        if !at_peak.contains_key(path) {
+            files.push_str(&format!("\n  {}: {before} -> gone", path.strip_prefix(root).unwrap_or(path).display()));
+        }
+    }
+    eprintln!("calibration367 files at the peak:{files}");
+    Growth { bytes: total.saturating_sub(start_total), files }
 }
 
-/// What the preflight would charge one shared volume for saving `session` to a new file.
-fn estimate(session: &Session) -> (u64, nodecraft_format::OutputSpace, u64) {
+/// What production checks before saving `session` to `target`: its own inventory's one-volume
+/// need, with the parts reported for the calibration.
+fn estimate(session: &mut Session, target: &std::path::Path) -> (u64, nodecraft_format::OutputSpace, u64) {
     let output = session.assets().output_space(session.document(), &std::collections::BTreeSet::new()).unwrap().unwrap();
     let archive = ArchivePlan::estimate_bytes(session.document(), session.assets(), 1, StorageCapability::StreamingV2).unwrap();
-    let mut inventory = SpaceInventory::save(archive, None).unwrap().with_verified_copies(output.verified_copies);
-    if let Some(pack) = output.compaction {
-        inventory = inventory.with_compaction(pack);
-    }
+    let (inventory, _) = session.save_space(Some(StorageLocation::Path(target.to_path_buf()))).unwrap().unwrap();
     (inventory.needed_on_one_volume().unwrap(), output, archive)
 }
 
@@ -410,17 +456,18 @@ fn the_inventory_covers_measured_saves() {
     {
         let mut seed = native_session(&dir.path().join("seed"));
         add_media(&mut seed, 30, 200 * 1024, 5);
-        let (needed, output, archive) = estimate(&seed);
-        let measured = peak_growth(dir.path(), || {
+        let (needed, output, archive) = estimate(&mut seed, &source);
+        let growth = peak_growth(dir.path(), || {
             seed.dispatch("file.save_as", &json!({"location": source.to_str().unwrap()})).unwrap();
         });
+        let measured = growth.bytes;
         let written = std::fs::metadata(&source).unwrap().len();
         report.push(format!(
             "imported session: archive estimate {archive} B, file written {written} B, verified copies {} B, compaction {:?}, estimate {needed} B, measured peak growth {measured} B",
             output.verified_copies, output.compaction
         ));
         assert!(archive >= written && archive - written <= 16, "archive estimate {archive} vs written {written}");
-        assert!(needed >= measured, "the estimate {needed} understates the measured peak {measured}");
+        assert!(needed >= measured, "the estimate {needed} understates the measured peak {measured}; at the peak:{}", growth.files);
         assert!(needed <= measured.saturating_mul(2), "the estimate {needed} more than doubles the measured peak {measured}");
         seed.close_recovery(false).unwrap();
     }
@@ -430,23 +477,25 @@ fn the_inventory_covers_measured_saves() {
     let file_bytes = std::fs::metadata(&source).unwrap().len();
     let open_needed =
         SpaceInventory::open(file_bytes).unwrap().with_verified_copies(30 * 200 * 1024).needed(nodecraft_format::space::Volume::Recovery).unwrap();
-    let open_measured = peak_growth(dir.path(), || {
+    let open_growth = peak_growth(dir.path(), || {
         session.dispatch("file.open", &json!({"location": source.to_str().unwrap(), "discard_dirty": true})).unwrap();
     });
+    let open_measured = open_growth.bytes;
     report.push(format!("open: file {file_bytes} B, estimate {open_needed} B, measured peak growth {open_measured} B"));
-    assert!(open_needed >= open_measured, "the open estimate {open_needed} understates the measured peak {open_measured}");
+    assert!(open_needed >= open_measured, "the open estimate {open_needed} understates the measured peak {open_measured}; at the peak:{}", open_growth.files);
     assert!(open_needed <= open_measured.saturating_mul(2), "the open estimate {open_needed} more than doubles {open_measured}");
     let target = second.join("calibration.ncraft");
-    let (needed, output, archive) = estimate(&session);
-    let measured = peak_growth(dir.path(), || {
+    let (needed, output, archive) = estimate(&mut session, &target);
+    let growth = peak_growth(dir.path(), || {
         session.dispatch("file.save_as", &json!({"location": target.to_str().unwrap()})).unwrap();
     });
+    let measured = growth.bytes;
     let written = std::fs::metadata(&target).unwrap().len();
     report.push(format!(
         "opened session: archive estimate {archive} B, file written {written} B, verified copies {} B, compaction {:?}, estimate {needed} B, measured peak growth {measured} B",
         output.verified_copies, output.compaction
     ));
     eprintln!("calibration367:\n{}", report.join("\n"));
-    assert!(needed >= measured, "the estimate {needed} understates the measured peak {measured}");
+    assert!(needed >= measured, "the estimate {needed} understates the measured peak {measured}; at the peak:{}", growth.files);
     assert!(needed <= measured.saturating_mul(2), "the estimate {needed} more than doubles the measured peak {measured}");
 }

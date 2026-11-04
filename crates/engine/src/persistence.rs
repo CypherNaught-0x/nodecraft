@@ -375,15 +375,43 @@ impl Persistence {
         epoch: u64,
         location: &StorageLocation,
     ) -> Result<(), Error> {
+        match self.save_inventory(document, assets, retained, epoch, location)? {
+            Some((inventory, probe)) => inventory.check(&probe),
+            None => Ok(()),
+        }
+    }
+    /// [`Self::save_inventory`] for the next save, to `location` or the current file.
+    pub(crate) fn next_save_inventory(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        location: Option<StorageLocation>,
+    ) -> Result<Option<(SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
+        let Some(location) = location.or_else(|| self.location.clone()) else { return Ok(None) };
+        let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
+        self.save_inventory(document, assets, retained, epoch, &location)
+    }
+    /// What a save of `document` to `location` would write, and the free space reported for it:
+    /// the inventory [`Self::preflight_save`] checks. `None` when nothing is checked (not native
+    /// storage, no free space reported, or an estimate that can't be made).
+    pub(crate) fn save_inventory(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        epoch: u64,
+        location: &StorageLocation,
+    ) -> Result<Option<(SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
         if self.capability != StorageCapability::StreamingV2 {
-            return Ok(());
+            return Ok(None);
         }
         let probe = guard(|| Ok(self.store.get()?.space_probe(location)))?;
         if probe.destination_free.is_none() && probe.recovery_free.is_none() {
-            return Ok(());
+            return Ok(None);
         }
         // An estimate that can't be made leaves the real error to the save itself.
-        let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(()) };
+        let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(None) };
         // Unknown housekeeping (the store is busy verifying, say) adds nothing rather than a guess.
         let output = assets.output_space(document, retained).ok().flatten().unwrap_or_default();
         // Saving over an existing file frees it at publication, before the checkpoint.
@@ -392,7 +420,7 @@ impl Persistence {
         if let Some(pack) = output.compaction {
             inventory = inventory.with_compaction(pack);
         }
-        inventory.check(&probe)
+        Ok(Some((inventory, probe)))
     }
     /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint. An
     /// older-format file's rewrite is checked inside the open, once it is known.
