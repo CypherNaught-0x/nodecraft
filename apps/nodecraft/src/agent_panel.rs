@@ -115,7 +115,13 @@ impl AgentPanel {
         if self.open && ours && !modal && self.agent.status() != Status::Idle && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.apply(vec![Intent::Cancel], app, ctx);
         }
-        if let Ok(worker) = &self.worker {
+        // While a background save writes, every change a reply asks for would be refused as busy
+        // and the model would spend a paid turn retrying it (#367): replies wait in the worker
+        // until the save has settled.
+        let saving = app.session.file_status().saving;
+        if let Ok(worker) = &self.worker
+            && !saving
+        {
             let mut replies = Vec::new();
             while let Some(reply) = worker.poll() {
                 replies.push(reply);

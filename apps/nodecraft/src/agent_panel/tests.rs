@@ -420,3 +420,51 @@ fn a_card_under_the_sidebar_neither_shows_over_it_nor_takes_its_clicks() {
     assert_eq!(title, "Sea", "the click reached Approve, not the card");
     assert!(h.state().app.selection.is_empty(), "the card wasn't selected");
 }
+
+/// While the person's save is still writing (#367), the agent's next step waits in the worker
+/// instead of being run and refused as busy, which the model would retry as paid turns; once
+/// the save has settled it runs, and the conversation goes on with one request per step.
+#[test]
+fn a_reply_waits_for_a_background_save_instead_of_spending_turns_on_busy() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(base.path().join("settings")));
+    let storage = nodecraft_ui_egui::app::storage::StorageSetup { recovery: base.path().join("settings/recovery/session.journal"), open: None };
+    let mut app = NodeCraftApp::with_settings_and_storage(&ctx, store, Some(storage)).unwrap();
+    let node = first_node(&app);
+    let (mut panel, script) = panel(AgentSettings::default());
+    panel.apply(vec![Intent::Mode(Mode::Auto)], &mut app, &ctx);
+    let gate = Arc::new(Gate::default());
+    app.session.set_save_runner(gate.clone());
+    let file = base.path().join("agent.ncraft");
+    assert_eq!(app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    panel.input = "Call it Sea".into();
+    panel.apply(vec![Intent::Ask], &mut app, &ctx);
+    let rename = json!({"id": "node.title", "params": {"canvas": app.canvas, "id": node, "title": "Sea"}});
+    script.release.send(tool("command_run", rename)).unwrap();
+    let title = |app: &NodeCraftApp| app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&node).unwrap().title.clone();
+    // The reply has come back to the worker; frames go on and nothing runs or is asked again.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(300) {
+        panel.logic(&mut app, &ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(title(&app), "Sea");
+    assert_eq!(panel.agent().status(), Status::Thinking, "the step is still to come");
+    assert_eq!(script.sent.lock().unwrap().len(), 1, "no turn was spent on a busy refusal");
+    // The save finishes; the step runs on the saved project and the model is asked once more.
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(app.session.poll_file().unwrap().unwrap()["saved"], true);
+    script.release.send(say("Renamed.")).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| said(p, "Renamed."));
+    assert_eq!(title(&app), "Sea");
+    assert_eq!(script.sent.lock().unwrap().len(), 2);
+}
