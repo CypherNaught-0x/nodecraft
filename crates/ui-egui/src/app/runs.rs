@@ -15,11 +15,13 @@ use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
+    plugin_providers::GrantCheck,
     plugin_runtime::{PluginSnapshot, is_plugin},
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
+    run_journal::PluginGrant,
     secrets::SecretStore,
     settings::ProviderSettings,
 };
@@ -110,14 +112,17 @@ pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Pro
 /// can't aim a request at the person's own network.
 struct PluginMaker {
     board: Board,
+    /// Asks the plugin store whether a broker's grant still holds before it sends anything.
+    grants: Grants,
     #[cfg(not(target_arch = "wasm32"))]
     http: Result<Arc<dyn Http>, String>,
 }
 
 impl PluginMaker {
-    fn new(board: Board) -> Self {
+    fn new(board: Board, grants: Grants) -> Self {
         Self {
             board,
+            grants,
             #[cfg(not(target_arch = "wasm32"))]
             http: nodecraft_providers::http::ReqwestHttp::public_only().map(|h| Arc::new(h) as Arc<dyn Http>).map_err(|e| e.message),
         }
@@ -128,13 +133,14 @@ impl PluginMaker {
         let provider = self.board.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(adapter).cloned();
         let provider = provider.ok_or_else(|| Readiness::NotSetUp("that plugin isn't enabled".into()))?;
         let http = self.http.clone().map_err(Readiness::Failed)?;
-        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http)
+        let grants = self.grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http, grants)
     }
 
     /// The browser can't keep a request to public addresses, so plugin providers don't run there.
     #[cfg(target_arch = "wasm32")]
     fn make(&self, _: &str, _: &dyn SecretStore) -> Result<Arc<dyn Provider>, Readiness> {
-        let _ = &self.board;
+        let _ = (&self.board, &self.grants);
         Err(Readiness::NotSetUp("plugin providers run in the desktop app only".into()))
     }
 }
@@ -294,6 +300,7 @@ pub(super) struct Runs {
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
     plugins: Board,
+    plugin_grants: Grants,
     /// Whether the plugin store has been read, so a plugin missing from `plugins` is gone and
     /// not just still loading.
     plugins_known: bool,
@@ -301,6 +308,8 @@ pub(super) struct Runs {
 
 /// The session's plugins as the provider thread last saw them.
 type Board = Arc<Mutex<Arc<PluginSnapshot>>>;
+/// How brokers recheck their grant, shared with the provider thread.
+type Grants = Arc<Mutex<GrantCheck>>;
 
 impl Runs {
     /// The runtime, HTTP client and provider thread, with adapters reading their keys from
@@ -317,7 +326,8 @@ impl Runs {
         #[cfg(not(target_arch = "wasm32"))]
         let key_http = Arc::clone(&http);
         let board = Board::default();
-        let plugins = PluginMaker::new(Arc::clone(&board));
+        let grants = Grants::new(Mutex::new(GrantCheck::this_window()));
+        let plugins = PluginMaker::new(Arc::clone(&board), Arc::clone(&grants));
         let mut runs = Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
@@ -329,6 +339,7 @@ impl Runs {
             }),
         )?;
         runs.plugins = board;
+        runs.plugin_grants = grants;
         #[cfg(not(target_arch = "wasm32"))]
         {
             runs.http = Some(key_http);
@@ -354,6 +365,12 @@ impl Runs {
             self.forget_adapters(session)?;
         }
         Ok(())
+    }
+
+    /// How plugin brokers built from now on recheck their grant before each request (#174): the
+    /// desktop reads the shared plugin store, so a revoke in another window stops them at once.
+    pub(super) fn set_plugin_grants(&mut self, grants: GrantCheck) {
+        *self.plugin_grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = grants;
     }
 
     /// [`Self::new`] with adapters built by `make`.
@@ -417,6 +434,7 @@ impl Runs {
             http: None,
             journal_problem: None,
             plugins: Board::default(),
+            plugin_grants: Grants::new(Mutex::new(GrantCheck::this_window())),
             plugins_known: false,
         })
     }
@@ -492,9 +510,15 @@ impl Runs {
                 if !self.plugins_known {
                     continue;
                 }
-                let granted = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).is_some();
-                if !granted {
+                let current = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).map(|p| PluginGrant::of(&p.stamp));
+                let Some(current) = current else {
                     self.host.abandon(project, &adapter, "its plugin is no longer enabled or granted");
+                    continue;
+                };
+                // Only jobs sent under the grant that stands now are followed; the broker checks
+                // that grant against the store before every poll.
+                self.host.abandon_other_grants(project, &adapter, &current);
+                if !self.host.waiting_targets(project).contains(&target) {
                     continue;
                 }
             }
@@ -1044,7 +1068,7 @@ mod plugin_maker_tests {
 
     #[test]
     fn a_plugin_provider_runs_only_while_the_session_publishes_it() {
-        let maker = PluginMaker::new(Board::default());
+        let maker = PluginMaker::new(Board::default(), Grants::default());
         let keys = nodecraft_engine::secrets::MemoryStore::default();
         match maker.make("plugin.io.example.acme.acme", &keys) {
             Err(Readiness::NotSetUp(why)) => assert_eq!(why, "that plugin isn't enabled"),
@@ -1099,6 +1123,7 @@ mod plugin_maker_tests {
             recipe: None,
             launches: 0,
             staged: None,
+            plugin: None,
         };
         let journal = nodecraft_engine::run_journal::FileJournal::at(path.clone());
         journal.save(&Journal { version: JOURNAL_VERSION, usage, submitted: vec![job] }).unwrap();

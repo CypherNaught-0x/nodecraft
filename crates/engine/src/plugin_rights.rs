@@ -2,6 +2,10 @@
 //! provider operations package, the origins its templates reach. This is what a person sees
 //! before granting, what a grant must match exactly, and what an update's permission delta
 //! compares. The store records a grant; reading the templates is the broker's (layer 3).
+//!
+//! A provider template also says things of its own service the host can't check: what each model
+//! costs, and whether the service deduplicates a resent job by its key. Those are shown as the
+//! publisher's claims ([`Claim`]), next to what is granted but never part of it.
 use nodecraft_plugin::manifest::{Capability, Optional, RegistrationKind, Runtime};
 use nodecraft_plugin_store::{Package, Rights};
 use nodecraft_providers::broker::Template;
@@ -17,6 +21,27 @@ pub struct Asks {
     pub optional: BTreeSet<Capability>,
     /// Every origin its provider templates name: their API and output origins.
     pub origins: BTreeSet<String>,
+    /// What its provider templates say of their services, one per provider.
+    pub claims: Vec<Claim>,
+}
+
+/// What one provider template says of its service, which the host can't check (#174).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Claim {
+    /// The provider's label.
+    pub provider: String,
+    /// Each model's label and the price the template declares for one job of it.
+    pub prices: Vec<(String, nodecraft_types::Money)>,
+    /// The header the template says its service deduplicates resent jobs by. The host sends the
+    /// key in it but never sends a job again on this claim.
+    pub idempotency_header: Option<&'static str>,
+}
+
+impl Claim {
+    fn to_json(&self) -> Value {
+        let prices: Vec<Value> = self.prices.iter().map(|(model, price)| json!({"model": model, "price": price})).collect();
+        json!({"provider": self.provider, "prices": prices, "idempotency_header": self.idempotency_header})
+    }
 }
 
 impl Asks {
@@ -27,7 +52,8 @@ impl Asks {
 
     pub fn to_json(&self) -> Value {
         let names = |c: &BTreeSet<Capability>| c.iter().map(|c| c.as_str()).collect::<Vec<_>>();
-        json!({"required": names(&self.required), "optional": names(&self.optional), "origins": self.origins})
+        let claims: Vec<Value> = self.claims.iter().map(Claim::to_json).collect();
+        json!({"required": names(&self.required), "optional": names(&self.optional), "origins": self.origins, "claims": claims})
     }
 
     /// The rights a grant of `chosen` capabilities is: every origin when network is among them.
@@ -57,13 +83,18 @@ pub fn asks(package: &Package) -> Result<Asks, Error> {
             Optional::Unknown(_) => None,
         })
         .collect();
-    let mut asks = Asks { required: caps.required.clone(), optional, origins: BTreeSet::new() };
+    let mut asks = Asks { required: caps.required.clone(), optional, origins: BTreeSet::new(), claims: Vec::new() };
     if matches!(package.manifest.runtime, Runtime::ProviderOperations { .. }) {
         for r in package.manifest.registrations.iter().filter(|r| r.kind == RegistrationKind::Provider) {
             let refuse = |why: String| Error::new(ErrorKind::InvalidInput, format!("its provider {} can't be used: {why}", r.id));
             let bytes = package.files.get(&r.descriptor).ok_or_else(|| refuse("its template is missing".into()))?;
             let template = Template::decode(bytes).map_err(|e| refuse(e.to_string()))?;
             asks.origins.extend(template.origins().map(|o| o.as_str().to_owned()));
+            asks.claims.push(Claim {
+                provider: template.label.clone(),
+                prices: template.models.iter().map(|m| (m.label.clone(), m.price)).collect(),
+                idempotency_header: template.idempotency.map(|h| h.name()),
+            });
         }
         if asks.origins.len() > nodecraft_plugin_store::grants::MAX_ORIGINS {
             return Err(Error::new(ErrorKind::InvalidInput, "its providers reach more than 8 origins, more than one grant covers"));

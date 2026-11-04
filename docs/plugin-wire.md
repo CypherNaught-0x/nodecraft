@@ -108,12 +108,12 @@ its templates. Unknown fields are refused, and so is any template that breaks a 
 | `origin` | the API: `https://` and a public DNS name in canonical form, with no port, path, user, query or fragment. IP literals and local names (`localhost`, `.local`, `.internal`, `.lan`, `.home.arpa`, …) are refused |
 | `output_origins` | up to 4 more origins, under the same rule, that output links may point to |
 | `credential` | optional: where the host puts the key, one of `bearer`, `key` (`Authorization: Key`), `x_api_key`, `api_key`, `x_goog_api_key`. A template names no other header |
-| `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. Without one, an ambiguous submit is never retried |
+| `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. It is the publisher's claim and shown as one at consent: an ambiguous submit is never sent again either way |
 | `models` | 1 to 64 `{id, price, label?, output?}`. An ID is `/`-separated parts of letters, digits, `.`, `_` and `-`. `price` is the publisher's positive per-job price in exact money (`{"currency":"USD","micros":"40000"}`); a zero price is refused. It is a floor the host's quote never goes under, not a price the host trusts. `label` is what the model picker shows (1 to 64 bytes, no control characters; the ID when absent). `output` is what the model makes: `image`, `video`, `audio`, `mesh` or `text`. A text model's outputs are all of kind `text` and any other's are all links; `output` defaults to whichever of `text` and `image` the outputs fit |
 | `submit` | `POST`, a `path`, a JSON `body`, and either `handle` (a JSON pointer to the job id) or `outputs` |
 | `poll` | needed for a queued submit, refused for one that finishes in its reply: `GET`, a `path` naming `{job}`, `status` (pointer), `states` (`queued`, `running`, `done`, `failed` status lists; `done` and `failed` required; no value in two), `outputs`, optional `error` (pointer), and `interval_ms` (500 to 60000) |
 | `cancel` | optional, queued jobs only: `POST` or `DELETE`, and a `path` naming `{job}` |
-| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise |
+| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s; a submit always gets at least 30 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise. `concurrency` caps both a run's jobs at once on the provider (its scheduler lane) and the requests in flight to it from every run and restored job together |
 
 A path segment is a literal of unreserved characters, or a whole `{model}` (a model the template
 lists) or `{job}` (an id from a reply of at most 128 unreserved characters). Paths have no query,
@@ -128,7 +128,7 @@ output origin.
 
 The broker's provider (`broker::Broker`) sends these requests without following a redirect: a
 `3xx` reply is an error, on the API origin and on a download alike. Outputs of kind `url` are
-fetched by the host without the credential, up to 256 MiB each, and typed by their bytes, not by
+fetched by the host without the credential, up to 64 MiB for one job (the downloads of a package's jobs hold at most 128 MiB at once), and typed by their bytes, not by
 the template's `mime`. A job id, output or link that carries the credential is refused, and the
 credential is taken out of every error. The service is unknown to the host, so no reply proves a
 submit created nothing: from the moment the submit is sent, every failure may have been billed.

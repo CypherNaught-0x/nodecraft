@@ -39,6 +39,11 @@ fn url(template: &Template, path: &PathTemplate, model: &str, job: Option<&str>)
     out
 }
 
+/// The least time a paid submit is given, whatever the template says (#174): a submit cut off
+/// while the service is still accepting it leaves a job that may be billed with no handle to
+/// follow, so a template can't make that the common case with a short timeout.
+pub const MIN_SUBMIT_TIMEOUT_MS: u64 = 30_000;
+
 fn bounded(template: &Template, request: HttpRequest) -> HttpRequest {
     request.timeout_ms(template.limits.timeout_ms).max_response_bytes(template.limits.response_bytes)
 }
@@ -111,7 +116,9 @@ pub fn plan_submit(template: &Template, job: &ProviderJob) -> Result<HttpRequest
         }
         request = request.header(header.name(), key.clone());
     }
-    Ok(bounded(template, request))
+    let request = bounded(template, request);
+    let timeout = template.limits.timeout_ms.max(MIN_SUBMIT_TIMEOUT_MS);
+    Ok(request.timeout_ms(timeout))
 }
 
 fn handle_parts<'a>(template: &'a Template, handle: &'a JobHandle) -> Result<(&'a str, &'a str), ProviderError> {
