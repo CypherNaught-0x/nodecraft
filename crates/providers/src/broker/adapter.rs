@@ -135,7 +135,8 @@ impl Broker {
         let Some(key) = &self.key else { return false };
         let escaped = serde_json::to_string(key.expose()).unwrap_or_default();
         let escaped = escaped.get(1..escaped.len().saturating_sub(1)).unwrap_or_default();
-        [key.expose(), escaped].iter().any(|k| !k.is_empty() && body.windows(k.len()).any(|w| w == k.as_bytes()))
+        // A linear scan per form: outputs may be tens of MiB, so no window-by-window compare.
+        [key.expose(), escaped].iter().any(|k| !k.is_empty() && memchr::memmem::find(body, k.as_bytes()).is_some())
     }
 
     /// An error for a non-2xx reply. A reply that echoes the credential is not quoted at all, so

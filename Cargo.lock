@@ -3519,6 +3519,7 @@ dependencies = [
  "hmac",
  "image",
  "js-sys",
+ "memchr",
  "nodecraft-catalog",
  "nodecraft-comfy",
  "nodecraft-media",
