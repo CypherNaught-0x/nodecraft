@@ -1,11 +1,13 @@
 # Native video service
 
-With the optional `nodecraft-media/video` feature, `video::VideoService` imports bounded media,
-decodes preview frames, supports latest-request-wins scrubbing, and encodes a stream of RGBA
-frames to VP9 WebM, and stitches staged clips into one WebM (see "Compose" below). The desktop
-app uses it to play videos and sounds on cards (see "On cards" and "Sound on cards" below); the service itself is not an engine
-command. It does not call providers. The default media
-build is unchanged.
+The desktop app uses installed FFmpeg and ffprobe to play media on cards and render video
+actions and Timelines. See [installation](install.md#optional-ffmpeg-tools) to configure them.
+
+For library consumers, the optional `nodecraft-media/video` feature enables
+`video::VideoService`. The desktop and native CLI already enable it through their
+dependencies. The service imports bounded media, decodes preview frames, supports
+latest-request-wins scrubbing and writes verified VP9 WebM. The engine exposes its render
+paths through Timeline and video-action commands. The service calls no providers.
 
 ## Tools and platforms
 
@@ -27,7 +29,7 @@ The native backend uses bounded worker/pipe threads and ordinary processes. It d
 a malicious executable, codec vulnerability, descendants or external process memory. Standard
 Flatpak installations do not grant host executable access; an explicitly configured permitted
 sandbox executable is necessary. There is no host-spawn escape or broader Flatpak permission.
-The browser API rejects setup as Unsupported before native work; WebCodecs is separate.
+The browser API rejects native video setup as Unsupported.
 
 ## Nonblocking host integration
 
@@ -361,3 +363,17 @@ redistributed. No speed, full codec support or fully decoded security guarantee 
 The engine's ignored `several_timeline_renders_respect_the_shared_staging_quota` test uses the
 same explicit tool variables, deterministic mock-provider captions and tiny actual renders to
 check aggregate admission and cleanup with a small test-only budget.
+
+### M7 four-clip render check
+
+On 2026-11-03, the Timeline integration path in NodeCraft 0.6.0 rendered four original
+one-second MP4 clips with distinct picture colors and audio tones on macOS using FFmpeg
+and ffprobe 9.0.2. The project imported the four files, wired them into a Timeline, set
+100 ms clip fades and three 200 ms crossfades through `timeline.update`, then ran the
+Timeline through `run.quote` and `run.start`. The recorded output was a 3.4-second WebM.
+FFprobe counted 102 VP9 frames at 30 fps and a 48 kHz stereo Opus track. Decoded samples
+from all four clips confirmed their distinct pictures and audible signals. The demo used
+the same engine path as [the two-clip integration test](../crates/engine/tests/timeline109.rs).
+
+This check covers the rendered video. Importing exported cuts into Final Cut Pro and
+DaVinci Resolve is tracked in [#643](https://github.com/CypherNaught-0x/nodecraft/issues/643).

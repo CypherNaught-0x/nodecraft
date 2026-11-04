@@ -251,8 +251,10 @@ over `agent` with `automation`'s tools) and, with `--control`, the control chann
 against the window's live session.
 
 `apps/nodecraft-web` is the browser app: the same `NodeCraftApp` on eframe's `WebRunner`, built
-by trunk (`packaging/web/package.sh`). It is a preview: no browser host provides project storage,
-the keychain or local runs yet, so those commands report *unsupported*.
+by Trunk (`packaging/web/package.sh`). The browser host opens and saves project files through
+pickers or downloads, offers recovery from origin storage, and runs supported providers directly
+with keys stored for that origin. Live sharing uses the browser WebSocket. The browser build
+ships as a preview and follows browser storage, CORS and secure-context limits.
 
 ## The engine/UI seam
 
@@ -696,9 +698,10 @@ imposing the archive's smaller manifest ceiling on every edit.
 ## Optional native video sidecar
 
 `media/video` provides the standalone bounded native FFmpeg service described in
-[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
-tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
-is separate. Feature-on wasm exposes an Unsupported host setup path.
+[media-video.md](media-video.md). Native app builds enable the library feature and discover
+installed tools. The UI uses the service for card previews and playback, and the engine uses
+it for Timeline and video-action renders. The library depends on external Rust crates and
+invokes FFmpeg and ffprobe as processes. WebAssembly exposes an Unsupported host setup path.
 
 ## Selected-node formatting
 
@@ -843,8 +846,9 @@ passes that on, and the app draws the others over the canvas. Presence never ent
 `nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.
-Assets over 16 MiB travel in parts, paced by the receiver and kept in a `Spool` until whole
-(the desktop's spools to temporary files); see the [decision](decisions/2026-10-23-large-shared-assets.md).
+Desktop transfers for assets over 16 MiB are paced by the receiver and spooled to temporary
+files. Browser peers keep assets within their memory cap. See
+[large shared assets](decisions/2026-10-23-large-shared-assets.md).
 
 ## Custom endpoints (#960)
 

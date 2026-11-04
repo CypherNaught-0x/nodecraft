@@ -390,7 +390,7 @@ impl NodeCraftApp {
         // Not while the recovery dialog decides which document is open: a result recorded now
         // would be lost if the person then recovers the other one.
         #[cfg(not(target_arch = "wasm32"))]
-        let deciding = self.recovery.is_some();
+        let deciding = self.recovery_deciding();
         #[cfg(target_arch = "wasm32")]
         let deciding = false;
         let settings = self.runs.as_ref().is_some_and(|runs| runs.has_waiting() && !deciding).then(|| self.provider_settings());

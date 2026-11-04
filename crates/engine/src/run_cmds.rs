@@ -439,6 +439,8 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     // A job that couldn't send its media would fail after the cost was accepted (#675); a mask
     // over an image that changed shape would stretch its strokes (#546): ask first.
     let oversized = media_size::oversized(&run_plan, c.assets);
+    // Video past what the model sends in one request would fail in its adapter (#84).
+    let video = media_size::too_much_video(&run_plan, c.assets, catalog);
     let reshaped = crate::mask_cmds::binding::reshaped(canvas, run_plan.steps.iter().map(|s| s.node), &expanded.inner);
     // Parameters and inputs that pass graph validation one by one may still be too many for one
     // model call together (#307): the same admission the call runs, over the jobs known now.
@@ -448,10 +450,11 @@ fn priced(c: &Context<'_>, p: &RunParams, token: String) -> Result<Priced, Error
     let requests_json: Vec<Value> = refused_first.into_iter().chain(admitted).take(MAX_LISTED).map(|r| r.json(expanded.owner(r.node))).collect();
     // A step whose media alone is too large already says so; one reason per cause.
     let refused = requests.iter().filter(|r| !oversized.iter().any(|o| o.node == r.node)).filter_map(|r| r.reason(expanded.owner(r.node)));
-    if !oversized.is_empty() || !reshaped.is_empty() || requests.iter().any(|r| r.check.refusal.is_some()) {
+    if !oversized.is_empty() || !video.is_empty() || !reshaped.is_empty() || requests.iter().any(|r| r.check.refusal.is_some()) {
         let reasons: Vec<String> = oversized
             .iter()
             .map(|o| o.reason(expanded.owner(o.node)))
+            .chain(video.iter().filter(|v| !oversized.iter().any(|o| o.node == v.node)).map(|v| v.reason(expanded.owner(v.node))))
             .chain(reshaped.iter().map(|id| crate::mask_cmds::binding::reason(expanded.owner(*id))))
             .chain(refused)
             .take(MAX_RUN_BLOCKS_LISTED)
@@ -743,6 +746,9 @@ fn run_start(c: &Context<'_>, value: &Value) -> Result<Effect, Error> {
     crate::generation_catalog::validate_plan(c.resources, c.kinds, &expanded.canvas, plan.steps.iter().map(|s| s.node))?;
     if let Some(oversized) = media_size::oversized(&plan, c.assets).first() {
         return Err(invalid(oversized.reason(expanded.owner(oversized.node))));
+    }
+    if let Some(video) = media_size::too_much_video(&plan, c.assets, c.resources.require::<RunCatalog>()?.catalog()).first() {
+        return Err(invalid(video.reason(expanded.owner(video.node))));
     }
     if let Some(reason) = request_size::requests(&plan, c.assets).0.iter().find_map(|r| r.reason(expanded.owner(r.node))) {
         return Err(invalid(reason));

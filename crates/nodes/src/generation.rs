@@ -10,7 +10,7 @@ use crate::{
 use nodecraft_graph::{Node, Port};
 use nodecraft_types::{
     AssetRef, AudioOverrun, AudioUse, ConnectedText, Contract, DocumentUse, Error, ErrorKind, Modality, NodeId, ParamControl, ParamOwner, ParamSchema,
-    ParamSpec, ParamValues, PortType, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
+    ParamSpec, ParamValues, PortType, ReadingUse, ResolvedParams, TextPrecedence, Value, VideoEdit, compose_text,
 };
 use std::{
     borrow::Cow,
@@ -76,6 +76,10 @@ pub struct GenerationMode {
     pub edit: Option<VideoEdit>,
     /// How it reads wired PDFs, when it takes them (#591).
     pub document: Option<DocumentUse>,
+    /// What a text mode promises about reading its inputs (#84): its context window, and how it
+    /// samples a wired video. Planning refuses a prompt clearly past the window, and a video of
+    /// a type it doesn't list or longer than the frames it reads, before anything is quoted.
+    pub reads: Option<ReadingUse>,
 }
 impl GenerationMode {
     /// Whether this mode sends the model setting `name`.
@@ -278,6 +282,13 @@ impl GenerationKind {
                     !mode.inputs.iter().any(|role| role.role == document.role && role.modality == Modality::Document) || document.validate().is_err()
                 }) {
                     return Err(bad(output, "a {noun} mode describes PDFs it doesn't take"));
+                }
+                if mode.reads.as_ref().is_some_and(|reads| {
+                    output != Modality::Text
+                        || reads.validate().is_err()
+                        || reads.frames.is_some() != mode.inputs.iter().any(|role| role.modality == Modality::Video)
+                }) {
+                    return Err(bad(output, "a {noun} mode describes reading it can't do"));
                 }
                 if mode.edit.as_ref().is_some_and(|edit| {
                     output != Modality::Video
@@ -605,6 +616,9 @@ impl NodeKind for GenerationKind {
             None if !mentioned.is_empty() => return Err(bad(self.output, "this {noun} model takes no prompt, so it can't use @mentions")),
             None => None,
         };
+        if let (Some(reads), Some(prompt)) = (&mode.reads, &prompt) {
+            reads.context_fits(&definition.model.id, prompt.len())?;
+        }
         let target = ctx
             .targets
             .get(ctx.node.id, &definition.model.provider)
@@ -685,6 +699,12 @@ fn media_fits<'a>(model: &GenerationModel, mode: &GenerationMode, media: impl It
     }
     if let Some(document) = &mode.document {
         document_fits(document, media.clone())?;
+    }
+    if let Some(reads) = &mode.reads {
+        for (role, asset) in media.filter(|(_, asset)| Modality::Video.accepts_mime(asset.mime.essence())) {
+            reads.video_type_fits(role, asset.mime.essence())?;
+            reads.frames_fit(role, asset.meta.duration_ms)?;
+        }
     }
     Ok(())
 }

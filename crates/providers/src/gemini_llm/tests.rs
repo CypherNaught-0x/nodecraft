@@ -23,7 +23,7 @@ fn gemini44_catalog_defaults_use_fixed_google_origin_and_secret_auth() {
     assert!(matches!(model.pricing, nodecraft_catalog::Pricing::ByUsage { .. }));
     assert!(model.usage.is_none());
     assert_eq!(model.provider_model, MODEL);
-    assert_eq!(model.modes.len(), 1);
+    assert_eq!(model.modes.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["text-to-text", "video-to-text"]);
     let values = model.effective_params(&Default::default(), true).unwrap();
     assert_eq!(values.get("max_tokens"), Some(&nodecraft_types::Value::Unsigned(nodecraft_types::Unsigned(DEFAULT_TOKENS))));
     let http = Canned::new(200, REPLY);
