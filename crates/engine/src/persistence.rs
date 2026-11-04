@@ -134,7 +134,8 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
             let capability = guard(|| Ok(storage.capability()))?;
             // Rewriting under the new identity is known only now: check it fits first (#367).
             let probe = guard(|| Ok(storage.space_probe(location)))?;
-            nodecraft_format::space::check_rewrite(&document.snapshot, capability, &probe)?;
+            let journal = guard(|| Ok(storage.journal_bytes()))?;
+            nodecraft_format::space::check_rewrite(&document.snapshot, capability, &probe, journal)?;
             CheckpointPlan::new(ArchivePlan::prepare(&document.snapshot, capability, cancel, metrics)?)?
         } else {
             checkpoint

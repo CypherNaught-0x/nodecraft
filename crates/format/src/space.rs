@@ -341,12 +341,15 @@ impl SpaceInventory {
 /// The check an open makes once the file's private copy is made and its index read (#367).
 /// A classic-format file (every project small enough for the classic wire) has each of its
 /// assets copied and verified in the workspace before it is decoded, then a checkpoint of the
-/// copy written; neither is known before the file is read. Checked against the space left now.
+/// copy written; neither is known before the file is read. Checked against the space left now,
+/// with the replace of the journal (of `journal_bytes` on disk; unknown is `None`, the larger
+/// charge) by the new checkpoint as [`SpaceInventory::with_journal_replaced`] counts it.
 pub fn check_open_copies(
     index: &crate::zip_index::ArchiveIndex,
     context: &crate::AssetContext,
     capability: crate::StorageCapability,
     probe: &SpaceProbe,
+    journal_bytes: Option<u64>,
 ) -> Result<(), Error> {
     if capability != crate::StorageCapability::StreamingV2 || probe.recovery_free.is_none() || !crate::archive::is_classic_wire(index.version()) {
         return Ok(());
@@ -368,20 +371,27 @@ pub fn check_open_copies(
         .zip(verified)
         .filter(|(_, verified)| !verified)
         .try_fold(0u64, |total, ((_, bytes), _)| total.checked_add(*bytes).ok_or_else(overflow))?;
-    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?.with_cleanup_debt(context.cleanup_debt()?).check(probe)
+    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?
+        .with_journal_replaced(journal_bytes.unwrap_or(0))
+        .with_cleanup_debt(context.cleanup_debt()?)
+        .check(probe)
 }
 /// The check an open makes once it has found that the file needs rewriting (#367): the
 /// rewritten archive of `snapshot` (estimated without reading its media), the media copies it
 /// is written from, any compaction pack and its checkpoint, against the space `probe` reports
-/// now, after the private copy was made. Unknown free space or an estimate that can't be made
-/// let the open go ahead; the real writes then decide.
-pub fn check_rewrite(snapshot: &crate::Snapshot, capability: crate::StorageCapability, probe: &SpaceProbe) -> Result<(), Error> {
+/// now, after the private copy was made, with the journal replace as in [`check_open_copies`].
+/// Unknown free space or an estimate that can't be made let the open go ahead; the real writes
+/// then decide.
+pub fn check_rewrite(snapshot: &crate::Snapshot, capability: crate::StorageCapability, probe: &SpaceProbe, journal_bytes: Option<u64>) -> Result<(), Error> {
     if capability != crate::StorageCapability::StreamingV2 || probe.recovery_free.is_none() {
         return Ok(());
     }
     let Ok(bytes) = crate::ArchivePlan::estimate_bytes(&snapshot.project, &snapshot.assets, snapshot.epoch, capability) else { return Ok(()) };
     let output = snapshot.assets.output_space(&snapshot.project, &std::collections::BTreeSet::new()).ok().flatten().unwrap_or_default();
-    let mut inventory = SpaceInventory::rewrite(bytes)?.with_verified_copies(output.verified_copies).with_cleanup_debt(output.cleanup_debt);
+    let mut inventory = SpaceInventory::rewrite(bytes)?
+        .with_verified_copies(output.verified_copies)
+        .with_journal_replaced(journal_bytes.unwrap_or(0))
+        .with_cleanup_debt(output.cleanup_debt);
     if let Some(pack) = output.compaction {
         inventory = inventory.with_compaction(pack);
     }
