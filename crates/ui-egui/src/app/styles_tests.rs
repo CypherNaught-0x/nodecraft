@@ -111,6 +111,63 @@ fn an_untrained_style_card_offers_no_card_and_plain_cards_no_style() {
     assert!(h.query_by_label("Use style ⏵").is_none());
 }
 
+/// A project whose trained style's file is gone: the card keeps its result, but offers no card
+/// and no style until it is trained again.
+fn missing_file() -> Harness<'static, NodeCraftApp> {
+    let mut h = harness();
+    add_style(&mut h, STYLE, 150.0, "Ink wash", "inkwash");
+    let (project, canvas) = (h.state().session.document().clone(), h.state().canvas);
+    // The same project opened without the style's file.
+    let app = NodeCraftApp::from_session(nodecraft_engine::Session::new(project).unwrap(), canvas).unwrap();
+    let mut h = Harness::builder()
+        .with_step_dt(1.0 / 60.0)
+        .with_max_steps(120)
+        .with_size(Vec2::new(1000.0, 700.0))
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.state_mut().view.zoom = 0.5;
+    h.run();
+    h
+}
+
+#[test]
+fn a_style_whose_file_is_missing_offers_nothing_until_trained_again() {
+    let mut h = missing_file();
+    let style = canvas(&h).nodes().get(&STYLE).unwrap().clone();
+    assert!(style.active.is_some(), "the card keeps its recorded result");
+    right_click(&mut h, STYLE);
+    let item = h.get_by_label("New image card with this style");
+    assert!(item.accesskit_node().is_disabled(), "a style without its file can't start a card");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    // An image card is offered it disabled, saying why: the missing file comes before any model check.
+    let canvas_id = h.state().canvas;
+    let card = nodecraft_types::NodeId::from_bytes([72; 16]);
+    let created = json!({"canvas": canvas_id, "id": card, "kind": nodecraft_nodes::generation::KIND, "pos": {"x": -400, "y": 250}});
+    h.state_mut().session.dispatch("node.create", &created).unwrap();
+    h.run();
+    let offers = {
+        let app = h.state();
+        let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
+        nodecraft_engine::style_cmds::offers(canvas, app.session.generation_catalog().ok(), app.session.assets(), canvas.nodes().get(&card).unwrap())
+    };
+    let [offer] = offers.as_slice() else { panic!("{offers:?}") };
+    assert!(offer.refusal.as_deref().is_some_and(|why| why.contains("missing") && why.contains("again")), "{offer:?}");
+    assert_eq!(canvas(&h).nodes().get(&STYLE).unwrap(), &style, "nothing about the card changed");
+}
+
+#[test]
+#[ignore = "manual public-safe capture; STYLES167_RENDER_DIR"]
+fn styles167_missing_file_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("STYLES167_RENDER_DIR").unwrap());
+    let h = missing_file();
+    let mut shot = Harness::builder().wgpu().with_size(Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), h.into_state());
+    shot.run();
+    right_click(&mut shot, STYLE);
+    shot.get_by_label("New image card with this style").hover();
+    shot.run();
+    shot.render().unwrap().save(dir.join("styles167-missing-file-menu.png")).unwrap();
+}
+
 #[test]
 #[ignore = "manual public-safe capture; STYLES167_RENDER_DIR"]
 fn styles167_visual() {

@@ -479,6 +479,8 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             let family = style.and_then(crate::style_cmds::family);
             // Descriptors are small and resident; one that isn't has no provider or trigger listed.
             let descriptor = style.and_then(|s| c.assets.get(&s.hash)).and_then(|bytes| nodecraft_media::style::decode(bytes).ok());
+            // A style whose file is gone from the project can't be used until it is trained again.
+            let present = style.is_some_and(|s| c.assets.contains(&s.hash));
             let trainer = match node.params.get(MODEL) {
                 Some(Value::Text(id)) if !id.is_empty() => Some(id.as_str()),
                 _ => None,
@@ -498,7 +500,9 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
                 "id": node.id,
                 "title": node.title,
                 "trainer": trainer,
-                "ready": family.is_some(),
+                "ready": family.is_some() && present,
+                // What to do when it isn't: the same reason style.list gives.
+                "reason": crate::style_cmds::unready(c.assets, node),
                 "family": family,
                 "identity": family == Some(SOUL_ID_FAMILY),
                 "trigger": descriptor.as_ref().map(|d| d.trigger.clone()),

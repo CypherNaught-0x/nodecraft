@@ -267,6 +267,8 @@ pub struct RunHost {
     kept_handles: Arc<Mutex<crate::jobs::KeptHandles>>,
     /// Paid results that couldn't be kept, waiting for a decision (#369).
     results: Arc<Mutex<held::Held>>,
+    /// The jobs `run.jobs` lists and the cancels `run.cancel` asked for (#167).
+    job_board: Arc<Mutex<crate::run_job_cmds::Board>>,
     held_preparation: assets::Actions,
     #[cfg(test)]
     preparation_hook: Option<assets::Hook>,
@@ -367,6 +369,7 @@ impl RunHost {
             checked_at: 0,
             kept_handles: Arc::default(),
             results,
+            job_board: Arc::default(),
             held_preparation: assets::Actions::default(),
             #[cfg(test)]
             preparation_hook: None,
@@ -695,7 +698,8 @@ impl RunHost {
         })?;
         let inbox = Arc::clone(&self.inbox);
         services.register_run_host_idle(move || lock(&inbox).waiting.is_empty())?;
-        held::register(&self.results, services)
+        held::register(&self.results, services)?;
+        crate::run_job_cmds::register(&self.job_board, services)
     }
 
     /// Registers the `run.estimate` service (#663); call once, before the session is built, on a
@@ -888,6 +892,12 @@ impl RunHost {
     /// Starts accepted runs and absorbs finished work. UI thread; never blocks on a provider.
     pub fn pump(&mut self, session: &mut Session) -> Vec<RunNotice> {
         let mut notices = std::mem::take(&mut self.held);
+        // Cancels asked through `run.cancel` (#167), as the queue panel's would be. One that ended
+        // meanwhile has nothing left to stop.
+        let cancels = std::mem::take(&mut lock(&self.job_board).cancels);
+        for key in cancels {
+            let _ = self.cancel(key);
+        }
         // Every accepted run starts now, before this pump records anything (see `Inbox`).
         loop {
             let next = lock(&self.inbox).waiting.pop_front();
@@ -944,6 +954,8 @@ impl RunHost {
         }
         *lock(&self.mapping_running) = self.running();
         self.publish_following();
+        let jobs = self.jobs();
+        lock(&self.job_board).publish(jobs);
         notices
     }
 

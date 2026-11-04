@@ -120,7 +120,11 @@ struct Fixture {
 
 /// A Train style card fed two pictures, and an image card on the trainer's family, unwired.
 fn fixture() -> Fixture {
-    let mock = MockProvider::standard();
+    fixture_with(MockProvider::standard())
+}
+
+/// [`fixture`] on `mock`.
+fn fixture_with(mock: MockProvider) -> Fixture {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([67; 16]), "Styles").unwrap();
@@ -386,4 +390,338 @@ fn a_style_card_starts_a_card_on_a_model_that_takes_the_style() {
     assert_eq!(wires, [(TRAIN, "style".to_owned())]);
     f.session.dispatch("edit.undo", &json!({})).unwrap();
     assert!(f.session.document().canvases().get(&C).unwrap().nodes().get(&NEW).is_none(), "one undo step");
+}
+
+// Saved projects, unavailable providers, missing style files, and trainings that fail or are
+// cancelled (#167). Mock provider only.
+
+/// A trained style wired into the painter card, with a prompt of the person's own.
+fn styled() -> Fixture {
+    let mut f = fixture();
+    run(&mut f, TRAIN, 2_000_000);
+    let edge = json!({"id": EdgeId::from_bytes([30; 16]), "from": {"node": TRAIN, "port": "out"}, "to": {"node": PAINT, "port": "style"}, "order": 0});
+    f.session.dispatch("edge.connect", &json!({"canvas": C, "edge": edge})).unwrap();
+    f.session.dispatch("node.param_set", &json!({"canvas":C,"id":PAINT,"name":"prompt","value":{"type":"text","value":"A harbour in fog"}})).unwrap();
+    f
+}
+
+/// The project as saved and read back, opened in a new session with the same catalog. It holds
+/// every saved asset except `missing`. `mock` is routed to both cards when given; without it
+/// the cards' provider is unavailable.
+fn reopen(f: &Fixture, missing: Option<nodecraft_types::Blake3>, mock: Option<&MockProvider>) -> (Session, RunHost) {
+    let snapshot = nodecraft_format::Snapshot { project: f.session.document().clone(), assets: f.session.assets().clone(), epoch: 0 };
+    let read = nodecraft_format::decode(&nodecraft_format::encode(&snapshot).unwrap()).unwrap();
+    let generation = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
+    let kinds = generation.registry().unwrap();
+    let mut resources = Resources::default();
+    resources.insert(generation.clone());
+    resources.insert(generation.run_catalog());
+    let budget = JobBudget {
+        log: Arc::new(Mutex::new(UsageLog::default())),
+        budgets: Arc::new(Mutex::new(Budgets::default())),
+        session: "styles-reopened".into(),
+        wall_clock_ms: Arc::new(|| 0),
+    };
+    let host = RunHost::new(Arc::new(Threads(Instant::now())), budget).with_retry(RetryPolicy { max_attempts: 1, ..Default::default() });
+    let mut services = Services::default();
+    host.register(&mut services).unwrap();
+    let mut session = Session::with_registries(read.project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
+    for (hash, bytes) in read.assets.iter() {
+        if Some(*hash) != missing {
+            assert_eq!(session.import_asset(bytes).unwrap(), *hash);
+        }
+    }
+    if let Some(mock) = mock {
+        let mut routing = ProviderRouting::new();
+        let binding = routing.bind_default(Arc::new(mock.clone())).unwrap();
+        for node in [TRAIN, PAINT] {
+            routing.select(node, "mock", binding.target()).unwrap();
+        }
+        session.set_provider_routing(routing).unwrap();
+    }
+    host.install(&mut session);
+    (session, host)
+}
+
+/// A connection, by its ends.
+type Wire = (NodeId, String, NodeId, String);
+
+/// What a card holds that the person set up: its model, settings, wiring and results.
+fn configuration(session: &Session) -> (Vec<Node>, Vec<Wire>) {
+    let canvas = session.document().canvases().get(&C).unwrap();
+    let nodes = [TRAIN, PAINT].iter().map(|id| canvas.nodes().get(id).unwrap().clone()).collect();
+    let mut edges: Vec<_> = canvas.edges().values().map(|e| (e.from.node, e.from.port.clone(), e.to.node, e.to.port.clone())).collect();
+    edges.sort();
+    (nodes, edges)
+}
+
+/// A provider set up in the session again routes both cards.
+fn route(session: &mut Session, mock: &MockProvider) {
+    let mut setup = nodecraft_engine::provider_setup::ProviderSetup::default();
+    let made = mock.clone();
+    setup.ensure("mock", move |_| Ok(Arc::new(made) as Arc<dyn nodecraft_providers::Provider>));
+    session.set_provider_routing(setup.routing([(TRAIN, "mock"), (PAINT, "mock")]).unwrap()).unwrap();
+}
+
+fn reopened_quote(session: &mut Session, card: NodeId) -> Result<serde_json::Value, nodecraft_types::Error> {
+    session.dispatch("run.quote", &json!({"canvas":C,"mode":"selected","nodes":[card]}))
+}
+
+/// Quotes, accepts and runs `card` in a reopened session until its host is idle.
+fn reopened_run(session: &mut Session, host: &mut RunHost, card: NodeId) -> Vec<RunNotice> {
+    let q = reopened_quote(session, card).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = json!({"canvas":C,"mode":"selected","nodes":[card]});
+    start["accept"] = json!({"token":q["token"],"partial":q["complete"] != true,"unpriced_jobs":0,"amounts":amounts});
+    session.dispatch("run.start", &start).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut notices = Vec::new();
+    loop {
+        notices.extend(host.pump(session));
+        if !host.is_busy() {
+            return notices;
+        }
+        assert!(Instant::now() < deadline, "the run never finished: {notices:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+#[test]
+fn a_saved_project_opened_without_its_provider_keeps_its_styles_and_runs_nothing_until_set_up() {
+    let f = styled();
+    let saved = configuration(&f.session);
+    let (mut session, mut host) = reopen(&f, None, None);
+    assert_eq!(configuration(&session), saved, "the cards, their settings, results and wiring read back as saved");
+
+    // The style is still ready and still fits its card: nothing about it depended on the provider.
+    let listed = session.dispatch("style.list", &json!({"canvas": C, "for": PAINT})).unwrap();
+    let style = &listed["styles"][0];
+    assert_eq!((style["ready"].clone(), style["family"].clone(), style["compatible"].clone()), (json!(true), json!("flux-1"), json!(true)), "{listed}");
+    assert_eq!(session.dispatch("library.styles", &json!({})).unwrap()["styles"][0]["ready"], true);
+
+    // Nothing runs while the provider is missing, and nothing is sent.
+    let refused = match reopened_quote(&mut session, PAINT) {
+        Err(error) => error.message,
+        Ok(q) => {
+            assert_eq!(q["allowed"], false, "{q}");
+            q.to_string()
+        }
+    };
+    assert!(refused.contains("provider route is not configured"), "the reopened session refuses the run itself: {refused}");
+    // The engine's own refusal names only the missing route; the app routes cards through its
+    // provider setup, whose refusal says what to set up.
+    let mut setup = nodecraft_engine::provider_setup::ProviderSetup::default();
+    setup.ensure("mock", |_| Err(nodecraft_engine::provider_setup::Readiness::NeedsKey { account: "mock".into() }));
+    let why = setup.routing([(PAINT, "mock")]).err().expect("an unready provider routes nothing").message;
+    assert!(why.contains("mock") && why.contains("API key"), "{why}");
+    assert_eq!(configuration(&session), saved, "a refused run changes nothing");
+
+    // Once the provider is back, the card runs with its saved style as it did before saving.
+    let mock = MockProvider::standard();
+    route(&mut session, &mock);
+    let notices = reopened_run(&mut session, &mut host, PAINT);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    let requests = mock.requests();
+    let [job] = requests.as_slice() else { panic!("one image request: {requests:?}") };
+    assert!(job.inputs.iter().any(|input| matches!(input, JobInput::Text { role, text } if role == "prompt" && text == "A harbour in fog")));
+    let sent = job.inputs.iter().find_map(|input| match input {
+        JobInput::Media { role, bytes, .. } if role == "style" => Some(bytes.clone()),
+        _ => None,
+    });
+    let descriptor = nodecraft_media::style::decode(&sent.expect("the saved style is sent")).unwrap();
+    assert_eq!(descriptor.family, "flux-1");
+    assert!(f.mock.requests().iter().all(|j| j.model == "mock-style"), "the first session's provider saw only the training");
+}
+
+#[test]
+fn a_saved_project_missing_its_style_file_keeps_the_configuration_and_says_to_train_again() {
+    let f = styled();
+    let saved = configuration(&f.session);
+    let style = result(node(&f.session, TRAIN));
+    let mock = MockProvider::standard();
+    let (mut session, mut host) = reopen(&f, Some(style.hash), Some(&mock));
+    assert!(!session.assets().contains(&style.hash));
+    assert_eq!(configuration(&session), saved, "the cards keep their settings, results and wiring");
+
+    // The style card says its file is gone and what to do, and the painter can't use it.
+    let listed = session.dispatch("style.list", &json!({"canvas": C, "for": PAINT})).unwrap();
+    let entry = &listed["styles"][0];
+    assert_eq!((entry["ready"].clone(), entry["compatible"].clone()), (json!(false), json!(false)), "{listed}");
+    let reason = entry["reason"].as_str().unwrap_or_default();
+    assert!(reason.contains("missing") && reason.contains("train"), "{listed}");
+    let library = session.dispatch("library.styles", &json!({})).unwrap();
+    assert_eq!(library["styles"][0]["ready"], false, "the styles browser agrees: {library}");
+    assert!(library["styles"][0]["reason"].as_str().is_some_and(|r| r.contains("missing")), "and says why: {library}");
+    let card = json!({"canvas": C, "style": TRAIN, "id": NodeId::from_bytes([61; 16]), "edge": EdgeId::from_bytes([62; 16]), "pos": {"x": 0, "y": 400}});
+    let refused_card = session.dispatch("style.card", &card).unwrap_err();
+    assert!(refused_card.message.contains("missing"), "{refused_card:?}");
+    let use_it = json!({"canvas": C, "style": TRAIN, "target": PAINT, "edge": EdgeId::from_bytes([60; 16])});
+    let refused = session.dispatch("style.use", &use_it).unwrap_err();
+    assert!(refused.message.contains("missing"), "{refused:?}");
+
+    // A run of the painter fails before anything is sent, saying what to do, and charges nothing.
+    let notices = reopened_run(&mut session, &mut host, PAINT);
+    let reason = notices.iter().find_map(|n| match n {
+        RunNotice::Failed { node, reason, .. } if *node == PAINT => Some(reason.clone()),
+        _ => None,
+    });
+    let reason = reason.unwrap_or_else(|| panic!("the painter fails: {notices:?}"));
+    assert!(reason.contains("doesn't have") && reason.contains("re-import its source"), "{reason}");
+    let view = host.jobs().into_iter().find(|v| v.node == PAINT).unwrap();
+    assert!(!view.sent && !view.may_have_been_charged(), "{view:?}");
+    assert!(mock.requests().is_empty(), "nothing was sent");
+    assert_eq!(configuration(&session), saved, "a refused run changes nothing");
+}
+
+/// A trainer that runs `polls` polls, failing as `fail` says.
+fn trainer(polls: u32, fail: Option<nodecraft_providers::mock::MockFailure>) -> MockProvider {
+    use nodecraft_providers::mock::{MockModel, MockOutput};
+    let mut style = MockModel::new(MockOutput::Style);
+    style.polls = polls;
+    style.fail = fail;
+    let models = [("mock-style".to_owned(), style), ("mock-image".to_owned(), MockModel::new(MockOutput::Image))];
+    MockProvider::new("mock", models)
+}
+
+fn train_job(f: &Fixture) -> Option<nodecraft_engine::run_jobs::JobView> {
+    f.host.jobs().into_iter().rev().find(|view| view.node == TRAIN)
+}
+
+/// Quotes and starts the training, then pumps until `done` holds.
+fn start_training(f: &mut Fixture, until: &str, done: impl Fn(&Fixture) -> bool) -> Vec<RunNotice> {
+    let q = quote(f, TRAIN).unwrap();
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = json!({"canvas":C,"mode":"selected","nodes":[TRAIN]});
+    start["accept"] = json!({"token":q["token"],"partial":q["complete"] != true,"unpriced_jobs":0,"amounts":amounts});
+    f.session.dispatch("run.start", &start).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut notices = Vec::new();
+    while !done(f) {
+        notices.extend(f.host.pump(&mut f.session));
+        assert!(Instant::now() < deadline, "{until} never happened: {notices:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    notices
+}
+
+fn drain(f: &mut Fixture) -> Vec<RunNotice> {
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut notices = Vec::new();
+    loop {
+        notices.extend(f.host.pump(&mut f.session));
+        if !f.host.is_busy() {
+            return notices;
+        }
+        assert!(Instant::now() < deadline, "the run never finished: {notices:?}");
+        std::thread::sleep(Duration::from_millis(1));
+    }
+}
+
+fn not_ready(f: &mut Fixture) {
+    let listed = f.session.dispatch("style.list", &json!({"canvas": C, "for": PAINT})).unwrap();
+    let entry = &listed["styles"][0];
+    assert_eq!((entry["ready"].clone(), entry["compatible"].clone()), (json!(false), json!(false)), "{listed}");
+    assert!(entry["reason"].as_str().is_some_and(|r| r.contains("train")), "{listed}");
+    assert!(node(&f.session, TRAIN).active.is_none(), "no style is offered");
+}
+
+#[test]
+fn a_training_the_provider_fails_keeps_no_style_and_says_it_may_have_been_charged() {
+    use nodecraft_providers::{ErrorKind, mock::MockFailure};
+    let mut f = fixture_with(trainer(2, Some(MockFailure::Job(ErrorKind::Server))));
+    let mut notices = start_training(&mut f, "the training was sent", |f| f.mock.requests().len() == 1);
+    notices.extend(drain(&mut f));
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Failed { node, .. } if *node == TRAIN)), "{notices:?}");
+    let view = train_job(&f).unwrap();
+    assert!(view.state.is_final() && view.sent, "{view:?}");
+    assert!(view.may_have_been_charged(), "a job the provider took and then failed may be billed: {view:?}");
+    not_ready(&mut f);
+    assert_eq!(f.mock.requests().len(), 1, "a failed training is not sent again by itself");
+    // The card keeps its settings and pictures for another try.
+    let train = node(&f.session, TRAIN);
+    assert_eq!(train.params.get("model"), Some(&Value::Text(TRAINER.into())));
+    let wired = f.session.document().canvases().get(&C).unwrap().edges().values().filter(|e| e.to.node == TRAIN && e.to.port == "images").count();
+    assert_eq!(wired, 2);
+}
+
+#[test]
+fn a_cancelled_training_keeps_no_style_and_is_not_shown_as_refunded() {
+    let mut f = fixture_with(trainer(u32::MAX, None));
+    start_training(&mut f, "the training is with the provider", |f| train_job(f).is_some_and(|v| v.sent && !v.state.is_final()));
+    f.host.cancel(train_job(&f).unwrap().key).unwrap();
+    let notices = drain(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Cancelled { node, .. } if *node == TRAIN)), "{notices:?}");
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. })), "{notices:?}");
+    let view = train_job(&f).unwrap();
+    assert_eq!(view.state, nodecraft_engine::run_jobs::JobState::Cancelled);
+    assert!(view.sent && view.status().contains("cost unresolved"), "a cancel is no refund: {view:?}");
+    assert_eq!(f.mock.cancelled().len(), 1, "the provider was asked to stop");
+    not_ready(&mut f);
+}
+
+#[test]
+fn a_training_the_provider_will_not_cancel_says_so_and_keeps_its_billed_style() {
+    use nodecraft_providers::{ErrorKind, mock::MockFailure};
+    let mut f = fixture_with(trainer(2000, Some(MockFailure::Cancel(ErrorKind::UnsupportedInput))));
+    start_training(&mut f, "the training is running", |f| {
+        train_job(f).is_some_and(|v| matches!(v.state, nodecraft_engine::run_jobs::JobState::Running { fraction: Some(_), .. }))
+    });
+    f.host.cancel(train_job(&f).unwrap().key).unwrap();
+    let notices = drain(&mut f);
+    let view = train_job(&f).unwrap();
+    assert!(view.cancel_refused, "{view:?}");
+    assert_eq!(view.status(), "Finished; the provider refused to cancel");
+    assert!(notices.contains(&RunNotice::Recorded { canvas: C, node: TRAIN }), "the billed style is kept: {notices:?}");
+    let style = result(node(&f.session, TRAIN));
+    assert_eq!(style.mime.param("family"), Some("flux-1"));
+}
+
+/// #167: an agent follows a training and stops it through commands, as the queue panel does.
+#[test]
+fn a_training_is_followed_and_cancelled_through_run_jobs_and_run_cancel() {
+    let mut f = fixture_with(trainer(u32::MAX, None));
+    start_training(&mut f, "the training is with the provider", |f| train_job(f).is_some_and(|v| v.sent && !v.state.is_final()));
+    f.host.pump(&mut f.session);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap_or_else(|| panic!("{listed}"));
+    assert_eq!((job["state"].clone(), job["sent"].clone(), job["model"].clone()), (json!("running"), json!(true), json!("mock-style")), "{job}");
+    assert_eq!(job["may_be_billed"], true, "a sent training may be billed while it runs: {job}");
+    assert_eq!(job["may_have_been_charged"], false, "it hasn't ended without its result: {job}");
+    let mut key = json!({"run": job["run"], "job": job["job"]});
+    assert_eq!(f.session.dispatch("run.cancel", &json!({"run": 999, "job": 1, "accept_loss": true})).unwrap_err().kind, nodecraft_types::ErrorKind::NotFound);
+    // A sent training is cancelled only once the agent accepts that its result may be billed and lost.
+    let refused = f.session.dispatch("run.cancel", &key).unwrap_err();
+    assert!(refused.message.contains("accept_loss") && refused.message.contains("paying again"), "{refused:?}");
+    key["accept_loss"] = json!(true);
+    let asked = f.session.dispatch("run.cancel", &key).unwrap();
+    assert_eq!((asked["cancelling"].clone(), asked["may_be_billed"].clone()), (json!(true), json!(true)), "{asked}");
+    let notices = drain(&mut f);
+    assert!(notices.iter().any(|n| matches!(n, RunNotice::Cancelled { node, .. } if *node == TRAIN)), "{notices:?}");
+    assert_eq!(f.mock.cancelled().len(), 1, "the provider was asked to stop");
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert_eq!((job["state"].clone(), job["may_have_been_charged"].clone()), (json!("cancelled"), json!(true)), "{job}");
+    assert!(job["status"].as_str().is_some_and(|s| s.contains("cost unresolved")), "a cancel is no refund: {job}");
+    assert_eq!(f.session.dispatch("run.cancel", &key).unwrap_err().kind, nodecraft_types::ErrorKind::Conflict, "an ended job can't be cancelled");
+    not_ready(&mut f);
+}
+
+#[test]
+fn run_jobs_reports_a_cancel_the_provider_refuses() {
+    use nodecraft_providers::{ErrorKind, mock::MockFailure};
+    let mut f = fixture_with(trainer(2000, Some(MockFailure::Cancel(ErrorKind::UnsupportedInput))));
+    start_training(&mut f, "the training is running", |f| {
+        train_job(f).is_some_and(|v| matches!(v.state, nodecraft_engine::run_jobs::JobState::Running { fraction: Some(_), .. }))
+    });
+    f.host.pump(&mut f.session);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert!(job["fraction"].is_number(), "progress is listed where the provider says: {job}");
+    f.session.dispatch("run.cancel", &json!({"run": job["run"], "job": job["job"], "accept_loss": true})).unwrap();
+    drain(&mut f);
+    let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
+    let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap();
+    assert_eq!((job["state"].clone(), job["cancel_refused"].clone()), (json!("done"), json!(true)), "{job}");
+    assert_eq!(job["status"], "Finished; the provider refused to cancel");
 }

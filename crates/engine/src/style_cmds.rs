@@ -64,6 +64,23 @@ pub(crate) fn family(style: &AssetRef) -> Option<&str> {
     style.mime.param("family").filter(|f| nodecraft_types::style_family(f))
 }
 
+/// Why a trained style can't be used though its card says it was trained: its descriptor isn't
+/// in the project (a file saved without it, or an asset lost). The card and its settings stay;
+/// training again makes a new one.
+fn missing(assets: &nodecraft_format::AssetStore, style: &AssetRef) -> Option<Error> {
+    (!assets.contains(&style.hash))
+        .then(|| Error::new(ErrorKind::NotFound, "this style's file is missing from the project; run its Train style card again to train it anew"))
+}
+
+/// The family of `node`'s active style when it is trained and its file is here, or why not.
+fn usable<'a>(assets: &nodecraft_format::AssetStore, node: &'a Node) -> Result<&'a str, Error> {
+    let style = active_style(node).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this Train style card has no trained style yet; run it first"))?;
+    if let Some(error) = missing(assets, style) {
+        return Err(error);
+    }
+    family(style).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this style doesn't say which models it was trained for; train it again"))
+}
+
 /// A Train style card on `canvas`, with the family of its active style when it has one.
 fn style_card(canvas: &Canvas, id: NodeId) -> Result<(&Node, Option<&AssetRef>), Error> {
     let node = canvas.nodes().get(&id).ok_or_else(|| not_found("document entity"))?;
@@ -136,9 +153,16 @@ fn alternatives(catalog: Option<&GenerationCatalog>, kind: &str, family: &str) -
     }
 }
 
-/// Whether `node` is a Train style card with a trained style, naming its family.
-pub fn trained(node: &Node) -> bool {
-    node.kind == STYLE_KIND && active_style(node).and_then(family).is_some()
+/// Why the style of Train style card `node` can't be used yet (train it, or train it again
+/// because its file is missing), or `None` when it can.
+pub fn unready(assets: &nodecraft_format::AssetStore, node: &Node) -> Option<String> {
+    verdict(assets, node, |_| Ok(())).err().map(|e| e.message)
+}
+
+/// Whether `node` is a Train style card with a trained style, naming its family, whose file is
+/// in `assets`.
+pub fn trained(assets: &nodecraft_format::AssetStore, node: &Node) -> bool {
+    node.kind == STYLE_KIND && usable(assets, node).is_ok()
 }
 
 /// Whether `node` has a style input, so a style could be chosen for it.
@@ -158,24 +182,31 @@ pub struct Offer {
     pub refusal: Option<String>,
 }
 
-/// The Train style cards on `canvas` as choices for `target`, in canvas order. `style.list`
-/// gives the same verdicts.
-pub fn offers(canvas: &Canvas, catalog: Option<&GenerationCatalog>, target: &Node) -> Vec<Offer> {
+/// The Train style cards on `canvas` as choices for `target`, in canvas order, their files read
+/// from `assets`. `style.list` gives the same verdicts.
+pub fn offers(canvas: &Canvas, catalog: Option<&GenerationCatalog>, assets: &nodecraft_format::AssetStore, target: &Node) -> Vec<Offer> {
     let input = port(&target.inputs, Modality::Style).map(|p| p.name.as_str());
     canvas
         .nodes()
         .values()
         .filter(|n| n.kind == STYLE_KIND)
         .map(|n| {
-            let verdict = match active_style(n).and_then(family) {
-                Some(family) => takes(catalog, target, family).map(|_| ()),
-                None => Err(invalid("train this style first")),
-            };
+            let verdict = verdict(assets, n, |family| takes(catalog, target, family).map(|_| ()));
             let label = if n.title.trim().is_empty() { model(n).unwrap_or("Train style").to_owned() } else { n.title.clone() };
             let wired = input.is_some_and(|input| canvas.edges().values().any(|e| e.from.node == n.id && e.to.node == target.id && e.to.port == input));
             Offer { style: n.id, label, wired, refusal: verdict.err().map(|e| e.message) }
         })
         .collect()
+}
+
+/// Whether the style of `card` can be used, as `check` says of its family: an untrained card is
+/// told to train first, and one whose file is gone to train again.
+fn verdict(assets: &nodecraft_format::AssetStore, card: &Node, check: impl FnOnce(&str) -> Result<(), Error>) -> Result<(), Error> {
+    match usable(assets, card) {
+        Ok(family) => check(family),
+        Err(error) if active_style(card).is_none() => Err(Error::new(error.kind, "train this style first")),
+        Err(error) => Err(error),
+    }
 }
 
 #[derive(Deserialize)]
@@ -201,21 +232,20 @@ fn list(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
         .map(|n| {
             let style = active_style(n);
             let family = style.and_then(family);
+            // A style whose file is gone names its family, but isn't ready to use.
+            let present = style.is_some_and(|s| missing(c.assets, s).is_none());
             // Small descriptors are resident; one that isn't just has no trigger listed.
             let trigger = style.and_then(|s| c.assets.get(&s.hash)).and_then(|bytes| nodecraft_media::style::decode(bytes).ok()).map(|s| s.trigger);
             let mut entry = json!({
                 "id": n.id,
                 "title": n.title,
                 "trainer": model(n),
-                "ready": family.is_some(),
+                "ready": family.is_some() && present,
                 "family": family,
                 "trigger": trigger,
             });
             if let Some(target) = target {
-                let verdict = match family {
-                    Some(family) => takes(c.resources.get::<GenerationCatalog>(), target, family).map(|_| ()),
-                    None => Err(invalid("train this style first")),
-                };
+                let verdict = verdict(c.assets, n, |family| takes(c.resources.get::<GenerationCatalog>(), target, family).map(|_| ()));
                 entry["compatible"] = json!(verdict.is_ok());
                 entry["reason"] = json!(verdict.err().map(|e| e.message));
             }
@@ -241,7 +271,7 @@ fn use_style(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let p: UseParams = params(value)?;
     let canvas = canvas(c, p.canvas)?;
     let (card, style) = style_card(canvas, p.style)?;
-    let family = style.and_then(family).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this Train style card has no trained style yet; run it first"))?;
+    let family = usable(c.assets, card)?;
     let out = port(&card.outputs, Modality::Style).ok_or_else(|| invalid("this Train style card has no style output"))?;
     let target = canvas.nodes().get(&p.target).ok_or_else(|| not_found("document entity"))?;
     let input = match takes(c.resources.get::<GenerationCatalog>(), target, family)? {
@@ -313,8 +343,8 @@ fn card(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     }
     let canvas = canvas(c, p.canvas)?;
     let (source, style) = style_card(canvas, p.style)?;
+    let family = usable(c.assets, source)?;
     let style = style.ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this Train style card has no trained style yet; run it first"))?;
-    let family = family(style).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "this style doesn't say which models it was trained for; train it again"))?;
     let out = port(&source.outputs, Modality::Style).ok_or_else(|| invalid("this Train style card has no style output"))?;
     let catalog = c.resources.get::<GenerationCatalog>();
     let model = match p.model {

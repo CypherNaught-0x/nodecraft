@@ -90,6 +90,7 @@ pub mod private_cmds;
 pub mod provider_quotes;
 pub mod resolve_cmds;
 pub mod results_export;
+pub mod run_job_cmds;
 pub mod search_cmds;
 pub mod share_cmds;
 pub mod soul_ids;
