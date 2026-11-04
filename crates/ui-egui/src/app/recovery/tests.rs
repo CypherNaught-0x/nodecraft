@@ -1081,3 +1081,24 @@ fn a_session_replaced_while_recovering_keeps_the_copy_and_drops_the_question() {
     assert!(!has_added(&h));
     assert_eq!(std::fs::read(&copy).unwrap(), bytes);
 }
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_recover367_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("recover-evidence-367");
+    crash(&dir, true);
+    let mut h = launch(&dir, None);
+    let held = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(held.clone());
+    h.get_by_label("Recover").click();
+    past_progress_delay(&mut h);
+    h.render().unwrap().save(output.join("recovering-progress.png")).unwrap();
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    held.release();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("recovering-cancelled-asks-again.png")).unwrap();
+}
