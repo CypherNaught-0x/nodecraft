@@ -223,14 +223,16 @@ bedrock_region = "us-east-1"
 ```
 
 The Region must be a code such as `us-east-1` or `us-gov-west-1`; anything else, including a URL,
-refuses before a request. China Regions (`amazonaws.com.cn`) are not supported. The key comes
+refuses before a request. Partitions not on `amazonaws.com` (China, European Sovereign Cloud,
+isolated US Regions) are not supported. The key comes
 only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, AWS profiles, access
 keys or instance metadata, and does not sign requests with SigV4. The native Converse API,
 SigV4 and other Bedrock models are deferred to the provider-layer decision in
 [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489). The browser has no Bedrock
 settings panel.
 
-Bedrock publishes prices per Region and service tier, so the cards use `ByUsage`: the picker says
+AWS's pricing page lists these models' rates per service tier for one Region only, so the cards
+use `ByUsage`: the picker says
 **Usage based (USD)** and run confirmation requires explicit unknown-price acceptance. Bedrock
 returns token usage, not a charge, so no exact dollar cost is settled. `keys.test` answers
 unverifiable: `bedrock-runtime` has no OpenAI model list, and NodeCraft knows no free,

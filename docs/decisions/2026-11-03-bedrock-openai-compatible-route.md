@@ -12,13 +12,17 @@
   native Converse API is a third wire; both wait for that record. The key comes only from the
   keychain account `bedrock`: no `AWS_BEARER_TOKEN_BEDROCK`, profiles, access keys or instance
   metadata. The non-secret `ProviderSettings.bedrock_region` holds a validated Region code, not a
-  URL, so the key's host is always `bedrock-runtime.<region>.amazonaws.com`; China Regions are
-  refused. `bedrock-mantle` (a compatibility endpoint with per-model path prefixes) is not used.
+  URL, so the key's host is always `bedrock-runtime.<region>.amazonaws.com`; partitions on
+  other domains (China `cn-`, European Sovereign Cloud `eusc-`, isolated `us-iso-`/`us-isob-`)
+  are refused. `bedrock-mantle` (a compatibility endpoint with per-model path prefixes) is not used.
 - **Two documented models, no invented rate.** The catalog ships the model cards' exact
   `bedrock-runtime` ids for gpt-oss-120b and gpt-oss-20b, which list Chat Completions there, text
-  only, 16K output. AWS's pricing page lists their Standard rates for one Region only, and rates
-  vary by Region and tier, so both use `ByUsage` with explicit unknown-price admission. The cap
-  goes out as `max_completion_tokens`, the field AWS's OpenAI-model examples use.
+  only, 16K output. AWS's [pricing page](https://aws.amazon.com/bedrock/pricing/) publishes their
+  rates per service tier and for one Region (Asia Pacific (Sydney)) only, with no rate for the
+  other Regions the cards list, so both use `ByUsage` with explicit unknown-price admission. The
+  cap goes out as `max_completion_tokens`, the field the OpenAI-compatible route's examples use
+  ([OpenAI models](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-openai.html));
+  the model cards' InvokeModel samples use `max_tokens`, which this route does not send.
 - **Shared lifecycle; no automatic paid replay.** Chat finishes at submit; streaming, usage, error
   kinds and size limits reuse `LlmClient`. AWS documents no idempotency for this route, so
   `retry_ambiguous_submit` is false, as for Azure, with a runner regression proving it.

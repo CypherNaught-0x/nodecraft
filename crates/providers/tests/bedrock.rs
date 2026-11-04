@@ -131,12 +131,29 @@ fn bedrock_preset_rejects_anything_but_a_region_code_without_echoing_it() {
         "us-east-1\nsecret",
         "us-éast-1",
         "cn-north-1",
+        "cn-northwest-1",
+        "eusc-de-east-1",
+        "us-iso-east-1",
+        "us-isob-east-1",
         &"a-".repeat(20),
     ] {
         let error = Endpoint::bedrock(region, ApiKey::new(KEY)).unwrap_err();
         assert_eq!(error.kind, ErrorKind::UnsupportedInput, "{region:?}");
         assert!(!error.message.contains("secret"), "{region:?}");
         assert!(!error.message.contains(KEY));
+    }
+}
+
+#[test]
+fn bedrock_preset_refuses_partitions_not_on_amazonaws_com() {
+    for region in ["cn-north-1", "eusc-de-east-1", "us-iso-east-1", "us-isob-east-1", "us-iso-west-1"] {
+        let error = Endpoint::bedrock(region, ApiKey::new(KEY)).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput, "{region}");
+        assert!(error.message.contains("amazonaws.com only"), "{region}: {}", error.message);
+    }
+    // Ordinary and GovCloud Regions stay on amazonaws.com.
+    for region in ["us-east-1", "us-gov-west-1", "eu-south-2", "ap-southeast-4"] {
+        assert!(Endpoint::bedrock(region, ApiKey::new(KEY)).is_ok(), "{region}");
     }
 }
 

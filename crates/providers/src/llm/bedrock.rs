@@ -34,9 +34,15 @@ pub fn validate_bedrock_region(region: &str) -> Result<(), ProviderError> {
     {
         return Err(bad());
     }
-    // China Regions are served from `amazonaws.com.cn`, which this preset does not build.
-    if words.first() == Some(&"cn") {
-        return Err(ProviderError::new(ErrorKind::UnsupportedInput, "AWS China Regions are not supported by the Bedrock preset"));
+    // China (`amazonaws.com.cn`), the European Sovereign Cloud and the isolated US partitions are
+    // not served from `amazonaws.com`, which is the only domain this preset builds.
+    let first = words.first().copied().unwrap_or_default();
+    let isolated = words.get(..2).is_some_and(|prefix| matches!(prefix, ["us", "iso" | "isob" | "isof"]));
+    if matches!(first, "cn" | "eusc") || isolated {
+        return Err(ProviderError::new(
+            ErrorKind::UnsupportedInput,
+            "the Bedrock preset supports AWS Regions on amazonaws.com only, not China, European Sovereign Cloud or isolated partitions",
+        ));
     }
     Ok(())
 }
