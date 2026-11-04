@@ -1070,6 +1070,21 @@ impl Session {
         self.never_wait = false;
         result
     }
+    /// Settles a background save that has already finished, without waiting for one that hasn't;
+    /// its outcome is kept for [`Self::poll_file`]. For a host about to judge what a command may
+    /// do (`enabled`) from the file's state, which a finished save has changed.
+    pub fn settle_finished(&mut self) {
+        if !matches!(self.pending, Some(PendingFile::Save(_))) {
+            return;
+        }
+        let before = self.file_status();
+        if let Some(outcome) = self.settle_file(false) {
+            self.settled = Some(outcome);
+        }
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+    }
     /// For a caller about to change the document by other means than [`Self::dispatch`] that
     /// must not block on the disk either (a host command that edits, say): settles a background
     /// save that has finished, and refuses as [`Self::dispatch_without_waiting`] does while one

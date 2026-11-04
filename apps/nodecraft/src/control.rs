@@ -187,6 +187,23 @@ impl LiveCommands<'_> {
         Ok(())
     }
 }
+/// A save or open asked for from a surface the window answers on its UI thread runs on the save
+/// runner (#367), whatever `background` it gave: the reply is `{saving:true}` or `{opening:true}`,
+/// and `file.status` (or the next change, refused as busy until then) tells when it has finished.
+/// `None` for every other command, and for parameters that aren't an object (dispatch refuses
+/// them as it would).
+fn in_background(id: &str, params: &serde_json::Value) -> Option<serde_json::Value> {
+    if !matches!(id, "file.save" | "file.save_as" | "file.open") {
+        return None;
+    }
+    let mut params = params.as_object()?.clone();
+    params.insert("background".into(), serde_json::Value::Bool(true));
+    Some(serde_json::Value::Object(params))
+}
+/// Why a save or open from a surface waits: one is already running (one at a time, #367).
+fn file_busy() -> nodecraft_types::Error {
+    nodecraft_types::Error::new(nodecraft_types::ErrorKind::Busy, "a save or open is still running; try again when it finishes, or cancel it with file.cancel")
+}
 impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
     fn session(&self) -> &nodecraft_engine::Session {
         &self.app.session
@@ -196,6 +213,11 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
             self.navigation_idle()?;
             self.app.host_enabled(self.ctx, id, params)
         } else {
+            // A save that finished meanwhile has changed what the file commands may do.
+            self.app.session.settle_finished();
+            if in_background(id, params).is_some() && self.app.session.file_status().operation.is_some() {
+                return Err(file_busy());
+            }
             self.app.session.enabled(id, params)
         }
     }
@@ -208,6 +230,12 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
                 self.app.session.settle_without_waiting()?;
             }
             self.app.dispatch_host(self.ctx, id, params)
+        } else if let Some(background) = in_background(id, params) {
+            self.app.session.settle_finished();
+            if self.app.session.file_status().operation.is_some() {
+                return Err(file_busy());
+            }
+            self.app.session.dispatch_without_waiting(id, &background)
         } else {
             self.app.session.dispatch_without_waiting(id, params)
         }

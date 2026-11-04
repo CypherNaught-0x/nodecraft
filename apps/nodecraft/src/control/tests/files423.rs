@@ -1,6 +1,18 @@
 //! The window saves and opens projects for a control client, inside the folders it was started
-//! with (#423): no dialog, whatever has focus.
+//! with (#423): no dialog, whatever has focus. Saves and opens run on the save thread (#367),
+//! whatever `background` the client asked for, and the window's frames settle them.
 use super::*;
+
+/// Frames until no save or open is running, as the window's loop would draw them.
+fn settle(app: &mut NodeCraftApp, ctx: &egui::Context) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while app.session.file_status().operation.is_some() {
+        assert!(std::time::Instant::now() < deadline, "the file operation never finished");
+        draw(app, ctx);
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    draw(app, ctx);
+}
 
 #[test]
 fn a_control_client_saves_and_opens_projects_inside_the_allowed_folders() {
@@ -27,13 +39,18 @@ fn a_control_client_saves_and_opens_projects_inside_the_allowed_folders() {
     assert!(!outside.exists(), "nothing is written outside");
 
     let saved = work.join("a.ncraft");
-    run(&mut app, "file.save_as", json!({"location":saved.to_str().unwrap()})).unwrap();
+    // A plain save from a client runs in the background: the window's frame never writes it.
+    let reply = run(&mut app, "file.save_as", json!({"location":saved.to_str().unwrap(),"background":false})).unwrap();
+    assert_eq!(reply["result"]["saving"], true, "{reply}");
+    settle(&mut app, &ctx);
     assert!(saved.is_file(), "the project file is on disk");
     let title = app.session.document().title().to_owned();
-    run(&mut app, "file.save", json!({})).unwrap();
+    assert_eq!(run(&mut app, "file.save", json!({})).unwrap()["result"]["saving"], true);
+    settle(&mut app, &ctx);
 
     // Another project replaces this one: open the saved file again over it.
-    run(&mut app, "file.open", json!({"location":saved.to_str().unwrap()})).unwrap();
+    assert_eq!(run(&mut app, "file.open", json!({"location":saved.to_str().unwrap()})).unwrap()["result"]["opening"], true);
+    settle(&mut app, &ctx);
     assert_eq!(app.session.document().title(), title);
     let resolved = std::fs::canonicalize(&saved).unwrap();
     assert_eq!(format!("{:?}", app.session.file_status().location), format!("Some(Path({resolved:?}))"), "opened from the resolved path");
@@ -115,12 +132,23 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
         let mut mcp = nodecraft_automation::mcp::McpServer::bridge(client, Box::new(|| [7; 16]));
         let mut replies = Vec::new();
         for (id, params) in calls {
-            let reply = mcp
-                .handle(
-                    &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"command_run","arguments":{"id":id,"params":params}}}).to_string(),
-                )
-                .ok_or("missing MCP reply")?;
-            replies.push(serde_json::from_str(&reply).map_err(|e| e.to_string())?);
+            // The previous save or open runs in the background: retry while it is busy, as a
+            // client does.
+            let started = Instant::now();
+            let reply: Value = loop {
+                let reply = mcp
+                    .handle(
+                        &json!({"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"command_run","arguments":{"id":id,"params":params}}})
+                            .to_string(),
+                    )
+                    .ok_or("missing MCP reply")?;
+                let reply: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
+                if !reply.to_string().contains("file.cancel") || started.elapsed() > Duration::from_secs(5) {
+                    break reply;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            };
+            replies.push(reply);
         }
         Ok(replies)
     });
@@ -144,6 +172,7 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
     }
     let finished_in_time = worker.is_finished();
     drop(listener);
+    settle(&mut app, &ctx);
     let replies = worker.join().unwrap().unwrap();
     assert!(finished_in_time, "MCP worker did not finish within its bounded host pump");
     assert_eq!(replies[0]["result"]["isError"], true, "{}", replies[0]);
