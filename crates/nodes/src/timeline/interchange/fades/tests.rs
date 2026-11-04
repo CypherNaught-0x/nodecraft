@@ -137,7 +137,7 @@ fn hostile_rates_and_aggregate_keyframes_are_bounded_and_cancellable() {
     long.out_us = Some(3_000_000);
     long.fade_in_us = 1_000_000;
     assert!(export(long.clone(), MediaKind::Audio, u32::MAX).unwrap_err().message.contains("too many fade keyframes"));
-    let (env, _) = Envelope::new(&long, MediaKind::Audio, true, 10, 10, 20).unwrap();
+    let (env, _, _) = Envelope::new(&long, MediaKind::Audio, true, 10, 10, 20).unwrap();
     let mut check = || Ok(());
     let mut budget = Budget::new(&mut check);
     budget.remaining = 2;
