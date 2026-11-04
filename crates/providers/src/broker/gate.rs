@@ -7,6 +7,9 @@
 //! sends to one plugin provider, so its requests stay within the limit however many runs and
 //! restored jobs use it. A request waits for a slot before anything about it is decided, so a
 //! wait that is given up sends nothing and bills nothing.
+//!
+//! The same counting gate, sized in bytes, is a package's [`ByteBudget`]: what all its jobs'
+//! downloads may hold in memory at once.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -14,7 +17,7 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::task::{Context, Poll, Waker};
 
-/// Slots for at most `size` requests at once.
+/// Slots for at most `size` requests at once (or, as a [`ByteBudget`], bytes).
 #[derive(Debug)]
 pub struct RequestGate {
     size: usize,
@@ -51,13 +54,19 @@ impl RequestGate {
 
     /// Waits for a slot; it is given back when the returned permit is dropped.
     pub fn acquire(self: &Arc<Self>) -> Acquire {
-        Acquire { gate: Arc::clone(self), ticket: None }
+        self.acquire_many(1)
     }
 
-    fn release(&self) {
+    /// Waits for `n` slots at once, all or none, so two waiters never each hold part of what
+    /// they need. More than the gate has is taken as all of it.
+    pub fn acquire_many(self: &Arc<Self>, n: usize) -> Acquire {
+        Acquire { gate: Arc::clone(self), ticket: None, n: n.clamp(1, self.size) }
+    }
+
+    fn release(&self, n: usize) {
         let woken: Vec<Waker> = {
             let mut state = self.lock();
-            state.held = state.held.saturating_sub(1);
+            state.held = state.held.saturating_sub(n);
             // Everyone waiting tries again; there are at most a few slots, and a waiter that has
             // gone away has already taken itself out.
             state.waiting.values().cloned().collect()
@@ -72,11 +81,12 @@ impl RequestGate {
 #[derive(Debug)]
 pub struct Permit {
     gate: Arc<RequestGate>,
+    n: usize,
 }
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        self.gate.release();
+        self.gate.release(self.n);
     }
 }
 
@@ -85,6 +95,7 @@ impl Drop for Permit {
 pub struct Acquire {
     gate: Arc<RequestGate>,
     ticket: Option<u64>,
+    n: usize,
 }
 
 impl Future for Acquire {
@@ -93,13 +104,13 @@ impl Future for Acquire {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Permit> {
         let this = &mut *self;
         let mut state = this.gate.lock();
-        if state.held < this.gate.size {
-            state.held = state.held.saturating_add(1);
+        if this.gate.size.saturating_sub(state.held) >= this.n {
+            state.held = state.held.saturating_add(this.n);
             if let Some(ticket) = this.ticket.take() {
                 state.waiting.remove(&ticket);
             }
             drop(state);
-            return Poll::Ready(Permit { gate: Arc::clone(&this.gate) });
+            return Poll::Ready(Permit { gate: Arc::clone(&this.gate), n: this.n });
         }
         let ticket = match this.ticket {
             Some(ticket) => ticket,
@@ -122,6 +133,9 @@ impl Drop for Acquire {
         }
     }
 }
+
+/// Bytes a package's jobs may hold in memory at once: a [`RequestGate`] counted in bytes.
+pub type ByteBudget = RequestGate;
 
 #[cfg(test)]
 mod tests {
@@ -155,5 +169,21 @@ mod tests {
         assert_eq!(gate.held(), 0);
         assert!(gate.acquire().now_or_never().is_some(), "the slot is free again");
         assert_eq!(RequestGate::new(0).size(), 1, "a gate always lets one through");
+    }
+
+    #[test]
+    fn many_slots_are_taken_all_or_none() {
+        let budget = ByteBudget::new(10);
+        let six = budget.acquire_many(6).now_or_never().expect("six of ten");
+        let waker = futures::task::noop_waker();
+        let mut five = Box::pin(budget.acquire_many(5));
+        assert!(five.as_mut().poll(&mut Context::from_waker(&waker)).is_pending(), "five don't fit in four");
+        assert_eq!(budget.held(), 6, "a waiter holds nothing while it waits");
+        drop(six);
+        assert!(matches!(five.as_mut().poll(&mut Context::from_waker(&waker)), Poll::Ready(_)));
+        assert_eq!(budget.held(), 0);
+        let all = budget.acquire_many(usize::MAX).now_or_never().expect("more than it has is all of it");
+        assert_eq!(budget.held(), 10);
+        drop(all);
     }
 }

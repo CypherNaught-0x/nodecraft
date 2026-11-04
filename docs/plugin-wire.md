@@ -128,7 +128,7 @@ output origin.
 
 The broker's provider (`broker::Broker`) sends these requests without following a redirect: a
 `3xx` reply is an error, on the API origin and on a download alike. Outputs of kind `url` are
-fetched by the host without the credential, up to 256 MiB each, and typed by their bytes, not by
+fetched by the host without the credential, up to 64 MiB for one job (the downloads of a package's jobs hold at most 128 MiB at once), and typed by their bytes, not by
 the template's `mime`. A job id, output or link that carries the credential is refused, and the
 credential is taken out of every error. The service is unknown to the host, so no reply proves a
 submit created nothing: from the moment the submit is sent, every failure may have been billed.

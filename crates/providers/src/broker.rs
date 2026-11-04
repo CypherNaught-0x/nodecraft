@@ -21,7 +21,7 @@ pub mod plan;
 pub mod template;
 
 pub use adapter::Broker;
-pub use gate::RequestGate;
+pub use gate::{ByteBudget, RequestGate};
 pub use plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 pub use template::{Credential, Origin, Template, TemplateError};
 

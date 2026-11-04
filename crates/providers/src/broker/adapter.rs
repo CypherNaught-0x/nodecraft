@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 use nodecraft_types::Money;
 
-use super::gate::RequestGate;
+use super::gate::{ByteBudget, RequestGate};
 use super::plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 use super::template::Template;
 use crate::secrets::Secret;
@@ -24,10 +24,15 @@ use crate::{
     SubmitContext,
 };
 
-/// The most bytes one output download may hold.
-pub const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+/// The most bytes one output download may hold. A plugin's service is the publisher's, so this
+/// is lower than for built-in adapters: images and short clips fit.
+pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 /// The most bytes all of one job's downloads may hold together.
-pub const MAX_JOB_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
+/// The most bytes the downloads of all of one package's jobs hold in memory at once (two jobs'
+/// worth); a job waits for room before its first download, then holds it until its outputs are
+/// handed over.
+pub const MAX_PACKAGE_BYTES: usize = 2 * MAX_JOB_BYTES;
 const DOWNLOAD_TIMEOUT_MS: u64 = 300_000;
 const REDACTED: &str = "[redacted]";
 
@@ -49,6 +54,8 @@ pub struct Broker {
     granted: Arc<dyn Fn() -> bool + Send + Sync>,
     /// Slots for the template's requests at once, shared with every broker for this provider.
     gate: Arc<RequestGate>,
+    /// Bytes its jobs' downloads may hold at once, shared with its package's other providers.
+    bytes: Arc<ByteBudget>,
 }
 
 impl Broker {
@@ -65,7 +72,8 @@ impl Broker {
             (None, _) => None,
         };
         let gate = RequestGate::new(concurrency(&template));
-        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true), gate })
+        let bytes = ByteBudget::new(MAX_PACKAGE_BYTES);
+        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true), gate, bytes })
     }
 
     /// This broker sending through `gate`, shared with the brokers built for the same provider
@@ -76,6 +84,20 @@ impl Broker {
             return self;
         }
         Self { gate, ..self }
+    }
+
+    /// This broker's downloads counted against `budget`, shared with its package's other
+    /// providers. A budget that can't hold one job's outputs is not this host's and is ignored.
+    pub fn budgeted(self, budget: Arc<ByteBudget>) -> Self {
+        if budget.size() < MAX_JOB_BYTES {
+            return self;
+        }
+        Self { bytes: budget, ..self }
+    }
+
+    /// The byte budget its downloads count against.
+    pub fn byte_budget(&self) -> &Arc<ByteBudget> {
+        &self.bytes
     }
 
     /// The gate its requests go through.
@@ -221,6 +243,9 @@ impl Broker {
 
     /// `done` with every link fetched into bytes; no output may carry the credential.
     async fn fetch(&self, done: Completed) -> Result<Completed, ProviderError> {
+        // Room for the whole job, taken before anything is fetched and kept until the outputs
+        // are handed over, so the package's jobs never hold more than its budget together.
+        let _room = if done.outputs.iter().any(|o| matches!(o, Output::Url { .. })) { Some(self.bytes.acquire_many(MAX_JOB_BYTES).await) } else { None };
         let mut outputs = Vec::with_capacity(done.outputs.len());
         let mut budget = MAX_JOB_BYTES;
         for output in done.outputs {
@@ -253,17 +278,19 @@ impl Broker {
             error.retry_after_ms = retry_after(&reply).filter(|n| *n <= 3_600_000);
             return Err(error);
         }
-        if reply.body.len() > MAX_OUTPUT_BYTES {
-            return Err(malformed("the plugin provider's output is larger than 256 MiB"));
+        let body = reply.body;
+        if body.len() > MAX_OUTPUT_BYTES {
+            return Err(malformed("the plugin provider's output is larger than 64 MiB"));
         }
-        *budget = budget.checked_sub(reply.body.len()).ok_or_else(|| malformed("the plugin provider's outputs for one job are larger than 512 MiB"))?;
+        *budget = budget.checked_sub(body.len()).ok_or_else(|| malformed("the plugin provider's outputs for one job are larger than 64 MiB"))?;
         // A link on the API origin may serve what the credential let it see.
-        if self.echoes(&reply.body) {
+        if self.echoes(&body) {
             return Err(malformed("an output the plugin provider served carries the credential"));
         }
         // Not quoted when it isn't media: the body is the service's, and may echo anything.
-        let sniffed = nodecraft_media::sniff(&reply.body).ok_or_else(|| malformed("the plugin provider's output is not a known media type"))?;
-        Ok(Output::Bytes { mime: sniffed.mime.to_owned(), bytes: Arc::from(&reply.body[..]) })
+        let mime = nodecraft_media::sniff(&body).ok_or_else(|| malformed("the plugin provider's output is not a known media type"))?.mime.to_owned();
+        // The reply is moved in, so its buffer is freed as soon as the shared copy exists.
+        Ok(Output::Bytes { mime, bytes: Arc::<[u8]>::from(body) })
     }
 }
 

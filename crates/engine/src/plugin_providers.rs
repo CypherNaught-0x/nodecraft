@@ -12,7 +12,8 @@
 //! Its template's `limits.concurrency` holds in two places: a run sends it no more jobs at once
 //! (the broker sets its scheduler lane's cap), and every broker built for it shares one
 //! [`RequestGate`], so all runs and jobs followed after a restart together keep that many
-//! requests in flight at most.
+//! requests in flight at most. The providers of one package share a [`ByteBudget`] as well: their
+//! jobs' downloads hold at most two jobs' worth of bytes in memory at once.
 //!
 //! Before each paid submit, and each poll, cancel or download, the broker asks a [`GrantCheck`]
 //! whether the grant it was published under still holds. On the desktop that reads the store's
@@ -27,7 +28,7 @@ use nodecraft_plugin_store::Package;
 use nodecraft_plugin_store::StoreBackend;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
-use nodecraft_providers::broker::{Broker, RequestGate, Template};
+use nodecraft_providers::broker::{Broker, ByteBudget, RequestGate, Template};
 use nodecraft_providers::http::Http;
 use nodecraft_types::Modality;
 use std::sync::Arc;
@@ -92,12 +93,15 @@ pub struct PluginProvider {
     revoked: AtomicBool,
     /// Its requests at once, for every broker built for it.
     gate: Arc<RequestGate>,
+    /// What its package's jobs' downloads may hold in memory at once, shared by the package's
+    /// providers.
+    bytes: Arc<ByteBudget>,
 }
 
 impl PluginProvider {
-    pub(crate) fn new(stamp: PluginStamp, template: Template) -> Self {
+    pub(crate) fn new(stamp: PluginStamp, template: Template, bytes: Arc<ByteBudget>) -> Self {
         let gate = RequestGate::new(usize::try_from(template.limits.concurrency).unwrap_or(1));
-        Self { stamp, template, revoked: AtomicBool::new(false), gate }
+        Self { stamp, template, revoked: AtomicBool::new(false), gate, bytes }
     }
 
     /// Whether its grant is gone: its broker sends no paid request any more.
@@ -128,6 +132,7 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
     let rights = &grant.rights;
     let mut out = Vec::new();
     let mut models = 0usize;
+    let bytes = ByteBudget::new(nodecraft_providers::broker::adapter::MAX_PACKAGE_BYTES);
     for (r, id) in package.manifest.registrations.iter().zip(package.manifest.registered_ids()) {
         if r.kind != RegistrationKind::Provider {
             continue;
@@ -135,7 +140,7 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
         let Some(template) = package.files.get(&r.descriptor).and_then(|bytes| Template::decode(bytes).ok()) else { continue };
         let reaches = rights.capabilities.contains(&Capability::Network) && template.origins().all(|o| rights.origins.contains(o.as_str()));
         let keyed = template.credential.is_none() || rights.capabilities.contains(&Capability::Secret);
-        let provider = PluginProvider::new(stamp.clone(), template);
+        let provider = PluginProvider::new(stamp.clone(), template, Arc::clone(&bytes));
         // A credential with nowhere to be kept would list models that never run.
         let kept = provider.template.credential.is_none() || provider.key_account().is_some();
         models = models.saturating_add(provider.template.models.len());
@@ -208,7 +213,8 @@ pub fn broker(
     let broker = Broker::new(id, provider.template.clone(), key, http)
         .map_err(|e| Readiness::Failed(e.message))?
         .granted(Arc::new(move || !held.is_revoked() && grants.holds(&held.stamp)))
-        .gated(Arc::clone(&provider.gate));
+        .gated(Arc::clone(&provider.gate))
+        .budgeted(Arc::clone(&provider.bytes));
     Ok(Arc::new(broker))
 }
 
