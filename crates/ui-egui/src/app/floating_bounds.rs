@@ -2,6 +2,8 @@
 //! open Search and Discussions. View state only; see `crate::floating`.
 use super::*;
 
+pub(super) const FILE_CONTROL_ID: &str = if cfg!(target_arch = "wasm32") { "nodecraft.web_files.menu" } else { "file_menu407" };
+
 impl NodeCraftApp {
     /// Where floating panels may sit this frame, from the top bar already drawn. Open Search
     /// and Discussions are pinned chrome above panels, so the area leaves them clear and
@@ -25,6 +27,21 @@ impl NodeCraftApp {
         let right = right.max(self.viewport.left());
         let area = Rect::from_min_max(Pos2::new(self.viewport.left(), top), Pos2::new(right, self.viewport.bottom()));
         crate::floating::Bounds { area, home: Pos2::new(home.max(area.left()).min(area.right()), top) }
+    }
+
+    pub(super) fn tag_panel_bounds(&self, ctx: &egui::Context) -> crate::floating::Bounds {
+        let t = self.theme.tokens();
+        let mut bounds = self.floating_bounds();
+        // File sits on the left below the application row. Leave it clear when the
+        // tag panel opens or is dragged against the top of its available area.
+        if let Some(file) = ctx.memory(|memory| memory.area_rect(egui::Id::new(FILE_CONTROL_ID)))
+            && file.is_finite()
+        {
+            let top = (file.bottom() + t.navigation_gap).clamp(bounds.area.top(), bounds.area.bottom());
+            bounds.area.min.y = top;
+            bounds.home.y = top;
+        }
+        bounds
     }
 
     /// Publishes [`Self::floating_bounds`]; call once a frame before drawing any panel.

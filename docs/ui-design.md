@@ -510,9 +510,10 @@ appear beside its label and remain in its accessible name; unavailable services 
 
 If the measured row does not fit, one More menu contains the same entries, icons, states and
 order. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
-entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
-reserved left slot; Format selection reserves the next slot when present, with the Tags panel
-below both controls. Sharing status is
+entries. More yields to active text editors and canvas gestures. The Tag filter trigger has a
+reserved left slot; Format selection reserves the next slot when present. The movable Tag filter
+opens below both controls, with a searchable list of color-coded tag checkboxes, card counts,
+and a footer announcing match count and navigation. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
 
@@ -615,7 +616,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 1. **Canvas** (`Background`): the board, cards and wires.
 2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
    in front. Opening one never reorders the others.
-3. **Pinned chrome** (`Foreground`): the application row, Tag filter, Format selection, Search,
+3. **Pinned chrome** (`Foreground`): the application row, the Tag filter trigger, Format selection, Search,
    Discussions, the minimap and comment pins.
 4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
@@ -631,7 +632,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 - **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
   panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
   where they are while resizing; the left and top edges are not handles.
-- **Dismiss** with the header's close button (AccessKit: "Close window", focusable by Tab) or the
+- **Dismiss** with the labelled close button in the header, which is focusable by Tab, or the
   control that opened it.
 - **Panel area**: the window below the application row, and below an open Search and left of
   open Discussions, which are pinned chrome drawn above panels. A panel is clamped into it every
@@ -639,7 +640,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   put its header under chrome or out of reach, and it can never cover the control that opened it.
 - **Opening**: a panel opens where it was last left, or first at its home: its top-right corner
   at the panel area's top-right (`navigation_margin` in from the window edge); viewers open
-  centred at the same height. A first opening is measured by egui unseen and placed on the next
+  centred at the same height. Tag filter starts at the left navigation margin below the File control. A first opening is measured by egui unseen and placed on the next
   pass with its real size. If it would cover an open panel's header, it steps down by
   `panel_cascade` (44) until every open panel's title and close button stay visible.
 - Position, size and stacking are view state in egui memory, never document changes or undo steps.
@@ -647,10 +648,11 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
+| Tag filter | floating panel | header | right/bottom edges, corner | Close tags, Escape, or its trigger |
 | Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
 | Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
-| Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
+| Application row, Tag filter trigger, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
 | Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
@@ -688,7 +690,8 @@ the buttons.
 
 ## Control icons
 
-Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
+The Tag filter uses Tabler x, filter-off, chevron-left and chevron-right for close, clear and
+match navigation. Controls use Tabler outline SVGs through `icons::Icon`, prepared by the pinned Craft SVG
 catalog and loaded by egui's SVG loader. The loader rasterizes at the requested display pixel
 size on desktop and WebAssembly. It loads only embedded bytes; no network or filesystem access
 is enabled. Source files stay unchanged under `assets/icons/tabler/`, with the MIT license beside

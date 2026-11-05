@@ -641,7 +641,7 @@ impl NodeCraftApp {
         });
     }
     pub(super) fn file_button(&mut self, ui: &egui::Ui, t: &Tokens) {
-        egui::Area::new(egui::Id::new("file_menu407"))
+        egui::Area::new(egui::Id::new(super::floating_bounds::FILE_CONTROL_ID))
             .order(egui::Order::Foreground)
             .fixed_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 4.0))
             .show(ui.ctx(), |ui| {
