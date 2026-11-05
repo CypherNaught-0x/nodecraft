@@ -852,6 +852,10 @@ impl Runs {
     pub(super) fn is_busy(&self) -> bool {
         self.host.is_busy() || self.host.is_estimating() || !self.asked.is_empty()
     }
+    /// The last pump at quit (#367): records what has finished, starts and sends nothing.
+    pub(super) fn record_for_quit(&mut self, session: &mut Session) {
+        let _ = self.host.pump_for_quit(session);
+    }
     pub(super) fn is_preparing_results(&self) -> bool {
         self.host.is_preparing_results()
     }

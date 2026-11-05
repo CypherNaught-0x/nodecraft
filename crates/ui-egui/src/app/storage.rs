@@ -253,15 +253,37 @@ impl NodeCraftApp {
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
         // Quitting waits for a save still writing; until it publishes, the project is unsaved.
-        // An open is cancelled instead (#367): waiting would hold the closing window for the
-        // whole read with no way to stop it, and the open project stays as it was.
-        if self.session.file_status().operation.is_some_and(|operation| operation.kind == nodecraft_engine::file_cmds::FileOperationKind::Open)
+        // An open or a recovery is cancelled instead (#367): waiting would hold the closing
+        // window for the whole read with no way to stop it, the open project stays as it was,
+        // and a recovery's kept copy stays to be offered next time.
+        if self.session.file_status().operation.is_some_and(|operation| operation.kind != nodecraft_engine::file_cmds::FileOperationKind::Save)
             && let Err(error) = self.session.dispatch("file.cancel", &json!({}))
         {
             log::warn!("the open could not be cancelled before quitting: {}", error.message);
         }
-        if let Some(Err(error)) = self.session.finish_file() {
-            log::warn!("project not saved: {}", error.message);
+        let saving = self.session.file_status().saving;
+        match self.session.finish_file() {
+            Some(Err(error)) if saving => log::warn!("project not saved: {}", error.message),
+            Some(Err(error)) => log::warn!("the file operation running at quit didn't finish: {}", error.message),
+            _ => {}
+        }
+        // Run results that arrived while the save wrote waited for it (#367): take them in now,
+        // before the journal's state is decided, so the recovery journal holds them. Not while
+        // the startup question is undecided: its answer may still replace the document.
+        if saving
+            && !self.recovery_deciding()
+            && let Some(runs) = &mut self.runs
+        {
+            // Records only: nothing starts or is sent at quit.
+            runs.record_for_quit(&mut self.session);
+            // Media a result brings are adopted off this thread; wait a moment for them, bounded.
+            for _ in 0..50 {
+                if !runs.is_preparing_results() {
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(10));
+                runs.record_for_quit(&mut self.session);
+            }
         }
         let status = self.session.file_status();
         let untouched = status.location.is_none() && !self.session.can_undo() && !self.session.can_redo();
@@ -284,6 +306,7 @@ impl NodeCraftApp {
         let busy = match status.operation.map(|operation| operation.kind) {
             Some(nodecraft_engine::file_cmds::FileOperationKind::Save) => " (saving…)",
             Some(nodecraft_engine::file_cmds::FileOperationKind::Open) => " (opening…)",
+            Some(nodecraft_engine::file_cmds::FileOperationKind::Recover) => " (recovering…)",
             None => "",
         };
         format!("{name}{dirty}{busy} — NodeCraft")

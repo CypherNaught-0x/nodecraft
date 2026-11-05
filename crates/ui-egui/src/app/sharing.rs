@@ -538,6 +538,12 @@ impl NodeCraftApp {
     /// Takes in what the worker reported, applies what it planned, and hands it the session as
     /// it now is. An error ends the sharing.
     fn drive_sharing(&mut self) -> Result<(), String> {
+        // While a background save writes, taking in a peer's edit would wait for the disk on
+        // this thread (#367). The worker keeps the connection; its reports wait until the save
+        // has settled, and the session it is handed is then the saved one.
+        if self.session.file_status().saving {
+            return Ok(());
+        }
         let Some(sharing) = &mut self.sharing else { return Ok(()) };
         let Some(live) = &mut sharing.live else { return Ok(()) };
         let mut desk = sharing.desk.try_borrow_mut().map_err(|_| "live sharing is busy".to_string())?;

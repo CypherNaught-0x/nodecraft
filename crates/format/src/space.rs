@@ -132,6 +132,7 @@ const CHECKPOINT_HEADER: u64 = 80;
 enum Operation {
     Save,
     Open,
+    Recover,
 }
 
 /// The extents one save or open writes, for [`SpaceInventory::check`].
@@ -174,6 +175,20 @@ impl SpaceInventory {
             replaced: None,
             cleanup_debt: 0,
         })
+    }
+    /// Adopting work recovered from an earlier session's journal (#367): its media copied into
+    /// this session's workspace (`copies`, every byte the recovered store holds outside this
+    /// workspace), then a checkpoint of the archive of `archive_bytes`. Nothing is written to a
+    /// project file. The old journal stays until the checkpoint replaces it.
+    pub fn recover(archive_bytes: u64, copies: u64) -> Result<Self, Error> {
+        let checkpoint = archive_bytes.checked_add(CHECKPOINT_HEADER).ok_or_else(overflow)?;
+        Ok(Self {
+            operation: Operation::Recover,
+            items: vec![SpaceItem::new(Extent::Checkpoint, Volume::Recovery, checkpoint, Phase::Publish)],
+            replaced: None,
+            cleanup_debt: 0,
+        }
+        .with_verified_copies(copies))
     }
     /// What an open still writes once it has found the file needs rewriting (an older format,
     /// or a legacy identity): the rewritten archive of `archive_bytes` and its checkpoint, on
@@ -306,6 +321,7 @@ impl SpaceInventory {
         let what = match self.operation {
             Operation::Save => "save",
             Operation::Open => "open this project",
+            Operation::Recover => "recover this work",
         };
         let drive = match at {
             Where::Both => "the drive holding the project and NodeCraft's recovery folder",
@@ -316,11 +332,13 @@ impl SpaceInventory {
             (Operation::Save, Where::Destination) => "Free some space there or use Save As to choose another drive.",
             (Operation::Save, _) => "Free some space there, then save again.",
             (Operation::Open, _) => "Free some space there, then open the project again.",
+            (Operation::Recover, _) => "Free some space there, then recover it again.",
         };
         let unchanged = match self.operation {
             Operation::Save if self.replaced.is_some() => "Nothing was written; the file is unchanged.",
             Operation::Save => "Nothing was written.",
             Operation::Open => "Nothing was written; the current project is unchanged.",
+            Operation::Recover => "Nothing was written; the current project and the recovered work are unchanged.",
         };
         // Debt sits in the recovery folder, so it matters only where that drive is short.
         let debt = if self.cleanup_debt > 0 && !matches!(at, Where::Destination) {
@@ -341,12 +359,15 @@ impl SpaceInventory {
 /// The check an open makes once the file's private copy is made and its index read (#367).
 /// A classic-format file (every project small enough for the classic wire) has each of its
 /// assets copied and verified in the workspace before it is decoded, then a checkpoint of the
-/// copy written; neither is known before the file is read. Checked against the space left now.
+/// copy written; neither is known before the file is read. Checked against the space left now,
+/// with the replace of the journal (of `journal_bytes` on disk; unknown is `None`, the larger
+/// charge) by the new checkpoint as [`SpaceInventory::with_journal_replaced`] counts it.
 pub fn check_open_copies(
     index: &crate::zip_index::ArchiveIndex,
     context: &crate::AssetContext,
     capability: crate::StorageCapability,
     probe: &SpaceProbe,
+    journal_bytes: Option<u64>,
 ) -> Result<(), Error> {
     if capability != crate::StorageCapability::StreamingV2 || probe.recovery_free.is_none() || !crate::archive::is_classic_wire(index.version()) {
         return Ok(());
@@ -368,20 +389,27 @@ pub fn check_open_copies(
         .zip(verified)
         .filter(|(_, verified)| !verified)
         .try_fold(0u64, |total, ((_, bytes), _)| total.checked_add(*bytes).ok_or_else(overflow))?;
-    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?.with_cleanup_debt(context.cleanup_debt()?).check(probe)
+    SpaceInventory::verified_open(copies, index.identity().archive_bytes)?
+        .with_journal_replaced(journal_bytes.unwrap_or(0))
+        .with_cleanup_debt(context.cleanup_debt()?)
+        .check(probe)
 }
 /// The check an open makes once it has found that the file needs rewriting (#367): the
 /// rewritten archive of `snapshot` (estimated without reading its media), the media copies it
 /// is written from, any compaction pack and its checkpoint, against the space `probe` reports
-/// now, after the private copy was made. Unknown free space or an estimate that can't be made
-/// let the open go ahead; the real writes then decide.
-pub fn check_rewrite(snapshot: &crate::Snapshot, capability: crate::StorageCapability, probe: &SpaceProbe) -> Result<(), Error> {
+/// now, after the private copy was made, with the journal replace as in [`check_open_copies`].
+/// Unknown free space or an estimate that can't be made let the open go ahead; the real writes
+/// then decide.
+pub fn check_rewrite(snapshot: &crate::Snapshot, capability: crate::StorageCapability, probe: &SpaceProbe, journal_bytes: Option<u64>) -> Result<(), Error> {
     if capability != crate::StorageCapability::StreamingV2 || probe.recovery_free.is_none() {
         return Ok(());
     }
     let Ok(bytes) = crate::ArchivePlan::estimate_bytes(&snapshot.project, &snapshot.assets, snapshot.epoch, capability) else { return Ok(()) };
     let output = snapshot.assets.output_space(&snapshot.project, &std::collections::BTreeSet::new()).ok().flatten().unwrap_or_default();
-    let mut inventory = SpaceInventory::rewrite(bytes)?.with_verified_copies(output.verified_copies).with_cleanup_debt(output.cleanup_debt);
+    let mut inventory = SpaceInventory::rewrite(bytes)?
+        .with_verified_copies(output.verified_copies)
+        .with_journal_replaced(journal_bytes.unwrap_or(0))
+        .with_cleanup_debt(output.cleanup_debt);
     if let Some(pack) = output.compaction {
         inventory = inventory.with_compaction(pack);
     }
@@ -576,5 +604,21 @@ mod tests {
         assert_eq!(replaced.needed_on_one_volume().unwrap(), save.needed_on_one_volume().unwrap() + extra);
         // A journal at least as big as the new checkpoint frees all of the second copy's room.
         assert_eq!(save.clone().with_journal_replaced(2 * GB), save);
+    }
+
+    #[test]
+    fn a_recovery_counts_its_media_copies_and_checkpoint_on_the_recovery_drive_only() {
+        let recover = SpaceInventory::recover(GB, 2 * GB).unwrap();
+        assert_eq!(recover.needed(Volume::Destination).unwrap(), 0, "no project file is written");
+        // Copies (housekeeping) stay while the checkpoint is written from them.
+        assert_eq!(recover.needed(Volume::Recovery).unwrap(), 3 * GB + 80 + 2 * EXTENT_SLACK);
+        let probe = SpaceProbe { recovery_free: Some(3 * GB), ..SpaceProbe::default() };
+        let error = recover.check(&probe).unwrap_err();
+        assert!(error.message.contains("recover this work") && error.message.contains("recovered work are unchanged"), "{}", error.message);
+        assert!(recover.check(&SpaceProbe { recovery_free: Some(4 * GB), ..SpaceProbe::default() }).is_ok());
+        // Media already in this workspace aren't copied; unknown space never refuses.
+        assert_eq!(SpaceInventory::recover(GB, 0).unwrap().needed(Volume::Recovery).unwrap(), GB + 80 + EXTENT_SLACK);
+        assert!(recover.check(&SpaceProbe::default()).is_ok());
+        assert!(SpaceInventory::recover(u64::MAX, 0).is_err());
     }
 }

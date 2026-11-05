@@ -140,6 +140,9 @@ pub struct Context<'a> {
     pub services: &'a Services,
     pub phase: Phase,
     pub file: crate::file_cmds::FileStatus,
+    /// How the last save, open or recovery that ran in this session ended (#367), for a client
+    /// whose background operation replied at once (`file.status`).
+    pub file_last: Option<crate::file_cmds::FileOutcome>,
     /// The session's performance recorder, for `perf.report`.
     pub perf: &'a crate::perf::Recorder,
     /// What the session may change (#121).

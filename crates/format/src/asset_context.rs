@@ -214,7 +214,8 @@ impl AssetContext {
         cache.insert(identity.hash, CacheRecord { identity: Arc::downgrade(identity), data });
         Ok(())
     }
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    /// Whether both are the one workspace (so adopting between them copies nothing).
+    pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }

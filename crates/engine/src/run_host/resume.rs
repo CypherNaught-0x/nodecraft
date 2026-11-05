@@ -201,20 +201,36 @@ impl Resumes {
 
     /// Absorbs what the restored jobs reported: records finished ones, settles every one that
     /// ended. Returns how each ended, and whether a job sent again got a handle to save.
-    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> (Vec<Ended>, bool) {
-        let (outcomes, mut reports, submitted) = {
-            let mut mailbox = lock(&self.mailbox);
-            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports), std::mem::take(&mut mailbox.submitted))
-        };
+    /// Takes in the handles resumed jobs were submitted under, and their progress reports,
+    /// without recording anything; whether a handle came (the journal must be saved).
+    pub(super) fn note_submitted(&mut self) -> bool {
+        let mailbox = Arc::clone(&self.mailbox);
+        let mut mailbox = lock(&mailbox);
+        let submitted = std::mem::take(&mut mailbox.submitted);
+        let handled = self.follow_handles(submitted);
+        self.jobs.absorb_reports(&mut mailbox.reports);
+        handled
+    }
+    /// Each job followed by its handle from here on, after another restart too.
+    fn follow_handles(&mut self, submitted: Vec<(JobId, nodecraft_providers::JobHandle)>) -> bool {
         let mut handled = false;
         for (id, handle) in submitted {
             if let Some((entry, _)) = self.live.get_mut(&id) {
-                // Followed by its handle from here on, after another restart too.
                 entry.handle = handle;
                 entry.staged = None;
                 handled = true;
             }
         }
+        handled
+    }
+    pub(super) fn absorb(&mut self, session: &mut Session, budget: &JobBudget, held: &Mutex<Held>, notices: &mut Vec<RunNotice>) -> (Vec<Ended>, bool) {
+        // One critical section: a driver pushes its handle and then its outcome, so an outcome
+        // taken here always comes with every handle pushed before it.
+        let (outcomes, mut reports, submitted) = {
+            let mut mailbox = lock(&self.mailbox);
+            (std::mem::take(&mut mailbox.outcomes), std::mem::take(&mut mailbox.reports), std::mem::take(&mut mailbox.submitted))
+        };
+        let handled = self.follow_handles(submitted);
         self.jobs.absorb_reports(&mut reports);
         let mut ended = Vec::new();
         for (id, outcome) in outcomes {
@@ -374,4 +390,50 @@ pub(super) fn record_prepared(
     };
     let params = json!({"canvas": canvas, "results": [entry]});
     session.dispatch("run.record", &params).map(|_| ()).map_err(|error| format!("the result could not be saved: {}", error.message))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry() -> Submitted {
+        serde_json::from_value(json!({
+            "project": nodecraft_types::ProjectId::from_bytes([1; 16]), "canvas": CanvasId::from_bytes([2; 16]), "node": NodeId::from_bytes([3; 16]),
+            "target": {"adapter": "mock"}, "key": "staged-key", "generation": 0,
+            "handle": {"remote_id": ""}, "model": "m", "routes": []
+        }))
+        .unwrap()
+    }
+    fn budget() -> JobBudget {
+        JobBudget { log: Arc::default(), budgets: Arc::default(), session: "resume367".into(), wall_clock_ms: Arc::new(|| 0) }
+    }
+    /// A driver pushes its job's handle, then its final outcome (#367 review). The pump takes
+    /// both in one critical section, so the interleavings left are "both before" (the kept job
+    /// carries the handle, and is followed by it next launch rather than sent again under its
+    /// staged key) and "both after" (nothing ends this pump, and the next takes both).
+    #[test]
+    fn a_handle_pushed_before_a_kept_outcome_goes_with_it() {
+        let mut session = Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([1; 16]), "Resume").unwrap()).unwrap();
+        let held = Mutex::new(Held::default());
+        let push = |resumes: &Resumes| {
+            let mut mailbox = lock(&resumes.mailbox);
+            mailbox.submitted.push((JobId(1), nodecraft_providers::JobHandle { remote_id: "sent-once".into(), data: serde_json::Value::Null }));
+            mailbox.outcomes.push((JobId(1), Outcome::Failed { error: "unreachable".into(), transient: true }));
+        };
+        for before in [true, false] {
+            let mut resumes = Resumes::default();
+            resumes.live.insert(JobId(1), (entry(), CancelToken::default()));
+            let mut notices = Vec::new();
+            if !before {
+                let (ended, handled) = resumes.absorb(&mut session, &budget(), &held, &mut notices);
+                assert!(ended.is_empty() && !handled, "nothing came yet");
+            }
+            push(&resumes);
+            let (ended, handled) = resumes.absorb(&mut session, &budget(), &held, &mut notices);
+            assert!(handled, "the handle was taken in");
+            let [Ended::Kept(kept)] = ended.as_slice() else { panic!("the job is kept for the next launch") };
+            assert_eq!(kept.handle.remote_id, "sent-once", "followed by its handle, never sent again");
+            assert!(kept.staged.is_none());
+        }
+    }
 }

@@ -144,6 +144,11 @@ impl NodeCraftApp {
     /// Every frame: records a finished recompute, and starts the next one if the document
     /// changed. Repaints while work is running so its result shows as soon as it lands.
     pub(super) fn live_recompute(&mut self, ctx: &egui::Context) {
+        // Recording a result while a background save writes would wait for the disk on this
+        // thread (#367): a finished round stays in its channel until the save settles.
+        if self.session.file_status().saving {
+            return;
+        }
         let owner = self.session.document_lineage();
         if self.live.owner.as_ref().is_some_and(|old| !self.session.is_current_document(old)) {
             self.live.cancel();
