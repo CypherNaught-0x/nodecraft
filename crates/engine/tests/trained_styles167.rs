@@ -588,6 +588,13 @@ fn train_job(f: &Fixture) -> Option<nodecraft_engine::run_jobs::JobView> {
     f.host.jobs().into_iter().rev().find(|view| view.node == TRAIN)
 }
 
+/// The training has been polled, so the provider answered its submit. `sent` alone holds from the
+/// moment the job starts, while the submit may still be in flight and a cancel has no remote job
+/// to stop yet.
+fn polled(f: &Fixture) -> bool {
+    train_job(f).is_some_and(|v| matches!(v.state, nodecraft_engine::run_jobs::JobState::Running { fraction: Some(_), .. }))
+}
+
 /// Quotes and starts the training, then pumps until `done` holds.
 fn start_training(f: &mut Fixture, until: &str, done: impl Fn(&Fixture) -> bool) -> Vec<RunNotice> {
     let q = quote(f, TRAIN).unwrap();
@@ -648,7 +655,7 @@ fn a_training_the_provider_fails_keeps_no_style_and_says_it_may_have_been_charge
 #[test]
 fn a_cancelled_training_keeps_no_style_and_is_not_shown_as_refunded() {
     let mut f = fixture_with(trainer(u32::MAX, None));
-    start_training(&mut f, "the training is with the provider", |f| train_job(f).is_some_and(|v| v.sent && !v.state.is_final()));
+    start_training(&mut f, "the training is with the provider", polled);
     f.host.cancel(train_job(&f).unwrap().key).unwrap();
     let notices = drain(&mut f);
     assert!(notices.iter().any(|n| matches!(n, RunNotice::Cancelled { node, .. } if *node == TRAIN)), "{notices:?}");
@@ -681,7 +688,7 @@ fn a_training_the_provider_will_not_cancel_says_so_and_keeps_its_billed_style() 
 #[test]
 fn a_training_is_followed_and_cancelled_through_run_jobs_and_run_cancel() {
     let mut f = fixture_with(trainer(u32::MAX, None));
-    start_training(&mut f, "the training is with the provider", |f| train_job(f).is_some_and(|v| v.sent && !v.state.is_final()));
+    start_training(&mut f, "the training is with the provider", polled);
     f.host.pump(&mut f.session);
     let listed = f.session.dispatch("run.jobs", &json!({})).unwrap();
     let job = listed["jobs"].as_array().unwrap().iter().find(|j| j["node"] == json!(TRAIN)).cloned().unwrap_or_else(|| panic!("{listed}"));
