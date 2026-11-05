@@ -230,6 +230,7 @@ mod files423;
 mod host360;
 mod race367;
 mod search;
+mod shell1053;
 mod shell367;
 
 #[test]

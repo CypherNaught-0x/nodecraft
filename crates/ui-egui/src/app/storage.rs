@@ -211,6 +211,9 @@ impl NodeCraftApp {
         }
         let mut session = Session::new(document)?;
         session.set_save_runner(Arc::new(ThreadSaves));
+        // Nothing may change the sample project meanwhile, from any surface (the control
+        // channel, MCP, the agent): the startup open and the question come once it settles.
+        session.hold_for_storage(true);
         let job = super::keep_aside::KeepAside::start(setup.recovery, storage, spawn);
         Ok(Started::KeepingAside(Box::new(job), session, canvas, setup.open))
     }

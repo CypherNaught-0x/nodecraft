@@ -57,3 +57,31 @@ fn a_session_built_over_storage_refuses_another() {
     assert_eq!(error.kind, ErrorKind::Conflict);
     assert!(session.file_status().available);
 }
+
+#[test]
+fn a_session_held_for_storage_refuses_every_change_and_says_why() {
+    let mut session = Session::new(project()).unwrap();
+    let revision = session.status_revision();
+    session.hold_for_storage(true);
+    assert!(session.status_revision() > revision, "hosts see the status change");
+    let node = Node::new(NodeId::from_bytes([2; 16]), "source.text");
+    for refused in
+        [session.dispatch("node.add", &json!({"canvas": C, "node": node})), session.dispatch_without_waiting("node.add", &json!({"canvas": C, "node": node}))]
+    {
+        let error = refused.unwrap_err();
+        assert_eq!(error.kind, ErrorKind::Busy);
+        assert!(error.message.contains("keeping the last session's unsaved work safe"), "{}", error.message);
+    }
+    assert!(session.file_status().unavailable_reason.is_some_and(|reason| reason.contains("keeping the last session's unsaved work safe")));
+    assert!(session.dispatch("file.status", &json!({})).is_ok(), "reads still answer");
+    assert!(session.import_asset(b"held").is_err(), "nor are media imported");
+    assert_eq!(session.document(), &project());
+    // Attaching storage lifts it.
+    session.attach_storage(Box::new(MemoryStorage::default())).unwrap();
+    session.dispatch("node.add", &json!({"canvas": C, "node": node})).unwrap();
+    // A host may also lift it without storage (the keep-aside was cancelled).
+    let mut other = Session::new(project()).unwrap();
+    other.hold_for_storage(true);
+    other.hold_for_storage(false);
+    other.dispatch("node.add", &json!({"canvas": C, "node": node})).unwrap();
+}

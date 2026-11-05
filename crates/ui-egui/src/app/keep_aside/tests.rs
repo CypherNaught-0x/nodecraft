@@ -117,6 +117,9 @@ fn the_first_frame_shows_the_keep_aside_and_frames_go_on_while_it_is_held() {
     assert!(dir.copies().is_empty());
     assert!(h.state().runs.is_none(), "runs wait for the storage");
     assert!(h.state().recovery_deciding(), "nothing that could replace the document runs meanwhile");
+    let canvas = h.state().canvas;
+    let refused = h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": nodecraft_graph::Node::new(ADDED, "source.text")}));
+    assert_eq!(refused.unwrap_err().kind, ErrorKind::Busy, "no surface changes the sample project meanwhile");
 
     held.release();
     settle(&mut h);
@@ -163,7 +166,6 @@ fn decide_later_keeps_every_byte_and_leaves_the_journal_for_the_next_launch() {
     let notice = h.state().notice.clone().unwrap_or_default();
     assert!(notice.contains("offers it again the next time it starts"), "{notice}");
     assert!(!h.state().session.file_status().available, "this window can't save, and says so");
-    assert!(h.state().runs.is_none() || !owned(&dir));
     assert_eq!(std::fs::read(dir.journal()).unwrap(), before, "the journal is as it was");
     assert!(dir.copies().is_empty(), "no copy, partial or not");
     assert!(!owned(&dir), "the journal is released");
@@ -367,4 +369,110 @@ fn render_keep_aside1053_evidence() {
     crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
     settle(&mut h);
     h.render().unwrap().save(output.join("keep-aside-then-asked.png")).unwrap();
+}
+
+/// A crashed session with media: images imported and placed, saved to `file` first when given.
+fn crash_with_media(dir: &Scratch, file: Option<&Path>) -> Vec<nodecraft_types::Blake3> {
+    let mut app = NodeCraftApp::with_services_and_storage(Default::default(), StorageSetup { recovery: dir.journal(), open: None }).unwrap();
+    let canvas = app.canvas;
+    let mut hashes = Vec::new();
+    for n in 0..6u8 {
+        let hash = app.session.import_asset(&vec![n; 256 * 1024 + usize::from(n)]).unwrap();
+        let mut node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([100 + n; 16]), "source.text");
+        node.params.insert(
+            "content".into(),
+            nodecraft_types::Value::Media(nodecraft_types::AssetRef { hash, mime: "application/octet-stream".parse().unwrap(), meta: Default::default() }),
+        );
+        app.session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": node})).unwrap();
+        hashes.push(hash);
+        if n == 2
+            && let Some(file) = file
+        {
+            app.session.dispatch("file.save_as", &serde_json::json!({"location": file.to_str().unwrap()})).unwrap();
+        }
+    }
+    let node = nodecraft_graph::Node::new(ADDED, "source.text");
+    app.session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": node})).unwrap();
+    // As the window's frames record it (`track_recovery`).
+    if let Some(file) = file {
+        storage::record_location(&dir.journal(), Some(file)).unwrap();
+    }
+    hashes
+}
+
+fn until_idle(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = Instant::now() + Duration::from_secs(30);
+    while h.state().session.file_status().operation.is_some() || h.state().files.owns_input() {
+        h.step();
+        assert!(Instant::now() < deadline, "the file operation never settled: {:?}", h.state().notice);
+        std::thread::sleep(Duration::from_millis(1));
+    }
+    h.step();
+}
+
+fn readable(app: &NodeCraftApp, hash: &nodecraft_types::Blake3) -> bool {
+    app.session.assets().verified_content(hash, &TransferCancel::default(), &StreamMetrics::default()).is_ok()
+}
+
+/// The question's media live in the session's own workspace (the reused replay): recovering
+/// them and saving, again and again, still fits its private quota.
+#[test]
+fn recovered_media_from_the_reused_replay_save_and_save_again() {
+    let dir = Scratch::new("media-recover");
+    let hashes = crash_with_media(&dir, None);
+    let mut h = launch(&dir, &thread_spawn());
+    settle(&mut h);
+    h.get_by_label("Recover").click();
+    h.step();
+    until_idle(&mut h);
+    assert!(h.state().recovery.is_none(), "{:?}", h.state().notice);
+    assert!(hashes.iter().all(|hash| readable(h.state(), hash)));
+    let file = dir.0.join("recovered.ncraft");
+    for round in 0..3 {
+        let saved = h.state_mut().session.dispatch("file.save_as", &serde_json::json!({"location": file.to_str().unwrap()}));
+        assert!(saved.is_ok(), "save {round}: {saved:?}");
+        h.step();
+        h.step();
+    }
+    assert!(dir.copies().is_empty(), "the saved work's copy is released");
+    assert!(hashes.iter().all(|hash| readable(h.state(), hash)));
+}
+
+/// "Start from last save" opens the file while the question's media still live in the
+/// session's workspace: the open fits beside them.
+#[test]
+fn start_from_last_save_opens_beside_the_reused_replays_media() {
+    let dir = Scratch::new("media-last-save");
+    let file = dir.0.join("saved.ncraft");
+    let hashes = crash_with_media(&dir, Some(&file));
+    let mut h = launch(&dir, &thread_spawn());
+    settle(&mut h);
+    h.get_by_label("Start from last save").click();
+    h.step();
+    until_idle(&mut h);
+    assert!(h.state().recovery.is_none(), "the open succeeded: {:?}", h.state().notice);
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file)));
+    assert!(hashes.iter().take(3).all(|hash| readable(h.state(), hash)), "the saved media open");
+    assert!(dir.copies().is_empty(), "the discarded copy is gone");
+}
+
+#[test]
+fn decide_later_while_only_looking_for_earlier_copies_still_takes_the_journal_over() {
+    let dir = Scratch::new("later-earlier");
+    let good = crash(&dir);
+    std::fs::write(dir.0.join("session.journal.unrecovered-1"), &good).unwrap();
+    std::fs::remove_file(dir.journal()).unwrap();
+    let held = Held::default();
+    let mut h = launch(&dir, &held.spawn());
+    h.step();
+    h.get_by_label("Decide later").click();
+    h.step();
+    held.release();
+    settle(&mut h);
+    assert!(h.state().session.file_status().available, "the live journal held nothing, so the window can save");
+    assert!(h.state().recovery.is_none());
+    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("offered the next time")), "{:?}", h.state().notice);
+    assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), good, "the copy stays");
+    let canvas = h.state().canvas;
+    h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": nodecraft_graph::Node::new(ADDED, "source.text")})).unwrap();
 }

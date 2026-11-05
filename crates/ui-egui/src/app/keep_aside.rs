@@ -100,6 +100,9 @@ impl Progress {
 pub(super) struct Kept {
     pub kept: Option<PathBuf>,
     pub offer: Option<RecoveryOffer>,
+    /// Looking for an earlier copy to offer was stopped: the live journal held nothing, so the
+    /// session may still take it over, and the copies stay to be offered next time.
+    pub skipped: bool,
 }
 
 /// Whether there is nothing to keep aside or offer: no journal (or an empty one) and no kept
@@ -153,10 +156,14 @@ pub(super) fn keep(recovery: &Path, storage: &NativeStorage, cancel: &TransferCa
     }
     let Some(replayed) = work else {
         if !earlier {
-            return Ok(Kept { kept: None, offer: None });
+            return Ok(Kept { kept: None, offer: None, skipped: false });
         }
         progress.set(Step::Earlier);
-        return Ok(Kept { kept: None, offer: RecoveryOffer::earlier(recovery, cancel)? });
+        return Ok(match RecoveryOffer::earlier(recovery, cancel) {
+            Ok(offer) => Kept { kept: None, offer, skipped: false },
+            Err(error) if TransferCancel::is_cancellation(&error) => Kept { kept: None, offer: None, skipped: true },
+            Err(error) => return Err(error),
+        });
     };
     let kept = keep_copy(recovery, cancel, progress, &probe)?;
     // The project file it belongs to goes with it; without it, the work is recovered untitled,
@@ -167,7 +174,7 @@ pub(super) fn keep(recovery: &Path, storage: &NativeStorage, cancel: &TransferCa
         log::warn!("the kept journal's project file wasn't recorded: {error}");
     }
     let offer = RecoveryOffer::from_replay(kept.clone(), replayed);
-    Ok(Kept { kept: Some(kept), offer: Some(offer) })
+    Ok(Kept { kept: Some(kept), offer: Some(offer), skipped: false })
 }
 
 fn unkeepable(_: impl std::fmt::Debug) -> Error {
@@ -233,6 +240,11 @@ pub(super) fn copy_aside(from: &Path, to: &Path, cancel: &TransferCancel, copied
         target.sync_all().map_err(unkeepable)?;
         drop(target);
         cancel.check()?;
+        // A rename replaces what is there on some systems: the slot must still be free.
+        match std::fs::symlink_metadata(to) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            _ => return Err(unkeepable("the recovery slot was taken while copying")),
+        }
         std::fs::rename(&staged, to).map_err(unkeepable)
     })();
     if result.is_err() {
@@ -323,6 +335,12 @@ impl KeepAside {
     }
 }
 
+/// `message` as a sentence ending in one full stop.
+fn sentence(message: &str) -> String {
+    let trimmed = message.trim_end().trim_end_matches('.');
+    format!("{trimmed}.")
+}
+
 fn size(bytes: u64) -> String {
     const MB: f64 = 1024.0 * 1024.0;
     let mb = bytes as f64 / MB;
@@ -362,10 +380,23 @@ impl NodeCraftApp {
         let (said, fraction) = describe(step, cancelling);
         let t = *self.theme.tokens();
         let mut later = false;
+        let (heading, why, later_hover) = if step == Step::Earlier {
+            (
+                "Looking for unsaved work…",
+                "Unsaved work from an earlier session is waiting in the recovery folder. NodeCraft is checking which copy can still be opened.",
+                "Stop looking. The copies stay in the recovery folder and are offered the next time NodeCraft starts.",
+            )
+        } else {
+            (
+                "Keeping unsaved work safe…",
+                "NodeCraft didn't close cleanly last time. Before this window can save projects, it keeps a copy of that session's unsaved work.",
+                "Stop now. The unsaved work stays where it is and is offered the next time NodeCraft starts; until then this window can't save projects.",
+            )
+        };
         egui::Modal::new(egui::Id::new("keep_aside1053")).show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
-            ui.heading("Keeping unsaved work safe…");
-            ui.label("NodeCraft didn't close cleanly last time. Before this window can save projects, it keeps a copy of that session's unsaved work.");
+            ui.heading(heading);
+            ui.label(why);
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.label(said);
@@ -373,12 +404,7 @@ impl NodeCraftApp {
             if let Some(fraction) = fraction {
                 ui.add(egui::ProgressBar::new(fraction));
             }
-            later = ui
-                .add_enabled(!cancelling, egui::Button::new("Decide later"))
-                .on_hover_text(
-                    "Stop now. The unsaved work stays where it is and is offered the next time NodeCraft starts; until then this window can't save projects.",
-                )
-                .clicked();
+            later = ui.add_enabled(!cancelling, egui::Button::new("Decide later")).on_hover_text(later_hover).clicked();
         });
         if later && let Some(job) = &self.keep_aside {
             job.cancel();
@@ -401,6 +427,8 @@ impl NodeCraftApp {
             return;
         };
         let KeepAside { journal, after, .. } = *job;
+        // Whatever happened, the window works from now on, with storage or without it.
+        self.session.hold_for_storage(false);
         let mut owns = false;
         let problem = match outcome {
             Outcome::Kept(settled) => {
@@ -412,20 +440,28 @@ impl NodeCraftApp {
                     if let Some(kept) = &kept.kept {
                         log::info!("recovery: kept the earlier session's journal as {}", kept.display());
                     }
+                    if kept.skipped {
+                        self.notice = Some(
+                            "Earlier unsaved work wasn't checked. It stays in the recovery folder and is offered the next time NodeCraft starts.".into(),
+                        );
+                    }
                     self.attach_recovery_offer(journal, kept.offer);
                     None
                 }
-                Err(error) => Some(format!(
-                    "Project files are unavailable: {}. The last session's unsaved work was kept in the recovery folder. Close this window and reopen NodeCraft to recover it. This window's edits cannot be saved.",
-                    error.message
-                )),
+                Err(error) => {
+                    log::warn!("recovery: the journal was kept aside but couldn't be taken over: {}", error.message);
+                    Some(format!(
+                    "Project files are unavailable: {} The last session's unsaved work was kept in the recovery folder. Close this window and reopen NodeCraft to recover it. This window's edits cannot be saved.",
+                    sentence(&error.message)
+                ))
+                }
                 }
             }
             Outcome::Failed(error) => {
                 log::error!("project storage unavailable: {}", error.message);
                 Some(format!(
-                    "Project files are unavailable: {}. The last session's unsaved work was left where it was. Close this window and reopen NodeCraft to try again. This window's edits cannot be saved.",
-                    error.message
+                    "Project files are unavailable: {} The last session's unsaved work was left where it was. Close this window and reopen NodeCraft to try again. This window's edits cannot be saved.",
+                    sentence(&error.message)
                 ))
             }
             Outcome::Cancelled => Some(
@@ -437,7 +473,11 @@ impl NodeCraftApp {
                     .to_owned(),
             ),
         };
-        if let Some(problem) = problem {
+        if let Some(mut problem) = problem {
+            // The project named at startup needs the storage to open.
+            if let Some(name) = after.open.as_ref().and_then(|path| path.file_name()) {
+                problem = format!("{problem} {} wasn't opened.", name.to_string_lossy());
+            }
             self.notice = Some(self.remember_storage_problem(problem, false));
         }
         // Only a window that owns project storage (and so its folder's lock) keeps runs.
@@ -466,12 +506,13 @@ impl NodeCraftApp {
             None => {
                 log::warn!("the keep-aside didn't stop in time; its partial copy is replaced next launch");
                 self.keep_aside = None;
+                self.session.hold_for_storage(false);
             }
         }
     }
 
     /// Whether the startup keep-aside is still running.
-    pub(super) fn keeping_aside(&self) -> bool {
+    pub fn keeping_aside(&self) -> bool {
         self.keep_aside.is_some()
     }
 }
