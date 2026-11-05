@@ -117,8 +117,9 @@ impl AgentPanel {
         }
         // While a background save, open or recovery runs, every change a reply asks for would be
         // refused as busy and the model would spend a paid turn retrying it (#367): replies wait
-        // in the worker until it has settled.
-        let busy = app.session.file_status().operation.is_some();
+        // in the worker until it has settled. Likewise while the startup keep-aside holds the
+        // session (#1053).
+        let busy = app.session.file_status().operation.is_some() || app.keeping_aside();
         if let Ok(worker) = &self.worker
             && !busy
         {
@@ -153,7 +154,7 @@ impl AgentPanel {
                 Intent::Cancel => self.agent.cancel(),
                 // Approved steps would be refused as busy while a file operation runs: the
                 // approval stays to be given once it has finished (#367).
-                Intent::Approve if app.session.file_status().operation.is_some() => {}
+                Intent::Approve if app.session.file_status().operation.is_some() || app.keeping_aside() => {}
                 Intent::Approve | Intent::Decline => {
                     let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
                     let next = if intent == Intent::Approve { self.agent.approve(&mut tools) } else { self.agent.decline(&mut tools) };
@@ -307,7 +308,7 @@ impl AgentPanel {
             Status::Waiting => {
                 ui.label(egui::RichText::new("The agent wants to go ahead with the steps marked for approval.").color(t.text));
                 ui.horizontal(|ui| {
-                    let busy = app.session.file_status().operation.is_some();
+                    let busy = app.session.file_status().operation.is_some() || app.keeping_aside();
                     if ui
                         .add_enabled(!busy, egui::Button::new("Approve"))
                         .on_disabled_hover_text("Available once the project has finished saving or opening")

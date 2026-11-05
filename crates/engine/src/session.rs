@@ -176,11 +176,11 @@ impl PendingFile {
 fn opening() -> Error {
     Error::new(ErrorKind::Busy, "a project is still opening; wait for it, or cancel it with file.cancel")
 }
-/// Refusal for a change that would wait for a background save, from a caller that must not
-/// block (#367): the control channel, MCP and the agent dispatch on the UI thread.
 /// Why a change is refused while the host holds the session for storage (#1053).
 const KEEPING_ASIDE: &str = "NodeCraft is still keeping the last session's unsaved work safe; try again once it finishes, which the window shows";
 
+/// Refusal for a change that would wait for a background save, from a caller that must not
+/// block (#367): the control channel, MCP and the agent dispatch on the UI thread.
 fn still_saving() -> Error {
     Error::new(ErrorKind::Busy, "the project is still being saved; try again when the save finishes, or cancel it with file.cancel")
 }
