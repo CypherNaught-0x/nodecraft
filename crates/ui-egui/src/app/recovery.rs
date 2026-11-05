@@ -1,5 +1,5 @@
 //! Offering unsaved work back after an unclean exit (#408). At startup a journal holding work
-//! is kept aside (`storage`); here it is replayed and the person decides: **Recover** adopts the
+//! is kept aside (`keep_aside`, off the UI thread, #1053); here the person decides: **Recover** adopts the
 //! replayed project at the file its session had open (restored in the background and
 //! checkpointed, unsaved; a failure or cancellation asks again, #367), **Start
 //! from last save** opens that file as last saved in the background (#367), then drops only the
@@ -37,13 +37,41 @@ pub struct RecoveryOffer {
 impl RecoveryOffer {
     /// Reads and replays the kept journal at `kept`.
     pub fn read(kept: PathBuf) -> Self {
-        let found = storage::replay_kept(&kept).map_err(|error| error.message).map(|recovered| Found {
+        let replayed = storage::replay_kept(&kept);
+        Self::from_replay(kept, replayed)
+    }
+
+    /// The question about `kept`, from a replay already made of the same bytes (#1053: the
+    /// startup keep-aside replays the live journal to decide whether to keep it, and the copy
+    /// it keeps is byte for byte that journal, so it isn't replayed again).
+    pub(super) fn from_replay(kept: PathBuf, replayed: Result<nodecraft_format::journal::Recovered, nodecraft_types::Error>) -> Self {
+        let found = replayed.map_err(|error| error.message).map(|recovered| Found {
             title: recovered.snapshot.project.title().to_owned(),
             changes: recovered.applied,
             damaged: recovered.damage.is_some() || recovered.truncated_tail,
             snapshot: recovered.snapshot,
         });
         Self { location: storage::recorded_location(&kept), kept, found, offered_over: None }
+    }
+
+    /// The question about an earlier copy that still replays (work recovered and never saved),
+    /// newest slot first, stopping at `cancel` (#1053: off the UI thread, so a long run of
+    /// damaged copies never holds the window). `Err` only when cancelled.
+    pub(super) fn earlier(recovery: &Path, cancel: &nodecraft_format::asset_source::TransferCancel) -> Result<Option<Self>, nodecraft_types::Error> {
+        let mut copies = storage::kept_journals(recovery);
+        while let Some(candidate) = copies.pop() {
+            cancel.check()?;
+            let replayed = storage::replay_kept_with(&candidate, cancel);
+            if let Err(error) = &replayed
+                && nodecraft_format::asset_source::TransferCancel::is_cancellation(error)
+            {
+                return Err(error.clone());
+            }
+            if replayed.is_ok() {
+                return Ok(Some(Self::from_replay(candidate, replayed)));
+            }
+        }
+        Ok(None)
     }
 
     /// The question to ask at startup, if any: about `kept` (the journal this launch kept
@@ -120,6 +148,18 @@ impl NodeCraftApp {
     pub(super) fn attach_recovery(&mut self, journal: PathBuf, kept: Option<PathBuf>) {
         if self.session.file_status().available {
             self.recovery = RecoveryOffer::at_startup(&journal, kept);
+            if let Some(offer) = &mut self.recovery {
+                offer.offered_over = Some(self.session.document_lineage());
+            }
+            self.recovery_journal = Some(journal);
+        }
+    }
+
+    /// [`Self::attach_recovery`] with the question the startup keep-aside already worked out
+    /// off the UI thread (#1053).
+    pub(super) fn attach_recovery_offer(&mut self, journal: PathBuf, offer: Option<RecoveryOffer>) {
+        if self.session.file_status().available {
+            self.recovery = offer;
             if let Some(offer) = &mut self.recovery {
                 offer.offered_over = Some(self.session.document_lineage());
             }
@@ -298,9 +338,10 @@ impl NodeCraftApp {
     }
 
     /// Whether the startup question is still being decided: asked, or its "Start from last
-    /// save" open still running (whose failure asks it again).
+    /// save" open still running (whose failure asks it again), or not yet worked out while the
+    /// earlier journal is kept aside (#1053).
     pub(super) fn recovery_deciding(&self) -> bool {
-        self.recovery.is_some() || self.last_save_opening()
+        self.recovery.is_some() || self.last_save_opening() || self.keeping_aside()
     }
 
     /// Every frame: keeps the record of which file this session has open beside its journal

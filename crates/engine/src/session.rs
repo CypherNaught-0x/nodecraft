@@ -176,6 +176,9 @@ impl PendingFile {
 fn opening() -> Error {
     Error::new(ErrorKind::Busy, "a project is still opening; wait for it, or cancel it with file.cancel")
 }
+/// Why a change is refused while the host holds the session for storage (#1053).
+const KEEPING_ASIDE: &str = "NodeCraft is still keeping the last session's unsaved work safe; try again once it finishes, which the window shows";
+
 /// Refusal for a change that would wait for a background save, from a caller that must not
 /// block (#367): the control channel, MCP and the agent dispatch on the UI thread.
 fn still_saving() -> Error {
@@ -212,6 +215,9 @@ pub struct Session {
     /// Set for the length of [`Self::dispatch_without_waiting`]: a change refuses rather than
     /// waits for a background save.
     never_wait: bool,
+    /// Set by the host while it makes storage safe to take over (#1053): every change is
+    /// refused as `Busy` until [`Self::attach_storage`] or the host lifts it.
+    storage_hold: bool,
     /// The outcome of a background save that an edit waited for, until the host polls it.
     settled: Option<Result<Value, Error>>,
     status_revision: u64,
@@ -273,6 +279,7 @@ impl Session {
             exports: Default::default(),
             pending: None,
             never_wait: false,
+            storage_hold: false,
             settled: None,
             status_revision: 0,
             admission_identity: identity,
@@ -468,6 +475,28 @@ impl Session {
     pub fn with_sendable_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage + Send>) -> Result<Self, Error> {
         Self::with_store(snapshot, crate::persistence::Store::Sendable(storage), None)
     }
+    /// Host lifecycle boundary (#1053): gives a session started without storage the storage it
+    /// may now take over, checkpointing the current document and its assets there as
+    /// [`Self::with_sendable_storage`] would. The desktop starts its window without storage
+    /// while an earlier session's journal is kept aside, since this checkpoint replaces that
+    /// journal. Edits already made stay, and stay undoable; the project is untitled and unsaved.
+    /// Refused when the session already has storage.
+    pub fn attach_storage(&mut self, storage: Box<dyn ProjectStorage + Send>) -> Result<(), Error> {
+        if self.persistence.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
+        }
+        let snapshot = Snapshot { project: self.document.clone(), assets: self.assets.clone(), epoch: 0 };
+        // No origin: the document keeps its identity, so nothing is migrated.
+        let (persistence, document) = crate::persistence::Persistence::new(crate::persistence::Store::Sendable(storage), snapshot, None)?;
+        if document.migration.is_some() || document.snapshot.project.id() != self.document.id() {
+            return Err(Error::new(ErrorKind::Internal, "attaching storage changed the project's identity"));
+        }
+        self.assets = document.snapshot.assets;
+        self.persistence = Some(persistence);
+        self.storage_hold = false;
+        self.status_revision = self.status_revision.saturating_add(1);
+        Ok(())
+    }
     fn with_store(snapshot: Snapshot, storage: crate::persistence::Store, origin: Option<StorageLocation>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;
@@ -563,6 +592,9 @@ impl Session {
     /// `file.cancel`) instead of blocking the caller for as long as the disk takes; one that has
     /// finished is settled at once, as here.
     pub(crate) fn settle_for_edit(&mut self) -> Result<(), Error> {
+        if self.storage_hold {
+            return Err(Error::new(ErrorKind::Busy, KEEPING_ASIDE));
+        }
         match &self.pending {
             None => Ok(()),
             Some(pending @ (PendingFile::Open(_) | PendingFile::Recover(_))) => Err(pending.replacing().unwrap_or_else(opening)),
@@ -651,11 +683,22 @@ impl Session {
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus {
             dirty: true,
-            unavailable_reason: Some(
-                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder.",
-            ),
+            unavailable_reason: Some(if self.storage_hold {
+                KEEPING_ASIDE
+            } else {
+                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder."
+            }),
             ..Default::default()
         })
+    }
+    /// Host lifecycle boundary (#1053): while `held`, the session is waiting for storage the
+    /// host is making safe to take over, and every change, from any surface, is refused as
+    /// `Busy` saying so; reads still answer. [`Self::attach_storage`] lifts it.
+    pub fn hold_for_storage(&mut self, held: bool) {
+        if self.storage_hold != held {
+            self.storage_hold = held;
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
     }
     /// Host observation of this adopted document; not inferred from ids, paths or revisions.
     pub fn document_lineage(&self) -> DocumentLineage {
@@ -1220,6 +1263,9 @@ impl Session {
             )
         {
             return Err(refusal);
+        }
+        if !reads && self.storage_hold {
+            return Err(Error::new(ErrorKind::Busy, KEEPING_ASIDE));
         }
         if !reads && self.pending.is_some() {
             // The save's outcome can change what this command may do: decide again after it.

@@ -155,6 +155,9 @@ inventory, and the repeated replays of kept copies bounded), for a follow-up iss
 a byte-accurate progress bar (phases only, as decided in #475), crash-orphan workspace cleanup
 (#363) and format coordination (#359), which #367 reuses and does not replace.
 
+*Update, 2026-11-05:* the startup keep-aside left above now runs off the UI thread (#1053). See
+[its record](2026-11-05-startup-keep-aside-off-the-ui-thread.md).
+
 - **Rejected:** running the recovery's media copies on the calling thread and only the checkpoint
   on the runner (the copies are the larger half of the work); removing the kept copy when the
   recovery publishes (it is released only by a save of the recovered work, as before); and making

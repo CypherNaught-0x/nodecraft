@@ -369,6 +369,8 @@ mod generate;
 mod host;
 mod image_tools;
 mod input_ports;
+#[cfg(not(target_arch = "wasm32"))]
+mod keep_aside;
 #[cfg(test)]
 mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -522,6 +524,9 @@ pub struct NodeCraftApp {
     /// Recovered work's kept journal, removed once that work is saved (#408).
     #[cfg(not(target_arch = "wasm32"))]
     recovered: Option<recovery::RecoveredWork>,
+    /// The startup keep-aside of an earlier session's journal, while it runs (#1053).
+    #[cfg(not(target_arch = "wasm32"))]
+    keep_aside: Option<Box<keep_aside::KeepAside>>,
     /// This session's recovery journal, beside which the open project file is recorded.
     #[cfg(not(target_arch = "wasm32"))]
     recovery_journal: Option<std::path::PathBuf>,
@@ -783,6 +788,12 @@ impl NodeCraftApp {
             "Project files are unavailable: this window was opened without local project storage. Use the original NodeCraft window's File menu to open or save a project."
         };
         let (mut app, kept, owns_storage) = Self::from_storage_setup(services, storage, missing_reason)?;
+        // While an earlier session's journal is kept aside, runs wait for its storage (#1053):
+        // only a window that owns it keeps runs, and none may start unjournalled meanwhile.
+        if let Some(job) = &mut app.keep_aside {
+            job.after.runs = runs.take();
+            job.after.runs_journal = runs_journal.clone();
+        }
         app.notice = app.notice.or(plugin_problem);
         app.plugins = plugins;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
@@ -1224,6 +1235,8 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             recovered: None,
             #[cfg(not(target_arch = "wasm32"))]
+            keep_aside: None,
+            #[cfg(not(target_arch = "wasm32"))]
             recovery_journal: None,
             #[cfg(not(target_arch = "wasm32"))]
             recorded_location: None,
@@ -1357,11 +1370,13 @@ impl NodeCraftApp {
         // frozen even after the menu closes, so one keypress creates one node (#267).
         let turn_into_owned_input = self.turn_into.is_some();
         #[cfg(not(target_arch = "wasm32"))]
-        let recovery_owns_input = self.recovery.is_some();
+        let recovery_owns_input = self.recovery.is_some() || self.keeping_aside();
         #[cfg(target_arch = "wasm32")]
         let recovery_owns_input = self.web_recovery_owns_input();
         #[cfg(not(target_arch = "wasm32"))]
         {
+            // The startup keep-aside first (#1053): until it settles there is no storage.
+            self.keep_aside_frame(ui.ctx());
             // For hosts that draw without calling `logic` first (tests); a no-op once started.
             self.begin_startup_open();
             self.poll_save(ui.ctx());

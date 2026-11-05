@@ -642,7 +642,8 @@ fn a_peers_edit_waits_for_a_background_save_and_ticks_go_on() {
         std::thread::sleep(Duration::from_millis(5));
     }
     assert!(!holds(&owner, note), "nothing is taken into the state being saved");
-    assert_eq!(chip(&owner), "Live", "the connection stays");
+    // Live, and possibly "catching up" once the held edit has reached it.
+    assert!(chip(&owner).starts_with("Live"), "the connection stays: {}", chip(&owner));
     std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
     assert_eq!(owner.session.poll_file().unwrap().unwrap()["saved"], true);
     until(&mut [&mut owner, &mut joiner], |apps| holds(apps[0], note));
