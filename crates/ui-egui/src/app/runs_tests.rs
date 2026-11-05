@@ -1333,12 +1333,49 @@ fn quitting_during_a_save_records_the_results_that_waited_for_it() {
         }
     }
     let dir = tempfile::tempdir().unwrap();
+    // The mock polls with no interval, and every frame takes results in, so the job would finish
+    // before the save starts; its polls wait until the save is held.
+    struct HeldPolls {
+        mock: MockProvider,
+        open: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl nodecraft_providers::Provider for HeldPolls {
+        fn id(&self) -> &str {
+            nodecraft_providers::Provider::id(&self.mock)
+        }
+        fn submit<'a>(
+            &'a self,
+            job: &'a nodecraft_providers::ProviderJob,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::Submission, nodecraft_providers::ProviderError>> {
+            nodecraft_providers::Provider::submit(&self.mock, job)
+        }
+        fn poll<'a>(
+            &'a self,
+            handle: &'a nodecraft_providers::JobHandle,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::JobProgress, nodecraft_providers::ProviderError>> {
+            if self.open.load(Ordering::SeqCst) {
+                nodecraft_providers::Provider::poll(&self.mock, handle)
+            } else {
+                Box::pin(async { Ok(nodecraft_providers::JobProgress::Running { fraction: None, message: None, partial: None }) })
+            }
+        }
+        fn cancel<'a>(
+            &'a self,
+            handle: &'a nodecraft_providers::JobHandle,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<(), nodecraft_providers::ProviderError>> {
+            nodecraft_providers::Provider::cancel(&self.mock, handle)
+        }
+        fn poll_interval_ms(&self, _: &nodecraft_providers::JobProgress) -> u64 {
+            1
+        }
+    }
     let mock = MockProvider::new("anthropic", [("claude-opus-5-5".to_owned(), MockModel { polls: 2, ..MockModel::new(MockOutput::Text) })]);
+    let polls_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let maker = {
-        let mock = mock.clone();
+        let held = Arc::new(HeldPolls { mock: mock.clone(), open: polls_open.clone() });
         Box::new(move |adapter: &str, _: &nodecraft_engine::settings::ProviderSettings| {
             if adapter == "anthropic" {
-                Ok(Arc::new(mock.clone()) as Arc<dyn nodecraft_providers::Provider>)
+                Ok(held.clone() as Arc<dyn nodecraft_providers::Provider>)
             } else {
                 Err(Readiness::NotSetUp("not in this test".into()))
             }
@@ -1373,6 +1410,8 @@ fn quitting_during_a_save_records_the_results_that_waited_for_it() {
     h.state_mut().session.set_save_runner(gate.clone());
     let file = dir.path().join("quit.ncraft");
     assert_eq!(h.state_mut().session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    assert!(node(h.state()).history.is_empty(), "the job is still running when the save starts");
+    polls_open.store(true, Ordering::SeqCst);
     // Frames go on (the progress window repaints, so step rather than run them to rest).
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut frames = 0;
