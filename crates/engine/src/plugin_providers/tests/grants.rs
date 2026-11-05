@@ -115,7 +115,18 @@ fn grants_that_cannot_be_read_send_nothing_new_but_keep_a_sent_job() {
     retouched.push(b'\n');
     for (bytes, busy) in [(b"{ not grants".to_vec(), false), (oversized, false), (retouched, true)] {
         // Busy: another window holds the store's lock while the grants change under it.
-        let lock = busy.then(|| FolderBackend::new(dir.path().to_path_buf()).unwrap().transaction().unwrap());
+        // The worker takes the lock for each reread, so this may wait out one of them.
+        let lock = busy.then(|| {
+            let backend = FolderBackend::new(dir.path().to_path_buf()).unwrap();
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                match backend.transaction() {
+                    Ok(lock) => break lock,
+                    Err(error) if error.kind == nodecraft_types::ErrorKind::Busy && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(1)),
+                    Err(error) => panic!("the store's lock was never free: {error:?}"),
+                }
+            }
+        });
         std::fs::write(dir.path().join("grants.json"), &bytes).unwrap();
         follow(&mut s, &mut seen);
         let now = s.plugins().provider(PROVIDER).expect("the provider is still published");
