@@ -332,3 +332,39 @@ fn the_window_says_where_it_is() {
     assert!(describe(Step::Earlier, false).0.contains("earlier"));
     assert!(describe(Step::Copying { copied: 1, total: 2 }, true).0.starts_with("Stopping"));
 }
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_keep_aside1053_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("evidence");
+    crash(&dir);
+    let held = Held::default();
+    let setup = StorageSetup { recovery: dir.journal(), open: None };
+    let (app, _, _) = NodeCraftApp::from_storage_setup_with(Default::default(), Some(setup), "unused", &held.spawn()).unwrap();
+    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    h.step();
+    h.render().unwrap().save(output.join("keep-aside-reading.png")).unwrap();
+    // As a large journal's copy would show it part way.
+    if let Some(job) = &h.state().keep_aside {
+        job.progress.set(Step::Copying { copied: 1288 * 1024 * 1024, total: 3482 * 1024 * 1024 });
+    }
+    h.step();
+    h.step();
+    h.render().unwrap().save(output.join("keep-aside-copying.png")).unwrap();
+    h.get_by_label("Decide later").click();
+    h.step();
+    held.release();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("keep-aside-decided-later.png")).unwrap();
+    drop(h);
+    // The next launch keeps it aside and asks.
+    let setup = StorageSetup { recovery: dir.journal(), open: None };
+    let (app, _, _) = NodeCraftApp::from_storage_setup_with(Default::default(), Some(setup), "unused", &thread_spawn()).unwrap();
+    let mut h = Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+    settle(&mut h);
+    h.render().unwrap().save(output.join("keep-aside-then-asked.png")).unwrap();
+}
