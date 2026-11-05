@@ -10,6 +10,8 @@ mod results966;
 
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
+#[path = "attach_storage1053.rs"]
+mod attach_storage1053;
 #[path = "audio_generation672.rs"]
 mod audio_generation672;
 #[path = "audio_length608.rs"]

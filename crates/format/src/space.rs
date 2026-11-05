@@ -59,6 +59,12 @@ pub enum Extent {
     /// staged checkpoint stays on disk until the replace completes, beside the journal already
     /// holding the new content, while the old journal's space comes back.
     CheckpointReplace,
+    /// At startup, the private copy a replay of an earlier session's journal makes of its
+    /// checkpoint archive (#1053), at most the journal's bytes. It holds the work offered back.
+    ReplayCopy,
+    /// At startup, the copy of an earlier session's journal kept aside before this session's
+    /// first checkpoint replaces it (#1053).
+    KeptJournal,
 }
 impl Extent {
     pub const fn name(self) -> &'static str {
@@ -71,6 +77,8 @@ impl Extent {
             Self::CompactionPack => "compacted media pack",
             Self::Rewrite => "project rewritten in the current format",
             Self::CheckpointReplace => "recovery checkpoint while it replaces the journal",
+            Self::ReplayCopy => "private copy of the last session's work",
+            Self::KeptJournal => "kept copy of the last session's recovery journal",
         }
     }
 }
@@ -133,6 +141,7 @@ enum Operation {
     Save,
     Open,
     Recover,
+    KeepAside,
 }
 
 /// The extents one save or open writes, for [`SpaceInventory::check`].
@@ -189,6 +198,28 @@ impl SpaceInventory {
             cleanup_debt: 0,
         }
         .with_verified_copies(copies))
+    }
+    /// Replaying an earlier session's journal of `journal_bytes` at startup to see whether it
+    /// holds work (#1053): the replay copies its checkpoint archive, at most the journal's bytes,
+    /// into the private workspace. Checked before the replay.
+    pub fn replay_journal(journal_bytes: u64) -> Result<Self, Error> {
+        Self::keep_aside(Extent::ReplayCopy, journal_bytes)
+    }
+    /// Keeping that journal aside once its replay found work (#1053): the whole journal is
+    /// copied to a kept slot beside it. Checked after the replay, whose copy is then already
+    /// on disk (and so already missing from the free space reported). The small checkpoint this
+    /// session then writes replaces the journal, freeing it, so it isn't charged.
+    pub fn keep_journal(journal_bytes: u64) -> Result<Self, Error> {
+        Self::keep_aside(Extent::KeptJournal, journal_bytes)
+    }
+    fn keep_aside(extent: Extent, journal_bytes: u64) -> Result<Self, Error> {
+        journal_bytes.checked_add(EXTENT_SLACK).ok_or_else(overflow)?;
+        Ok(Self {
+            operation: Operation::KeepAside,
+            items: vec![SpaceItem::new(extent, Volume::Recovery, journal_bytes, Phase::Prepare)],
+            replaced: None,
+            cleanup_debt: 0,
+        })
     }
     /// What an open still writes once it has found the file needs rewriting (an older format,
     /// or a legacy identity): the rewritten archive of `archive_bytes` and its checkpoint, on
@@ -322,6 +353,7 @@ impl SpaceInventory {
             Operation::Save => "save",
             Operation::Open => "open this project",
             Operation::Recover => "recover this work",
+            Operation::KeepAside => "keep the last session's unsaved work safe",
         };
         let drive = match at {
             Where::Both => "the drive holding the project and NodeCraft's recovery folder",
@@ -333,12 +365,14 @@ impl SpaceInventory {
             (Operation::Save, _) => "Free some space there, then save again.",
             (Operation::Open, _) => "Free some space there, then open the project again.",
             (Operation::Recover, _) => "Free some space there, then recover it again.",
+            (Operation::KeepAside, _) => "Free some space there, then close and reopen NodeCraft.",
         };
         let unchanged = match self.operation {
             Operation::Save if self.replaced.is_some() => "Nothing was written; the file is unchanged.",
             Operation::Save => "Nothing was written.",
             Operation::Open => "Nothing was written; the current project is unchanged.",
             Operation::Recover => "Nothing was written; the current project and the recovered work are unchanged.",
+            Operation::KeepAside => "Nothing was written; the unsaved work stays in the recovery journal and is offered again then.",
         };
         // Debt sits in the recovery folder, so it matters only where that drive is short.
         let debt = if self.cleanup_debt > 0 && !matches!(at, Where::Destination) {
@@ -620,5 +654,25 @@ mod tests {
         assert_eq!(SpaceInventory::recover(GB, 0).unwrap().needed(Volume::Recovery).unwrap(), GB + 80 + EXTENT_SLACK);
         assert!(recover.check(&SpaceProbe::default()).is_ok());
         assert!(SpaceInventory::recover(u64::MAX, 0).is_err());
+    }
+
+    #[test]
+    fn keeping_a_journal_aside_charges_its_replay_and_its_copy_on_the_recovery_drive() {
+        for keep in [SpaceInventory::replay_journal(GB).unwrap(), SpaceInventory::keep_journal(GB).unwrap()] {
+            assert_eq!(keep.needed(Volume::Destination).unwrap(), 0, "no project file is written");
+            assert_eq!(keep.needed(Volume::Recovery).unwrap(), GB + EXTENT_SLACK);
+            let error = keep.check(&SpaceProbe { recovery_free: Some(GB), ..SpaceProbe::default() }).unwrap_err();
+            assert_eq!(error.kind, ErrorKind::Busy);
+            assert!(
+                error.message.contains("keep the last session's unsaved work safe") && error.message.contains("stays in the recovery journal"),
+                "{}",
+                error.message
+            );
+            assert!(keep.check(&SpaceProbe { recovery_free: Some(2 * GB), ..SpaceProbe::default() }).is_ok());
+            assert!(keep.check(&SpaceProbe::default()).is_ok(), "unknown space never refuses");
+        }
+        assert_eq!(SpaceInventory::replay_journal(GB).unwrap().items()[0].extent, Extent::ReplayCopy);
+        assert_eq!(SpaceInventory::keep_journal(GB).unwrap().items()[0].extent, Extent::KeptJournal);
+        assert!(SpaceInventory::keep_journal(u64::MAX).is_err());
     }
 }

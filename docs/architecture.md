@@ -487,6 +487,11 @@ cancel or failure before the checkpoint publishes keeps the current project and 
 `Session::dispatch_without_waiting` is dispatch for callers that must not block (the desktop's
 control channel, MCP and agent): where dispatch would wait for a background save, it refuses as
 `Busy` naming `file.cancel` (`docs/decisions/2026-11-04-background-recover-and-close-out.md`).
+`Session::attach_storage` gives a session started without storage its storage later,
+checkpointing the current document there. The desktop uses it after a crash: it starts its window
+without storage while a thread holding the journal's lock keeps the earlier journal aside, then
+attaches the storage once that has settled
+(`docs/decisions/2026-11-05-startup-keep-aside-off-the-ui-thread.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only

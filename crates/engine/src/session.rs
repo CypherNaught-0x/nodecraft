@@ -468,6 +468,27 @@ impl Session {
     pub fn with_sendable_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage + Send>) -> Result<Self, Error> {
         Self::with_store(snapshot, crate::persistence::Store::Sendable(storage), None)
     }
+    /// Host lifecycle boundary (#1053): gives a session started without storage the storage it
+    /// may now take over, checkpointing the current document and its assets there as
+    /// [`Self::with_sendable_storage`] would. The desktop starts its window without storage
+    /// while an earlier session's journal is kept aside, since this checkpoint replaces that
+    /// journal. Edits already made stay, and stay undoable; the project is untitled and unsaved.
+    /// Refused when the session already has storage.
+    pub fn attach_storage(&mut self, storage: Box<dyn ProjectStorage + Send>) -> Result<(), Error> {
+        if self.persistence.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
+        }
+        let snapshot = Snapshot { project: self.document.clone(), assets: self.assets.clone(), epoch: 0 };
+        // No origin: the document keeps its identity, so nothing is migrated.
+        let (persistence, document) = crate::persistence::Persistence::new(crate::persistence::Store::Sendable(storage), snapshot, None)?;
+        if document.migration.is_some() || document.snapshot.project.id() != self.document.id() {
+            return Err(Error::new(ErrorKind::Internal, "attaching storage changed the project's identity"));
+        }
+        self.assets = document.snapshot.assets;
+        self.persistence = Some(persistence);
+        self.status_revision = self.status_revision.saturating_add(1);
+        Ok(())
+    }
     fn with_store(snapshot: Snapshot, storage: crate::persistence::Store, origin: Option<StorageLocation>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;

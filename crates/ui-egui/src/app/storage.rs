@@ -41,38 +41,32 @@ pub struct StorageSetup {
     pub open: Option<PathBuf>,
 }
 
+/// How [`NodeCraftApp::start_storage`] began.
+enum Started {
+    Ready(Session, nodecraft_types::CanvasId, Option<PathBuf>),
+    KeepingAside(Box<super::keep_aside::KeepAside>, Session, nodecraft_types::CanvasId, Option<PathBuf>),
+}
+
 /// Canonical safety-copy slots. Exhaustion refuses replacement of the live journal.
 pub const MAX_KEPT: u32 = 99;
 
-/// Whether the journal at `recovery` holds work worth keeping: edits after its checkpoint, or
+/// Whether a journal of `length` holds work worth keeping: edits after its checkpoint, or
 /// damage or an old format that recovery has to look at. A journal holding only the checkpoint
-/// (the session started and did nothing) isn't.
-fn holds_work(recovery: &std::path::Path, storage: &NativeStorage) -> bool {
-    // The caller already owns this journal's lock. Native replay dispatches classic
-    // and streamed envelopes without buffering the whole recovery file.
-    holds_work_with_metadata(std::fs::metadata(recovery).map(|metadata| metadata.len()), || storage.recover())
-}
-
+/// (the session started and did nothing) isn't. See [`super::keep_aside::live_work`].
+#[cfg(test)]
 fn holds_work_with_metadata(length: std::io::Result<u64>, replay: impl FnOnce() -> Result<nodecraft_format::journal::Recovered, Error>) -> bool {
-    match length {
-        Ok(0) => return false,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return false,
-        // A retained handle cannot make an inaccessible/replaced pathname empty.
-        // Keep/refuse rather than silently checkpointing over uncertain work.
-        Err(_) => return true,
-        Ok(_) => {}
-    }
-    match replay() {
-        Ok(recovered) => recovered.applied > 0 || recovered.damage.is_some() || recovered.truncated_tail || recovered.legacy,
-        // Unreadable bytes are kept: only a person should decide they're worthless.
-        Err(_) => true,
-    }
+    super::keep_aside::live_work(length, replay).is_some()
 }
 
 /// Read a kept journal through the native, bounded replay path. The returned asset
 /// store owns its private ranges/context, so offers remain readable after this host drops.
 pub(super) fn replay_kept(path: &Path) -> Result<nodecraft_format::journal::Recovered, Error> {
-    NativeStorage::new(path.to_path_buf())?.recover()
+    replay_kept_with(path, &nodecraft_format::asset_source::TransferCancel::default())
+}
+
+/// [`replay_kept`], stopping at `cancel`.
+pub(super) fn replay_kept_with(path: &Path, cancel: &nodecraft_format::asset_source::TransferCancel) -> Result<nodecraft_format::journal::Recovered, Error> {
+    NativeStorage::new(path.to_path_buf())?.recover_with(cancel, &nodecraft_format::asset_source::StreamMetrics::default())
 }
 
 /// The file beside a journal (live or kept) naming the project file its session had open, so
@@ -145,42 +139,6 @@ pub fn kept_journals(recovery: &Path) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Copies a journal holding work at `recovery` to a fresh `<name>.unrecovered-<n>` beside it,
-/// flushed to disk, and returns where. Call with the journal's lock held.
-fn keep_unrecovered(recovery: &std::path::Path, storage: &NativeStorage) -> Result<Option<PathBuf>, Error> {
-    let unreadable = |_| Error::new(ErrorKind::Conflict, "an earlier session's recovery journal can't be kept, so it wasn't replaced");
-    if !holds_work(recovery, storage) {
-        return Ok(None);
-    }
-    let name = recovery.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "session.journal".into());
-    for n in 1..=MAX_KEPT {
-        let kept = recovery.with_file_name(format!("{name}.unrecovered-{n}"));
-        let available = match std::fs::symlink_metadata(&kept) {
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-            Ok(_) => false,
-            Err(error) => return Err(unreadable(error)),
-        };
-        if available {
-            std::fs::copy(recovery, &kept).map_err(unreadable)?;
-            // On disk before the original is checkpointed over.
-            // Windows flushes only files opened for writing.
-            std::fs::OpenOptions::new().write(true).open(&kept).and_then(|file| file.sync_all()).map_err(unreadable)?;
-            // The project file it belongs to goes with it; without it, the work is recovered
-            // untitled, which loses nothing.
-            if let Some(location) = recorded_location(recovery)
-                && let Err(error) = record_location(&kept, Some(&location))
-            {
-                log::warn!("the kept journal's project file wasn't recorded: {error}");
-            }
-            return Ok(Some(kept));
-        }
-    }
-    Err(Error::new(
-        ErrorKind::Conflict,
-        "all recovery safety-copy slots are occupied, so this session's journal was not replaced and earlier work is untouched; move or delete old session.journal.unrecovered-* copies in the recovery folder, then restart",
-    ))
-}
-
 impl NodeCraftApp {
     /// Shared startup path, also exercised without keychain/network workers in UI tests.
     pub(super) fn from_storage_setup(
@@ -188,12 +146,31 @@ impl NodeCraftApp {
         setup: Option<StorageSetup>,
         missing_reason: &str,
     ) -> Result<(Self, Option<PathBuf>, bool), Error> {
-        match setup.map(Self::storage_session) {
-            Some(Ok((session, canvas, kept, open))) => {
+        Self::from_storage_setup_with(services, setup, missing_reason, &super::keep_aside::thread_spawn())
+    }
+    /// [`Self::from_storage_setup`], keeping an earlier session's journal aside on `spawn`
+    /// (#1053). When there is something to keep aside or offer, the window starts without
+    /// storage and the keep-aside runs behind its first frame; the session takes the journal
+    /// over once it has settled ([`Self::keep_aside_frame`]), so `kept` is `None` and the window
+    /// doesn't yet own storage.
+    pub(super) fn from_storage_setup_with(
+        services: nodecraft_engine::commands::Services,
+        setup: Option<StorageSetup>,
+        missing_reason: &str,
+        spawn: &super::keep_aside::Spawn,
+    ) -> Result<(Self, Option<PathBuf>, bool), Error> {
+        match setup.map(|setup| Self::start_storage(setup, spawn)) {
+            Some(Ok(Started::Ready(session, canvas, open))) => {
                 let mut app = Self::from_session(session.with_services(services), canvas)?;
                 // Opened in the background by the first frame, once the window can show it.
                 app.files.startup = open;
-                Ok((app, kept, true))
+                Ok((app, None, true))
+            }
+            Some(Ok(Started::KeepingAside(mut job, session, canvas, open))) => {
+                let mut app = Self::from_session(session.with_services(services), canvas)?;
+                job.after.open = open;
+                app.keep_aside = Some(job);
+                Ok((app, None, false))
             }
             failed => {
                 let (reason, owner_busy) = match failed {
@@ -215,11 +192,37 @@ impl NodeCraftApp {
             }
         }
     }
+    /// Storage over the journal in `setup`, its lock taken on the calling thread. With nothing
+    /// to keep aside or offer, the session is built over it here; otherwise the keep-aside
+    /// starts on `spawn` and the session starts without storage.
+    fn start_storage(setup: StorageSetup, spawn: &super::keep_aside::Spawn) -> Result<Started, Error> {
+        let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
+        let (document, canvas) = Self::starter_document(&kinds)?;
+        if let Some(folder) = setup.recovery.parent() {
+            std::fs::create_dir_all(folder).map_err(|_| Error::new(ErrorKind::Unsupported, "the recovery folder can't be created"))?;
+        }
+        // The lock comes first: once held, no other window is using this journal.
+        let storage = NativeStorage::new(setup.recovery.clone())?;
+        if super::keep_aside::nothing_to_keep(&setup.recovery) {
+            let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
+            let mut session = Session::with_sendable_storage(snapshot, Box::new(storage))?;
+            session.set_save_runner(Arc::new(ThreadSaves));
+            return Ok(Started::Ready(session, canvas, setup.open));
+        }
+        let mut session = Session::new(document)?;
+        session.set_save_runner(Arc::new(ThreadSaves));
+        let job = super::keep_aside::KeepAside::start(setup.recovery, storage, spawn);
+        Ok(Started::KeepingAside(Box::new(job), session, canvas, setup.open))
+    }
     /// A session over native storage, starting from the sample project, and the canvas to show,
     /// plus where an earlier session's unrecovered journal was kept and the file in `setup` still
     /// to open. That open is not made here (#367): it runs in the background from the window's
     /// first frame ([`Self::begin_startup_open`]), so a large project shows its progress and
     /// can be cancelled instead of holding the window shut.
+    ///
+    /// Inline, for tests: the desktop keeps the journal aside off the UI thread
+    /// ([`Self::from_storage_setup`]).
+    #[cfg(test)]
     pub(super) fn storage_session(setup: StorageSetup) -> Result<(Session, nodecraft_types::CanvasId, Option<PathBuf>, Option<PathBuf>), Error> {
         let kinds = nodecraft_engine::generation_catalog::default_registry()?.0;
         let (document, canvas) = Self::starter_document(&kinds)?;
@@ -230,7 +233,8 @@ impl NodeCraftApp {
         let storage = NativeStorage::new(setup.recovery.clone())?;
         // A journal left by a session that didn't close cleanly holds unsaved work. Starting a
         // session checkpoints over it, so keep a copy first (recovery offers it, #408).
-        let kept = keep_unrecovered(&setup.recovery, &storage)?;
+        let progress = super::keep_aside::Progress::default();
+        let kept = super::keep_aside::keep(&setup.recovery, &storage, &nodecraft_format::asset_source::TransferCancel::default(), &progress, false)?.kept;
         let snapshot = Snapshot { project: document, assets: AssetStore::default(), epoch: 0 };
         // This first checkpoint is of the small sample project, so it stays inline.
         let mut session = Session::with_sendable_storage(snapshot, Box::new(storage))?;
@@ -252,6 +256,8 @@ impl NodeCraftApp {
     /// no edits), close the recovery journal so it isn't offered next time. Unsaved work keeps
     /// its journal for recovery (#408).
     pub(super) fn close_storage(&mut self) {
+        // A keep-aside still running is stopped first (#1053); the journal stays as it was.
+        self.stop_keep_aside();
         // Quitting waits for a save still writing; until it publishes, the project is unsaved.
         // An open or a recovery is cancelled instead (#367): waiting would hold the closing
         // window for the whole read with no way to stop it, the open project stays as it was,
