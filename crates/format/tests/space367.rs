@@ -104,14 +104,16 @@ fn a_classic_open_checks_its_asset_copies_once_the_file_is_read() {
     let dir = tempfile::tempdir().unwrap();
     let context = AssetContext::native(NativeAssetWorkspace::new(dir.path(), DiskQuota::default()).unwrap());
     let probe = |free| SpaceProbe { recovery_free: Some(free), ..SpaceProbe::default() };
+    // A journal at least as large as the new checkpoint: its replace adds nothing anywhere.
+    let journal = Some(file + 80);
     // Four 100 kB copies and a checkpoint of the file, each with its slack.
     let needed = 400_000 + file + 80 + 2 * nodecraft_format::space::EXTENT_SLACK;
-    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed)).is_ok());
-    let error = check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed - 1)).unwrap_err();
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed), journal).is_ok());
+    let error = check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(needed - 1), journal).unwrap_err();
     assert!(error.message.contains("open this project") && error.message.contains("current project is unchanged"), "{}", error.message);
     // Unknown space, or a host that doesn't copy, never refuses.
-    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &SpaceProbe::default()).is_ok());
-    assert!(check_open_copies(&index, &context, StorageCapability::SmallV1, &probe(1)).is_ok());
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &SpaceProbe::default(), journal).is_ok());
+    assert!(check_open_copies(&index, &context, StorageCapability::SmallV1, &probe(1), journal).is_ok());
     // Media this workspace already holds verified (the open project has them) aren't copied.
     let mut held = AssetStore::with_context(context.clone());
     for n in 0..4u8 {
@@ -119,6 +121,17 @@ fn a_classic_open_checks_its_asset_copies_once_the_file_is_read() {
         held.import_stream(&AssetRange::new(Arc::new(MemorySource::new(body)), 0, 100_000).unwrap(), &TransferCancel::default(), &StreamMetrics::default())
             .unwrap();
     }
-    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(file + 80 + 2 * nodecraft_format::space::EXTENT_SLACK)).is_ok());
+    assert!(
+        check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(file + 80 + 2 * nodecraft_format::space::EXTENT_SLACK), journal).is_ok()
+    );
+    // Where the replace briefly keeps two checkpoints (Windows), a smaller journal adds the
+    // second copy less the journal it frees, as the save and open preflights charge it (#367).
+    let slack = nodecraft_format::space::EXTENT_SLACK;
+    let small = Some(1_000);
+    let extra = if cfg!(windows) { file + 80 - 1_000 + slack } else { 0 };
+    let fits = file + 80 + slack + extra;
+    assert!(check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(fits), small).is_ok());
+    let short = check_open_copies(&index, &context, StorageCapability::StreamingV2, &probe(fits - 1), small);
+    assert!(short.is_err(), "the in-open check charges the journal replace too");
     drop(held);
 }

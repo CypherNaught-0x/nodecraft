@@ -47,6 +47,9 @@ enum Phase {
         path: PathBuf,
         after: AfterOpen,
     },
+    /// Recovery's "Recover" is restoring the offered work in the background (#367). The offer
+    /// stays here, so a failure or cancellation asks the question again.
+    Recovering(Box<super::recovery::RecoveryOffer>),
 }
 /// Why a background open didn't replace the project, so each purpose can say it in its own words.
 pub(super) enum OpenFailed {
@@ -60,9 +63,9 @@ pub(super) enum OpenFailed {
     Unfinished,
 }
 impl OpenFailed {
-    fn from_error(error: &Error) -> Self {
-        // The engine's own wording for an open its cancel stopped before publishing.
-        if error.kind == ErrorKind::Conflict && error.message.starts_with("opening was cancelled") {
+    pub(super) fn from_error(error: &Error) -> Self {
+        // The engine's own wording for an open (or recovery) its cancel stopped before publishing.
+        if error.kind == ErrorKind::Conflict && (error.message.starts_with("opening was cancelled") || error.message.starts_with("recovering was cancelled")) {
             Self::Cancelled
         } else {
             Self::Error(error.message.clone())
@@ -78,8 +81,8 @@ impl OpenFailed {
                 let mut chars = message.chars();
                 chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
             }
-            Self::Unconfirmed => "it didn't confirm it opened".to_owned(),
-            Self::Unfinished => "the open ended without a result".to_owned(),
+            Self::Unconfirmed => "it didn't confirm it finished".to_owned(),
+            Self::Unfinished => "it ended without a result".to_owned(),
         }
     }
 }
@@ -374,9 +377,15 @@ impl NodeCraftApp {
             (AfterOpen::LastSave(offer), Err(failed)) => self.last_save_not_opened(*offer, &failed, same_session),
         }
     }
-    /// Whether a "Start from last save" open is running: its question isn't answered yet.
+    /// Whether a "Start from last save" open or a "Recover" is running: its question isn't
+    /// answered yet.
     pub(super) fn last_save_opening(&self) -> bool {
-        self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Opening { after: AfterOpen::LastSave(_), .. }))
+        self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Opening { after: AfterOpen::LastSave(_), .. } | Phase::Recovering(_)))
+    }
+    /// "Recover" started restoring `offer` in the background; its outcome settles in
+    /// [`Self::file_save_completed`].
+    pub(super) fn recovering(&mut self, offer: super::recovery::RecoveryOffer) {
+        self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Recovering(Box::new(offer)) });
     }
     fn file_opened(&mut self, path: PathBuf) {
         self.after_file_open();
@@ -436,6 +445,19 @@ impl NodeCraftApp {
     }
     pub(super) fn file_save_completed(&mut self, ctx: &egui::Context, result: Result<serde_json::Value, Error>) {
         let opened = result.as_ref().is_ok_and(|value| value.get("opened").and_then(serde_json::Value::as_bool) == Some(true));
+        if let Some(Pending { phase: Phase::Recovering(offer), stamp }) = self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Recovering(_))) {
+            self.files.own_frame(ctx);
+            let same_session = Arc::ptr_eq(&stamp.session, &self.session.view_identity());
+            let recovered = result.as_ref().is_ok_and(|value| value.get("recovered").and_then(serde_json::Value::as_bool) == Some(true));
+            match result {
+                Ok(_) if recovered && same_session => self.recovered_work(*offer),
+                Ok(_) if same_session => self.recovery_not_restored(*offer, &OpenFailed::Unconfirmed, true),
+                Ok(_) => self.recovery_not_restored(*offer, &OpenFailed::Unfinished, false),
+                Err(error) => self.recovery_not_restored(*offer, &OpenFailed::from_error(&error), same_session),
+            }
+            self.clear_file_input(ctx);
+            return;
+        }
         if let Some(Pending { phase: Phase::Opening { path, after }, stamp }) =
             self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening { .. }))
         {
@@ -559,6 +581,16 @@ impl NodeCraftApp {
                 } else {
                     // The host replaced the session, or the open ended without an outcome.
                     self.open_settled(path, after, Err(OpenFailed::Unfinished), same_session);
+                }
+                self.file_progress(ctx);
+            }
+            Phase::Recovering(offer) => {
+                let same_session = Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity());
+                if same_session && self.session.file_status().operation.is_some() {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Recovering(offer) });
+                } else {
+                    // The host replaced the session, or the recovery ended without an outcome.
+                    self.recovery_not_restored(*offer, &OpenFailed::Unfinished, same_session);
                 }
                 self.file_progress(ctx);
             }
@@ -766,6 +798,6 @@ impl NodeCraftApp {
     }
 }
 
-mod progress;
+pub(in crate::app) mod progress;
 #[cfg(test)]
 mod tests;

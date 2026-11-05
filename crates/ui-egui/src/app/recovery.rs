@@ -1,6 +1,7 @@
 //! Offering unsaved work back after an unclean exit (#408). At startup a journal holding work
 //! is kept aside (`storage`); here it is replayed and the person decides: **Recover** adopts the
-//! replayed project at the file its session had open (checkpointed at once, unsaved), **Start
+//! replayed project at the file its session had open (restored in the background and
+//! checkpointed, unsaved; a failure or cancellation asks again, #367), **Start
 //! from last save** opens that file as last saved in the background (#367), then drops only the
 //! selected copy, and only once the open has succeeded. Nothing is lost silently: the
 //! kept copy stays on disk until the recovered work is saved (so quitting first, or crashing
@@ -97,6 +98,10 @@ enum Choice {
     StartFromLastSave,
     /// Close the notice about a journal that can't be replayed; the file stays.
     Keep,
+}
+
+fn flag(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_bool) == Some(true)
 }
 
 fn quoted(title: &str) -> String {
@@ -210,23 +215,14 @@ impl NodeCraftApp {
         }
 
         match (choice, &offer.found) {
-            (Choice::Recover, Ok(found)) => match self.session.recover(found.snapshot.clone(), offer.location.clone().map(StorageLocation::Path)) {
-                Ok(()) => {
-                    log::info!("recovery: recovered {} changes from {name}", found.changes);
-                    self.after_document_replaced();
-                    let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or_else(|| quoted(&found.title), |n| n.to_string_lossy().into_owned());
-                    self.notice = Some(if offer.location.is_some() {
-                        format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
-                    } else {
-                        format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
-                    });
-                    // Kept until the recovered work is saved (`track_recovery`).
-                    self.recovered = Some(RecoveredWork { offer, lineage: self.session.document_lineage() });
-                }
-                Err(error) => {
-                    log::error!("recovery: {name} couldn't be recovered: {}", error.message);
-                    self.notice = Some(format!("That work couldn't be recovered ({}). It was kept as {name} in the recovery folder.", error.message));
-                }
+            // Restored on the save runner (#367): the media copies and the checkpoint never hold
+            // the window. The copy stays until the recovered work is saved (`track_recovery`).
+            (Choice::Recover, Ok(found)) => match self.session.recover_in_background(found.snapshot.clone(), offer.location.clone().map(StorageLocation::Path))
+            {
+                Ok(result) if flag(&result, "recovering") => self.recovering(offer),
+                Ok(result) if flag(&result, "recovered") => self.recovered_work(offer),
+                Ok(_) => self.recovery_not_restored(offer, &super::file_dialogs::OpenFailed::Unconfirmed, true),
+                Err(error) => self.recovery_not_restored(offer, &super::file_dialogs::OpenFailed::from_error(&error), true),
             },
             (Choice::StartFromLastSave, _) => match offer.location.clone() {
                 // The copy stays until the open has succeeded (`started_from_last_save`).
@@ -236,6 +232,41 @@ impl NodeCraftApp {
             (Choice::Recover | Choice::Keep, _) => {
                 log::warn!("recovery: kept {name}, which can't be replayed");
             }
+        }
+    }
+
+    /// "Recover" has replaced the document with the offered work: the copy is kept until that
+    /// work is saved.
+    pub(super) fn recovered_work(&mut self, offer: RecoveryOffer) {
+        let name = offer.kept_name();
+        let (changes, title) = match &offer.found {
+            Ok(found) => (found.changes, quoted(&found.title)),
+            Err(_) => (0, quoted("")),
+        };
+        log::info!("recovery: recovered {changes} changes from {name}");
+        self.after_document_replaced();
+        let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or(title, |n| n.to_string_lossy().into_owned());
+        self.notice = Some(if offer.location.is_some() {
+            format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
+        } else {
+            format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
+        });
+        // Kept until the recovered work is saved (`track_recovery`).
+        self.recovered = Some(RecoveredWork { offer, lineage: self.session.document_lineage() });
+    }
+
+    /// "Recover" didn't restore the work (it failed, was cancelled, or ended without an
+    /// outcome): the copy is untouched, the current project stays, and in this session the
+    /// question is asked again so either choice is still one click away.
+    pub(super) fn recovery_not_restored(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
+        let name = offer.kept_name();
+        log::warn!("recovery: the work wasn't recovered; kept {name}");
+        self.notice = Some(match failed {
+            super::file_dialogs::OpenFailed::Cancelled => format!("Recovering was cancelled. The unsaved work was kept as {name} in the recovery folder."),
+            failed => format!("That work couldn't be recovered: {}. It was kept as {name} in the recovery folder.", failed.clause()),
+        });
+        if same_session && self.recovery.is_none() {
+            self.recovery = Some(offer);
         }
     }
 

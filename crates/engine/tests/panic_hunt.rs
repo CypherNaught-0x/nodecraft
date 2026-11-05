@@ -794,7 +794,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
-        "file.cancel" | "file.focus_owner" => json!({}),
+        "file.cancel" | "file.focus_owner" | "file.status" => json!({}),
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),

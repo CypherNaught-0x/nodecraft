@@ -480,7 +480,13 @@ other file command is refused as `Busy`, since the document is about to be repla
 its destination is published, an open until its replacement checkpoint is, and the outcome says
 which happened. `FileStatus::operation` gives the kind, phase (`preparing`, `reading`, `writing`,
 `checkpointing`) and whether a cancel was asked for
-(`docs/decisions/2026-10-19-background-open-and-cancel.md`).
+(`docs/decisions/2026-10-19-background-open-and-cancel.md`). `Session::recover_in_background`
+restores work from a kept journal the same way (kind `recover`): the media are copied into this
+session's workspace and the checkpoint written on the runner, changes are refused meanwhile, and a
+cancel or failure before the checkpoint publishes keeps the current project and its journal.
+`Session::dispatch_without_waiting` is dispatch for callers that must not block (the desktop's
+control channel, MCP and agent): where dispatch would wait for a background save, it refuses as
+`Busy` naming `file.cancel` (`docs/decisions/2026-11-04-background-recover-and-close-out.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only
