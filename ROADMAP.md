@@ -242,7 +242,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
-  The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
+  The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
+  between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
   actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
   model cards is a per-card command (`node.cache_set`) with no button yet (#91). Module
   (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
