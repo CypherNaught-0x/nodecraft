@@ -30,7 +30,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
 | **HeyGen through fal** | `fal` | the existing fal key | supplied speech and one photo → Photo Avatar4, or MP4 → Speed/Precision lip sync | Native streamed storage required. Unknown monetary price with explicit consent; supplied PCM WAV, no TTS/stock voices. See below. |
-| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds; prompt and 2–5 keyframes → 720p video, 5–25 seconds | Native streamed project storage required; $0.05 a second. No text-to-video (removed by fal); see below. |
 | **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
@@ -2428,8 +2428,22 @@ the encoded image is bounded before decoding or base64 allocation. Resolution, n
 seed, frame rate, audio, safety and output-count controls are not exposed or sent. The service's
 other defaults apply; the absence of a safety field is not a claim about moderation.
 
-This initial integration covers **current image-to-video only**. Text-to-video, multiple
-keyframes, Pikaframes, effects, the separate native Pika API and Pika 2.2 are outside this scope.
+**Keyframes (#1061).** **Pika 2.5 keyframes (fal)** (`fal.pika25-keyframes`,
+`fal-ai/pika/v2.5/pikaframes`, checked **2026-11-06** against fal's
+[model/rates](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes),
+[API](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes/api) and
+[formal schema](https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/pika/v2.5/pikaframes))
+takes a prompt and **2 to 5** images wired to **keyframes**, in order, under the same image
+limits as the first frame. Its one setting is the whole clip's length, **5 to 25 seconds**,
+split across the transitions in whole seconds (the first ones a second longer when it doesn't
+divide). fal bills "$0.05 for 720p" a second with a 5-second minimum; the catalog fixes 720p and
+starts at 5 seconds, so the quote of **$0.05 per second** is exact. The request has exactly
+`prompt`, `image_urls`, `transitions` (each a `duration`) and `resolution="720p"`; per-transition
+prompts, negative prompt and seed aren't sent. Results are admitted up to 26 seconds.
+
+**Not offered.** Pika text-to-video: fal's v2.2 model was removed on 2026-10-29 and v2.5 has
+none (checked 2026-11-06). Pikaframes v2.2 was removed the same day. Effects, the separate
+native Pika API and other Pika 2.2 models are outside this scope.
 The native service uses a separate credential/protocol; it is not configured with a fal key.
 
 The [fal queue contract](https://fal.ai/docs/api-reference/inference-api/queue/submit-path)

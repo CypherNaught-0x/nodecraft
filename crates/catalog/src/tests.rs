@@ -86,7 +86,7 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 Some(250_000)
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
-        } else if model.id == "fal.pika25-i2v" {
+        } else if model.id == "fal.pika25-i2v" || model.id == "fal.pika25-keyframes" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if model.id == "fal.topaz-precision" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
@@ -316,6 +316,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.minimax-music3", false),
             ("fal.minimax-speech28-hd", false),
             ("fal.pika25-i2v", false),
+            ("fal.pika25-keyframes", false),
             ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
