@@ -600,7 +600,7 @@ fn jobs_are_checked_before_anything_is_sent() {
 #[test]
 fn the_catalog_and_the_adapter_agree() {
     let catalog = nodecraft_catalog::Catalog::builtin().unwrap();
-    for (id, model) in [("higgsfield.soul-2", SOUL), ("higgsfield.kling-2.5-turbo-i2v", KLING_I2V)] {
+    for (id, model) in [("higgsfield.soul-2", SOUL), ("higgsfield.soul-2-i2i", SOUL_I2I), ("higgsfield.kling-2.5-turbo-i2v", KLING_I2V)] {
         let entry = catalog.get(id).unwrap();
         assert_eq!((entry.provider.as_str(), entry.provider_model.as_str()), ("higgsfield", model));
         // Every default the catalog fills in is one the adapter takes.
@@ -642,9 +642,11 @@ fn the_catalog_and_the_adapter_agree() {
     let contract = restyle.parameter_contract.as_ref().unwrap();
     assert!(contract.rules.iter().any(|r| r.param == "preset_id" && r.options.as_ref().is_some_and(|o| o.id == RESTYLE_PRESETS)));
     // And SOUL 2's Soul ID list is the one the adapter fetches; its strength is sent only with one.
+    for id in ["higgsfield.soul-2", "higgsfield.soul-2-i2i"] {
+        let contract = catalog.get(id).unwrap().parameter_contract.as_ref().unwrap();
+        assert!(contract.rules.iter().any(|r| r.param == "custom_reference_id" && r.options.as_ref().is_some_and(|o| o.id == SOUL_IDS)), "{id}");
+    }
     let soul = catalog.get("higgsfield.soul-2").unwrap();
-    let contract = soul.parameter_contract.as_ref().unwrap();
-    assert!(contract.rules.iter().any(|r| r.param == "custom_reference_id" && r.options.as_ref().is_some_and(|o| o.id == SOUL_IDS)));
     let mut values = nodecraft_types::ParamValues::new();
     let sent = soul.effective_params(&values, false).unwrap();
     assert!(!sent.contains_key("custom_reference_strength") && !sent.contains_key("seed"), "{sent:?}");
@@ -921,3 +923,105 @@ fn the_soul_id_list_keeps_ready_soul_2_identities_across_pages() {
 mod replay_tests;
 #[path = "training_tests.rs"]
 mod training_tests;
+
+fn soul_i2i(params: Value, inputs: Vec<JobInput>) -> ProviderJob {
+    job(SOUL_I2I, params, inputs)
+}
+
+/// SOUL 2 image to image (#1043): the scene image is staged through the upload grant, without the
+/// key, and named by its public link; the Soul ID is confirmed ready before the paid submit; the
+/// body carries the documented fields and no prompt-enhancement switch.
+#[test]
+fn soul_image_to_image_stages_its_scene_and_checks_the_soul_id_before_paying() {
+    let t = Transport::new(vec![ok(reference("v2", "completed")), grant(), empty(200), receipt()]);
+    let job = soul_i2i(
+        json!({"custom_reference_id": SOUL_ID, "custom_reference_strength": 0.8, "aspect_ratio": "3:4", "resolution": "1080p", "batch_size": "4", "seed": 7}),
+        vec![prompt("her on a rooftop at noon"), image()],
+    );
+    let Submission::Queued(handle) = block_on(adapter(&t).submit(&job)).unwrap() else { panic!("queued") };
+    assert_eq!(handle.data, json!({"v": 1, "model": SOUL_I2I, "count": 4}));
+    let [check, g, put, submit] = t.requests().try_into().unwrap();
+    assert_eq!(check.url, format!("https://api.higgsfield.ai/v1/custom-references/{SOUL_ID}"));
+    assert_eq!(g.url, "https://api.higgsfield.ai/files/generate-upload-url");
+    assert_eq!(header(&put, "Authorization"), None, "storage never sees the key");
+    assert_eq!(put.body, png());
+    assert_eq!(submit.url, "https://api.higgsfield.ai/higgsfield-ai/soul/v2/image-to-image");
+    assert_eq!(header(&submit, "Idempotency-Key"), Some("fixture-operation"));
+    assert_eq!(
+        body(&submit),
+        json!({"prompt": "her on a rooftop at noon", "image_url": PUBLIC, "custom_reference_id": SOUL_ID, "custom_reference_strength": 0.8,
+            "aspect_ratio": "3:4", "resolution": "1080p", "batch_size": 4, "seed": 7})
+    );
+    // Without a Soul ID the scene image alone is sent, and nothing is checked.
+    let t = Transport::new(vec![grant(), empty(200), receipt()]);
+    block_on(adapter(&t).submit(&soul_i2i(json!({}), vec![prompt("a quiet street"), image()]))).unwrap();
+    let sent = body(&t.requests()[2]);
+    assert_eq!(sent, json!({"prompt": "a quiet street", "image_url": PUBLIC, "aspect_ratio": "1:1", "resolution": "720p", "batch_size": 1}));
+}
+
+/// What SOUL 2 image to image can't take is refused before anything is sent: no scene image (an
+/// identity never stands in for one), a second one, a prompt-enhancement switch, a Soul ID that
+/// isn't ready here.
+#[test]
+fn soul_image_to_image_refuses_a_missing_or_extra_scene_and_a_soul_id_not_ready() {
+    for job in [
+        soul_i2i(json!({"custom_reference_id": SOUL_ID}), vec![prompt("x")]),
+        soul_i2i(json!({}), vec![prompt("x"), image(), image()]),
+        soul_i2i(json!({"enhance_prompt": true}), vec![prompt("x"), image()]),
+        soul_i2i(json!({}), vec![image()]),
+        soul_i2i(json!({}), vec![prompt("x"), JobInput::Media { role: "image".into(), mime: "image/gif".into(), bytes: Arc::from(png()) }]),
+    ] {
+        let t = Transport::new(vec![]);
+        let e = block_on(adapter(&t).submit(&job)).unwrap_err();
+        assert!(t.requests().is_empty(), "nothing sent: {e:?}");
+        no_secret(&e);
+    }
+    let t = Transport::new(vec![ok(reference("v2", "in_progress"))]);
+    let e = block_on(adapter(&t).submit(&soul_i2i(json!({"custom_reference_id": SOUL_ID}), vec![prompt("x"), image()]))).unwrap_err();
+    assert!(e.message.contains("still training"), "{e:?}");
+    assert_eq!(t.requests().len(), 1, "only the free check, no upload or paid submit");
+}
+
+/// SOUL 2 image to image finishes as SOUL does (#1043): its images are fetched without the key
+/// and must be images; too many, none, or a video instead are errors, not results.
+#[test]
+fn soul_image_to_image_results_are_images_and_hostile_ones_are_refused() {
+    let s = |v: Value| {
+        ok(json!({"request_id": REQUEST})
+            .as_object()
+            .unwrap()
+            .clone()
+            .into_iter()
+            .chain(v.as_object().unwrap().clone())
+            .collect::<serde_json::Map<_, _>>()
+            .into())
+    };
+    let four = json!({"status": "completed", "images": [{"url": "https://cdn.example.com/a.png"}, {"url": "https://cdn.example.com/b.png"}, {"url": "https://cdn.example.com/c.png"}, {"url": "https://cdn.example.com/d.png"}]});
+    let t = Transport::new(vec![s(four.clone()), file(&png()), file(&png()), file(&png()), file(&png())]);
+    let JobProgress::Done(done) = block_on(adapter(&t).poll(&queued(SOUL_I2I, 4))).unwrap() else { panic!("done") };
+    assert_eq!(done.outputs.len(), 4);
+    assert!(done.outputs.iter().all(|o| matches!(o, Output::Bytes { mime, .. } if mime == "image/png")));
+    assert!(t.requests()[1..].iter().all(|r| header(r, "Authorization").is_none()));
+    let one = json!({"status": "completed", "images": [{"url": "https://cdn.example.com/a.png"}]});
+    let t = Transport::new(vec![s(one.clone()), file(&png())]);
+    assert!(matches!(block_on(adapter(&t).poll(&queued(SOUL_I2I, 1))).unwrap(), JobProgress::Done(_)));
+    // More images than asked for, none, or a video: refused.
+    for reply in [four, json!({"status": "completed", "images": []}), json!({"status": "completed", "video": {"url": "https://cdn.example.com/clip.mp4"}})] {
+        let t = Transport::new(vec![s(reply)]);
+        assert!(block_on(adapter(&t).poll(&queued(SOUL_I2I, 1))).is_err());
+    }
+    // A download that isn't an image is refused.
+    let t = Transport::new(vec![s(one), file(&mp4())]);
+    assert!(block_on(adapter(&t).poll(&queued(SOUL_I2I, 1))).is_err());
+}
+
+/// A Soul ID trained for another SOUL, or missing from this account, is refused before any upload.
+#[test]
+fn soul_image_to_image_refuses_a_soul_id_from_another_version_or_account() {
+    for reply in [ok(reference("v1", "completed")), status(404, json!({"detail": "not found"}))] {
+        let t = Transport::new(vec![reply]);
+        let e = block_on(adapter(&t).submit(&soul_i2i(json!({"custom_reference_id": SOUL_ID}), vec![prompt("x"), image()]))).unwrap_err();
+        no_secret(&e);
+        assert_eq!(t.requests().len(), 1, "only the free check");
+    }
+}

@@ -16,7 +16,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948) and close-out (#374) open | 47/49 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180), SOUL 2 scene inputs (#1043) and close-out (#377) open | 11/14 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |

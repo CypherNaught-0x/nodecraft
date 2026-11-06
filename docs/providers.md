@@ -36,7 +36,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
-| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text, or text and one scene image, → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
 | **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
@@ -1363,6 +1363,19 @@ Preset field is a picker showing the names (#676), and `node.options` lists them
 control characters or echoes the key, are left out and counted; a list over 1,024 presets is
 refused whole. A restyle without a preset, or with one that isn't a UUID, is refused before
 anything is uploaded or paid, and a preset the latest list doesn't have is reported on the card.
+
+**SOUL 2 image to image (#1043).** **Higgsfield SOUL 2 image to image**
+(`higgsfield.soul-2-i2i`, `higgsfield-ai/soul/v2/image-to-image`, checked 2026-11-06 against its
+[API reference](https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference))
+takes a prompt and exactly one scene image wired to **image** (PNG, JPEG or WebP, under the same
+size limit as Kling's image), plus SOUL 2's aspect ratio, resolution, 1 or 4 images, seed and
+optional Soul ID with its strength. The scene image is staged through the upload grant, without
+the key, and sent as `image_url`; a Soul ID is confirmed ready on the account first, so an
+identity that isn't is refused before any upload or payment. No scene image is refused before
+anything is sent: an identity never stands in for it. Higgsfield always reworks this model's
+prompt from the image, so it has no **Enhance prompt** switch and none is sent. The page states no
+price; like SOUL 2 it is priced in credits, so the run is estimated by Higgsfield or needs the
+unknown-price consent, and its submit is idempotent like the other queue models.
 
 **Soul IDs (#180).** A Soul ID is an identity trained on the Higgsfield account. SOUL 2's
 optional **Soul ID** field (`custom_reference_id`) names one, and **Soul ID strength**
