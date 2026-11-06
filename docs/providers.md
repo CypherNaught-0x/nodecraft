@@ -7,7 +7,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
 | **Deepgram** | `deepgram` | API key (`Authorization: Token`), keychain account `deepgram` | English audio file → text | Nova-3, smart formatting, unknown usage cost, no uncertain replay. See below. |
-| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and a quote by output megapixels (#1062); no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
 | **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
@@ -1801,10 +1801,15 @@ credentials or redirects. Replies are capped at 64 KiB, image bytes at 32 MiB, d
 image allocation at 64 MiB, and output geometry must match the request. Native desktop
 transport is supported; the built-in browser transport returns an unsupported error.
 
-[BFL pricing](https://bfl.ai/pricing?category=flux.2) depends on pixels and credits.
-NodeCraft currently marks the cost as unknown usage pricing. Running requires explicit
-acceptance of an unpriced job; a finite budget cannot admit it. The API's credit fields
-are not recorded as dollars. Once the paid request is sent, lost replies are never retried
+**Price (#1062, checked 2026-11-06).** [BFL pricing](https://bfl.ai/pricing) lists FLUX.2
+[klein] 4B at "1st MP $0.014 / Add'l MP $0.001" (and $0.001/MP per reference image, which
+text-to-image doesn't send), billed in credits of $0.01
+([docs](https://docs.bfl.ai/quick_start/pricing)), with "Resolution … rounded up to the next MP"
+of 1024 × 1024 pixels. The card's width and height are known before the run, so the quote follows
+BFL's list price as checked (the invoice itself is in credits): 0.014 USD for the default 1024 × 1024, 0.001 USD more per started megapixel above the
+first (at most 0.017 USD at 1984 × 1984), through the catalog's `per_output_megapixel` pricing.
+A run needs that price accepted, and a budget counts it. The API's credit fields are not
+recorded as dollars. Once the paid request is sent, lost replies are never retried
 automatically: BFL documents no idempotency key. Cancellation stops local waiting but
 cannot confirm a remote stop or prevent billing. A successful saved handle can be resumed
 without sending another create request.
@@ -2233,7 +2238,12 @@ and [overview](https://docs.magnific.com/api-reference/image-upscaler-precision-
 were checked on **2026-10-27**. [API pricing](https://docs.magnific.com/pricing) consumes
 organizational credits even when a plan includes unlimited use in the web app. No verified
 current credit-to-currency rate is available, so the quote is **unknown**, never free or a
-fixed EUR amount. Running requires explicit acceptance of one unpriced job; finite monetary
+fixed EUR amount. Re-checked 2026-11-06 (#1062): the [pricing page](https://docs.magnific.com/pricing)
+says only that calls deduct credits, and the
+[Precision V2 overview](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview)
+that pricing "is based on output image area in pixels … See the Pricing page for current
+rates", which states none; the detailed credit page it links refused to load. Third-party
+figures disagree and aren't a source. Running requires explicit acceptance of one unpriced job; finite monetary
 budgets cannot establish that an unknown price fits. The adapter does not invent an invoice.
 
 Submission stores a task UUID for polling after restart. Lost or ambiguous paid replies are
@@ -2490,7 +2500,10 @@ The three current aliases are `fal-ai/heygen/avatar4/image-to-video`,
 [Speed](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) and
 [Precision](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) schemas and prices
 were checked **2026-10-28**. Published rates are **USD 0.10, USD 0.05 and USD 0.10 per output
-second**, respectively. They do not establish strict output-duration or rounding guarantees.
+second**, respectively. They do not establish strict output-duration or rounding guarantees. Re-checked 2026-11-06 (#1062): each page still reads "Billed per second of output video"
+($0.1000/s, $0.0500/s, $0.1000/s), and none says how the output's length follows from the
+inputs (lip sync allows `enable_dynamic_duration` "to match the new audio") or how it is
+rounded, so the consent gate stays.
 Quotes therefore remain **unknown/by usage USD** and require explicit consent to one
 unpriced job. A measured input length is not a monetary ceiling; finite money budgets
 cannot establish that an unknown price fits. No currency invoice is invented.
