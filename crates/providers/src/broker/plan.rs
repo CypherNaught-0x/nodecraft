@@ -246,7 +246,7 @@ pub fn read_poll(template: &Template, body: &[u8], secret: &str) -> Result<JobPr
             .and_then(|p| reply.pointer(p))
             .and_then(Value::as_str)
             .filter(|m| secret.is_empty() || !m.contains(secret))
-            .map(|m| excerpt(m.as_bytes()));
+            .map(|m| untrusted(&excerpt(m.as_bytes())));
         JobProgress::Failed(ProviderError::new(ErrorKind::JobFailed, said.unwrap_or_else(|| "the provider says the job failed".into())))
     } else if s.queued.contains(status) {
         JobProgress::Queued { position: None }
@@ -255,4 +255,11 @@ pub fn read_poll(template: &Template, body: &[u8], secret: &str) -> Result<JobPr
         // failing a paid job on a new status would lose what it is producing.
         JobProgress::Running { fraction: None, message: None, partial: None }
     })
+}
+
+/// Text a plugin's service wrote, quoted and marked as its own words (#174 review): an error
+/// reaches the agent's context too, and a third party's text there is data, never instructions.
+pub(crate) fn untrusted(said: &str) -> String {
+    // Escaped, so its own quotes can't end the quote and make what follows read as the host's.
+    format!("the plugin provider said (unchecked): {said:?}")
 }
