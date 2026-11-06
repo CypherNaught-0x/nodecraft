@@ -15,6 +15,42 @@ cargo run -p nodecraft -- --version
 cargo run -p nodecraft-cli -- --help
 ```
 
+### macOS: keychain prompts on rebuilds
+
+API keys live in the macOS keychain, which trusts an app by its code signature. A `cargo build`
+is only ad-hoc signed by the linker, so its signature is the hash of that exact binary. "Always
+Allow" therefore trusts one build only, and every rebuild asks again for every key it reads.
+
+To stop the prompts, sign dev builds with a certificate of your own. The keychain then trusts
+"this identifier, signed by this certificate", which every rebuild matches.
+
+1. **Create the certificate once.** In Keychain Access, choose Certificate Assistant → Create a
+   Certificate…, name it `NodeCraft Dev`, and set Certificate Type to *Code Signing*.
+   - It needs no Apple developer account.
+   - `security find-identity -p codesigning` lists it. *Not trusted* there is fine: the
+     keychain only needs a stable signature.
+2. **Sign before running.** [`scripts/macos/dev-sign.sh`](../scripts/macos/dev-sign.sh) signs
+   `nodecraft` and `nodecraft-cli` as `io.github.cyphernaught0x.nodecraft[-cli]` and runs
+   every other binary unchanged. Make it the Cargo runner in your personal
+   `~/.cargo/config.toml`, not the repository's:
+
+   ```toml
+   [target.aarch64-apple-darwin]   # x86_64-apple-darwin on Intel Macs
+   runner = "/path/to/NodeCraft/scripts/macos/dev-sign.sh"
+   ```
+
+   - `cargo run -p nodecraft` and `cargo run -p nodecraft-cli` are now signed on each rebuild,
+     which adds about 1–2 s.
+   - Tests and other projects aren't affected.
+   - A binary you start directly, such as `target/debug/nodecraft --control`, needs signing
+     first: `scripts/macos/dev-sign.sh --sign target/debug/nodecraft`.
+   - Use another certificate name with `NODECRAFT_DEV_SIGN_IDENTITY`. Without the certificate,
+     the script just runs the binary.
+3. **Answer "Always Allow" once more** for each key. The next rebuilds don't ask again.
+
+Don't set "Allow all applications to access this item" on the keys instead. Any program running
+as you could then read them without asking.
+
 ## Test
 
 ```sh
