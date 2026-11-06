@@ -439,8 +439,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
-        let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
-        self.save_accounts(changes);
+        self.keys_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
