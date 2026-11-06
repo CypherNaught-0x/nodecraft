@@ -6,7 +6,8 @@
 //! imported into a video service of its own; its waveform is made once per content hash, and a
 //! playing card asks for a couple of seconds of decoded sound at a time, one request in flight,
 //! into a bounded buffer the sound device's callback plays from. One card plays at a time.
-//! Browsers have no video service, so cards say playback needs the desktop app.
+//! Browsers have no video service: there the page's own `<audio>` element plays each card's
+//! sound (#1070), with no waveform.
 //!
 //! A speech card also plays its job's latest preview while the sound arrives (#875): the MP3 so
 //! far, imported like any sound but never given a waveform, and dropped once a newer one or the
@@ -111,45 +112,7 @@ pub use native::Audios;
 pub use web::Audios;
 
 #[cfg(target_arch = "wasm32")]
-mod web {
-    use super::{AudioIntent, AudioView, Take};
-    use nodecraft_types::NodeId;
-
-    /// Browsers have no video service, so no sound decoding, yet.
-    #[derive(Default)]
-    pub struct Audios;
-
-    impl Audios {
-        pub fn configure(&mut self, _: Option<(&std::path::Path, &std::path::Path)>) {}
-        pub fn poll(&mut self, _: &egui::Context) {}
-        pub fn view(
-            &mut self,
-            _: &egui::Context,
-            _: NodeId,
-            _: &nodecraft_types::AssetRef,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn view_result(
-            &mut self,
-            _: &egui::Context,
-            _: NodeId,
-            _: &nodecraft_types::AssetRef,
-            _: Option<Take>,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn view_preview(&mut self, _: &egui::Context, _: NodeId, _: &nodecraft_engine::run_jobs::AudioPreview) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn act(&mut self, _: &egui::Context, _: NodeId, _: AudioIntent) {}
-        pub fn let_go(&mut self, _: NodeId) {}
-        pub fn retain(&mut self, _: impl Fn(NodeId) -> bool) {}
-        pub fn stop(&mut self) {}
-    }
-}
+mod web;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod output;

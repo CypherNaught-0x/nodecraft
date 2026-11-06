@@ -288,7 +288,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672), account voice choices (#670), and streaming speech playback on desktop
-  (#671, #875). The CLI and browser do not request streaming previews. 3D has Tripo
+  and in the browser (#671, #875, #1070); the CLI requests streaming previews too and reports
+  how much sound has arrived. 3D has Tripo
   text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
   for model and host capabilities. Published releases track their tagged source.

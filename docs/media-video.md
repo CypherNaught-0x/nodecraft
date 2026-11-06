@@ -321,7 +321,12 @@ buffer that the device's callback resamples from; it plays silence, rather than 
 decoding falls behind. One card plays at a time: playing another pauses the first where it was.
 Playback stops when its card is deleted, when the sound device goes away (the card says so; play
 again to reopen it) and when the app quits. Without an output device the card says "No sound
-output device found". The browser build says playback needs the desktop app. A bounded worker
+output device found". In the browser (#1070) the page's own `<audio>` element plays each card's sound from an object
+URL, with no waveform (the card shows a plain line), at most 8 players and 64 MiB a sound; a
+speech card's previews continue into its result there too, keeping the place, and a preview that
+plays up to what has arrived waits for more, still playing. Playing one card pauses the others. If
+the browser refuses to play (the page hasn't been clicked yet), the card says so rather than
+playing muted. A bounded worker
 opens the output device and requests the next stretch independently of app frames, so playback
 continues when the window is minimized. Seek drags replace one pending target without decoding
 until release; committed seeks wait 75 ms before decoding. If frames stop before a drag release,

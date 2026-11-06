@@ -1474,8 +1474,8 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 
 The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
 across the following merged changes. Generation works in the desktop app and headless CLI.
-The desktop app and browser preview request the account voice list; streamed previews are
-desktop-only. The CLI does not request either capability. The host limits below apply.
+The desktop app and browser preview request the account voice list and streamed previews; the
+CLI requests streamed previews (#1070) but not the voice list. The host limits below apply.
 
 | Tracker requirement | Implementation and offline coverage |
 |---|---|
@@ -1550,8 +1550,11 @@ goes through the same no-redirect transport; a stream cut short is a lost reply,
 and keeps the previews already reported. Sound effects, music and the voice changer never stream.
 The audio before each chunk is previewed only once that chunk arrives, so the last chunk never
 makes a preview: a transport that can't stream hands the whole reply over as one chunk and makes
-none, rather than one equal to the result. The desktop app's runner asks for previews and its
-speech cards play them while the sound arrives (#875); the CLI's and the browser's don't.
+none, rather than one equal to the result. The desktop app's and the browser's runners ask for previews and their
+speech cards play them while the sound arrives (#875, #1070). In the browser the body is read as
+`fetch` streams it (reqwest's `bytes_stream`), under the same cap, so previews arrive there too.
+`nodecraft-cli run` asks for them as well and writes `<node>: <n> KiB of sound so far` to stderr
+as a sound grows, at most once a second per job; stdout keeps the JSON report.
 
 The ignored live tests speak one short sentence with Flash v2.5 (about 0.002 USD) and stream one
 through `/stream` with Eleven v3 as `mp3_44100_128`, checking that its previews grow and are never
