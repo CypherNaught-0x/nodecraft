@@ -173,10 +173,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
-- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
-  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
-  It is quoted by output megapixels from BFL's published rates (#1062). Image editing and
-  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Black Forest Labs**: desktop Generate image and the CLI use BFL directly (#33, #1060): FLUX.2
+  klein 4B and 9B, pro, max and flex text-to-image, quoted by output megapixels from BFL's
+  published rates (#1062), and FLUX.1 Kontext pro and max image editing at a published price per
+  image, with a keychain API key, resumable polling and bounded PNG downloads. FLUX.2 editing isn't
+  offered: its API documents input images only as URLs; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
 - **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
