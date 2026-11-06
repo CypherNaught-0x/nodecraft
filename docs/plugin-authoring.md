@@ -15,8 +15,10 @@ is in [plugin-wire.md](plugin-wire.md), and the reasons behind it are in
 | `provider_operations` | models served by an HTTP API the package describes ([templates](plugin-wire.md#provider-operation-templates-174)) | the host sends requests, after a grant | yes | no |
 | `rust_wasm` | — | — | refused | refused |
 
-Packages can't ship native or WebAssembly code yet. A `rust_wasm` package is refused at install,
-with an "unsupported" error. Nothing in a package ever runs while it is packed, linted or
+Packages can't ship native or WebAssembly code, and won't under this contract: NodeCraft runs no
+code a package ships. A `rust_wasm` package is refused at install, and by `plugin lint`, with an
+"unsupported" error that says so; write the logic as a `text_actions` package instead
+([decision](decisions/2026-11-06-module-packages-refused.md)). Nothing in a package ever runs while it is packed, linted or
 installed: there are no build, install or post-install hooks.
 
 ## The layout
