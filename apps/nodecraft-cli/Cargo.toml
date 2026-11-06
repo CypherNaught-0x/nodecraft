@@ -44,6 +44,13 @@ url = { workspace = true }
 # Runs (#97): jobs are driven on a tokio runtime, as the app's are.
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "signal"] }
 
+# Relay wss:// (#1067): the platform's TLS stack, as the providers' HTTPS uses: the operating
+# system's on Windows and macOS, rustls with aws-lc elsewhere.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+native-tls = "0.2.18"
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+
 [dev-dependencies]
 nodecraft-catalog = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }

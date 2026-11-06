@@ -271,9 +271,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   interchange is available on desktop, with Final Cut Pro and DaVinci Resolve import checks and
   background export improvements tracked separately (#643).
 
-- **Relay transport and storage differ by client.** The relay serves plain `ws://`.
-  Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
-  remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
+- **Relay transport and storage differ by client.** The relay serves plain `ws://`, which
+  desktop clients use, and with a certificate also `wss://` on a second port for browsers on
+  HTTPS pages (#1067); both reach the same rooms. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
   local development and remote access. The relay holds rooms in memory unless it is given a
   store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
