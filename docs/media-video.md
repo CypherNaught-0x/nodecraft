@@ -295,6 +295,12 @@ ffmpeg = "/opt/homebrew/bin/ffmpeg"
 ffprobe = "/opt/homebrew/bin/ffprobe"
 ```
 
+A video with a sound track is heard while its card plays (#1065): the card's sound is decoded
+from the same file, through the sound cards' player, started and stopped with the picture and
+moved back to it when they drift apart by more than 0.3 s. Nothing is read for it while the card
+is still, and a video with no sound track plays silent. As for sound cards, one card is heard at a
+time.
+
 They come from the trusted native host, never from a project. Without them, or in the browser build, the
 card says what is missing instead of a frame. A card shows a poster frame from the start of the
 clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:

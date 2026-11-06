@@ -1902,7 +1902,15 @@ impl NodeCraftApp {
                     (self.view.zoom >= card::BODY_MIN_ZOOM).then(|| crate::video::video_of(node)).flatten().filter(|_| images.0.is_empty()).map(|asset| {
                         let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
                         let assets = self.session.assets();
-                        self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
+                        let view = self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset));
+                        // Its sound track plays with the picture (#1065): only while it plays, so an
+                        // idle canvas reads and plays nothing.
+                        let (playing, at) = match &view {
+                            crate::video::VideoView::Frame { playing, position_us, .. } => (*playing, *position_us),
+                            _ => (false, 0),
+                        };
+                        self.audios.follow(ui.ctx(), node.id, asset, playing, at, || assets.preview_read(asset));
+                        view
                     });
                 // And sounds; which card plays, and where, is view state too (#106). A sound
                 // still arriving plays from its job's latest preview, then its result (#875).
@@ -1912,7 +1920,8 @@ impl NodeCraftApp {
                 let sound_so_far = self.runs.as_ref().and_then(|runs| runs.audio_preview(self.canvas, node.id));
                 let result = crate::audio::audio_of(node);
                 let finished = result.and_then(|asset| self.runs.as_ref()?.finished_take(self.canvas, node.id, asset.hash));
-                if sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
+                // A video card's sound is its video's, followed above.
+                if video.is_none() && sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
                     self.audios.let_go(node.id);
                 }
                 let audio = match (sound_so_far, result) {
