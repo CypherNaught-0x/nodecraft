@@ -376,4 +376,6 @@ from all four clips confirmed their distinct pictures and audible signals. The d
 the same engine path as [the two-clip integration test](../crates/engine/tests/timeline109.rs).
 
 This check covers the rendered video. Importing exported cuts into Final Cut Pro and
-DaVinci Resolve is tracked in [#643](https://github.com/CypherNaught-0x/nodecraft/issues/643).
+DaVinci Resolve can be checked by hand (see "Checking an import" in
+[timeline-interchange.md](timeline-interchange.md)); that hasn't been done yet. It is tracked in
+[#1066](https://github.com/CypherNaught-0x/nodecraft/issues/1066).

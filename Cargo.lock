@@ -3377,6 +3377,7 @@ dependencies = [
  "nodecraft-sync",
  "nodecraft-template-data",
  "nodecraft-types",
+ "roxmltree",
  "rustix 1.1.5",
  "serde",
  "serde_json",
