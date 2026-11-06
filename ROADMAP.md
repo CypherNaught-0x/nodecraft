@@ -274,7 +274,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Relay transport and storage differ by client.** The relay serves plain `ws://`.
   Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
   remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
-  local development and remote access. The relay holds rooms in memory.
+  local development and remote access. The relay holds rooms in memory unless it is given a
+  store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100) and typed nested descriptor records/lists (#528) remain open. HTTP serve
