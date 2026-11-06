@@ -12,8 +12,13 @@ it decodes video itself.
   Chosen over WebCodecs, which would need demuxing in Rust for each container and a second
   audio path, and over FFmpeg built for wasm, which is GPL with the usual builds and many
   megabytes.
-- **Bounded.** At most 8 players (the least recently shown go first, freeing their URLs), a
-  video of at most `media`'s 256 MiB, and one canvas read per drawn frame.
+- **Bounded.** At most 8 players (the least recently shown go first, freeing their URLs; cards
+  shown in the same frame never push each other out, a ninth says there are too many), a video of
+  at most `media`'s 256 MiB, and frames taken about 30 times a second from a canvas asked to be
+  kept for frequent reads. A player whose card isn't shown is paused, so no sound plays from a
+  card nobody can see.
+- **Sound needs the person's click.** A page that hasn't had one may refuse to play sound; the
+  card then plays muted rather than not at all.
 - **What the browser can't decode says so.** Which formats play is the browser's choice (H.264
   MP4 and WebM are broadly supported). An element that fails marks the card "This browser can't
   play this video; the desktop app can" until it shows another video.

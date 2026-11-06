@@ -5,7 +5,9 @@
 //! video's sound through the page, so a card with a sound track is heard while it plays.
 //!
 //! Everything here is view state, as on the desktop. Bounded: at most [`MAX_PLAYERS`] players
-//! (the least recently shown go first, freeing their URL), a video of at most `media`'s 256 MiB
+//! (the least recently shown go first, freeing their URL; cards shown in the same frame never
+//! push each other out), a player whose card isn't shown is paused, frames are taken about 30
+//! times a second, a video of at most `media`'s 256 MiB
 //! input cap, and textures at most [`MAX_EDGE`] on their longer side. A video the browser can't
 //! decode says so on its card and isn't tried again until it changes.
 use super::{VideoIntent, VideoView};
@@ -23,11 +25,15 @@ const MAX_INPUT: u64 = 256 * 1024 * 1024;
 const MAX_EDGE: u32 = 1024;
 /// `HTMLMediaElement.HAVE_CURRENT_DATA`: the element has a frame to draw.
 const HAVE_CURRENT_DATA: u16 = 2;
+/// Least time between two frames taken from a playing element: about 30 a second. A display
+/// repaints faster than most videos change, and each take reads the canvas back.
+const DRAW_EVERY: std::time::Duration = std::time::Duration::from_millis(33);
 
 const UNREADABLE: &str = "The video can't be read";
 const TOO_LARGE: &str = "The video is too large to play here";
 const UNSUPPORTED: &str = "This browser can't play this video; the desktop app can";
 const NO_PAGE: &str = "The page can't make a video player";
+const TOO_MANY: &str = "Too many videos are shown at once to play them all here; zoom in on fewer";
 
 /// One card's player: its element and the copy of the video it plays from.
 struct Player {
@@ -38,9 +44,10 @@ struct Player {
     context: web_sys::CanvasRenderingContext2d,
     texture: Option<TextureHandle>,
     size: [u32; 2],
-    /// The element's time when its frame was last drawn, and at which size.
+    /// The element's time when its frame was last drawn, and at which size, and when.
     drawn: Option<(f64, [u32; 2])>,
-    /// When it was last shown, by the frame count of [`Videos::clock`].
+    drawn_at: Option<web_time::Instant>,
+    /// The frame (egui's pass number) it was last shown in.
     used: u64,
 }
 
@@ -59,15 +66,21 @@ pub struct Videos {
     /// Cards whose video couldn't be played, with which video and why: not tried again until the
     /// card shows another video.
     failed: HashMap<NodeId, (Blake3, &'static str)>,
-    clock: u64,
 }
 
 impl Videos {
     /// The browser decodes video itself; there are no tools to set.
     pub fn configure(&mut self, _: Option<(&std::path::Path, &std::path::Path)>) {}
 
-    /// Keeps drawing while a card plays.
+    /// Keeps drawing while a card plays, and pauses a player whose card wasn't shown last frame
+    /// (scrolled away, zoomed out, its output changed): its sound would go on with no way to stop it.
     pub fn poll(&mut self, ctx: &egui::Context) {
+        let now = ctx.cumulative_pass_nr();
+        for player in self.players.values() {
+            if player.used.saturating_add(1) < now && !player.video.paused() {
+                let _ = player.video.pause();
+            }
+        }
         if self.players.values().any(|player| !player.video.paused() && !player.video.ended()) {
             ctx.request_repaint();
         }
@@ -82,7 +95,7 @@ impl Videos {
         edge: f32,
         read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
     ) -> VideoView {
-        self.clock = self.clock.saturating_add(1);
+        let frame = ctx.cumulative_pass_nr();
         if let Some((hash, why)) = self.failed.get(&node) {
             if *hash == asset.hash {
                 return VideoView::Unavailable(why);
@@ -93,9 +106,13 @@ impl Videos {
             self.players.remove(&node);
         }
         if !self.players.contains_key(&node) {
+            // Room first: only a player not shown this frame makes way, so cards on screen never
+            // take turns evicting each other.
+            if !self.make_room(frame) {
+                return VideoView::Unavailable(TOO_MANY);
+            }
             match open(asset, read) {
                 Ok(player) => {
-                    self.make_room();
                     self.players.insert(node, player);
                 }
                 Err(why) => {
@@ -104,15 +121,14 @@ impl Videos {
                 }
             }
         }
-        let clock = self.clock;
         let Some(player) = self.players.get_mut(&node) else { return VideoView::Pending };
-        player.used = clock;
+        player.used = frame;
         if player.video.error().is_some() {
             self.players.remove(&node);
             self.failed.insert(node, (asset.hash, UNSUPPORTED));
             return VideoView::Unavailable(UNSUPPORTED);
         }
-        if player.video.ready_state() < HAVE_CURRENT_DATA {
+        if player.video.ready_state() < HAVE_CURRENT_DATA || player.video.seeking() {
             // The element loads on the page's own time; look again shortly.
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
             return VideoView::Pending;
@@ -153,8 +169,16 @@ impl Videos {
                 if video.ended() {
                     video.set_current_time(0.0);
                 }
-                // A refusal (the page has had no click yet) leaves it paused; the card says so.
-                let _ = video.play();
+                // A page that hasn't had the person's click yet may refuse sound: then it plays muted.
+                if let Ok(promise) = video.play() {
+                    let video = video.clone();
+                    wasm_bindgen_futures::spawn_local(async move {
+                        if wasm_bindgen_futures::JsFuture::from(promise).await.is_err() {
+                            video.set_muted(true);
+                            let _ = video.play();
+                        }
+                    });
+                }
             }
             VideoIntent::Toggle => {
                 let _ = video.pause();
@@ -174,12 +198,19 @@ impl Videos {
         self.failed.retain(|id, _| keep(*id));
     }
 
-    /// Lets go of the least recently shown players past [`MAX_PLAYERS`], making space for one more.
-    fn make_room(&mut self) {
+    /// Lets go of the least recently shown players past [`MAX_PLAYERS`], making space for one
+    /// more; never one shown in `frame`. Whether there is space.
+    fn make_room(&mut self, frame: u64) -> bool {
         while self.players.len() >= MAX_PLAYERS {
-            let Some(oldest) = self.players.iter().min_by_key(|(_, player)| player.used).map(|(id, _)| *id) else { return };
-            self.players.remove(&oldest);
+            let oldest = self.players.iter().filter(|(_, player)| player.used < frame).min_by_key(|(_, player)| player.used).map(|(id, _)| *id);
+            match oldest {
+                Some(oldest) => {
+                    self.players.remove(&oldest);
+                }
+                None => return false,
+            }
         }
+        true
     }
 }
 
@@ -195,9 +226,17 @@ impl Player {
         if self.texture.is_some() && self.drawn == Some((now, size)) {
             return Ok(());
         }
+        // A playing video is taken about 30 times a second, however fast the display repaints.
+        let playing = !self.video.paused() && !self.video.ended();
+        let resized = self.drawn.is_none_or(|(_, drawn)| drawn != size);
+        if playing && !resized && self.texture.is_some() && self.drawn_at.is_some_and(|at| at.elapsed() < DRAW_EVERY) {
+            return Ok(());
+        }
         let [w, h] = size;
-        self.canvas.set_width(w);
-        self.canvas.set_height(h);
+        if resized {
+            self.canvas.set_width(w);
+            self.canvas.set_height(h);
+        }
         self.context.draw_image_with_html_video_element_and_dw_and_dh(&self.video, 0.0, 0.0, f64::from(w), f64::from(h)).map_err(|_| UNSUPPORTED)?;
         let data = self.context.get_image_data(0.0, 0.0, f64::from(w), f64::from(h)).map_err(|_| UNSUPPORTED)?.data();
         let expected = usize::try_from(u64::from(w) * u64::from(h) * 4).map_err(|_| TOO_LARGE)?;
@@ -212,6 +251,7 @@ impl Player {
         }
         self.size = size;
         self.drawn = Some((now, size));
+        self.drawn_at = Some(web_time::Instant::now());
         Ok(())
     }
 }
@@ -259,12 +299,15 @@ fn open(asset: &AssetRef, read: impl FnOnce() -> Result<PreviewAssetRead, Previe
         video.set_preload("auto");
         video.set_src(&url);
         let canvas: web_sys::HtmlCanvasElement = document.create_element("canvas").ok()?.dyn_into().ok()?;
-        let context: web_sys::CanvasRenderingContext2d = canvas.get_context("2d").ok()??.dyn_into().ok()?;
+        // Its pixels are read back every drawn frame: ask for a canvas kept where that is cheap.
+        let options = js_sys::Object::new();
+        js_sys::Reflect::set(&options, &"willReadFrequently".into(), &true.into()).ok()?;
+        let context: web_sys::CanvasRenderingContext2d = canvas.get_context_with_context_options("2d", &options).ok()??.dyn_into().ok()?;
         Some((video, canvas, context))
     })();
     let Some((video, canvas, context)) = made else {
         let _ = web_sys::Url::revoke_object_url(&url);
         return Err(NO_PAGE);
     };
-    Ok(Player { hash: asset.hash, video, url, canvas, context, texture: None, size: [0, 0], drawn: None, used: 0 })
+    Ok(Player { hash: asset.hash, video, url, canvas, context, texture: None, size: [0, 0], drawn: None, drawn_at: None, used: 0 })
 }
