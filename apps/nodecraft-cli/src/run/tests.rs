@@ -179,3 +179,77 @@ fn a_run_past_its_deadline_is_cancelled_and_fails_as_timed_out() {
     assert!(error.message.contains("may still be charged"), "{}", error.message);
     assert!(started.elapsed() < CANCEL_GRACE, "the cancelled job stopped without waiting out the grace");
 }
+
+const MOCK_SPEECH: &str = r#"
+[[model]]
+id = "mock-speech"
+provider = "mock"
+provider_model = "mock-audio"
+label = "Mock speech"
+description = "Public deterministic test fixture"
+quality = 1
+latency_s = 0
+pricing = { type = "per_call", price = "0.01 USD" }
+[[model.modes]]
+id = "text-to-audio"
+output = "audio"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+"#;
+
+/// The start of an MP3 file, `len` bytes long.
+fn mp3(len: usize) -> nodecraft_providers::Output {
+    let mut bytes = b"ID3\x04\0\0\0\0\0\0\xFF\xFB\x90\x64".to_vec();
+    bytes.resize(len, 7);
+    nodecraft_providers::Output::Bytes { mime: "audio/mpeg".into(), bytes: bytes.into() }
+}
+
+/// A speech card on a mock model that sends three previews and then keeps running (#1070), until
+/// the run's deadline cancels it.
+#[test]
+fn a_streaming_sound_reports_how_much_has_arrived() {
+    let catalog = nodecraft_catalog::Catalog::from_toml(MOCK_SPEECH).unwrap();
+    let snapshot = GenerationCatalog::new(RunCatalog::new(catalog).unwrap()).unwrap();
+    let kinds = snapshot.registry().unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([94; 16]), "Speech").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let values = [("model".into(), Output::Text("mock-speech".into())), ("prompt".into(), Output::Text("Hello from a paper boat".into()))].into();
+    let node = kinds.get(nodecraft_nodes::generation::AUDIO_KIND).unwrap().instantiate_instance(N, Default::default(), &values).unwrap();
+    Change::AddNode { canvas: C, node }.apply(&mut project).unwrap();
+    let mut resources = Resources::default();
+    resources.insert(snapshot.clone());
+    resources.insert(snapshot.run_catalog());
+    let mut services = Services::default();
+    let lines = Arc::new(Mutex::new(Vec::<String>::new()));
+    let told = Arc::clone(&lines);
+    let mut runner = Runner::with_progress(&mut services, "cli-test".into(), Box::new(move |line| told.lock().unwrap().push(line.to_owned()))).unwrap();
+    let mut session = Session::with_registries(project, Registry::builtins().unwrap(), kinds).unwrap().with_resources(resources).with_services(services);
+    let mut model = MockModel::new(MockOutput::Audio);
+    model.polls = u32::MAX;
+    let mock = MockProvider::new("mock", [("mock-audio".to_owned(), model)]).with_previews("mock-audio", [mp3(4 * 1024), mp3(8 * 1024), mp3(12 * 1024)]);
+    let mut maker = move |adapter: &str| -> Result<Arc<dyn Provider>, Readiness> {
+        if adapter == "mock" { Ok(Arc::new(mock.clone())) } else { Err(Readiness::NotSetUp("not in this test".into())) }
+    };
+    crate::quote::prepare(&mut session, C, &[N], &mut maker).unwrap();
+    runner.install(&mut session);
+    let quote = crate::quote::quote(&mut session, C, &[N]).unwrap();
+    let deadline = Instant::now() + Duration::from_millis(1500);
+    let ended = runner.run_within(&mut session, C, &[N], &quote, Consent { spend: true }, Some(deadline)).unwrap_err();
+    assert_eq!(ended.kind, ErrorKind::Timeout);
+    let lines = lines.lock().unwrap().clone();
+    assert!(!lines.is_empty(), "the sound so far was reported");
+    assert!(lines.iter().all(|line| line.starts_with(&format!("{N}: ")) && line.ends_with(" KiB of sound so far")), "{lines:?}");
+    // Told at once, then at most once more within the second and a half, and only as it grew.
+    assert!(lines.len() <= 2, "{lines:?}");
+    assert!(lines.windows(2).all(|pair| pair[0] != pair[1]), "{lines:?}");
+}
+
+#[test]
+fn progress_is_told_at_once_then_at_most_once_a_second_and_only_as_it_grows() {
+    let start = Instant::now();
+    let at = |ms: u64| start + Duration::from_millis(ms);
+    assert!(due(None, 0, start), "the first preview is told at once");
+    assert!(!due(Some((4096, start)), 8192, at(999)), "not again within the second");
+    assert!(due(Some((4096, start)), 8192, at(1000)), "a second later, as it grew");
+    assert!(!due(Some((8192, start)), 8192, at(5000)), "never while it doesn't grow");
+    assert!(!due(Some((8192, at(10))), 9000, start), "a clock that went back is not a second later");
+}

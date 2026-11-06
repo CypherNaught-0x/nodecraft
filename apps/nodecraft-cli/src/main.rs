@@ -542,7 +542,11 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
     let mut new_id = random_bytes();
     let mut services = Services::default();
     let session_id: String = new_id().iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let mut runner = match run::Runner::new(&mut services, session_id) {
+    // A sound that streams says how much has arrived (#1070), on stderr: stdout is the report.
+    let progress: run::Progress = Box::new(|line| {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    });
+    let mut runner = match run::Runner::with_progress(&mut services, session_id, progress) {
         Ok(runner) => runner,
         Err(error) => return fail(&error.message),
     };
