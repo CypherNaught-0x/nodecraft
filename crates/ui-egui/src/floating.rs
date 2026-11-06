@@ -63,6 +63,18 @@ pub fn layer(id: Id) -> egui::LayerId {
 /// The panels drawn recently, with the pass each was last drawn in.
 type Shown = Vec<(Id, u64)>;
 
+/// The panels drawn in this or the previous pass, with their rectangles (#959 tests).
+#[cfg(test)]
+pub fn shown(ctx: &Context) -> Vec<(Id, egui::Rect)> {
+    let pass = ctx.cumulative_pass_nr();
+    let shown: Shown = ctx.data(|data| data.get_temp::<Shown>(shown_id())).unwrap_or_default();
+    shown
+        .into_iter()
+        .filter(|(_, at)| at.saturating_add(1) >= pass)
+        .filter_map(|(id, _)| egui::AreaState::load(ctx, id).map(|state| (id, state.rect())))
+        .collect()
+}
+
 /// Records a fixed surface drawn in the panel layer this pass (the Shared parameters panel), so
 /// a panel opening over it steps below its header like it does for any open panel.
 pub fn occupy(ctx: &Context, id: Id) {

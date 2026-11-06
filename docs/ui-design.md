@@ -659,6 +659,41 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded.
 
+## Menu and panel inventory (#959, in progress)
+
+The shared check is [`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs). Each
+top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
+bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both themes. None of its
+on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
+control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
+tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
+again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+
+| Surface | Opens from | Kind | Covered by |
+|---|---|---|---|
+| Sheets, Techniques, Elements, Budgets, API keys | top bar | floating panel | `menus959_tests` (open, area, overlap, close) |
+| ComfyUI servers, Plugins | top bar (disabled without their service) | floating panel | `menus959_tests` (opened through their state), `topbar_tests` (disabled state) |
+| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` |
+| Share | top bar | floating panel | `sharing::tests` |
+| Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
+| Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+**Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
+The API keys panel sits past the window's right edge for its first placement frames at 1000 px
+and settles inside once laid out; the checks run after placement settles.
+
+**Not yet reviewed or covered:** Automation, Provider servers (browser), Charges to review,
+Custom shader, the PDF and image viewers, Batch items, Workflow fields, Project files, the model
+picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
+the update banner, card and field context menus, the inspector and bulk panels, notices, and the
+Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
+states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
+Escape is left for its own change: several canvas and dialog handlers read Escape without
+consuming it, so a panel close needs them fixed first.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**
