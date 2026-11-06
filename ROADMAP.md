@@ -243,7 +243,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
   The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
-  actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
+  actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
+  the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is a per-card command (`node.cache_set`) with no button yet (#91). Module
   (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
