@@ -129,11 +129,14 @@ impl Videos {
             return VideoView::Unavailable(UNSUPPORTED);
         }
         if player.video.ready_state() < HAVE_CURRENT_DATA || player.video.seeking() {
-            // The element loads on the page's own time; look again shortly.
-            ctx.request_repaint_after(std::time::Duration::from_millis(50));
-            return VideoView::Pending;
-        }
-        if let Err(why) = player.draw(ctx, edge) {
+            // The element loads (or finds the place it was sent to) on the page's own time: keep
+            // the last frame meanwhile, and look again shortly. Drawing now would take the old
+            // picture and call it the new place's.
+            ctx.request_repaint_after(std::time::Duration::from_millis(30));
+            if player.texture.is_none() {
+                return VideoView::Pending;
+            }
+        } else if let Err(why) = player.draw(ctx, edge) {
             self.players.remove(&node);
             self.failed.insert(node, (asset.hash, why));
             return VideoView::Unavailable(why);
