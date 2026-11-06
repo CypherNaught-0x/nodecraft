@@ -109,6 +109,26 @@ pub struct ModelPicker {
     workflow_search: Vec<String>,
     /// The highlighted server row, by its index in `rows`; never set with `highlighted`.
     server_highlight: Option<usize>,
+    /// The provider whose models are shown, or every provider's.
+    provider: Option<String>,
+    /// The providers with a model here, in order, with how many of their models can be chosen.
+    providers: Vec<(String, usize)>,
+    /// Hide models that can't be chosen for these targets. On by default.
+    selectable_only: bool,
+    /// Offer "Refresh provider models" (the host can read OpenRouter's and LiteLLM's lists).
+    can_refresh_catalogs: bool,
+}
+
+/// What pickers call a provider: its name for the ones that list their models, else its id.
+pub fn provider_label(provider: &str) -> &str {
+    match provider {
+        "openrouter" => "OpenRouter",
+        "openrouter-images" => "OpenRouter images",
+        "openrouter-speech" => "OpenRouter speech",
+        "openrouter-video" => "OpenRouter video",
+        "litellm" => "LiteLLM",
+        other => other,
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -133,6 +153,8 @@ pub enum Outcome {
     },
     /// Read the default ComfyUI server again.
     RefreshServer,
+    /// Read the providers' own model lists again (`models.catalog_refresh`).
+    RefreshCatalogs,
 }
 
 fn invalid(message: &'static str) -> Error {
@@ -186,6 +208,15 @@ impl ModelPicker {
             }
             _ => a.id.cmp(&b.id),
         });
+        let mut providers: Vec<(String, usize)> = Vec::new();
+        for choice in &choices {
+            let Some(model) = catalog.get(&choice.id) else { continue };
+            let selectable = usize::from(choice.unavailable.is_none());
+            match providers.last_mut() {
+                Some((provider, count)) if *provider == model.provider => *count = count.saturating_add(selectable),
+                _ => providers.push((copy(&model.provider)?, selectable)),
+            }
+        }
         let mut filtered = Vec::new();
         filtered.try_reserve_exact(choices.len()).map_err(|_| allocation())?;
         let mut rows = Vec::new();
@@ -203,6 +234,10 @@ impl ModelPicker {
             server_search: Vec::new(),
             workflow_search: Vec::new(),
             server_highlight: None,
+            provider: None,
+            providers,
+            selectable_only: true,
+            can_refresh_catalogs: false,
         };
         picker.refilter(catalog);
         Ok(picker)
@@ -218,9 +253,31 @@ impl ModelPicker {
         self
     }
 
+    /// Offers "Refresh provider models", for a host that can read the providers' lists.
+    pub fn with_catalog_refresh(mut self, can: bool) -> Self {
+        self.can_refresh_catalogs = can;
+        self
+    }
+
     /// The current search text, kept when the controller rebuilds the picker.
     pub fn query(&self) -> &str {
         &self.query
+    }
+
+    /// The provider filter and "Selectable only", kept when the controller rebuilds the picker.
+    pub fn filters(&self) -> (Option<&str>, bool) {
+        (self.provider.as_deref(), self.selectable_only)
+    }
+
+    /// Restores [`Self::filters`]; a provider with no model here shows every provider instead.
+    pub fn set_filters(&mut self, provider: Option<&str>, selectable_only: bool, catalog: &Catalog) -> Result<(), Error> {
+        self.provider = match provider {
+            Some(provider) if self.providers.iter().any(|(id, _)| id == provider) => Some(copy(provider)?),
+            _ => None,
+        };
+        self.selectable_only = selectable_only;
+        self.refilter(catalog);
+        Ok(())
     }
 
     /// Retained ID/reason payload lengths only; excludes vector shells/capacity, the borrowed
@@ -244,7 +301,15 @@ impl ModelPicker {
         let mut provider = None;
         for (index, choice) in self.choices.iter().enumerate() {
             let Some(model) = catalog.get(&choice.id) else { continue };
-            if !query.is_empty() && !model.id.contains(&query) && !model.provider.contains(&query) && !model.label.to_lowercase().contains(&query) {
+            if self.provider.as_ref().is_some_and(|provider| *provider != model.provider) || (self.selectable_only && choice.unavailable.is_some()) {
+                continue;
+            }
+            if !query.is_empty()
+                && !model.id.contains(&query)
+                && !model.provider.contains(&query)
+                && !provider_label(&model.provider).to_lowercase().contains(&query)
+                && !model.label.to_lowercase().contains(&query)
+            {
                 continue;
             }
             if provider != Some(model.provider.as_str()) {
@@ -257,6 +322,10 @@ impl ModelPicker {
         self.highlighted = self.filtered.iter().copied().find(|index| self.choices.get(*index).is_some_and(|choice| choice.unavailable.is_none()));
         self.filtered_query.clone_from(&self.query);
         self.server_highlight = None;
+        // The server section belongs to ComfyUI: another provider's filter hides it.
+        if self.provider.as_deref().is_some_and(|provider| provider != nodecraft_nodes::comfy_workflow::PROVIDER) {
+            return;
+        }
         let Some(server) = &self.server else { return };
         let matches = |lower: &str| query.is_empty() || lower.contains(&query);
         let mut rows: Vec<Row> = (0..server.missing.len()).map(Row::Missing).collect();
@@ -351,7 +420,7 @@ impl ModelPicker {
         }
     }
 
-    /// Draw only visible rows. Search changes rebuild bounded indices; an idle frame does not
+    /// Draw the rows. Search changes rebuild bounded indices; an idle frame does not
     /// re-evaluate compatibility or clone/flatten the catalog's model schemas.
     pub fn show(&mut self, ctx: &egui::Context, catalog: &Catalog, t: &Tokens) -> Outcome {
         let (up, down, enter, escape) = ctx.input_mut(|i| {
@@ -369,19 +438,42 @@ impl ModelPicker {
         let mut chosen = None;
         let mut server_chosen = None;
         let mut changed_catalog = false;
+        let mut refresh_catalogs = false;
         egui::Window::new("Choose a model")
             .id(egui::Id::new("model_picker157"))
             .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
+            .resizable(true)
             .default_width(t.dialog_width)
+            .default_height(t.model_picker_height)
             .show(ctx, |ui| {
                 let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
                 if self.focus {
                     search.request_focus();
                     self.focus = false;
                 }
-                if self.filtered_query != self.query {
+                let mut refilter = self.filtered_query != self.query;
+                ui.horizontal_wrapped(|ui| {
+                    let shown = self.provider.as_deref().map_or("All providers", provider_label).to_owned();
+                    egui::ComboBox::from_label("Provider").selected_text(shown).show_ui(ui, |ui| {
+                        refilter |= ui.selectable_value(&mut self.provider, None, "All providers").changed();
+                        for (provider, selectable) in &self.providers {
+                            let label = format!("{} ({selectable})", provider_label(provider));
+                            refilter |= ui.selectable_value(&mut self.provider, Some(provider.clone()), label).changed();
+                        }
+                    });
+                    refilter |= ui
+                        .checkbox(&mut self.selectable_only, "Selectable only")
+                        .on_hover_text("Hide models that can't be used here (wrong output, inputs or settings)")
+                        .changed();
+                    if self.can_refresh_catalogs
+                        && ui.button("Refresh provider models").on_hover_text("Read the models OpenRouter and your LiteLLM proxy list again").clicked()
+                    {
+                        refresh_catalogs = true;
+                    }
+                });
+                if refilter {
                     self.refilter(catalog);
                 }
                 if up {
@@ -393,30 +485,30 @@ impl ModelPicker {
                 ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
                 ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
                 if self.rows.is_empty() {
-                    ui.label("No matching models");
+                    ui.label(if self.selectable_only {
+                        "No matching models can be used here. Untick “Selectable only” to see the rest."
+                    } else {
+                        "No matching models"
+                    });
                 }
-                // One choice control and three bounded text lines, also at larger text sizes.
-                let row_height =
-                    t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
-                let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
-                if (up || down)
-                    && let Some(row) = self.highlighted_row()
-                {
-                    scroll = scroll.vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
-                }
-                scroll.show_rows(ui, row_height, self.rows.len(), |ui, range| {
-                    let first = range.start;
-                    for (offset, row) in self.rows.get(range).into_iter().flatten().enumerate() {
-                        let at = first.saturating_add(offset);
+                // Every row is drawn at its own height. Fixed-height virtualization drew rows
+                // shorter than it laid out, so rows past the first screen were never shown; the
+                // picker is drawn only while open, and the catalog holds at most a few hundred.
+                let highlighted_row = if up || down { self.highlighted_row() } else { None };
+                let scroll = egui::ScrollArea::vertical().auto_shrink([false, false]).max_height(ui.available_height());
+                scroll.show(ui, |ui| {
+                    for (at, row) in self.rows.iter().enumerate() {
                         let index = match row {
                             Row::Provider(index) | Row::Model(index) => *index,
                             _ => {
                                 if let Some(server) = &self.server {
-                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                        if let Some(outcome) = server_row(ui, server, *row, self.server_highlight == Some(at), t) {
-                                            server_chosen = Some(outcome);
-                                        }
-                                    });
+                                    let drawn = ui.scope(|ui| server_row(ui, server, *row, self.server_highlight == Some(at), t));
+                                    if let Some(outcome) = drawn.inner {
+                                        server_chosen = Some(outcome);
+                                    }
+                                    if highlighted_row == Some(at) {
+                                        drawn.response.scroll_to_me(Some(egui::Align::Center));
+                                    }
                                 }
                                 continue;
                             }
@@ -426,34 +518,37 @@ impl ModelPicker {
                             changed_catalog = true;
                             continue;
                         };
-                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                            if matches!(row, Row::Provider(_)) {
-                                ui.heading(&model.provider);
-                                return;
-                            }
-                            let response = ui
-                                .add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
-                            ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
-                                )
-                                .truncate(),
+                        if matches!(row, Row::Provider(_)) {
+                            ui.add_space(t.control_gap);
+                            ui.heading(provider_label(&model.provider));
+                            continue;
+                        }
+                        let response =
+                            ui.add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
+                        if highlighted_row == Some(at) {
+                            response.scroll_to_me(Some(egui::Align::Center));
+                        }
+                        ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
                             )
-                            .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
-                            ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
-                            if let Some(reason) = &choice.unavailable {
-                                response.on_disabled_hover_ui(|ui| {
-                                    ui.label(reason);
-                                    model_details(ui, model);
-                                });
-                            } else {
-                                if response.clicked() {
-                                    chosen = Some(index);
-                                }
-                                response.on_hover_ui(|ui| model_details(ui, model));
+                            .truncate(),
+                        )
+                        .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
+                        ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
+                        if let Some(reason) = &choice.unavailable {
+                            response.on_disabled_hover_ui(|ui| {
+                                ui.label(reason);
+                                model_details(ui, model);
+                            });
+                        } else {
+                            if response.clicked() {
+                                chosen = Some(index);
                             }
-                        });
+                            response.on_hover_ui(|ui| model_details(ui, model));
+                        }
+                        ui.add_space(t.control_gap / 2.0);
                     }
                 });
             });
@@ -462,6 +557,9 @@ impl ModelPicker {
         }
         if !open {
             return Outcome::Closed;
+        }
+        if refresh_catalogs {
+            return Outcome::RefreshCatalogs;
         }
         if let Some(outcome) = server_chosen.or_else(|| {
             (enter && chosen.is_none())

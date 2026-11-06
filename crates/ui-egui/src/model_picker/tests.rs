@@ -74,6 +74,9 @@ fn groups_keep_disabled_models_and_run_additional_checks_only_once() {
 fn search_is_case_insensitive_bounded_and_keyboard_skips_disabled_rows() {
     let catalog = catalog();
     let mut picker = picker(&catalog);
+    // The disabled-row assertions below need them visible; the default hides them (see below).
+    picker.selectable_only = false;
+    picker.refilter(&catalog);
     picker.move_highlight(true);
     assert_eq!(selected(&picker), Some("b.good"));
     picker.move_highlight(false);
@@ -88,6 +91,58 @@ fn search_is_case_insensitive_bounded_and_keyboard_skips_disabled_rows() {
     assert_eq!(selected(&picker), None, "search does not turn an incompatible row into a choice");
     picker.set_query(&"λ".repeat(128)).unwrap();
     assert!(picker.set_query(&"λ".repeat(129)).is_err());
+}
+
+#[test]
+fn selectable_only_is_on_by_default_and_toggling_it_off_reveals_disabled_models() {
+    let catalog = catalog();
+    let mut picker = picker(&catalog);
+    assert!(picker.selectable_only);
+    let visible = |picker: &ModelPicker| picker.filtered.iter().map(|i| picker.choices[*i].id.clone()).collect::<Vec<_>>();
+    assert_eq!(visible(&picker), ["a.good", "b.good"], "disabled models are hidden by default");
+    assert_eq!(selected(&picker), Some("a.good"));
+    picker.selectable_only = false;
+    picker.refilter(&catalog);
+    assert!(visible(&picker).contains(&"a.blocked".to_owned()), "turning the filter off shows disabled models again");
+    assert_eq!(selected(&picker), Some("a.good"), "highlight still lands on a selectable model");
+    picker.selectable_only = true;
+    picker.refilter(&catalog);
+    assert_eq!(visible(&picker), ["a.good", "b.good"]);
+}
+
+#[test]
+fn the_provider_filter_shows_one_providers_models_and_survives_a_rebuild() {
+    let catalog = catalog();
+    let mut picker = picker(&catalog);
+    assert_eq!(picker.providers, [("a".to_owned(), 1), ("b".to_owned(), 1)], "each provider with how many of its models can be chosen");
+    let visible = |picker: &ModelPicker| picker.filtered.iter().map(|i| picker.choices[*i].id.clone()).collect::<Vec<_>>();
+    picker.set_filters(Some("b"), true, &catalog).unwrap();
+    assert_eq!(visible(&picker), ["b.good"]);
+    assert_eq!(selected(&picker), Some("b.good"));
+    assert_eq!(picker.rows.iter().filter(|r| matches!(r, Row::Provider(_))).count(), 1);
+    picker.set_filters(Some("a"), false, &catalog).unwrap();
+    assert!(visible(&picker).contains(&"a.blocked".to_owned()), "unselectable models show with the filter off");
+    assert!(visible(&picker).iter().all(|id| id.starts_with("a.")));
+    assert_eq!(picker.filters(), (Some("a"), false));
+    // A provider with no model here falls back to every provider.
+    picker.set_filters(Some("gone"), true, &catalog).unwrap();
+    assert_eq!(picker.filters(), (None, true));
+    assert_eq!(visible(&picker), ["a.good", "b.good"]);
+    // Search also matches a provider's display name.
+    assert_eq!(provider_label("openrouter-images"), "OpenRouter images");
+    assert_eq!(provider_label("fal"), "fal");
+}
+
+#[test]
+fn the_provider_menu_filters_through_real_pointer_events() {
+    let mut h = harness();
+    h.run();
+    h.get_by_label("Provider").click();
+    h.run();
+    h.get_by_label("b (1)").click();
+    h.run();
+    assert!(h.query_by_label("Alpha").is_none(), "another provider's model is hidden");
+    assert!(h.query_by_label("Beta").is_some());
 }
 
 #[test]
@@ -325,6 +380,8 @@ fn openai_audio39_render_picker_evidence() {
 fn actual_pointer_and_keyboard_choose_a_model_but_never_a_disabled_row() {
     let mut h = harness();
     h.run();
+    h.get_by_label("Selectable only").click();
+    h.run();
     let blocked = h.get_by_label("Reference model").rect().center();
     for pressed in [true, false] {
         h.input_mut().events.extend([
@@ -409,4 +466,74 @@ fn luma26_visual() {
     h.run_steps(4);
     assert_eq!(h.query_by_label("Luma Photon (fal)").is_some(), !baseline);
     h.render().unwrap().save(output.join(if baseline { "before.png" } else { "after.png" })).unwrap();
+}
+
+#[test]
+#[ignore = "manual public-safe picker capture; LIVE1075_RENDER_DIR"]
+fn live_catalog1075_picker_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("LIVE1075_RENDER_DIR").unwrap());
+    let listed = |id: &str, label: &str| {
+        format!(
+            r#"
+[[model]]
+id = "openrouter.{id}"
+provider = "openrouter-images"
+provider_model = "{id}"
+label = "{label}"
+description = "Listed by OpenRouter. The charge is known once the image is made."
+latency_s = 30
+quality = 2
+pricing = {{ type = "by_usage", currency = "USD" }}
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}]
+"#
+        )
+    };
+    let extra = [
+        listed("tencent/hy-image-v3.5-preview", "Tencent: Hy Image 3.5 Preview"),
+        listed("black-forest-labs/flux-3-image-klein", "Black Forest Labs: FLUX.3 Klein"),
+        listed("qwen/qwen-image-2.1-turbo", "Qwen: Qwen Image 2.1 Turbo"),
+    ]
+    .concat();
+    for before in [true, false] {
+        let mut catalog = Catalog::builtin().unwrap();
+        if !before {
+            catalog.merge(Catalog::from_toml(&extra).unwrap()).unwrap();
+        }
+        let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
+        if !before {
+            picker.set_filters(Some("openrouter-images"), true, &catalog).unwrap();
+        }
+        let state = View { catalog, picker, outcome: Outcome::Open };
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+        crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+        h.run();
+        h.render().unwrap().save(dir.join(if before { "live1075-before.png" } else { "live1075-after.png" })).unwrap();
+    }
+}
+
+#[test]
+fn the_window_fills_with_rows_instead_of_leaving_them_undrawn() {
+    let toml: String = (0..40).map(|i| model(&format!("many.m{i:02}"), "many", &format!("Listed model {i:02}"), "image")).collect();
+    let catalog = Catalog::from_toml(&toml).unwrap();
+    let picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
+    let state = View { catalog, picker, outcome: Outcome::Open };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1000.0, 900.0))
+        .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+    h.run();
+    // Fixed-height virtualization drew about five rows in this window and left the rest empty.
+    let drawn = h.query_all_by_label_contains("Listed model").count();
+    assert!(drawn >= 8, "only {drawn} rows were drawn");
+    // Keyboard movement scrolls the highlighted row into view, down to the last.
+    for _ in 0..39 {
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+    }
+    assert!(h.query_by_label("Listed model 39").is_some());
 }

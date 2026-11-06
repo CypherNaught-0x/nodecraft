@@ -161,6 +161,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "options.status",
     "comfy.nodes.refresh",
     "comfy.nodes.status",
+    "models.catalog_refresh",
+    "models.catalog_status",
     "comfy.workflow.import",
     "comfy.workflow.mapping",
     "comfy.workflow.mapping_set",

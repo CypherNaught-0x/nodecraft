@@ -130,6 +130,7 @@ impl NodeCraftApp {
             }
             Ok(())
         })?;
+        picker = picker.with_catalog_refresh(self.session.enabled("models.catalog_refresh", &json!({})).is_ok());
         if let Some((listed, can_refresh)) = listed {
             picker = picker.with_server(server_section(listed, can_refresh, kind, &snapshot, &captures), snapshot.run_catalog().catalog());
         }
@@ -192,17 +193,24 @@ impl NodeCraftApp {
         };
         let t = *self.theme.tokens();
         let same_selection = self.selection.edges().is_empty() && self.selection.nodes().iter().copied().eq(choice.nodes.iter().copied());
+        let catalog_changed = !self.session.generation_catalog_stamp().is_ok_and(|stamp| stamp == choice.stamp);
+        let picking = matches!(choice.step, Step::Picking(_));
         choice.stale |= !Arc::ptr_eq(&choice.session, &self.session.view_identity())
             || choice.canvas != self.canvas
             || choice.revision != self.session.revision()
             || !same_selection
-            || !self.session.generation_catalog_stamp().is_ok_and(|stamp| stamp == choice.stamp);
+            // While picking, a new catalog (provider lists read in the background) just rebuilds
+            // the list; a proposal under review is stale.
+            || (catalog_changed && !picking);
         let dirty = self.model_targets_dirty(&choice.nodes);
         let mut close = false;
-        let mut refresh = matches!(choice.step, Step::Picking(_)) && !choice.stale && choice.server_read != self.server_read();
-        let query = match &choice.step {
-            Step::Picking(picker) => picker.query().to_owned(),
-            Step::Review(_) => String::new(),
+        let mut refresh = picking && !choice.stale && (catalog_changed || choice.server_read != self.server_read());
+        let (query, filters) = match &choice.step {
+            Step::Picking(picker) => {
+                let (provider, selectable) = picker.filters();
+                (picker.query().to_owned(), Some((provider.map(str::to_owned), selectable)))
+            }
+            Step::Review(_) => (String::new(), None),
         };
         let mut back = false;
         let mut apply = false;
@@ -269,6 +277,10 @@ impl NodeCraftApp {
                     },
                     Outcome::RefreshServer => match self.session.dispatch("comfy.nodes.refresh", &json!({})) {
                         Ok(_) => self.notice = Some("Reading the ComfyUI server's models…".into()),
+                        Err(error) => choice.error = Some(error.message),
+                    },
+                    Outcome::RefreshCatalogs => match self.session.dispatch("models.catalog_refresh", &json!({})) {
+                        Ok(_) => self.notice = Some("Reading the models OpenRouter and LiteLLM list…".into()),
                         Err(error) => choice.error = Some(error.message),
                     },
                 },
@@ -373,10 +385,13 @@ impl NodeCraftApp {
             ui.ctx().request_repaint();
             match self.open_model_picker(choice.canvas, choice.nodes.clone(), self.session.revision()) {
                 Ok(()) => {
-                    if let Some(ModelChoice { step: Step::Picking(picker), .. }) = &mut self.model_choice
+                    if let Some(ModelChoice { step: Step::Picking(picker), snapshot, .. }) = &mut self.model_choice
                         && !back
                     {
                         let _ = picker.set_query(&query);
+                        if let Some((provider, selectable)) = &filters {
+                            let _ = picker.set_filters(provider.as_deref(), *selectable, snapshot.run_catalog().catalog());
+                        }
                     }
                 }
                 Err(error) => {

@@ -203,12 +203,33 @@ impl GenerationCatalog {
     /// models the catalog can't hold (too many, or past its limits) is left out on its own, so
     /// it never takes the other packages' models with it.
     pub(crate) fn with_plugin_models(&self, packages: Vec<Vec<nodecraft_catalog::ModelDescriptor>>) -> Result<Self, Error> {
+        let (catalog, listed) = self.with_plugin_models_only(packages)?;
+        Ok(catalog.with_listed_models(&crate::model_catalogs::LISTED_PROVIDERS, listed)?.0)
+    }
+    /// The curated models and `packages`' (as many packages as fit), and the listed models taken
+    /// out, in priority order, for [`Self::with_listed_models`] to fit back in.
+    fn with_plugin_models_only(
+        &self,
+        packages: Vec<Vec<nodecraft_catalog::ModelDescriptor>>,
+    ) -> Result<(Self, Vec<nodecraft_catalog::ModelDescriptor>), Error> {
         let prefix = nodecraft_plugin::id::PLUGIN_PREFIX;
-        let base: Vec<_> = self.0.catalog.catalog().models().filter(|m| !m.provider.starts_with(prefix)).cloned().collect();
+        let listed_providers = crate::model_catalogs::LISTED_PROVIDERS;
+        // Models providers list themselves only fill what plugins leave of the budget, so a
+        // plugin is never crowded out by them, whichever was published first.
+        let mut listed: Vec<_> = self.0.catalog.catalog().models().filter(|m| listed_providers.contains(&m.provider.as_str())).cloned().collect();
+        listed.sort_by_key(crate::model_catalogs::rank);
+        let base: Vec<_> = self
+            .0
+            .catalog
+            .catalog()
+            .models()
+            .filter(|m| !m.provider.starts_with(prefix) && !listed_providers.contains(&m.provider.as_str()))
+            .cloned()
+            .collect();
         let build = |models: &[nodecraft_catalog::ModelDescriptor]| Self::new(RunCatalog::new(Catalog::from_models(models.iter().cloned())?)?);
         let all: Vec<_> = base.iter().cloned().chain(packages.iter().flatten().cloned()).collect();
         if let Ok(catalog) = build(&all) {
-            return Ok(catalog);
+            return Ok((catalog, listed));
         }
         let mut kept = base;
         for package in packages {
@@ -218,7 +239,31 @@ impl GenerationCatalog {
                 kept.truncate(before);
             }
         }
-        build(&kept)
+        Ok((build(&kept)?, listed))
+    }
+    /// The catalog's models whose provider isn't one of `providers`.
+    pub(crate) fn models_except<'a>(&'a self, providers: &'a [&str]) -> impl Iterator<Item = &'a nodecraft_catalog::ModelDescriptor> + 'a {
+        self.0.catalog.catalog().models().filter(move |m| !providers.contains(&m.provider.as_str()))
+    }
+    /// This catalog with the models of `providers` replaced by `models`, kept in order as far as
+    /// the catalog's admission budget holds them; returns the catalog and how many it took. The
+    /// rest (curated and plugin models) is untouched.
+    pub(crate) fn with_listed_models(&self, providers: &[&str], models: Vec<nodecraft_catalog::ModelDescriptor>) -> Result<(Self, usize), Error> {
+        let base: Vec<_> = self.models_except(providers).cloned().collect();
+        let build = |n: usize| {
+            let listed = models.get(..n).unwrap_or_default();
+            Self::new(RunCatalog::new(Catalog::from_models(base.iter().chain(listed).cloned())?)?)
+        };
+        if let Ok(catalog) = build(models.len()) {
+            return Ok((catalog, models.len()));
+        }
+        // The largest prefix that fits; the base alone always does (it is today's catalog).
+        let (mut fits, mut fails) = (0usize, models.len());
+        while fails - fits > 1 {
+            let mid = fits + (fails - fits) / 2;
+            if build(mid).is_ok() { fits = mid } else { fails = mid }
+        }
+        Ok((build(fits)?, fits))
     }
     /// `kinds` with this catalog's generation kinds in place of the ones it has.
     pub(crate) fn rebind(&self, kinds: &nodecraft_nodes::Registry) -> Result<nodecraft_nodes::Registry, Error> {

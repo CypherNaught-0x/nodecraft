@@ -21,7 +21,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
 | **vLLM / other gateways** | `llm` | optional bearer key | text, streaming | Any OpenAI-compatible base URL (`Endpoint::openai_compatible`). |
-| **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
+| **OpenRouter** | `llm`, `openrouter-images` | API key (account `openrouter`) | text, vision, streaming; image generation and editing | Models are listed live, not curated: with an `openrouter` key account kept, its chat models (`/api/v1/models`) and image models (`/api/v1/images/models`) appear in model pickers as `openrouter.<id>`. Chat runs on the `openrouter` adapter (Chat Completions). Images run on `openrouter-images` (`POST /api/v1/images`): `resolution`, `aspect_ratio` and `seed` as the model lists them, up to 16 reference images inline, the image returned inline, the charge read from `usage.cost`. Image models are priced by usage (unknown-price consent per run); no idempotency, so an uncertain submit isn't retried. Speech models (`/api/v1/models?output_modalities=speech`) run on `openrouter-speech` (`POST /api/v1/audio/speech`, MP3, a voice from the model's `supported_voices`), priced per character when listed; models that answer only raw PCM (HeyGen Voice, Gemini TTS) are left out. Video models (`/api/v1/videos/models`) run on `openrouter-video`: a queued job (`POST /api/v1/videos`), polled every 5 s, downloaded from `/content` with the key, with `duration`, `resolution`, `aspect_ratio`, `generate_audio`, `seed` and first/last frames as the model lists them; a model priced only per second is quoted at its highest listed rate, others by usage (`usage.cost`). OpenRouter has no video cancel endpoint, so a cancelled job still finishes and is billed. Music and chat-audio models (Lyria, GPT Audio) aren't offered yet. Desktop and CLI only for images, speech and video. See [the live catalog decision](decisions/2026-11-06-live-provider-model-catalogs.md). |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
 | **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | text → text, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. No SigV4, AWS SDK, Converse API or AWS credential discovery (#489). See below. |
@@ -148,11 +148,13 @@ The rules are recorded in
 [the custom base URL decision](decisions/2026-11-03-custom-base-urls.md). Models that only the
 server offers, and that the catalog doesn't price, are the LiteLLM catalog work in #489.
 
-LiteLLM's endpoint and optional `litellm` virtual key can be saved now, but the shipped model
-catalog has no LiteLLM entries: no card can select or call the proxy yet. The adapter accepts the
-proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) for future catalog
-integration. Saving this address alone does not add models.
-The model-catalog integration decision is tracked in [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
+LiteLLM's proxy root (`[providers] litellm_url = "https://proxy.example"`, without `/v1`) is set
+in the desktop's **API keys** panel, next to the optional `litellm` virtual key (the browser sets
+it under Providers). Once it is saved, the proxy's chat models (`/v1/models`, with
+`/model/info` when the key may read it) appear in model pickers as `litellm.<id>` and run on the
+`litellm` adapter. A model without a positive listed price is priced by usage and charged what
+the proxy reports. See [the live catalog decision](decisions/2026-11-06-live-provider-model-catalogs.md)
+and [#489](https://github.com/CypherNaught-0x/nodecraft/issues/489).
 
 Select **Azure OpenAI deployment** on a text generation card and enter your exact Azure
 deployment name in **Azure deployment name**. NodeCraft accepts 1–64 ASCII letters, digits,

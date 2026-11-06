@@ -36,13 +36,17 @@ impl AssetSource for FileSource {
 
 /// Opens the project at `path` read-only: nothing is written, and the app's lock is not taken.
 pub fn open(path: &Path) -> Result<Session, Error> {
-    Session::new(read(path)?.project)
+    let mut session = Session::new(read(path)?.project)?;
+    crate::listed::install_if_named(&mut session);
+    Ok(session)
 }
 
 /// [`open`] with the project's assets, for runs and exports. Its storage is in memory, so
 /// nothing the session does is written to the project file.
 pub fn open_with_assets(path: &Path) -> Result<Session, Error> {
-    Session::with_storage_origin(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()), origin(path)?)
+    let mut session = Session::with_storage_origin(read(path)?, Box::new(nodecraft_format::MemoryStorage::default()), origin(path)?)?;
+    crate::listed::install_if_named(&mut session);
+    Ok(session)
 }
 
 pub(crate) fn origin(path: &Path) -> Result<nodecraft_format::StorageLocation, Error> {

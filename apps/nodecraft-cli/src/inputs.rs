@@ -97,6 +97,7 @@ impl Target {
         if let Some((version, id)) = self.placed {
             session.dispatch("technique.place", &json!({"canvas":self.canvas,"version":version,"id":id,"pos":{"x":0,"y":0}}))?;
         }
+        crate::listed::install_if_named(&mut session);
         Ok(session)
     }
     pub fn bindings(&self, raw: &[String], base: &Path, files: &mut Files) -> Result<Vec<Binding>, Error> {
