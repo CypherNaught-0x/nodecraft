@@ -292,6 +292,7 @@ mod tests {
         assert!(h.query_by_label_contains("s3crets3cret").is_none(), "the token is never shown in full");
         h.get_by_label_contains("Token …ret0");
         h.get_by_label_contains("--header \"Authorization: Bearer …ret0\"");
+        crate::app::panel_check::check_open_panels(&h, "Automation, running");
         h.get_by_label("Copy token").click();
         h.run();
         h.get_by_label("New token").click();

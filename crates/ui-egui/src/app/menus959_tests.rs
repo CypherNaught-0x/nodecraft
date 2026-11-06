@@ -2,13 +2,11 @@
 //! window, none of its controls overlaps another, and choosing its entry again closes it. Run at
 //! a narrow and a wide window, in both themes. Search and Discussions are pinned chrome rather
 //! than floating panels, and are checked as open and closed.
+use super::panel_check::overlaps;
 use super::topbar_tests::reveal;
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{
-    Harness,
-    kittest::{NodeT, Queryable},
-};
+use egui_kittest::{Harness, kittest::Queryable};
 
 /// The window sizes checked: the narrowest the overflow menu is built for, and a wide one.
 const SIZES: [Vec2; 2] = [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)];
@@ -45,77 +43,6 @@ fn choose(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     h.run_steps(12);
 }
 
-/// Controls a person acts on.
-fn interactive(role: Role) -> bool {
-    matches!(
-        role,
-        Role::Button
-            | Role::TextInput
-            | Role::MultilineTextInput
-            | Role::CheckBox
-            | Role::ComboBox
-            | Role::Slider
-            | Role::SpinButton
-            | Role::RadioButton
-            | Role::Link
-    )
-}
-
-fn bounds(node: &egui_kittest::Node<'_>) -> Option<Rect> {
-    let b = node.accesskit_node().bounding_box()?;
-    Some(Rect::from_min_max(Pos2::new(b.x0 as f32, b.y0 as f32), Pos2::new(b.x1 as f32, b.y1 as f32)))
-}
-
-/// Pairs of the panel's own on-screen controls that cross; a control may share space only with
-/// its own accessibility descendants. Clipping isn't checked: egui's tree doesn't mark scroll
-/// areas, so content scrolled out of view can't be told from content cut off.
-fn overlaps(h: &Harness<'static, NodeCraftApp>, panel: Rect) -> Vec<String> {
-    // The panel's window node: the window whose box is the panel's.
-    let mut stack = vec![h.root()];
-    let mut window = None;
-    while let Some(node) = stack.pop() {
-        if node.accesskit_node().role() == Role::Window
-            && bounds(&node).is_some_and(|b| (b.min - panel.min).length() < 2.0 && (b.max - panel.max).length() < 2.0)
-        {
-            window = Some(node);
-            break;
-        }
-        stack.extend(node.children());
-    }
-    let Some(window) = window else { return vec![format!("no window node for the panel at {panel:?}")] };
-    let mut controls: Vec<(String, Rect, String, Vec<String>)> = Vec::new();
-    let mut found = Vec::new();
-    let mut stack = vec![(window, Vec::<String>::new())];
-    while let Some((node, ancestors)) = stack.pop() {
-        let id = format!("{:?}", node.accesskit_node().id());
-        let role = node.accesskit_node().role();
-        let mut below = ancestors.clone();
-        below.push(id.clone());
-        for child in node.children() {
-            stack.push((child, below.clone()));
-        }
-        let Some(rect) = bounds(&node) else { continue };
-        if !interactive(role) || node.accesskit_node().is_hidden() || !rect.is_positive() {
-            continue;
-        }
-        let name = format!("{role:?} {:?}", node.accesskit_node().label().unwrap_or_default());
-        // What a scroll area hides isn't on screen to cross anything.
-        if panel.contains_rect(rect) {
-            controls.push((name, rect, id, ancestors));
-        }
-    }
-    for (i, (a, ra, ia, pa)) in controls.iter().enumerate() {
-        for (b, rb, ib, pb) in controls.iter().skip(i + 1) {
-            let related = pa.contains(ib) || pb.contains(ia);
-            let both = ra.intersect(*rb);
-            if !related && both.is_positive() && both.area() > 4.0 {
-                found.push(format!("{a} {ra:?} overlaps {b} {rb:?}"));
-            }
-        }
-    }
-    found
-}
-
 #[test]
 fn every_top_bar_panel_opens_inside_the_window_without_overlaps_and_closes() {
     for size in SIZES {
@@ -126,11 +53,11 @@ fn every_top_bar_panel_opens_inside_the_window_without_overlaps_and_closes() {
                 let before: Vec<egui::Id> = crate::floating::shown(&h.ctx).into_iter().map(|(id, _)| id).collect();
                 choose(&mut h, label);
                 let opened: Vec<(egui::Id, Rect)> = crate::floating::shown(&h.ctx).into_iter().filter(|(id, _)| !before.contains(id)).collect();
-                let [(_, rect)] = opened.as_slice() else { panic!("{label} at {size:?} {kind:?} opened {} panels", opened.len()) };
+                let [(id, rect)] = opened.as_slice() else { panic!("{label} at {size:?} {kind:?} opened {} panels", opened.len()) };
                 // Inside the panel area: below the top bar, clear of pinned chrome.
                 let area = h.state().floating_bounds().area;
                 assert!(area.expand(1.0).contains_rect(*rect), "{label} at {size:?} {kind:?}: {rect:?} leaves the panel area {area:?}");
-                let crossing = overlaps(&h, *rect);
+                let crossing = overlaps(&h, *id, *rect);
                 assert!(crossing.is_empty(), "{label} at {size:?} {kind:?}:\n{}", crossing.join("\n"));
                 choose(&mut h, label);
                 h.run_steps(2);
@@ -152,11 +79,11 @@ fn panels_without_their_service_open_inside_the_window_without_overlaps_and_clos
                 toggle(h.state_mut());
                 h.run_steps(12);
                 let opened: Vec<(egui::Id, Rect)> = crate::floating::shown(&h.ctx).into_iter().filter(|(id, _)| !before.contains(id)).collect();
-                let [(_, rect)] = opened.as_slice() else { panic!("{label} at {size:?} {kind:?} opened {} panels", opened.len()) };
+                let [(id, rect)] = opened.as_slice() else { panic!("{label} at {size:?} {kind:?} opened {} panels", opened.len()) };
                 // Inside the panel area: below the top bar, clear of pinned chrome.
                 let area = h.state().floating_bounds().area;
                 assert!(area.expand(1.0).contains_rect(*rect), "{label} at {size:?} {kind:?}: {rect:?} leaves the panel area {area:?}");
-                let crossing = overlaps(&h, *rect);
+                let crossing = overlaps(&h, *id, *rect);
                 assert!(crossing.is_empty(), "{label} at {size:?} {kind:?}:\n{}", crossing.join("\n"));
                 toggle(h.state_mut());
                 h.run_steps(4);

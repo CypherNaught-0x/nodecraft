@@ -661,8 +661,11 @@ they follow the card, so they are not clamped or cascaded.
 
 ## Menu and panel inventory (#959, in progress)
 
-The shared check is [`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs). Each
-top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
+The shared check is `panel_check::check_open_panels`
+([`panel_check.rs`](../crates/ui-egui/src/app/panel_check.rs)), run by
+[`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs) for the top bar and by each
+service-backed panel's own test once that panel is open. It finds a panel's controls through
+that panel's own accessibility node, by id. Each top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
 bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both themes. None of its
 on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
 control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
@@ -673,7 +676,10 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 |---|---|---|---|
 | Sheets, Techniques, Elements, Budgets, API keys | top bar | floating panel | `menus959_tests` (open, area, overlap, close) |
 | ComfyUI servers, Plugins | top bar (disabled without their service) | floating panel | `menus959_tests` (opened through their state), `topbar_tests` (disabled state) |
-| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` |
+| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` (with the layout check) |
+| Automation | top bar (with an MCP host) | floating panel | `automation::tests` (with the layout check, server running) |
+| Charges to review | palette `usage.ownership` | floating panel | `ownership_panel::tests` (with the layout check) |
+| Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
 | Share | top bar | floating panel | `sharing::tests` |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
@@ -684,8 +690,7 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 The API keys panel sits past the window's right edge for its first placement frames at 1000 px
 and settles inside once laid out; the checks run after placement settles.
 
-**Not yet reviewed or covered:** Automation, Provider servers (browser), Charges to review,
-Custom shader, the PDF and image viewers, Batch items, Workflow fields, Project files, the model
+**Not yet reviewed or covered:** Provider servers (browser only), the layout check for Share, the PDF and image viewers, Batch items, Workflow fields, Project files, the model
 picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
