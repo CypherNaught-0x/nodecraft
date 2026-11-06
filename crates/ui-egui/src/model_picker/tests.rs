@@ -467,3 +467,73 @@ fn luma26_visual() {
     assert_eq!(h.query_by_label("Luma Photon (fal)").is_some(), !baseline);
     h.render().unwrap().save(output.join(if baseline { "before.png" } else { "after.png" })).unwrap();
 }
+
+#[test]
+#[ignore = "manual public-safe picker capture; LIVE1075_RENDER_DIR"]
+fn live_catalog1075_picker_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("LIVE1075_RENDER_DIR").unwrap());
+    let listed = |id: &str, label: &str| {
+        format!(
+            r#"
+[[model]]
+id = "openrouter.{id}"
+provider = "openrouter-images"
+provider_model = "{id}"
+label = "{label}"
+description = "Listed by OpenRouter. The charge is known once the image is made."
+latency_s = 30
+quality = 2
+pricing = {{ type = "by_usage", currency = "USD" }}
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}]
+"#
+        )
+    };
+    let extra = [
+        listed("tencent/hy-image-v3.5-preview", "Tencent: Hy Image 3.5 Preview"),
+        listed("black-forest-labs/flux-3-image-klein", "Black Forest Labs: FLUX.3 Klein"),
+        listed("qwen/qwen-image-2.1-turbo", "Qwen: Qwen Image 2.1 Turbo"),
+    ]
+    .concat();
+    for before in [true, false] {
+        let mut catalog = Catalog::builtin().unwrap();
+        if !before {
+            catalog.merge(Catalog::from_toml(&extra).unwrap()).unwrap();
+        }
+        let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
+        if !before {
+            picker.set_filters(Some("openrouter-images"), true, &catalog).unwrap();
+        }
+        let state = View { catalog, picker, outcome: Outcome::Open };
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_size(egui::vec2(1000.0, 800.0))
+            .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+        crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+        h.run();
+        h.render().unwrap().save(dir.join(if before { "live1075-before.png" } else { "live1075-after.png" })).unwrap();
+    }
+}
+
+#[test]
+fn the_window_fills_with_rows_instead_of_leaving_them_undrawn() {
+    let toml: String = (0..40).map(|i| model(&format!("many.m{i:02}"), "many", &format!("Listed model {i:02}"), "image")).collect();
+    let catalog = Catalog::from_toml(&toml).unwrap();
+    let picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
+    let state = View { catalog, picker, outcome: Outcome::Open };
+    let mut h = Harness::builder()
+        .with_size(egui::vec2(1000.0, 900.0))
+        .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+    h.run();
+    // Fixed-height virtualization drew about five rows in this window and left the rest empty.
+    let drawn = h.query_all_by_label_contains("Listed model").count();
+    assert!(drawn >= 8, "only {drawn} rows were drawn");
+    // Keyboard movement scrolls the highlighted row into view, down to the last.
+    for _ in 0..39 {
+        h.key_press(egui::Key::ArrowDown);
+        h.run();
+    }
+    assert!(h.query_by_label("Listed model 39").is_some());
+}
