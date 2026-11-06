@@ -117,7 +117,7 @@ pub(super) fn status(body: &[u8], id: &str, model: &str, count: u64, leaks: impl
         "queued" => Ok(Status::Progress(JobProgress::Queued { position: None })),
         "in_progress" => Ok(Status::Progress(JobProgress::Running { fraction: None, message: None, partial: None })),
         "completed" => {
-            let urls = if model == SOUL {
+            let urls = if model == SOUL || model == SOUL_I2I {
                 let images = v.get("images").and_then(Value::as_array).ok_or_else(|| malformed("Higgsfield finished without images"))?;
                 if images.is_empty() || images.len() as u64 > count {
                     return Err(malformed("Higgsfield returned an unexpected number of images"));
@@ -217,9 +217,9 @@ pub(super) fn estimate(body: &[u8]) -> Result<Estimate, ProviderError> {
 pub(super) fn media(bytes: &[u8], model: &str) -> Result<&'static str, ProviderError> {
     let sniffed = nodecraft_media::sniff(bytes).map(|s| s.mime);
     let found = match (model, sniffed) {
-        (SOUL, Some("image/png")) => "image/png",
-        (SOUL, Some("image/jpeg")) => "image/jpeg",
-        (SOUL, Some("image/webp")) => "image/webp",
+        (SOUL | SOUL_I2I, Some("image/png")) => "image/png",
+        (SOUL | SOUL_I2I, Some("image/jpeg")) => "image/jpeg",
+        (SOUL | SOUL_I2I, Some("image/webp")) => "image/webp",
         (KLING_I2V | MOTION_TRANSFER | OBJECT_SWAP | RESTYLE, Some("video/mp4")) => "video/mp4",
         _ => return Err(malformed("Higgsfield returned a different kind of media than the model makes")),
     };

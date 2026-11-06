@@ -360,6 +360,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
+            ("higgsfield.soul-2-i2i", false),
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("huggingface.gpt-oss-120b-groq", false),

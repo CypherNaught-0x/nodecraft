@@ -124,6 +124,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `higgsfield.genjutsu-restyle` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/restyle) | 2026-10-27 |
 | `higgsfield.kling-2.5-turbo-i2v` | [Documentation](https://docs.higgsfield.ai/docs) | 2026-10-27 |
 | `higgsfield.soul-2` | [Documentation](https://higgsfield.ai/soul-intro) | 2026-10-27 |
+| `higgsfield.soul-2-i2i` | [Documentation](https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference) | 2026-11-06 |
 | `higgsfield.soul-id-trainer` | [Documentation](https://open.higgsfield.ai/models/soul-id/api-reference) | 2026-10-27 |
 | `huggingface.gpt-oss-120b-groq` | [Documentation](https://huggingface.co/docs/inference-providers/en/guides/gpt-oss) | 2026-10-27 |
 | `kling.image_v2_1` | [Documentation](https://kling.ai/document-api/updates/api?date=2026-02-11) | 2026-10-27 |
