@@ -76,6 +76,7 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     h.get_by_label("Session a");
     h.get_by_label("1 charge");
     press(&mut h, Role::Button, "Review");
+    crate::app::panel_check::check_open_panels(&h, "Charges to review");
 
     // What was known at import, then the charge itself.
     h.get_by_label("The earlier total could hold up to");
