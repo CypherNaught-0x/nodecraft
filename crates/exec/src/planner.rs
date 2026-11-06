@@ -1069,13 +1069,9 @@ impl<'a> Graph<'a> {
             for collect in collects {
                 let (collected, port_type) =
                     self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| vec![blocker(None, Some(upstream), reason)])?;
-                // A batch inside the version stays unsupported (#93); only one on the canvas
-                // fans a technique node.
-                if let Collected::Fanned(tags, _) = &collected
-                    && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
-                {
-                    return Err(vec![blocker(None, Some(collect.node), Reason::PublicInvalid("a batch inside its technique can't fan it out yet".into()))]);
-                }
+                // A batch inside the version fans the technique node as one on the canvas does
+                // (#1073): its items are tagged by the batch's inlined id, which is derived from
+                // the instance and stays the same from run to run.
                 let from = match collected {
                     Collected::Plain(from) => from,
                     Collected::Fanned(tags, source) => {

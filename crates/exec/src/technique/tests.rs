@@ -449,11 +449,15 @@ fn a_batch_its_version_collects_runs_the_technique_once() {
     assert!(finished.first().is_some_and(|result| result.node == placed_id && result.generation.items.is_empty()), "{finished:?}");
 }
 
-#[test]
-fn a_batch_inside_a_version_still_blocks_its_technique_node() {
-    let (mut project, kinds) = project(Some("fox"), "");
-    // "Split": a Words input through a batch of its own into a Shout.
-    let (brief, inner_batch, shout) = (NodeId::from_bytes([80; 16]), NodeId::from_bytes([81; 16]), NodeId::from_bytes([82; 16]));
+const INNER_BATCH: NodeId = NodeId::from_bytes([81; 16]);
+
+/// "Split": a Words input collected by a batch of its own (items "a" and "b" after the words),
+/// each item shouted. Placed at `T`, its words fed by a text source holding `words`.
+fn split(words: &str, items: &str) -> (Project, Registry) {
+    let kinds = kinds();
+    let (brief, shout) = (NodeId::from_bytes([80; 16]), NodeId::from_bytes([82; 16]));
+    let nodes = vec![node(&kinds, brief, "source.text", "cat"), batch_node(&kinds, INNER_BATCH, items), node(&kinds, shout, "test.shout", "")];
+    let edges = vec![edge(83, (brief, "out"), (INNER_BATCH, "in"), 0), edge(84, (INNER_BATCH, "item"), (shout, "in"), 0)];
     let technique = Technique {
         id: TechniqueId::from_bytes([11; 16]),
         version: 1,
@@ -467,21 +471,110 @@ fn a_batch_inside_a_version_still_blocks_its_technique_node() {
         source: None,
         retired: false,
     };
-    let nodes = vec![node(&kinds, brief, "source.text", "cat"), batch_node(&kinds, inner_batch, "a\nb"), node(&kinds, shout, "test.shout", "")];
-    let edges = vec![edge(83, (brief, "out"), (inner_batch, "in"), 0), edge(84, (inner_batch, "item"), (shout, "in"), 0)];
-    let version = Canvas::technique(CanvasId::from_bytes([7; 16]), "Split v1", technique, nodes, edges).unwrap();
+    let version = Canvas::technique(V, "Split v1", technique, nodes, edges).unwrap();
     let interface = technique::interface_of(&version, &kinds).unwrap();
-    let placed_id = NodeId::from_bytes([16; 16]);
-    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(placed_id, interface.config().unwrap(), &Default::default()).unwrap();
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(T, interface.config().unwrap(), &Default::default()).unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([4; 16]), "Techniques").unwrap();
     let changes = vec![
         Change::AddCanvas { canvas: version },
+        Change::AddCanvas { canvas: Canvas::new(C, "Canvas") },
         Change::AddNode { canvas: C, node: placed },
-        Change::Connect { canvas: C, edge: edge(85, (SOURCE, "out"), (placed_id, "words"), 0) },
+        Change::AddNode { canvas: C, node: node(&kinds, SOURCE, "source.text", words) },
+        Change::Connect { canvas: C, edge: edge(85, (SOURCE, "out"), (T, "words"), 0) },
     ];
     Changeset::new(changes).apply(&mut project).unwrap();
-    let Planned::Blocked(blockers) = planned(&project, &kinds, &[placed_id]).unwrap() else { panic!("a batch inside a version can't fan it out (#93)") };
-    assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![placed_id]);
-    assert!(blockers.first().unwrap().message(project.canvases().get(&C).unwrap()).contains("batch inside"), "{blockers:?}");
+    (project, kinds)
+}
+
+/// The id the version's batch is inlined under for `T`.
+fn inlined_batch(project: &Project, kinds: &Registry) -> NodeId {
+    let expanded = expand(project.canvases(), project.canvases().get(&C).unwrap(), kinds).unwrap();
+    let batches: Vec<NodeId> =
+        expanded.canvas.nodes().values().filter(|n| n.kind == nodecraft_nodes::batch::ID && expanded.inner.contains_key(&n.id)).map(|n| n.id).collect();
+    let [batch] = batches.as_slice() else { panic!("one inlined batch: {batches:?}") };
+    assert!(!project.canvases().get(&C).unwrap().nodes().contains_key(batch), "it isn't on the real canvas");
+    *batch
+}
+
+/// A batch inside a technique's own graph fans out what it feeds and the technique node with it,
+/// one item at a time, every item planned (and so quoted) before the run (#1073).
+#[test]
+fn a_batch_inside_a_version_fans_its_technique_node_out() {
+    let (project, kinds) = split("fox", "a\nb");
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let shout = plan.steps.iter().find(|s| plan.inner.contains_key(&s.node) && s.kind == "test.shout").unwrap();
+    let fanout = shout.fanout.as_ref().expect("the inner step fans");
+    // The batch's wired words come before its own items; every item's jobs are planned now.
+    assert_eq!(fanout.items.len(), 3, "{shout:?}");
+    assert!(shout.jobs.as_ref().is_some_and(|jobs| jobs.len() == fanout.jobs.iter().sum::<usize>()), "{shout:?}");
+    assert_eq!(fanout.jobs.len(), 3, "a job count per item: {shout:?}");
+    let owner = plan.steps.iter().find(|s| s.node == T).unwrap();
+    assert_eq!(owner.fanout.as_ref().map(|f| f.items.len()), Some(3), "{owner:?}");
+    let (finished, failed) = drive(&project, &kinds, &plan, None);
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX+A+B".to_owned()])]);
+    let batch = inlined_batch(&project, &kinds);
+    let items = &finished.first().unwrap().generation.items;
+    assert_eq!(items.len(), 3);
+    assert!(items.iter().all(|tag| tag.len() == 1 && tag.first().is_some_and(|key| key.batch == batch)), "{items:?}");
+    // Planned again, the items are tagged the same, so a partial result can be completed.
+    let again = ready(planned(&project, &kinds, &[T]).unwrap());
+    let owner_again = again.steps.iter().find(|s| s.node == T).unwrap();
+    assert_eq!(owner_again.fanout.as_ref().map(|f| &f.items), owner.fanout.as_ref().map(|f| &f.items));
+}
+
+/// An item failing behind a batch inside a technique leaves a partial result, and the next run
+/// plans only the missing item (#1073, as #536 for a batch on the canvas).
+#[test]
+fn a_failed_item_behind_a_batch_inside_a_version_is_the_only_one_run_again() {
+    let (mut project, kinds) = split("fox", "a\nb");
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed, _) = drive_failing(&project, &kinds, &plan, "A");
+    let [partial] = finished.as_slice() else { panic!("{finished:?}") };
+    let missing = &partial.generation.incomplete.as_ref().unwrap().missing;
+    assert_eq!(missing, &vec![nodecraft_graph::MissingItem::new(1, nodecraft_graph::Missing::Failed)]);
+    assert_eq!(failed.iter().map(|f| f.node).collect::<Vec<_>>(), vec![T]);
+    record(&mut project, partial);
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let shout = plan.steps.iter().find(|s| plan.inner.contains_key(&s.node) && s.kind == "test.shout").unwrap();
+    assert_eq!(shout.fanout.as_ref().map(|f| f.jobs.clone()), Some(vec![0, 2, 0]), "only the failed item runs: {shout:?}");
+    let (finished, failed, ran) = drive_failing(&project, &kinds, &plan, "");
+    assert!(failed.is_empty(), "{failed:?}");
+    assert!(ran.iter().all(|job| !matches!(job, JobSpec::Source { value, .. } if *value == Value::Text("FOX".into()))), "{ran:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["FOX+A+B".to_owned()])]);
+}
+
+/// A batch inside a technique is held to the canvas's bounds: past 1,000 items its technique
+/// node is blocked with the batch's reason, before anything runs.
+#[test]
+fn a_batch_inside_a_version_keeps_the_item_bound() {
+    let many = "x\n".repeat(nodecraft_nodes::batch::MAX_ITEMS);
+    let (project, kinds) = split("fox", &many);
+    let Planned::Blocked(blockers) = planned(&project, &kinds, &[T]).unwrap() else { panic!("1,001 items are refused") };
+    assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![T], "{blockers:?}");
+    let message = blockers.first().unwrap().message(project.canvases().get(&C).unwrap());
+    assert!(message.contains("inside its technique") && message.contains("at most 1000 items"), "{message}");
+}
+
+/// A batch on the canvas feeding a technique whose own batch collects that input: the inner
+/// batch collects the outer one's items as its own (a batch collecting a batch flattens, #92),
+/// so every item runs once, tagged by the inner batch, and the chain stays bounded.
+#[test]
+fn a_batch_on_the_canvas_into_the_versions_batch_joins_its_items() {
+    let (mut project, kinds) = split("fox", "a");
+    let changes = vec![
+        Change::Disconnect { canvas: C, id: EdgeId::from_bytes([85; 16]) },
+        Change::AddNode { canvas: C, node: batch_node(&kinds, BATCH, "owl\nhare") },
+        Change::Connect { canvas: C, edge: edge(86, (BATCH, "item"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let plan = ready(planned(&project, &kinds, &[T]).unwrap());
+    let (finished, failed) = drive(&project, &kinds, &plan, None);
+    assert!(failed.is_empty(), "{failed:?}");
+    assert_eq!(outputs(&finished), vec![(T, vec!["OWL+HARE+A".to_owned()])]);
+    let batch = inlined_batch(&project, &kinds);
+    let items = &finished.first().unwrap().generation.items;
+    assert!(items.len() == 3 && items.iter().all(|tag| tag.iter().map(|key| key.batch).eq([batch])), "{items:?}");
 }
 
 /// Runs `plan` like [`drive`], failing the jobs whose text is `fail`; also returns the jobs run.

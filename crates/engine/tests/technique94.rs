@@ -32,6 +32,7 @@ const VERSION: CanvasId = CanvasId::from_bytes([42; 16]);
 const PLACED: NodeId = NodeId::from_bytes([5; 16]);
 const MOON: NodeId = NodeId::from_bytes([6; 16]);
 const MODEL: &str = "fixture.writer";
+const INNER_BATCH: NodeId = NodeId::from_bytes([14; 16]);
 
 fn catalog() -> Catalog {
     Catalog::from_toml(&format!(
@@ -87,6 +88,12 @@ fn fixture() -> Fixture {
 }
 
 fn fixture_with(mock: MockProvider) -> Fixture {
+    fixture_built(mock, None)
+}
+
+/// The fixture, with a batch of `inner_batch` (one item per line) between the source and the
+/// writer when the technique is published, so the batch is one of the version's nodes.
+fn fixture_built(mock: MockProvider, inner_batch: Option<&str>) -> Fixture {
     let snapshot = GenerationCatalog::new(RunCatalog::new(catalog()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([41; 16]), "Technique run").unwrap();
@@ -98,13 +105,24 @@ fn fixture_with(mock: MockProvider) -> Fixture {
             kinds.get("source.text").unwrap().instantiate_instance(id, Default::default(), &[("text".into(), Value::Text(text.into()))].into()).unwrap();
         Change::AddNode { canvas: C, node: source }.apply(&mut project).unwrap();
     }
-    let edge = Edge {
-        id: EdgeId::from_bytes([3; 16]),
-        from: Endpoint { node: SOURCE, port: "out".into() },
-        to: Endpoint { node: WRITER, port: "prompt".into() },
+    let wire = |id: u8, from: (NodeId, &str), to: (NodeId, &str)| Edge {
+        id: EdgeId::from_bytes([id; 16]),
+        from: Endpoint { node: from.0, port: from.1.into() },
+        to: Endpoint { node: to.0, port: to.1.into() },
         order: 0,
     };
-    Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
+    let edges = match inner_batch {
+        None => vec![wire(3, (SOURCE, "out"), (WRITER, "prompt"))],
+        Some(items) => {
+            let mut batch = kinds.get(nodecraft_nodes::batch::ID).unwrap().instantiate_instance(INNER_BATCH, Default::default(), &Default::default()).unwrap();
+            batch.params.insert("text".into(), Value::Text(items.into()));
+            Change::AddNode { canvas: C, node: batch }.apply(&mut project).unwrap();
+            vec![wire(3, (SOURCE, "out"), (INNER_BATCH, "in")), wire(4, (INNER_BATCH, "item"), (WRITER, "prompt"))]
+        }
+    };
+    for edge in edges {
+        Change::Connect { canvas: C, edge }.apply(&mut project).unwrap();
+    }
     let mut resources = Resources::default();
     resources.insert(snapshot.clone());
     resources.insert(snapshot.run_catalog());
@@ -130,7 +148,7 @@ fn fixture_with(mock: MockProvider) -> Fixture {
     let canvas = session.document().canvases().get(&C).unwrap();
     let expanded = nodecraft_exec::technique::expand(session.document().canvases(), canvas, session.kinds()).unwrap();
     let inner: Vec<NodeId> = expanded.inner.keys().copied().collect();
-    assert_eq!(inner.len(), 2, "the version's source and writer");
+    assert_eq!(inner.len(), if inner_batch.is_some() { 3 } else { 2 }, "the version's source, batch and writer");
     session.set_provider_routing(routing(&mock, &[[WRITER].as_slice(), &inner].concat())).unwrap();
     Fixture { session, host, mock }
 }
@@ -314,4 +332,42 @@ fn an_item_of_a_fanned_technique_that_ends_early_is_the_only_one_run_again() {
     for (text, subject) in texts.iter().zip(["a fox", "an owl", "a hare"]) {
         assert!(text.starts_with(&format!("mock-text: {subject} #")), "{texts:?}");
     }
+}
+
+/// A batch inside the technique's own graph (#1073) runs the version's writer once per item: every
+/// item's call is quoted on the technique node before the run, one paid call goes out per item,
+/// and the technique node records one result holding every item, tagged by the inlined batch.
+#[test]
+fn a_batch_inside_a_technique_runs_and_quotes_every_item() {
+    let mut f = fixture_built(MockProvider::standard(), Some("by day\nby night"));
+    let request = json!({"canvas": C, "mode": "with_upstream", "nodes": [PLACED]});
+    let q = f.session.dispatch("run.quote", &request).unwrap();
+    assert_eq!(q["allowed"], true, "{q}");
+    assert_eq!(q["complete"], true, "every item is known before the run: {q}");
+    // The moon and the version's two items: three paid calls.
+    assert_eq!(q["totals"]["USD"]["micros"], json!(30_000), "one paid call per item: {q}");
+    let priced: Vec<NodeId> = q["steps"].as_array().unwrap().iter().map(|step| serde_json::from_value(step["node"].clone()).unwrap()).collect();
+    assert!(priced.iter().all(|id| [MOON, PLACED].contains(id)), "inner steps are priced on the technique node: {q}");
+    let amounts: serde_json::Map<_, _> = q["totals"].as_object().unwrap().iter().map(|(currency, total)| (currency.clone(), total["micros"].clone())).collect();
+    let mut start = request;
+    start["accept"] = json!({"token": q["token"], "partial": false, "unpriced_jobs": 0, "amounts": amounts});
+    f.session.dispatch("run.start", &start).unwrap();
+    let notices = drive(&mut f);
+    assert!(!notices.iter().any(|n| matches!(n, RunNotice::Failed { .. } | RunNotice::Refused { .. })), "{notices:?}");
+    assert_eq!(f.mock.requests().len(), 3, "one paid call per item");
+    let placed = node(&f.session, PLACED);
+    let [done] = placed.history.as_slice() else { panic!("one result holding every item: {:?}", placed.history) };
+    assert_eq!(done.items.len(), 3, "{done:?}");
+    let batches: std::collections::BTreeSet<NodeId> = done.items.iter().flatten().map(|key| key.batch).collect();
+    assert_eq!(batches.len(), 1, "one batch names the items: {:?}", done.items);
+    assert!(!f.session.document().canvases().get(&C).unwrap().nodes().contains_key(batches.first().unwrap()), "the inlined batch, not one on the canvas");
+    let Value::List(answers) = &done.outputs[0] else { panic!("one answer per item: {done:?}") };
+    let texts: Vec<&str> = answers.iter().map(|a| if let Value::Text(t) = a { t.as_str() } else { panic!("{a:?}") }).collect();
+    for (text, subject) in texts.iter().zip(["Describe the moon", "by day", "by night"]) {
+        assert!(text.starts_with(&format!("mock-text: {subject} #")), "{texts:?}");
+    }
+    // Fresh now: nothing to run again.
+    let again = f.session.dispatch("run.quote", &json!({"canvas": C, "mode": "all_stale"})).unwrap();
+    let stale: Vec<NodeId> = again["steps"].as_array().unwrap().iter().map(|step| serde_json::from_value(step["node"].clone()).unwrap()).collect();
+    assert!(!stale.contains(&PLACED), "{again}");
 }
