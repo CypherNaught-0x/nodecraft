@@ -30,8 +30,14 @@ impl Drop for Relay {
 }
 
 fn relay() -> Relay {
+    relay_with(&[])
+}
+
+/// A relay started with `more` arguments after its listen address.
+fn relay_with(more: &[&str]) -> Relay {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
         .args(["relay", "--listen", "127.0.0.1:0"])
+        .args(more)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -278,4 +284,117 @@ fn relay_takes_only_listen() {
     let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["relay", "--listen", "not an address"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--listen"));
+    for args in [&["relay", "--keep-days", "3"][..], &["relay", "--store", "x", "--keep-days", "0"], &["relay", "--store-max-gib"], &["relay", "--other", "1"]]
+    {
+        let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(args).output().unwrap();
+        assert!(!out.status.success(), "{args:?}");
+    }
+}
+
+/// `used` in the kept room's links file, once the relay has written one.
+fn kept_used(store: &std::path::Path) -> Option<u64> {
+    let room = std::fs::read_dir(store).ok()?.flatten().find(|entry| entry.path().is_dir())?;
+    let links: serde_json::Value = serde_json::from_slice(&std::fs::read(room.path().join("links.json")).ok()?).ok()?;
+    links["used"].as_u64()
+}
+
+fn seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// With a store (#1068), a room, its document and its links survive the relay being killed and
+/// started again: the project comes back to whoever joins, a link still lets its holder in with
+/// its role, and a link revoked before the restart stays revoked. Neither the room id nor a link
+/// key is written to the store.
+#[test]
+fn a_room_and_its_links_survive_a_relay_restart() {
+    let store = tempfile::tempdir().unwrap();
+    let path = store.path().to_str().unwrap().to_owned();
+    let mut relay = relay_with(&["--store", &path]);
+    let mut project = Project::new(ProjectId::from_bytes([1; 16]), "Shared").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
+    let session = Session::new(project).unwrap();
+    let mut owner = Person::connect(&relay, Collab::share(&session, room()).unwrap(), Some(session));
+    let comment = owner.collab.links_request(&json!({"op": "create", "role": "comment", "name": "Ana"}), 0).unwrap();
+    let view = owner.collab.links_request(&json!({"op": "create", "role": "view", "name": "Bo"}), 0).unwrap();
+    let comment_key: LinkKey = comment["key"].as_str().unwrap().parse().unwrap();
+    let view_key: LinkKey = view["key"].as_str().unwrap().parse().unwrap();
+    let mut people = vec![owner];
+    until(&mut people, |p| same(p, 0));
+    add(&mut people[0], 5);
+    add(&mut people[0], 6);
+    // The owner's turns send its links and cards before anyone comes in through one.
+    let flushed = Instant::now();
+    while flushed.elapsed() < Duration::from_millis(500) {
+        people[0].turn();
+    }
+    // Someone else has both cards: the relay merged them.
+    people.push(Person::connect(&relay, Collab::join_link(view_key.clone()), None));
+    until(&mut people, |p| same(p, 2));
+    people.pop();
+    people[0].collab.links_request(&json!({"op": "revoke", "id": view["id"]}), 0).unwrap();
+    for _ in 0..20 {
+        people[0].turn();
+    }
+
+    // Everyone leaves; the relay writes the room down once they have.
+    let edited = seconds();
+    std::thread::sleep(Duration::from_millis(1100));
+    people.clear();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !kept_used(store.path()).is_some_and(|used| used > edited) {
+        assert!(Instant::now() < deadline, "the relay never kept the room");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Killed, not stopped: nothing is written on the way out.
+    relay.child.kill().unwrap();
+    relay.child.wait().unwrap();
+
+    let relay = relay_with(&["--store", &path]);
+    // The project comes back to whoever joins by the room id.
+    let mut people = vec![Person::connect(&relay, Collab::join(room()), None)];
+    until(&mut people, |p| same(p, 2));
+    people.clear();
+    // The comment link still lets Ana in, as a commenter.
+    let mut people = vec![Person::connect(&relay, Collab::join_link(comment_key.clone()), None)];
+    until(&mut people, |p| same(p, 2));
+    assert_eq!(people[0].collab.role(), Some(Role::Comment));
+    // The revoked one stays revoked.
+    people.push(Person::connect(&relay, Collab::join_link(view_key.clone()), None));
+    until(&mut people, |p| p[1].ended.is_some());
+
+    // The store names the room by a hash and holds no key.
+    let mut written = Vec::new();
+    let mut folders = vec![store.path().to_owned()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            written.extend(entry.file_name().to_string_lossy().bytes());
+            if entry.path().is_dir() {
+                folders.push(entry.path());
+            } else {
+                written.extend(std::fs::read(entry.path()).unwrap());
+            }
+        }
+    }
+    for secret in [room().to_string(), comment_key.as_str().to_owned(), view_key.as_str().to_owned()] {
+        assert!(!written.windows(secret.len()).any(|w| w == secret.as_bytes()), "the store holds a key");
+    }
+}
+
+/// A hello with a made-up room id, and nothing sent after it, leaves nothing in the store
+/// (#1068): strangers can't fill it, nor push kept rooms out.
+#[test]
+fn a_hello_alone_leaves_nothing_in_the_store() {
+    let store = tempfile::tempdir().unwrap();
+    let path = store.path().to_str().unwrap().to_owned();
+    let relay = relay_with(&["--store", &path]);
+    for n in 0..4u8 {
+        let (mut socket, _) = tungstenite::connect(&relay.url).unwrap();
+        let hello = Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: RoomId::from_bytes([100 + n; 32]) };
+        socket.send(Message::binary(hello.encode().unwrap())).unwrap();
+        let _ = socket.close(None);
+    }
+    // Past a save pass (every 5 s).
+    std::thread::sleep(Duration::from_millis(6500));
+    assert_eq!(std::fs::read_dir(store.path()).unwrap().count(), 0, "nothing kept");
 }
