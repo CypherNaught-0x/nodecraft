@@ -181,8 +181,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
 - **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
   current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
-  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
-  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+  Pika 2.5 keyframes move through 2 to 5 frames for 5 to 25 seconds at the same rate (#1061).
+  Browser sessions refuse before payment. Text-to-video isn't offered: fal removed Pika's on
+  2026-10-29. See [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
   supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
   see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
