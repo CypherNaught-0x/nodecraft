@@ -30,3 +30,156 @@ default={type="unsigned",value="1024"}
 name="seed"
 label="Seed"
 control={type="unsigned",min="0",max="4294967295",step="1"}
+
+# More direct models and Kontext editing (#1060), verified 2026-11-06 at https://api.bfl.ai/openapi.json
+# and https://bfl.ai/pricing: FLUX.2 [klein] 9B "1st MP $0.015 / Add'l MP $0.002", [pro] $0.03 / $0.015,
+# [max] $0.07 / $0.03, [flex] $0.05 / $0.05; FLUX.1 Kontext [pro] "$0.04/img", [max] "$0.08/img".
+# FLUX.2 editing isn't offered: its schema documents input images only as URLs ("Path to the input
+# image"), and NodeCraft doesn't host the person's images; Kontext's says "Base64 encoded image or URL".
+[[model]]
+id="bfl.flux-2-klein-9b"
+provider="bfl"
+provider_model="flux-2-klein-9b"
+label="FLUX.2 klein 9B (BFL)"
+description = "Larger compact FLUX.2 image generation from a prompt. Priced by output megapixels; requires a BFL account."
+latency_s=10
+quality=3
+pricing={type="per_output_megapixel",width="width",height="height",first="0.015 USD",additional="0.002 USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="bfl.flux-2-pro"
+provider="bfl"
+provider_model="flux-2-pro"
+label="FLUX.2 pro (BFL)"
+description = "FLUX.2 pro image generation from a prompt. Priced by output megapixels; requires a BFL account."
+latency_s=20
+quality=4
+pricing={type="per_output_megapixel",width="width",height="height",first="0.03 USD",additional="0.015 USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="bfl.flux-2-max"
+provider="bfl"
+provider_model="flux-2-max"
+label="FLUX.2 max (BFL)"
+description = "FLUX.2 max, BFL's highest-quality image generation, from a prompt. Priced by output megapixels; requires a BFL account."
+latency_s=30
+quality=5
+pricing={type="per_output_megapixel",width="width",height="height",first="0.07 USD",additional="0.03 USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="bfl.flux-2-flex"
+provider="bfl"
+provider_model="flux-2-flex"
+label="FLUX.2 flex (BFL)"
+description = "FLUX.2 flex image generation from a prompt at BFL's default steps and guidance. Priced by output megapixels; requires a BFL account."
+latency_s=30
+quality=4
+pricing={type="per_output_megapixel",width="width",height="height",first="0.05 USD",additional="0.05 USD"}
+[[model.modes]]
+id="text-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true}]
+[[model.params.params]]
+name="width"
+label="Width"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="height"
+label="Height"
+control={type="unsigned",min="64",max="1984",step="16"}
+default={type="unsigned",value="1024"}
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="bfl.flux-kontext-pro"
+provider="bfl"
+provider_model="flux-kontext-pro"
+label="FLUX.1 Kontext pro (BFL)"
+description = "Edit one image (PNG, JPEG or WebP, up to 10 MiB) as a prompt describes. 0.04 USD per image; requires a BFL account."
+latency_s=20
+quality=4
+pricing={type="per_call",price="0.04 USD"}
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="image",modality="image",min=1,max=1}]
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}
+
+[[model]]
+id="bfl.flux-kontext-max"
+provider="bfl"
+provider_model="flux-kontext-max"
+label="FLUX.1 Kontext max (BFL)"
+description = "Edit one image (PNG, JPEG or WebP, up to 10 MiB) as a prompt describes, at BFL's top quality. 0.08 USD per image; requires a BFL account."
+latency_s=20
+quality=5
+pricing={type="per_call",price="0.08 USD"}
+[[model.modes]]
+id="image-to-image"
+output="image"
+inputs=[{role="prompt",modality="text",min=1,max=1,inline=true},{role="image",modality="image",min=1,max=1}]
+[[model.params.params]]
+name="seed"
+label="Seed"
+control={type="unsigned",min="0",max="4294967295",step="1"}

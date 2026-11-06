@@ -69,6 +69,8 @@ nodecraft-provider-testkit = { workspace = true }
 nodecraft-providers = { workspace = true, features = ["openai-audio", "openai-images", "replicate", "runway", "seedream", "bfl", "gemini-images", "gemini-llm", "huggingface", "gemini-video", "google-veo", "google-tts", "google-gemini-images", "seedance", "fal", "tripo", "meshy", "higgsfield", "kling", "elevenlabs", "deepgram", "stability", "magnific", "comfy-cloud"] }
 nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
+# Read back what an edit sends base64-encoded (#1060); the version providers pins.
+base64 = "=0.22.1"
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
 
