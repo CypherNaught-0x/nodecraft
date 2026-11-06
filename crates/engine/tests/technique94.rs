@@ -344,7 +344,7 @@ fn a_batch_inside_a_technique_runs_and_quotes_every_item() {
     let q = f.session.dispatch("run.quote", &request).unwrap();
     assert_eq!(q["allowed"], true, "{q}");
     assert_eq!(q["complete"], true, "every item is known before the run: {q}");
-    // The moon and the version's two items: three paid calls.
+    // The moon, wired into the version's batch, comes before its two own items: three paid calls.
     assert_eq!(q["totals"]["USD"]["micros"], json!(30_000), "one paid call per item: {q}");
     let priced: Vec<NodeId> = q["steps"].as_array().unwrap().iter().map(|step| serde_json::from_value(step["node"].clone()).unwrap()).collect();
     assert!(priced.iter().all(|id| [MOON, PLACED].contains(id)), "inner steps are priced on the technique node: {q}");

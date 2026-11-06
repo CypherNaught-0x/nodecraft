@@ -1305,6 +1305,13 @@ impl<'a> Graph<'a> {
             if upstream.is_some_and(|u| folder::loops_over(u, up_port)) {
                 return Err(Reason::PublicInvalid("a batch collects a folder's Files or Names output, not its looping File or Name".into()));
             }
+            // Inside a technique every node but its inputs runs with it and has no result of its
+            // own, so nothing can be run first (#1073): say what can feed the batch instead.
+            if self.inner.contains_key(&id) && self.inner.contains_key(up) && !upstream.is_some_and(|u| self.is_source(u)) {
+                return Err(Reason::PublicInvalid(
+                    "a batch inside a technique collects only its inputs and source cards; publish the technique with what feeds the batch outside it, wired to an input".into(),
+                ));
+            }
             if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
                 return Err(Reason::PublicInvalid("a batch collects existing results; run the nodes feeding it first".into()));
             }

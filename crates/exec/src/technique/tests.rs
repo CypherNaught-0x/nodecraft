@@ -556,6 +556,51 @@ fn a_batch_inside_a_version_keeps_the_item_bound() {
     assert!(message.contains("inside its technique") && message.contains("at most 1000 items"), "{message}");
 }
 
+/// A batch inside a technique fed by one of the version's own steps can't collect its result:
+/// that step runs with the technique. The technique node says what can feed the batch instead.
+#[test]
+fn a_batch_inside_a_version_fed_by_an_inner_step_says_what_can_feed_it() {
+    let kinds = kinds();
+    let (brief, shout, again) = (NodeId::from_bytes([90; 16]), NodeId::from_bytes([91; 16]), NodeId::from_bytes([92; 16]));
+    let nodes = vec![
+        node(&kinds, brief, "source.text", "cat"),
+        node(&kinds, shout, "test.shout", ""),
+        batch_node(&kinds, INNER_BATCH, "a"),
+        node(&kinds, again, "test.shout", ""),
+    ];
+    let edges =
+        vec![edge(93, (brief, "out"), (shout, "in"), 0), edge(94, (shout, "out"), (INNER_BATCH, "in"), 0), edge(95, (INNER_BATCH, "item"), (again, "in"), 0)];
+    let technique = Technique {
+        id: TechniqueId::from_bytes([13; 16]),
+        version: 1,
+        name: "Chain".into(),
+        description: String::new(),
+        category: String::new(),
+        tags: Vec::new(),
+        inputs: vec![port("Words", brief, "out", TEXT)],
+        outputs: vec![port("Again", again, "out", TEXT)],
+        params: Vec::new(),
+        source: None,
+        retired: false,
+    };
+    let version = Canvas::technique(V, "Chain v1", technique, nodes, edges).unwrap();
+    let interface = technique::interface_of(&version, &kinds).unwrap();
+    let placed = kinds.get(technique::ID).unwrap().instantiate_instance(T, interface.config().unwrap(), &Default::default()).unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([4; 16]), "Techniques").unwrap();
+    let changes = vec![
+        Change::AddCanvas { canvas: version },
+        Change::AddCanvas { canvas: Canvas::new(C, "Canvas") },
+        Change::AddNode { canvas: C, node: placed },
+        Change::AddNode { canvas: C, node: node(&kinds, SOURCE, "source.text", "fox") },
+        Change::Connect { canvas: C, edge: edge(96, (SOURCE, "out"), (T, "words"), 0) },
+    ];
+    Changeset::new(changes).apply(&mut project).unwrap();
+    let Planned::Blocked(blockers) = planned(&project, &kinds, &[T]).unwrap() else { panic!("an inner step can't feed the batch") };
+    assert_eq!(blockers.iter().map(|b| b.node).collect::<Vec<_>>(), vec![T], "{blockers:?}");
+    let message = blockers.first().unwrap().message(project.canvases().get(&C).unwrap());
+    assert!(message.contains("inside its technique") && message.contains("only its inputs and source cards"), "{message}: {blockers:?}");
+}
+
 /// A batch on the canvas feeding a technique whose own batch collects that input: the inner
 /// batch collects the outer one's items as its own (a batch collecting a batch flattens, #92),
 /// so every item runs once, tagged by the inner batch, and the chain stays bounded.
