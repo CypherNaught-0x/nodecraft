@@ -2009,6 +2009,7 @@ impl NodeCraftApp {
                                     .session
                                     .generation_catalog()
                                     .is_ok_and(|catalog| !nodecraft_engine::variation_cmds::pinned_seeds(catalog, node).is_empty()),
+                            cache: nodecraft_engine::cache::enabled(node, self.session.kinds()),
                         },
                     },
                     editor,
@@ -2666,6 +2667,7 @@ impl NodeCraftApp {
                 },
                 Intent::Variations(count) => ("node.variations_set", json!({"canvas":self.canvas,"id":id,"count":count}), None),
                 Intent::VariationCards(cards) => ("canvas.set_variation_cards", json!({"canvas":self.canvas,"cards":cards}), None),
+                Intent::Cache(enabled) => ("node.cache_set", json!({"canvas":self.canvas,"id":id,"enabled":enabled}), None),
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);
