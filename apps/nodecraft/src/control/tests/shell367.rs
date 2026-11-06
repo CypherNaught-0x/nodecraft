@@ -54,7 +54,11 @@ fn a_control_request_queued_before_the_first_frame_meets_the_startup_open_busy()
         canvas_tx.send(serde_json::to_value(app.canvas).unwrap()).unwrap();
         waiting.recv().unwrap();
         let listener = control::Listener { addr: std::net::SocketAddr::from(([127, 0, 0, 1], 0)), calls };
-        let channel = Channel { listener, pump: CallPump::new(FileRoots::default()), token_file: None };
+        let channel = Channel {
+            listener,
+            pump: CallPump::new(FileRoots::default(), nodecraft_ui_egui::app::automation_runs::AutomationClient::Control),
+            token_file: None,
+        };
         let agent = crate::agent_panel::AgentPanel::new(Err("no agent in this test".into()), Default::default());
         Shell { app, agent, channel: Some(channel), storage_window: None, storage_window_pending: None, mcp: None }
     });

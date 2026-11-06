@@ -80,7 +80,7 @@ fn turning_it_on_serves_the_windows_session_and_turning_it_off_stops_it() {
     };
     let mut app = NodeCraftApp::headless().unwrap();
     let ctx = egui::Context::default();
-    let mut pump = crate::control::CallPump::new(Default::default());
+    let mut pump = crate::control::CallPump::new(Default::default(), nodecraft_ui_egui::app::automation_runs::AutomationClient::McpServer);
     let until = Instant::now() + Duration::from_secs(30);
     while !client.is_finished() && Instant::now() < until {
         pump.pump(s.poll(), &mut app, &ctx);

@@ -21,6 +21,8 @@ use toolbox::LiveTools;
 use worker::SendFn;
 use worker::Worker;
 
+/// The agent's channel, for paid-run consent (#1079).
+const AGENT: nodecraft_ui_egui::app::automation_runs::AutomationClient = nodecraft_ui_egui::app::automation_runs::AutomationClient::Agent;
 /// Most nodes offered in the @ menu, and most mentions kept on one message.
 const MAX_MENTIONS: usize = 100;
 /// Longest node name shown on a mention, in characters.
@@ -128,7 +130,10 @@ impl AgentPanel {
                 replies.push(reply);
             }
             for (ticket, reply) in replies {
-                let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
+                let mut tools = LiveTools {
+                    commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None, client: AGENT, approved: false },
+                    new_id: &mut *self.new_id,
+                };
                 let next = self.agent.on_reply(ticket, reply, &mut tools);
                 self.follow(next);
             }
@@ -156,7 +161,11 @@ impl AgentPanel {
                 // approval stays to be given once it has finished (#367).
                 Intent::Approve if app.session.file_status().operation.is_some() || app.keeping_aside() => {}
                 Intent::Approve | Intent::Decline => {
-                    let mut tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
+                    // Approval is per call: the agent says which calls the person saw (#1079).
+                    let mut tools = LiveTools {
+                        commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None, client: AGENT, approved: false },
+                        new_id: &mut *self.new_id,
+                    };
                     let next = if intent == Intent::Approve { self.agent.approve(&mut tools) } else { self.agent.decline(&mut tools) };
                     self.follow(next);
                 }
@@ -206,7 +215,10 @@ impl AgentPanel {
         self.agent.set_model(model);
         self.agent.set_budget(budget(&self.settings));
         let focus = focus(app, &self.mentions);
-        let tools = LiveTools { commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None }, new_id: &mut *self.new_id };
+        let tools = LiveTools {
+            commands: crate::control::LiveCommands { app: &mut *app, ctx, roots: None, client: AGENT, approved: false },
+            new_id: &mut *self.new_id,
+        };
         let next = self.agent.ask(&self.input, &focus, &tools);
         match next {
             Ok(next) => {

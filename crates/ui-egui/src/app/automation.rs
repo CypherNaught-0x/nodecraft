@@ -133,6 +133,11 @@ impl NodeCraftApp {
         nodecraft_engine::settings::AutomationSettings::default()
     }
 
+    /// Says what went wrong in the Automation panel, or clears it.
+    pub(super) fn automation_status(&mut self, status: Option<String>) {
+        self.automation.status = status;
+    }
+
     /// Whether settings say the server should run.
     fn mcp_setting(&self) -> bool {
         self.automation_settings().mcp_server
@@ -217,6 +222,8 @@ impl NodeCraftApp {
             if let Some(status) = &self.automation.status {
                 ui.label(egui::RichText::new(status).color(t.danger));
             }
+            ui.separator();
+            self.consent_section(ui, t);
         });
         self.automation.open = open;
         if let Some(on) = toggle {
@@ -232,7 +239,7 @@ impl NodeCraftApp {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
@@ -263,6 +270,11 @@ mod tests {
         fn note(&self) -> Option<String> {
             None
         }
+    }
+
+    /// Gives the harness's app a server that starts at once, so its Automation panel shows.
+    pub(in crate::app) fn install_fake(h: &mut Harness<'static, NodeCraftApp>) {
+        h.state_mut().install_mcp_server(Rc::new(RefCell::new(Fake::default())) as SharedMcpHost).unwrap();
     }
 
     fn harness(fake: &Rc<RefCell<Fake>>) -> Harness<'static, NodeCraftApp> {

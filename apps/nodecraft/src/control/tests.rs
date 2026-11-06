@@ -198,7 +198,13 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
         assert_eq!(entries["commands"].as_array().unwrap().iter().find(|entry| entry["id"] == id).unwrap()["ready"], false);
     }
     // Both external availability and dispatch must reject the internal minimap-pan exemption.
-    let mut live = LiveCommands { app: h.state_mut(), ctx: &ctx, roots: None };
+    let mut live = LiveCommands {
+        app: h.state_mut(),
+        ctx: &ctx,
+        roots: None,
+        client: nodecraft_ui_egui::app::automation_runs::AutomationClient::Control,
+        approved: false,
+    };
     assert_eq!(
         nodecraft_automation::commands::CommandHost::enabled(&mut live, "canvas.pan_to", &json!({"x":12345,"y":6789})).unwrap_err().kind,
         ErrorKind::Conflict
@@ -226,6 +232,7 @@ fn active_minimap_drag_refuses_external_navigation_until_release() {
     assert!(restored.blocked && !restored.viewport_available && !restored.fit_all && !restored.fit_selection);
 }
 
+mod consent1079;
 mod files423;
 mod host360;
 mod race367;
@@ -241,7 +248,8 @@ fn live_navigation_is_judged_a_read_and_moves_nothing() {
     let ctx = egui::Context::default();
     draw(&mut app, &ctx);
     let (view, revision) = (app.view, app.session.revision());
-    let mut live = LiveCommands { app: &mut app, ctx: &ctx, roots: None };
+    let mut live =
+        LiveCommands { app: &mut app, ctx: &ctx, roots: None, client: nodecraft_ui_egui::app::automation_runs::AutomationClient::Control, approved: false };
     assert_eq!(live.impact("canvas.pan_to", &json!({"x":1234,"y":-567})).unwrap(), Impact::Read);
     assert_eq!(live.impact("canvas.minimap_toggle", &json!({})).unwrap(), Impact::Read);
     assert_eq!(

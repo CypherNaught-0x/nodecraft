@@ -92,7 +92,13 @@ fn active_minimap_refuses_every_external_search_then_release_restores_it() {
         ("canvas.search_previous", json!({})),
         ("canvas.search_close", json!({})),
     ] {
-        let mut host = LiveCommands { app: h.state_mut(), ctx: &ctx, roots: None };
+        let mut host = LiveCommands {
+            app: h.state_mut(),
+            ctx: &ctx,
+            roots: None,
+            client: nodecraft_ui_egui::app::automation_runs::AutomationClient::Control,
+            approved: false,
+        };
         assert_eq!(host.enabled(id, &params).unwrap_err().kind, ErrorKind::Conflict);
         assert_eq!(run(h.state_mut(), &ctx, &mut connection, id, params).unwrap_err().kind, ErrorKind::Conflict);
     }

@@ -214,7 +214,7 @@ fn main() -> ExitCode {
                     std::sync::Arc::new(move || waker.request_repaint()),
                 )));
                 match app.install_mcp_server(server.clone()) {
-                    Ok(()) => Some((server, control::CallPump::new(roots.clone()))),
+                    Ok(()) => Some((server, control::CallPump::new(roots.clone(), nodecraft_ui_egui::app::automation_runs::AutomationClient::McpServer))),
                     Err(e) => {
                         log::warn!("the built-in MCP server is unavailable: {}", e.message);
                         None

@@ -699,6 +699,9 @@ fn template(id: &str) -> (Session, Value) {
         // No MCP server host here either (#116): refused cleanly, never started.
         "automation.mcp_server_set" => json!({"enabled": true}),
         "automation.mcp_server_status" => json!({}),
+        "automation.run_consent_list" => json!({}),
+        "automation.run_consent_set" => json!({"client": "control", "decision": "always", "ceiling": {"USD": 1_000_000}}),
+        "automation.run_consent_answer" => json!({"answer": "once"}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})

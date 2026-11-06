@@ -222,6 +222,16 @@ impl Quote {
         })
     }
 
+    /// The token `run.start` accepts this quote with.
+    pub(super) fn token(&self) -> &str {
+        &self.token
+    }
+
+    /// How many steps the run has, listed or not.
+    pub(super) fn steps_total(&self) -> usize {
+        self.steps_total
+    }
+
     /// Nothing runs and nothing is reused, and nothing is in the way: every result is current.
     pub(super) fn nothing(&self) -> bool {
         self.planned && self.allowed && self.listed && self.steps.is_empty() && self.reused == 0

@@ -22,10 +22,10 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const C: CanvasId = CanvasId::from_bytes([91; 16]);
-const N: NodeId = NodeId::from_bytes([92; 16]);
+pub(super) const C: CanvasId = CanvasId::from_bytes([91; 16]);
+pub(super) const N: NodeId = NodeId::from_bytes([92; 16]);
 
-const MOCK_IMAGE: &str = r#"
+pub(super) const MOCK_IMAGE: &str = r#"
 [[model]]
 id = "mock-square"
 provider = "mock"
@@ -84,15 +84,15 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 "#;
 
 /// A maker that builds `mock` for the `mock` adapter.
-fn making(mock: MockProvider) -> Make {
+pub(super) fn making(mock: MockProvider) -> Make {
     Box::new(move |adapter, _| if adapter == "mock" { Ok(Arc::new(mock.clone())) } else { Err(Readiness::NotSetUp("not in this test".into())) })
 }
 
-fn image(model: MockModel) -> MockProvider {
+pub(super) fn image(model: MockModel) -> MockProvider {
     MockProvider::new("mock", [("mock-image".to_owned(), model)])
 }
 
-fn scene(make: Make) -> Harness<'static, NodeCraftApp> {
+pub(super) fn scene(make: Make) -> Harness<'static, NodeCraftApp> {
     scene_with(make, |_, _| {})
 }
 
@@ -102,7 +102,7 @@ fn scene_with(make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Regi
 }
 
 /// The card on `model`, from the `catalog` given.
-fn scene_in(catalog: &str, model: &str, make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
+pub(super) fn scene_in(catalog: &str, model: &str, make: Make, edit: impl FnOnce(&mut Project, &nodecraft_nodes::Registry)) -> Harness<'static, NodeCraftApp> {
     scene_on(catalog, model, Runs::with_maker, make, edit)
 }
 
@@ -237,7 +237,7 @@ fn click(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
 }
 
 /// Frames, as the window's loop runs them, until `done`.
-fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) {
+pub(super) fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraftApp) -> bool) {
     let deadline = Instant::now() + Duration::from_secs(20);
     loop {
         let ctx = h.ctx.clone();
@@ -256,11 +256,11 @@ fn accept(h: &mut Harness<'static, NodeCraftApp>) {
     press(h, Role::Button, &label);
 }
 
-fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
+pub(super) fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
     app.session.document().canvases().get(&C).unwrap().nodes().get(&N).unwrap()
 }
 
-fn idle(app: &NodeCraftApp) -> bool {
+pub(super) fn idle(app: &NodeCraftApp) -> bool {
     app.runs.as_ref().is_some_and(|runs| !runs.is_busy())
 }
 

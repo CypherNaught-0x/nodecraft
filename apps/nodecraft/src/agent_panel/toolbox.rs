@@ -27,7 +27,16 @@ impl nodecraft_agent::Toolbox for LiveTools<'_> {
     }
 
     fn call(&mut self, name: &str, input: &Value) -> Result<Value, Error> {
-        tools::call(&mut self.commands, name, input, self.new_id)
+        self.call_approved(name, input, false)
+    }
+
+    /// A paid run the person approved as shown needs no other consent (#1079); any other call
+    /// gets none from it.
+    fn call_approved(&mut self, name: &str, input: &Value, approved: bool) -> Result<Value, Error> {
+        self.commands.approved = approved;
+        let result = tools::call(&mut self.commands, name, input, self.new_id);
+        self.commands.approved = false;
+        result
     }
 
     fn label(&self, name: &str, input: &Value) -> String {

@@ -342,6 +342,7 @@ pub(crate) mod admission;
 
 mod app_mode;
 pub mod automation;
+pub mod automation_runs;
 mod batch_review;
 mod browser_providers;
 mod budget_caps;
@@ -612,6 +613,8 @@ pub struct NodeCraftApp {
     pub budgets: crate::budgets::BudgetsPanel,
     /// Settings › Automation: the desktop app's built-in MCP server, once it hands one over (#116).
     pub automation: automation::AutomationPanel,
+    /// Whether automation may start paid runs, and the question the window is asking (#1079).
+    consent: automation_runs::SharedConsent,
     budget_caps: nodecraft_engine::settings::BudgetSettings,
     browser_providers: Option<browser_providers::BrowserProviders>,
     /// Answers from the keychain thread (the app's `keys.store` service).
@@ -896,6 +899,7 @@ impl NodeCraftApp {
         self.canvas_prefs = settings.canvas.clone();
         self.key_accounts = settings.keys.clone();
         self.set_budget_caps(settings.budgets.clone());
+        self.load_consent(&settings.automation.run_consent);
         self.set_media_tools(settings.media.tools());
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -1109,7 +1113,7 @@ impl NodeCraftApp {
         self.editors.clear();
         self.mesh_views.clear();
         self.centred = false;
-        if let Some(runs) = &self.runs {
+        if let Some(runs) = &mut self.runs {
             runs.project_opened(&mut self.session);
         }
     }
@@ -1172,6 +1176,7 @@ impl NodeCraftApp {
             Ok(serde_json::json!({"accepted":true}))
         })?;
         let copied = copy_result::register(&mut session)?;
+        let consent = Self::new_consent(&mut session)?;
         Ok(Self {
             theme: ThemeKind::default(),
             view: CanvasView::default(),
@@ -1287,6 +1292,7 @@ impl NodeCraftApp {
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
             budgets: crate::budgets::BudgetsPanel::default(),
             automation: automation::AutomationPanel::default(),
+            consent,
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
             browser_providers: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1326,6 +1332,11 @@ impl NodeCraftApp {
         let mut discussions = std::mem::take(&mut self.comments);
         discussions.reset_session_view();
         next.comments = discussions;
+        // The person's paid-run decisions are the app's, not the project's (#1079); a question
+        // about a run on the old project is dropped with it.
+        if let (Ok(old), Ok(mut new)) = (self.consent.try_borrow_mut(), next.consent.try_borrow_mut()) {
+            new.carry_from(old);
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             next.store = self.store.take();
@@ -1453,6 +1464,7 @@ impl NodeCraftApp {
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
         model_blocks |= self.run_overlay(ui);
+        model_blocks |= self.consent_overlay(ui);
         model_blocks |= self.mask_overlay(ui);
         model_blocks |= self.layer_overlay(ui);
         model_blocks |= self.deck_editor_overlay(ui);
@@ -3733,6 +3745,9 @@ mod audio672_tests;
 mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
+#[cfg(test)]
+#[cfg(not(target_arch = "wasm32"))]
+mod automation_runs_tests;
 #[cfg(test)]
 mod batch_review_tests;
 #[cfg(test)]

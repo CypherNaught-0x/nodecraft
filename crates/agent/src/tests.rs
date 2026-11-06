@@ -15,6 +15,8 @@ struct Fake {
     calls: Vec<(String, Value)>,
     judged: Vec<String>,
     added: bool,
+    /// Each call made, and whether the person approved it as shown.
+    approved: Vec<(String, bool)>,
 }
 
 impl Toolbox for Fake {
@@ -59,9 +61,27 @@ impl Toolbox for Fake {
             _ => Ok(json!({"ok": name})),
         }
     }
+    fn call_approved(&mut self, name: &str, input: &Value, approved: bool) -> Result<Value, Error> {
+        self.approved.push((name.into(), approved));
+        self.call(name, input)
+    }
     fn label(&self, name: &str, input: &Value) -> String {
         input["id"].as_str().map_or_else(|| name.to_owned(), str::to_owned)
     }
+}
+
+#[test]
+fn only_a_call_the_person_saw_is_made_as_approved() {
+    // Auto: the first run has a part of unknown price and waits, with the plan shown. `late` can't be priced
+    // until `change` has run, so the person never saw its price: once known it fits the budget
+    // and runs, but a host asking for consent before spending must not take it as given (#1079).
+    let mut tools = Fake::default();
+    let mut a = agent(Mode::Auto);
+    let (ticket, _) = ask(&mut a, &tools, "make two");
+    let parts = vec![call("1", "spend", json!({"usd": 0, "partial": true})), call("2", "change", json!({})), call("3", "late", json!({"usd": 10_000}))];
+    assert_eq!(a.on_reply(ticket, reply(parts), &mut tools), Next::Approval);
+    sent(a.approve(&mut tools));
+    assert_eq!(tools.approved, [("spend".to_owned(), true), ("change".to_owned(), true), ("late".to_owned(), false)]);
 }
 
 fn agent(mode: Mode) -> Agent {
