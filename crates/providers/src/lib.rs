@@ -62,6 +62,10 @@ mod model_file;
 pub mod openai_audio;
 #[cfg(feature = "openai-images")]
 pub mod openai_images;
+#[cfg(feature = "openrouter-images")]
+pub mod openrouter_images;
+#[cfg(feature = "openrouter-media")]
+pub mod openrouter_media;
 mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;

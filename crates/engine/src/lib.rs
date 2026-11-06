@@ -69,6 +69,7 @@ pub mod mcp_server_cmds;
 pub mod mesh_cmds;
 pub mod mesh_view_cmds;
 pub mod migrate_cmds;
+pub mod model_catalogs;
 pub mod model_cmds;
 pub mod model_swap;
 pub mod navigation_cmds;

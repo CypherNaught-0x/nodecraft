@@ -14,6 +14,7 @@ mod csv;
 mod estimates;
 mod inputs;
 mod inspect;
+mod listed;
 mod mcp_http;
 mod plugin;
 mod project;

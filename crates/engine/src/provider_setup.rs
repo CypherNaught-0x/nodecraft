@@ -66,6 +66,8 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "bedrock" => Some("bedrock"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
+        // OpenRouter's chat and image models (live catalog) share one key.
+        "openrouter" | "openrouter-images" | "openrouter-speech" | "openrouter-video" => Some("openrouter"),
         "replicate" => Some("replicate"),
         "runway" => Some("runway"),
         "seedream" => Some("seedream"),
@@ -326,6 +328,18 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             let endpoint = Endpoint::bedrock(region, ApiKey::from(&needs_key(env.keys, "bedrock")?)).map_err(adapter_error)?;
             Arc::new(llm(endpoint, env))
         }
+        // OpenRouter (live catalog): chat through its OpenAI-compatible API, images through its
+        // Images API. Both read the `openrouter` key; neither takes a custom base URL.
+        "openrouter" => Arc::new(llm(Endpoint::openrouter(ApiKey::from(&needs_key(env.keys, "openrouter")?)), env)),
+        "openrouter-images" if cfg!(target_arch = "wasm32") => {
+            return Err(Readiness::NotSetUp("OpenRouter image models need the desktop or CLI host's no-redirect HTTP transport".into()));
+        }
+        "openrouter-speech" | "openrouter-video" if cfg!(target_arch = "wasm32") => {
+            return Err(Readiness::NotSetUp("OpenRouter speech and video need the desktop or CLI host's no-redirect HTTP transport".into()));
+        }
+        "openrouter-speech" => Arc::new(nodecraft_providers::openrouter_media::OpenRouterSpeech::new(needs_key(env.keys, "openrouter")?, env.http.clone())),
+        "openrouter-video" => Arc::new(nodecraft_providers::openrouter_media::OpenRouterVideo::new(needs_key(env.keys, "openrouter")?, env.http.clone())),
+        "openrouter-images" => Arc::new(nodecraft_providers::openrouter_images::OpenRouterImages::new(needs_key(env.keys, "openrouter")?, env.http.clone())),
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())

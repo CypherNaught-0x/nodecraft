@@ -366,6 +366,17 @@ impl Session {
         self.kinds = Arc::new(kinds);
         Ok(())
     }
+    /// Publishes the models providers list themselves (see `model_catalogs`): they replace the listed
+    /// models in the generation catalog, in order, as many as it holds. Returns how many it took.
+    /// Changes no document; cards keep their model ids.
+    pub(crate) fn publish_listed_models(&mut self, models: Vec<nodecraft_catalog::ModelDescriptor>) -> Result<usize, Error> {
+        let (catalog, kept) =
+            crate::generation_catalog::GenerationCatalog::current(&self.resources)?.with_listed_models(&crate::model_catalogs::LISTED_PROVIDERS, models)?;
+        let kinds = catalog.rebind(&self.kinds)?;
+        catalog.install(self);
+        self.kinds = std::sync::Arc::new(kinds);
+        Ok(kept)
+    }
     #[cfg(test)]
     pub(crate) fn exhaust_execution_generation(&mut self) {
         self.execution.exhaust();

@@ -383,6 +383,8 @@ mod library_browsers;
 mod library_import;
 mod library_saved;
 mod library_view;
+#[cfg(test)]
+mod litellm_address_tests;
 mod live;
 mod mask_badges;
 mod mask_editor;
@@ -390,6 +392,8 @@ mod mentions;
 mod mesh_capture;
 mod mesh_saved;
 mod metrics;
+#[cfg(not(target_arch = "wasm32"))]
+mod model_catalogs;
 mod models;
 mod navigation;
 mod option_fetch;
@@ -628,6 +632,12 @@ pub struct NodeCraftApp {
     /// Reads the ComfyUI server's nodes `comfy.nodes.refresh` asks for (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
+    /// Reads the models OpenRouter and a LiteLLM proxy list (`models.catalog_refresh`).
+    #[cfg(not(target_arch = "wasm32"))]
+    model_catalogs: Option<model_catalogs::CatalogFetcher>,
+    /// Whether the start-up refresh of provider model lists was asked for.
+    #[cfg(not(target_arch = "wasm32"))]
+    model_catalogs_started: bool,
     /// View-only draft of an existing workflow card's field selection (#947).
     comfy_mapping: Option<comfy_mapping::Editor>,
     /// The ComfyUI server's address and its check (#9).
@@ -749,6 +759,13 @@ impl NodeCraftApp {
                 None
             }
         };
+        let model_catalogs = match model_catalogs::CatalogFetcher::new(&mut services) {
+            Ok(fetcher) => Some(fetcher),
+            Err(e) => {
+                log::warn!("provider model lists can't be read: {}", e.message);
+                None
+            }
+        };
         // Updates are staged in, and their outcome recorded in, the settings folder (#540).
         let mut updates = match updates::UpdateChecker::new(&mut services, store.dir().map(|d| d.join("updates"))) {
             Ok(checker) => Some(checker),
@@ -835,6 +852,7 @@ impl NodeCraftApp {
             }
         }
         app.comfy_nodes = comfy_nodes;
+        app.model_catalogs = model_catalogs;
         // The technique library every project shares (#96), beside the plugins; in memory when
         // settings aren't kept on disk.
         let library: Box<dyn nodecraft_engine::library::LibraryStore> = match store.dir() {
@@ -1298,6 +1316,10 @@ impl NodeCraftApp {
             template_fetch: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            model_catalogs: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            model_catalogs_started: false,
             comfy_mapping: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_server: comfy_server::ComfyServerPanel::default(),
@@ -2962,6 +2984,28 @@ impl NodeCraftApp {
         ui.ctx().request_repaint();
     }
 
+    /// Saves the LiteLLM address typed in the API keys panel, drops the adapters built with the
+    /// old one, and reads the proxy's models again. Also tells the panel what settings hold.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn save_litellm_address(&mut self) {
+        if let Some(url) = self.keys.litellm.take_change() {
+            match &mut self.store {
+                Some(store) if !store.is_read_only() => {
+                    store.update(|settings| settings.providers.litellm_url.clone_from(&url));
+                    self.forget_key_adapters();
+                    self.refresh_model_catalogs();
+                    self.notice = Some(match &url {
+                        Some(url) => format!("Saved the LiteLLM address {url}; reading its models…"),
+                        None => "Cleared the LiteLLM address; its models are no longer offered.".into(),
+                    });
+                }
+                _ => self.keys.litellm.error = Some("Settings can't be saved here, so the LiteLLM address can't be changed.".into()),
+            }
+        }
+        let saved = self.store.as_ref().and_then(|store| store.get().providers.litellm_url.clone());
+        self.keys.litellm.set_saved(saved.as_deref());
+    }
+
     /// Stops new quotes and runs using an adapter that captured the previous key.
     fn forget_key_adapters(&mut self) {
         if let Some(runs) = &mut self.runs
@@ -3012,6 +3056,8 @@ impl NodeCraftApp {
     /// underneath it; the notice then says the account won't be listed after a restart.
     fn save_accounts(&mut self, changes: Vec<crate::keys::AccountChange>) {
         use crate::keys::AccountChange;
+        #[cfg(not(target_arch = "wasm32"))]
+        self.save_litellm_address();
         if changes.is_empty() {
             return;
         }
@@ -3048,6 +3094,11 @@ impl NodeCraftApp {
             store.update(|settings| {
                 apply(&mut settings.keys);
             });
+        }
+        // OpenRouter's models are offered once its key account is kept, and taken away with it.
+        #[cfg(not(target_arch = "wasm32"))]
+        if before.accounts().iter().any(|a| a.as_str() == "openrouter") != self.key_accounts.accounts().iter().any(|a| a.as_str() == "openrouter") {
+            self.refresh_model_catalogs();
         }
         #[cfg(target_arch = "wasm32")]
         let _ = before;
@@ -3682,6 +3733,8 @@ impl eframe::App for NodeCraftApp {
         self.tick_template_fetch(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_comfy_nodes(ctx);
+        #[cfg(not(target_arch = "wasm32"))]
+        self.tick_model_catalogs(ctx);
         #[cfg(not(target_arch = "wasm32"))]
         self.tick_updates(ctx);
         #[cfg(not(target_arch = "wasm32"))]

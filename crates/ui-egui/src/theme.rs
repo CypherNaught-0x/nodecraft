@@ -149,6 +149,8 @@ pub struct Tokens {
     pub card_preview_height: f32,
     /// Width of a modal question such as the startup recovery prompt (#408).
     pub dialog_width: f32,
+    /// Default height of the model picker window, which can be resized.
+    pub model_picker_height: f32,
     pub control_row_height: f32,
     pub control_gap: f32,
     /// Control icons in screen points; SVG strokes are in their 24-unit view box.
@@ -322,6 +324,7 @@ pub const DARK: Tokens = Tokens {
     card_max_height: 720.0,
     card_preview_height: 180.0,
     dialog_width: 440.0,
+    model_picker_height: 640.0,
     control_row_height: 64.0,
     control_gap: 6.0,
     icon_size: 16.0,
