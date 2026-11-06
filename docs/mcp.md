@@ -219,7 +219,7 @@ see what is installed with `plugins.list` (#172), which names a package's reload
 file name (`reload_file`), never its folders. Granting a text action package the right to run,
 or revoking it (`plugins.grant`, `plugins.revoke`, #173), is the person's yes or no as well; a package that asks for capabilities is granted only the
 digest, capabilities and origins `plugins.rights` showed (#174), which agents may read to explain a
-grant before a person gives it. Worker-backed hosts return an opaque pending
+grant before a person gives it; its `key_origins` says which of those origins receive a key. Worker-backed hosts return an opaque pending
 ID; agents may read its retained envelope with `plugins.result` and acknowledge a terminal result
 with `plugins.forget`. These two commands do not acquire files or mutate packages. In the browser
 (#823) `plugins.list` also answers `session_only: true`: packages last only for the session, are
