@@ -19,9 +19,11 @@ use serde::{Deserialize, Serialize};
 mod agent;
 mod budgets;
 mod projects;
+mod run_consent;
 pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
 pub use budgets::BudgetSettings;
 pub use projects::ProjectSettings;
+pub use run_consent::{MAX_CEILING_CURRENCIES, RUN_CONSENT_CLIENTS, RunConsentDecision, RunConsentSetting, is_currency_code};
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
 #[cfg(not(target_arch = "wasm32"))]
@@ -58,6 +60,9 @@ pub struct AutomationSettings {
     pub mcp_server: bool,
     /// The loopback port it listens on. Read through [`Self::mcp_port`].
     pub mcp_port: u16,
+    /// Whether each automation channel may start paid runs (#1079), by channel
+    /// ([`RUN_CONSENT_CLIENTS`]). A channel not named here is asked the first time.
+    pub run_consent: std::collections::BTreeMap<String, RunConsentSetting>,
 }
 
 /// The port the built-in MCP server listens on unless settings name another.
@@ -67,7 +72,7 @@ pub const MCP_TOKEN_ACCOUNT: &str = "nodecraft-mcp-server";
 
 impl Default for AutomationSettings {
     fn default() -> Self {
-        Self { mcp_server: false, mcp_port: DEFAULT_MCP_PORT }
+        Self { mcp_server: false, mcp_port: DEFAULT_MCP_PORT, run_consent: std::collections::BTreeMap::new() }
     }
 }
 

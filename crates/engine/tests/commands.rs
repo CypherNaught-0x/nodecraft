@@ -302,6 +302,9 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
         "app.update_status",
         "automation.mcp_server_set",
         "automation.mcp_server_status",
+        "automation.run_consent_list",
+        "automation.run_consent_set",
+        "automation.run_consent_answer",
         "app.install_update",
         "app.restart_to_update",
         "canvas.fit_all",
@@ -496,8 +499,8 @@ fn registration_rejects_invalid_or_duplicate_stable_ids() {
     }
     assert_eq!(
         registry.specs().count(),
-        273,
-        "canvas.auto_format, 12 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 4 keys, 2 provider settings, 4 library, 3 library browsers, library.attach, 5 My library, canvas.stale, node.describe, node.options, 2 option fetch, 3 ComfyUI workflow import, 2 workflow mapping, comfy.server.use, 4 ComfyUI server models, 2 update check, 2 update install, 5 navigation, 5 search, 6 file, 4 run/usage, run.estimate, 2 whole-canvas runs, 2 usage ownership, 2 charge resolution, 2 unresolved charge resolution, 4 held results, 2 run jobs, 8 history, 2 export job, 4 perf, 14 plugin, 2 cache commands, 2 variation commands, folder.fill, node.shader_set, 2 shader writing, 5 shader library, 6 mask, 2 image tools, 7 layer, 2 layer font, 9 deck, 2 deck font, 3 element, 9 Elements library, 3 style, 2 app mode, mesh.capture, mesh.view_set, 3 document commands, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private, 4 live sharing, 8 skill and node.migrate, 2 local export, 2 workflow result export, 7 templates, 2 export card, 2 MCP server"
+        276,
+        "canvas.auto_format, 12 sheet, 8 technique, 8 tag/filter, 5 field, 10 discussion, 7 graph, 3 node editing, 2 model migration, node.prompt_assist, 3 edge, node.create, node.create_connected, canvas.paste, 4 keys, 2 provider settings, 4 library, 3 library browsers, library.attach, 5 My library, canvas.stale, node.describe, node.options, 2 option fetch, 3 ComfyUI workflow import, 2 workflow mapping, comfy.server.use, 4 ComfyUI server models, 2 update check, 2 update install, 5 navigation, 5 search, 6 file, 4 run/usage, run.estimate, 2 whole-canvas runs, 2 usage ownership, 2 charge resolution, 2 unresolved charge resolution, 4 held results, 2 run jobs, 8 history, 2 export job, 4 perf, 14 plugin, 2 cache commands, 2 variation commands, folder.fill, node.shader_set, 2 shader writing, 5 shader library, 6 mask, 2 image tools, 7 layer, 2 layer font, 9 deck, 2 deck font, 3 element, 9 Elements library, 3 style, 2 app mode, mesh.capture, mesh.view_set, 3 document commands, 11 timeline, 2 timeline interchange, 4 share link, canvas.set_private, 4 live sharing, 8 skill and node.migrate, 2 local export, 2 workflow result export, 7 templates, 2 export card, 2 MCP server, 3 automation run consent"
     );
     assert_eq!(registry.specs().map(|spec| spec.id).collect::<std::collections::BTreeSet<_>>(), builtin_ids);
 }

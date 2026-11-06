@@ -83,6 +83,52 @@ app to local agents is the person's call); `automation.mcp_server_status {}` ret
 `{enabled, state, url, error}`, never the token, and agents may read it. Elsewhere (the CLI, the
 browser) both are refused as unsupported.
 
+## Paid runs from automation
+
+In the desktop app, an agent can quote and start runs on the window's canvas, whether it uses
+`--bridge`, the built-in server or the in-canvas agent. The cards a `run.quote`, `run.changed`,
+`run.workflow`, `run.estimate` or `run.start` names are routed to their providers as Generate
+routes them, and no dialog opens for the call (#1079). While a provider is being set up (reading
+its key from the keychain, reaching a ComfyUI server), the call waits. Over the bridge and the
+built-in server it is answered when the provider is ready, within the 30 s a call may wait. The
+in-canvas agent is answered `busy` and sends it again. A provider that can't run, such as one with
+no API key, is named in the error.
+
+Spending money needs the person's yes. The first time a channel's `run.start` would spend money,
+the window asks:
+
+- **Allow once** starts that run one time, exactly as asked: the same quote token and the same
+  `accept`. A start that accepts more, or more of unknown price, asks again.
+- **Always allow** remembers the channel, up to a ceiling per run in each currency. It starts at
+  the most this run may spend (its `accept.amounts`, which the dialog shows beside the quoted
+  price), and the person can change it.
+- **Never** remembers a refusal.
+- **Not now** refuses that run alone.
+
+Until they answer, the call waits as above, and the in-canvas agent is told `busy`. Nothing has started then, so
+sending the same `run.start` again is safe. Never is answered `forbidden` with a message saying the
+person can change it in the Automation panel. Decisions are remembered per channel, not per
+program: `control` (the control channel and every `--bridge`), `mcp_server` (the built-in server)
+and `agent` (the in-canvas agent).
+
+- Always allow covers a run only when its `accept.amounts`, the most it may reserve, are within
+  the ceiling. A run with a part of unknown price (`partial`, `unpriced_jobs`) asks every time.
+- A start that accepts nothing in every currency and no unknown price can't spend money, so it
+  never asks.
+- An agent step the person approved as shown, with the price they saw, is its own consent. Any
+  other agent call, such as one in auto mode or one priced only after the approval, asks like any
+  other channel.
+- Consent comes on top of the engine's checks, which are unchanged: the quote token, budget caps,
+  the accepted ceiling, unknown-price consent and idempotency keys.
+
+`automation.run_consent_list {}` returns each channel's decision (`ask`, `always` with its
+`ceiling` in micros, or `never`) and which channel the window is asking about. Agents may read it.
+`automation.run_consent_set {client, decision, ceiling?}` (the Automation panel's Ask again and
+Never) and `automation.run_consent_answer {answer, ceiling?}` (the dialog's buttons) are
+human-only: an agent can't grant itself consent. Decisions are kept in `config.toml` as
+`[automation.run_consent.<channel>]`. In the CLI the three commands are unsupported. In the
+browser, which has no automation channels, decisions last only for the session.
+
 ## Bridge to the running app
 
 ```sh
@@ -203,7 +249,9 @@ takes it from, so it is human-only too (#831). `run.record` writes results the h
 own provider records (#325), as does `usage.resolve_charge` for what a reconciled charge was billed
 (#332), and `usage.resolve_unresolved` for what an ordinary unresolved charge was billed (#298);
 agents can still review those charges with `usage.ownership`, `usage.unsettled` and
-`usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
+`usage.unresolved`. `automation.run_consent_set` and `automation.run_consent_answer` grant or
+withdraw an agent's right to spend money (#1079), so only a person runs them; agents can read
+`automation.run_consent_list`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
 results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`.
 Agents follow the host's jobs with `run.jobs` and stop one with `run.cancel` (#167). `run.jobs`
 gives state, queue position and progress where the provider says, `may_be_billed` (it reached the

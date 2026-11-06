@@ -276,6 +276,12 @@ pub(super) struct Runs {
     epoch: u64,
     /// The run waiting for its adapters.
     waiting: Option<Waiting>,
+    /// What the session's routing was last set to: its session, the adapters built so far, and
+    /// each node's adapter. Routing again to the same is skipped, since new routing changes every
+    /// quote's token (#1079): a client's `run.start` must still match the quote it read.
+    routed: Option<(std::sync::Weak<()>, u64, BTreeMap<NodeId, String>)>,
+    /// Counts adapters handed over, so routing made before one was rebuilt is never kept.
+    built: u64,
     /// Why the last run of a card failed, until it runs again.
     failed: BTreeMap<(CanvasId, NodeId), String>,
     running: BTreeSet<(CanvasId, NodeId)>,
@@ -420,6 +426,8 @@ impl Runs {
             asked: BTreeSet::new(),
             epoch: 0,
             waiting: None,
+            routed: None,
+            built: 0,
             failed: BTreeMap::new(),
             running: BTreeSet::new(),
             jobs: Vec::new(),
@@ -463,7 +471,9 @@ impl Runs {
     }
 
     /// Checks quotes against the open project's spending, after another project was opened.
-    pub(super) fn project_opened(&self, session: &mut Session) {
+    pub(super) fn project_opened(&mut self, session: &mut Session) {
+        // Routed again for the next run, whatever the open did to the session's routing.
+        self.routed = None;
         self.host.install(session);
     }
 
@@ -583,6 +593,38 @@ impl Runs {
         stale: &BTreeSet<NodeId>,
         settings: &ProviderSettings,
     ) -> Result<Route, Error> {
+        self.route_for(session, canvas, ids, kind, stale, settings, None)
+    }
+
+    /// [`Self::route`] for a run an automation client asked for (#1079). The card waiting for its
+    /// provider is not remembered (when it is ready nothing opens: the client asks again), and the
+    /// routing keeps the cards on `shown` too, so a run the person is confirming there still
+    /// reaches its providers.
+    #[allow(clippy::too_many_arguments)]
+    pub(super) fn route_automation(
+        &mut self,
+        session: &mut Session,
+        canvas: CanvasId,
+        ids: &[NodeId],
+        kind: RunKind,
+        stale: &BTreeSet<NodeId>,
+        settings: &ProviderSettings,
+        shown: CanvasId,
+    ) -> Result<Route, Error> {
+        self.route_for(session, canvas, ids, kind, stale, settings, Some(shown))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn route_for(
+        &mut self,
+        session: &mut Session,
+        canvas: CanvasId,
+        ids: &[NodeId],
+        kind: RunKind,
+        stale: &BTreeSet<NodeId>,
+        settings: &ProviderSettings,
+        automation: Option<CanvasId>,
+    ) -> Result<Route, Error> {
         let (adapters, inner) = adapters_of(session, canvas, settings);
         let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
@@ -612,13 +654,34 @@ impl Runs {
             return Err(Error::new(ErrorKind::Unsupported, unready.join(" ")));
         }
         if !pending.is_empty() {
-            self.waiting = Some(Waiting { canvas, nodes: ids.to_vec(), kind, pending, settings: settings.clone() });
+            if automation.is_none() {
+                self.waiting = Some(Waiting { canvas, nodes: ids.to_vec(), kind, pending, settings: settings.clone() });
+            }
             return Ok(Route::Waiting);
         }
         // Every card whose provider is ready, so a run of more than these cards reaches its
         // providers too.
-        let ready = adapters.iter().filter(|(_, a)| self.setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.as_str()));
-        session.set_provider_routing(self.setup.routing_for(ready, settings)?)?;
+        let mut selections: BTreeMap<NodeId, String> =
+            adapters.iter().filter(|(_, a)| self.setup.readiness(a) == Some(&Readiness::Ready)).map(|(node, a)| (*node, a.clone())).collect();
+        if let Some(shown) = automation.filter(|shown| *shown != canvas) {
+            let (also, _) = adapters_of(session, shown, settings);
+            for (node, adapter) in also {
+                if self.setup.readiness(&adapter) == Some(&Readiness::Ready) {
+                    // The client's canvas wins a node id both canvases use.
+                    selections.entry(node).or_insert(adapter);
+                }
+            }
+        }
+        // The identity is held weakly, so another session can never be taken for the one routed.
+        let identity = session.view_identity();
+        let same = self.routed.as_ref().is_some_and(|(routed, built, chosen)| {
+            routed.upgrade().is_some_and(|routed| Arc::ptr_eq(&routed, &identity)) && *built == self.built && *chosen == selections
+        });
+        if same {
+            return Ok(Route::Ready);
+        }
+        session.set_provider_routing(self.setup.routing_for(selections.iter().map(|(node, a)| (*node, a.as_str())), settings)?)?;
+        self.routed = Some((Arc::downgrade(&identity), self.built, selections));
         Ok(Route::Ready)
     }
 
@@ -672,6 +735,7 @@ impl Runs {
     fn rebuild(&mut self, session: &mut Session) -> Result<(), Error> {
         self.epoch = self.epoch.wrapping_add(1);
         self.asked.clear();
+        self.routed = None;
         session.set_provider_routing(ProviderRouting::default())?;
         if let Some(waiting) = self.waiting.clone() {
             for adapter in &waiting.pending {
@@ -702,6 +766,7 @@ impl Runs {
             self.asked.remove(&adapter);
             self.setup.forget(&adapter);
             self.setup.ensure(&adapter, |_| result);
+            self.built = self.built.wrapping_add(1);
             if let Some(waiting) = &mut self.waiting
                 && waiting.pending.remove(&adapter)
                 && waiting.pending.is_empty()

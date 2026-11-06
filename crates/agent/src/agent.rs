@@ -64,6 +64,13 @@ pub trait Toolbox {
     fn impact(&mut self, name: &str, input: &Value) -> Result<Impact, Error>;
     /// Makes the call.
     fn call(&mut self, name: &str, input: &Value) -> Result<Value, Error>;
+    /// Makes the call, saying whether the person approved this call as shown (its impact is
+    /// what they saw when they pressed Approve). A host that asks for consent before spending
+    /// money takes that as consent to this call alone (#1079).
+    fn call_approved(&mut self, name: &str, input: &Value, approved: bool) -> Result<Value, Error> {
+        let _ = approved;
+        self.call(name, input)
+    }
     /// The call in a few words, for the timeline.
     fn label(&self, name: &str, _input: &Value) -> String {
         name.to_owned()
@@ -369,7 +376,7 @@ impl Agent {
             if let Impact::Run(run) = &impact {
                 self.charge(run);
             }
-            let (content, is_error) = match toolbox.call(&call.name, &call.input) {
+            let (content, is_error) = match toolbox.call_approved(&call.name, &call.input, approved) {
                 Ok(value) => {
                     let text = value.to_string();
                     self.set_status(call.step, ToolStatus::Ran(prompt::clip(&text, MAX_SUMMARY_CHARS)));

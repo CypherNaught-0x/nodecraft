@@ -10,6 +10,7 @@ use std::sync::Arc;
 use nodecraft_automation::control::{self, Call, Listener, Request, Token, TokenFile};
 use nodecraft_automation::roots::FileRoots;
 use nodecraft_ui_egui::NodeCraftApp;
+use nodecraft_ui_egui::app::automation_runs::{AutomationClient, RunGate};
 
 /// Requests answered per frame, so a busy client can't stall drawing.
 pub const PER_FRAME: usize = 16;
@@ -17,6 +18,8 @@ pub const PER_FRAME: usize = 16;
 const MAX_PENDING_SHOTS: usize = 4;
 /// A screenshot whose image hasn't arrived by then (the window isn't drawing) fails.
 const SHOT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+/// Run commands waiting for their providers or the person's consent at once (#1079).
+const MAX_PARKED: usize = 16;
 
 /// Marks the screenshots this module asks for, so others aren't taken as replies.
 /// Each [`CallPump`] tags its own, so the control channel's and the MCP server's never answer
@@ -44,13 +47,18 @@ pub struct CallPump {
     roots: FileRoots,
     /// This pump's [`ControlShot`] tag.
     tag: u64,
+    /// Whose calls these are, for paid-run consent (#1079).
+    client: AutomationClient,
+    /// Run commands waiting for their providers to be set up or for the person to answer, asked
+    /// again each frame until they can go ahead or their client stops waiting (#1079).
+    parked: Vec<Call>,
 }
 
 impl Channel {
     /// Starts listening and writes the token file into `dir` (`control.json`).
     pub fn start(ctx: &egui::Context, dir: Option<PathBuf>, roots: FileRoots) -> Result<Self, nodecraft_types::Error> {
         let (listener, token_file) = Self::listen(ctx, dir)?;
-        Ok(Self { listener, pump: CallPump::new(roots), token_file })
+        Ok(Self { listener, pump: CallPump::new(roots, AutomationClient::Control), token_file })
     }
 
     /// Answers waiting requests and finished screenshots.
@@ -94,8 +102,41 @@ impl Channel {
 }
 
 impl CallPump {
-    pub fn new(roots: FileRoots) -> Self {
-        Self { shots: Vec::new(), shot_since: None, roots, tag: NEXT_PUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed) }
+    pub fn new(roots: FileRoots, client: AutomationClient) -> Self {
+        Self { shots: Vec::new(), shot_since: None, roots, tag: NEXT_PUMP.fetch_add(1, std::sync::atomic::Ordering::Relaxed), client, parked: Vec::new() }
+    }
+
+    /// Whether `call` must wait, and why: a run command whose providers are being set up, or whose
+    /// paid run the person is being asked about. `Err` refuses it (the person said never).
+    fn must_wait(&self, app: &mut NodeCraftApp, call: &Call) -> Result<Option<&'static str>, nodecraft_types::Error> {
+        let Request::RunCommand(args) = &call.request else { return Ok(None) };
+        let Some(id) = args.get("id").and_then(serde_json::Value::as_str).filter(|id| NodeCraftApp::is_gated_run_command(id)) else { return Ok(None) };
+        let empty = serde_json::Value::Object(serde_json::Map::new());
+        let params = args.get("params").unwrap_or(&empty);
+        Ok(match app.automation_run_gate(self.client, id, params, false)? {
+            RunGate::Ready => None,
+            RunGate::Waiting(why) => Some(why),
+        })
+    }
+
+    /// Answers `call` now, or parks it while its run waits.
+    fn handle(&mut self, call: Call, app: &mut NodeCraftApp, ctx: &egui::Context) {
+        match self.must_wait(app, &call) {
+            Err(refused) => call.reply(Err(refused)),
+            Ok(Some(why)) if self.parked.len() >= MAX_PARKED => call.reply(Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Busy, why))),
+            Ok(Some(_)) => self.parked.push(call),
+            Ok(None) => match answer_as(app, ctx, &self.roots, &call.request, self.client) {
+                Some(result) => call.reply(result),
+                None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
+                    if self.shots.is_empty() {
+                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot(self.tag))));
+                        self.shot_since = Some(std::time::Instant::now());
+                    }
+                    self.shots.push(call);
+                }
+                None => call.reply(Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Busy, "screenshots are already being taken; try again"))),
+            },
+        }
     }
 
     /// Answers `calls` (at most [`PER_FRAME`]; a full batch asks for another frame) and finished
@@ -141,34 +182,42 @@ impl CallPump {
             self.shot_since = None;
         }
         let more = calls.len() >= PER_FRAME;
+        // Parked runs first, in the order they came. One whose client stopped waiting is dropped
+        // unanswered: it never started, and running it late could start it twice.
+        for call in std::mem::take(&mut self.parked) {
+            if !call.expired() {
+                self.handle(call, app, ctx);
+            }
+        }
         for call in calls {
             // The client already gave up on it: running it now could apply a command twice.
             if call.expired() {
                 continue;
             }
-            match answer(app, ctx, &self.roots, &call.request) {
-                Some(result) => call.reply(result),
-                None if call.request == Request::Screenshot && self.shots.len() < MAX_PENDING_SHOTS => {
-                    if self.shots.is_empty() {
-                        ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::new(ControlShot(self.tag))));
-                        self.shot_since = Some(std::time::Instant::now());
-                    }
-                    self.shots.push(call);
-                }
-                None => call.reply(Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Busy, "screenshots are already being taken; try again"))),
-            }
+            self.handle(call, app, ctx);
         }
         if more {
             ctx.request_repaint();
-        } else if !self.shots.is_empty() {
+        } else if !self.shots.is_empty() || !self.parked.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
     }
 }
 
 // Keep the production UI-thread dispatch independently testable without a native window.
+#[cfg(test)]
 fn answer(app: &mut NodeCraftApp, ctx: &egui::Context, roots: &FileRoots, request: &Request) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
-    control::answer_with(&mut LiveCommands { app, ctx, roots: Some(roots) }, request)
+    answer_as(app, ctx, roots, request, AutomationClient::Control)
+}
+/// [`answer`] for `client`'s pump.
+fn answer_as(
+    app: &mut NodeCraftApp,
+    ctx: &egui::Context,
+    roots: &FileRoots,
+    request: &Request,
+    client: AutomationClient,
+) -> Option<Result<serde_json::Value, nodecraft_types::Error>> {
+    control::answer_with(&mut LiveCommands { app, ctx, roots: Some(roots), client, approved: false }, request)
 }
 /// The window's session as a command host: commands that act on the view reach it (#360).
 pub(crate) struct LiveCommands<'a> {
@@ -176,6 +225,11 @@ pub(crate) struct LiveCommands<'a> {
     pub(crate) ctx: &'a egui::Context,
     /// The folders file commands may use; the in-canvas agent has none.
     pub(crate) roots: Option<&'a FileRoots>,
+    /// Who is asking, for paid-run consent (#1079).
+    pub(crate) client: AutomationClient,
+    /// The person approved the call being made as shown (the agent's Approve, set per call by
+    /// its toolbox), which is consent to a paid run it starts.
+    pub(crate) approved: bool,
 }
 impl LiveCommands<'_> {
     fn navigation_idle(&self) -> Result<(), nodecraft_types::Error> {
@@ -235,6 +289,17 @@ impl nodecraft_automation::commands::CommandHost for LiveCommands<'_> {
                 return Err(file_busy());
             }
             self.app.session.dispatch_without_waiting(id, &background)
+        } else if NodeCraftApp::is_gated_run_command(id) {
+            // Routed to its providers and, for a paid start, consented to first (#1079). A run
+            // that has to wait is refused as busy here; the pumps park it instead.
+            if let RunGate::Waiting(why) = self.app.automation_run_gate(self.client, id, params, self.approved)? {
+                return Err(nodecraft_types::Error::new(nodecraft_types::ErrorKind::Busy, why));
+            }
+            let result = self.app.session.dispatch_without_waiting(id, params);
+            if result.is_ok() {
+                self.app.automation_run_started(self.client, id, params);
+            }
+            result
         } else {
             self.app.session.dispatch_without_waiting(id, params)
         }

@@ -175,6 +175,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.update_status",
     // Where the desktop app's built-in server listens; never its token (#116).
     "automation.mcp_server_status",
+    // Whether each channel may start paid runs (#1079); giving consent is the person's.
+    "automation.run_consent_list",
     "history.select",
     "history.previous",
     "history.next",
@@ -387,6 +389,9 @@ pub const HUMAN_ONLY: &[&str] = &[
     "plugins.prune",
     // Opening the app to local MCP clients, or closing it to them, is the person's call (#116).
     "automation.mcp_server_set",
+    // So is letting automation spend money, which an agent must never grant itself (#1079).
+    "automation.run_consent_set",
+    "automation.run_consent_answer",
     // Replacing the app and restarting it stays the person's choice (#540).
     "app.install_update",
     "app.restart_to_update",
