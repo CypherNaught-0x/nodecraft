@@ -84,6 +84,7 @@ fn card(h: &Harness<'static, NodeCraftApp>, id: NodeId) -> Option<nodecraft_grap
 fn a_server_checkpoint_is_listed_under_its_server_and_applied_with_the_pointer() {
     let mut h = harness("openai-images.sunburst", None);
     search(&mut h, "juggernaut");
+    crate::app::panel_check::check_window(&h, egui::Id::new("model_picker157"), "Choose a model, searching");
     picker(&h).get_by_label("From ComfyUI server \"studio\"");
     picker(&h).get_by_label("Checkpoints");
     picker(&h).get_by_label("juggernaut_xl_v9.safetensors").click();
