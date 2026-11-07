@@ -86,9 +86,24 @@ See [provider and browser limits](providers.md).
 
 Open **Share** to start a room or join one. The browser uses the same `nodecraft-cli relay`
 as the desktop. For local development, a page served over HTTP can connect to a relay on plain
-WebSocket (`ws://`). For a remote relay used from an HTTPS page, put a TLS proxy in front of
-the relay and use its `wss://` address. The desktop client uses `ws://`, so desktop peers
-need a plain WebSocket address for the same room.
+WebSocket (`ws://`). A page served over HTTPS may only open a secure WebSocket (`wss://`): start
+the relay with a certificate chain and its private key (PEM files, for example from Let's
+Encrypt) and it serves `wss://` too, on the next port or `--tls-listen`:
+
+```sh
+nodecraft-cli relay --listen 0.0.0.0:7342 --tls-cert fullchain.pem --tls-key privkey.pem
+```
+
+Browsers then use `wss://<host>:7343/`, and desktop peers keep `ws://<host>:7342/`, which the
+desktop client uses; both reach the same rooms. A link shared from the desktop app names its
+`ws://` address: for a browser on an HTTPS page, change its start to `wss://<host>:7343/` and keep
+the `#room=` or `#link=` part. A TLS proxy in front of the relay works as well.
+
+A relay keeps its rooms only in memory unless you start it with a store folder:
+`nodecraft-cli relay --store <folder>` keeps each room, its share links and its media there, so
+a restart loses nothing and a share link works while its owner is away. A room nobody joined for
+`--keep-days` (default 30) is forgotten, and past `--store-max-gib` (default 8) the rooms used
+longest ago go first. Folders are named by a hash of the room id; the id is never written.
 
 The browser has a single window, so joining replaces the project in the current tab. It is refused
 while that tab has changes of its own; save them first, or join in a new tab.

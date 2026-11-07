@@ -439,8 +439,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         self.file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
-        let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
-        self.save_accounts(changes);
+        self.keys_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
         self.ownership_panel(ui.ctx(), t);
@@ -580,10 +579,20 @@ impl NodeCraftApp {
                         actions.push(Action::Remove(selected.clone()));
                     }
                     let run = if some { format!("Run {} selected", selected.len()) } else { "Run selected".into() };
-                    if ui.add_enabled(some, egui::Button::new(run)).on_hover_text("Quote the selected rows, then run them").clicked() {
+                    if ui
+                        .add_enabled(some, egui::Button::new(run))
+                        .on_hover_text("Quote the selected rows, then run them")
+                        .on_disabled_hover_text("Select at least one row to run")
+                        .clicked()
+                    {
                         actions.push(Action::Run(selected.clone()));
                     }
-                    if ui.add_enabled(!rows.rows.is_empty(), egui::Button::new("Run all")).on_hover_text("Quote every row, then run them").clicked() {
+                    if ui
+                        .add_enabled(!rows.rows.is_empty(), egui::Button::new("Run all"))
+                        .on_hover_text("Quote every row, then run them")
+                        .on_disabled_hover_text("Add a row to run")
+                        .clicked()
+                    {
                         actions.push(Action::Run(rows.rows.iter().map(|row| row.id).collect()));
                     }
                     let open = self.sheet.template.is_some();
@@ -609,6 +618,7 @@ impl NodeCraftApp {
                     if ui
                         .add_enabled(!chosen.is_empty(), egui::Button::new(place))
                         .on_hover_text("Put the selected rows' results on the canvas as source cards")
+                        .on_disabled_hover_text("Select rows that have finished to send their results")
                         .clicked()
                     {
                         actions.push(Action::Place(chosen.clone()));
@@ -650,17 +660,19 @@ impl NodeCraftApp {
                     let name = ui.label("Filter");
                     ui.add(egui::TextEdit::singleline(&mut self.sheet.filter).hint_text("Filter prompts").desired_width(t.sheet_title_width))
                         .labelled_by(name.id);
-                    egui::ComboBox::from_id_salt("sheet_status_filter").selected_text(self.sheet.status.label()).show_ui(ui, |ui| {
+                    let status = egui::ComboBox::from_id_salt("sheet_status_filter").selected_text(self.sheet.status.label()).show_ui(ui, |ui| {
                         for status in StatusFilter::ALL {
                             ui.selectable_value(&mut self.sheet.status, status, status.label());
                         }
                     });
+                    status.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Show rows by status"));
                     if shown.len() != rows.rows.len() {
                         ui.label(egui::RichText::new(format!("Showing {} of {}", shown.len(), rows.rows.len())).color(t.text_muted));
                         let ids: Vec<NodeId> = shown.iter().filter_map(|index| rows.rows.get(*index)).map(|row| row.id).collect();
                         if ui
                             .add_enabled(!ids.is_empty(), egui::Button::new("Select shown"))
                             .on_hover_text("Select exactly the rows the filter shows")
+                            .on_disabled_hover_text("No rows match the filter")
                             .clicked()
                         {
                             actions.push(Action::Select(ids));
@@ -730,7 +742,11 @@ impl NodeCraftApp {
         ui.horizontal(|ui| {
             ui.set_height(height);
             let mut chosen = self.selection.contains(row.id);
-            if ui.add_sized([widths.index, height], egui::Checkbox::without_text(&mut chosen)).on_hover_text("Select this row").changed() {
+            let pick = ui.add_sized([widths.index, height], egui::Checkbox::without_text(&mut chosen));
+            // Named for screen readers: a bare checkbox is announced as nothing (#1118).
+            let number = index.saturating_add(1);
+            pick.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, chosen, format!("Select row {number}")));
+            if pick.on_hover_text("Select this row").changed() {
                 self.selection.toggle(row.id);
             }
             ui.add_sized([widths.index, height], egui::Label::new(egui::RichText::new(format!("{}", index.saturating_add(1))).color(t.text_muted)));
@@ -801,10 +817,20 @@ impl NodeCraftApp {
             cell(ui, self.row_status(row.id, t));
             ui.allocate_ui_with_layout(Vec2::new(widths.other, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = t.control_gap;
-                if ui.add_enabled(index > 0, egui::Button::new("Up")).on_hover_text("Move this row up").clicked() {
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("Up"))
+                    .on_hover_text("Move this row up")
+                    .on_disabled_hover_text("This row is already first")
+                    .clicked()
+                {
                     actions.push(Action::Move(row.id, index.saturating_sub(1)));
                 }
-                if ui.add_enabled(index < last, egui::Button::new("Down")).on_hover_text("Move this row down").clicked() {
+                if ui
+                    .add_enabled(index < last, egui::Button::new("Down"))
+                    .on_hover_text("Move this row down")
+                    .on_disabled_hover_text("This row is already last")
+                    .clicked()
+                {
                     actions.push(Action::Move(row.id, index.saturating_add(1)));
                 }
                 if ui.button("Run").on_hover_text("Quote this row, then run it").clicked() {
@@ -860,7 +886,7 @@ impl NodeCraftApp {
                     let edge = side * ui.ctx().pixels_per_point();
                     let assets = self.session.assets();
                     let preview = self.previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset));
-                    crate::card::show_image(ui, rect.shrink(2.0), &preview, None, t);
+                    crate::card::show_image(ui, rect.shrink(t.inset), &preview, None, t);
                 }
                 Preview::Text(text) => {
                     ui.put(rect.shrink(t.control_gap), egui::Label::new(egui::RichText::new(text).size(t.label_size).color(t.text)).wrap().selectable(false));
@@ -876,7 +902,7 @@ impl NodeCraftApp {
             let badge = Rect::from_min_size(rect.min + Vec2::splat(t.control_gap), size + Vec2::splat(t.control_gap));
             ui.painter().rect_filled(badge, radius, t.panel_fill);
             ui.put(badge, egui::Label::new(text).selectable(false));
-            let stroke = if chosen { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+            let stroke = if chosen { egui::Stroke::new(t.stroke_strong, t.accent) } else { egui::Stroke::new(t.stroke_hairline, t.panel_stroke) };
             ui.painter().rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
             let response = response.on_hover_text(line(&row.prompt));
             if response.clicked() {
@@ -888,11 +914,19 @@ impl NodeCraftApp {
                 if let Some(position) = row.position
                     && row.results > 1
                 {
-                    if ui.add_enabled(position > 1, egui::Button::new("‹").small()).on_hover_text("Show this row's older result").clicked() {
+                    if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), &format!("Previous result, row {number}"))
+                        .on_hover_text("Show this row's older result")
+                        .on_disabled_hover_text("This is the row's oldest result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, false));
                     }
                     ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
-                    if ui.add_enabled(position < row.results, egui::Button::new("›").small()).on_hover_text("Show this row's newer result").clicked() {
+                    if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), &format!("Next result, row {number}"))
+                        .on_hover_text("Show this row's newer result")
+                        .on_disabled_hover_text("This is the row's newest result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, true));
                     }
                 }
@@ -956,8 +990,7 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let sources = self.image_sources(revision);
         let Some(draft) = self.sheet.template.as_mut() else { return };
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
+        let frame = crate::theme::panel_frame(t);
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 let name = ui.label("Template");
@@ -1051,6 +1084,7 @@ impl NodeCraftApp {
                 if ui
                     .add_enabled(fits, egui::Button::new(label))
                     .on_hover_text("Add the rows after the last, copying its model and settings; nothing runs")
+                    .on_disabled_hover_text("Nothing to expand into yet, or the rows wouldn't fit; the line below says which")
                     .clicked()
                 {
                     actions.push(Action::Expand(params));
@@ -1131,7 +1165,7 @@ impl NodeCraftApp {
     fn row_status(&self, id: NodeId, t: &Tokens) -> egui::RichText {
         if let Some(runs) = &self.runs {
             if let Some(status) = runs.card_status(self.canvas, id) {
-                return egui::RichText::new(status).color(t.accent);
+                return egui::RichText::new(status).color(t.accent_text);
             }
             let card = runs.card(self.canvas, id);
             if card.held {
@@ -1360,7 +1394,7 @@ pub(super) use tools::CONTRACTS_READ;
 /// A grid tile's badge for a row in `state`.
 fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32) {
     match state {
-        StatusFilter::Running => ("Running", t.accent),
+        StatusFilter::Running => ("Running", t.accent_text),
         StatusFilter::Failed => ("Failed", t.danger),
         StatusFilter::Held => ("Held", t.stale),
         StatusFilter::Cancelled => ("Cancelled", t.text_muted),

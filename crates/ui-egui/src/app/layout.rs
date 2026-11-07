@@ -222,8 +222,9 @@ impl NodeCraftApp {
                             mode = Some(choice);
                             ui.close();
                         }
+                        // Disabled, it says why: plain hover text would be hidden then (#1113).
                         if let Err(error) = enabled {
-                            response.on_hover_text(error.message);
+                            response.on_disabled_hover_text(error.message);
                         }
                     }
                 });

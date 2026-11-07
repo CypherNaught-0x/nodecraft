@@ -18,7 +18,7 @@ pub(super) enum RunKind {
     Generate,
     /// Refresh a stale result (#211): the card with whatever upstream is stale or has no result.
     Refresh,
-    /// Run changed (#965, ⌘/Ctrl+Enter): every card on the canvas whose result is stale,
+    /// Run changed (#965, Command+Enter): every card on the canvas whose result is stale,
     /// part-made or missing, with the upstream it needs.
     Changed,
     /// Run workflow (#965): every generation and technique card on the canvas, and whatever
@@ -75,7 +75,7 @@ impl RunKind {
     }
 }
 
-/// What ⌘/Ctrl+Enter and Run workflow say when the canvas has nothing to run (#965).
+/// What Command+Enter and Run workflow say when the canvas has nothing to run (#965).
 pub(super) const NOTHING_TO_RUN: &str = "Nothing to run: every card's result is up to date.";
 /// The same for a canvas with no generation, action or technique cards at all.
 pub(super) const NO_WORKFLOW: &str = "Nothing to run: this canvas has no cards that generate or compute a result.";
@@ -478,8 +478,9 @@ impl NodeCraftApp {
                 }
                 if quote.waiting > 0 {
                     ui.label(format!(
-                        "{} card(s) after a batch wait for this run's results: press ⌘/Ctrl+Enter (Run changed) again once it finishes.",
-                        quote.waiting
+                        "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
+                        quote.waiting,
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
                     ));
                 }
                 if busy > 0 {
@@ -692,7 +693,8 @@ impl NodeCraftApp {
                             }
                             let r = ui
                                 .add_enabled(editable(nodecraft_nodes::generation::MODEL), egui::Button::new(&short))
-                                .on_hover_text(format!("Model: {model}. Click to change it."));
+                                .on_hover_text(format!("Model: {model}. Click to change it."))
+                                .on_disabled_hover_text(format!("Model: {model}. It can't be changed here right now."));
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));
@@ -848,6 +850,8 @@ impl NodeCraftApp {
         let assets = self.session.assets();
         let preview = self.previews.request_asset(ctx, hash, edge, || assets.preview_read(&asset));
         let mut open = true;
+        // A tall image is shown smaller rather than past the bottom of the window (#959).
+        let room = crate::floating::body_room(ctx, egui::Id::new("image_viewer"), &t);
         crate::floating::panel(ctx, "Image", egui::Id::new("image_viewer"), crate::floating::Home::CenterTop, &t)
             .open(&mut open)
             .default_width(t.viewer_width)
@@ -859,6 +863,8 @@ impl NodeCraftApp {
                     _ => width,
                 };
                 let height = if height.is_finite() { height.clamp(1.0, width.max(1.0) * 4.0) } else { width };
+                // No taller than the room left; `show_image` fits the picture in, keeping its shape.
+                let height = if room >= 1.0 { height.min(room) } else { height };
                 let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
                 card::show_image(ui, area, &preview, None, &t);
             });

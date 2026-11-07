@@ -56,11 +56,23 @@ impl RecoveryOffer {
 
     /// The question about an earlier copy that still replays (work recovered and never saved),
     /// newest slot first, stopping at `cancel` (#1053: off the UI thread, so a long run of
-    /// damaged copies never holds the window). `Err` only when cancelled.
-    pub(super) fn earlier(recovery: &Path, cancel: &nodecraft_format::asset_source::TransferCancel) -> Result<Option<Self>, nodecraft_types::Error> {
+    /// damaged copies never holds the window). Each replay copies its checkpoint into the
+    /// private workspace, so each is charged against `probe` first (#367), as the live
+    /// journal's is. `Err` when cancelled, or when a copy's replay wouldn't fit: the scan stops
+    /// there, and the copies stay to be offered another time.
+    pub(super) fn earlier(
+        recovery: &Path,
+        cancel: &nodecraft_format::asset_source::TransferCancel,
+        probe: &dyn Fn() -> nodecraft_format::space::SpaceProbe,
+    ) -> Result<Option<Self>, nodecraft_types::Error> {
         let mut copies = storage::kept_journals(recovery);
         while let Some(candidate) = copies.pop() {
             cancel.check()?;
+            if let Ok(bytes) = std::fs::metadata(&candidate).map(|metadata| metadata.len())
+                && bytes > 0
+            {
+                nodecraft_format::space::SpaceInventory::replay_journal(bytes)?.check(&probe())?;
+            }
             let replayed = storage::replay_kept_with(&candidate, cancel);
             if let Err(error) = &replayed
                 && nodecraft_format::asset_source::TransferCancel::is_cancellation(error)

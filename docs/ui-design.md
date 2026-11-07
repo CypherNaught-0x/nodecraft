@@ -21,9 +21,11 @@ same structure with the values inverted.
 | `panel_fill` / `panel_stroke` | `#171719` / `#2c2c30` | `#ffffff` / `#dddde1` | floating chrome, menus, windows |
 | `card_fill` | `#121214` | `#ffffff` | node card body |
 | `card_stroke` / `_hover` / `_selected` | `#343439` / `#5a5a61` / `#e6e6ea` | `#d4d4d9` / `#a0a0a8` / `#18181b` | card border by state |
-| `text` / `text_muted` | `#e8e8ec` / `#8a8a93` | `#18181b` / `#6b6b74` | body text / labels and hints |
+| `text` / `text_muted` | `#e8e8ec` / `#96969f` | `#18181b` / `#5f5f68` | body text / labels and hints (`text_muted` ≥ 4.5:1 on panels, cards and a hovered widget's `panel_stroke`) |
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
-| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
+| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline. Strokes and fills only (3:1 is enough); never text |
+| `accent_text` | `#4cc38a` | `#0f6b42` | the accent drawn as text: run status, **Running**, **Soul ID**, a verified key, links (≥ 4.5:1 on canvas, panel and card) |
+| `selection_fill` / `selection_text` | `#1d3a2c` / `#4cc38a` | `#d5eee1` / `#0f6b42` | a selected row or entry: `selectable_label`, the palette's highlighted row, the model picker, the top bar's open panel, and selected text (≥ 4.5:1) |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `mask_overlay` | `#4cc38a` at 60% | `#1f9d63` at 60% | the painted area in the mask editor, scaled by mask strength |
 | `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
@@ -34,6 +36,35 @@ same structure with the values inverted.
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` / `_style` | `#e07a5a` / `#8fc35a` / `#a0a0a8` / `#e06fa8` | `#b0482a` / `#4f8a1f` / `#6b6b74` / `#a82f6c` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 | `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
+
+No egui default colour is left un-themed: `visuals()` sets egui's selection from `selection_fill` /
+`selection_text`, its hyperlink colour from `accent_text`, and its warning and error text from `stale` and
+`danger`, and the text cursor from `text`. `theme.rs` tests hold, in both themes, selection text on
+`selection_fill`, `accent_text` on canvas, panel and card, `text_muted` on panels, cards and
+`panel_stroke`, and warning and error text on panels and the canvas at 4.5:1 or more.
+
+Stroke widths, a few sizes and egui's small text are tokens too (#1124): `stroke_hairline` (1),
+`stroke_medium` (1.5) and `stroke_strong` (2) for outlines, playheads and chosen thumbnails or
+clips; `heading_size` (19.5) for the drop hint and `display_size` (24) for an empty deck slide's
+message; `inset` (2) between a thumbnail and its outline and for a swatch's corners; `dim` (0.6) for
+a fill drawn dimmed behind what is being edited; and `badge_text_ratio` (1.2) for the number in an
+input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
+`.small()` hints are never below a card label. `theme::panel_frame(t)` is the one framed-group
+recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
+fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
+
+A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
+disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
+as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own
+`enabled` reason. A test in `ui_ext.rs` fails on a new call site that drops it.
+
+Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
+item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
+submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through
+`Icon::icon_button` or `history::named` so a screen reader hears its name ("More for fox", "Previous
+result, row 2"), and a tag marker carries its tag's name ("Tag: Hero shots") rather than its colour alone.
+`a11y_check::unnamed_controls` finds any clickable AccessKit node whose name is empty or only
+punctuation; kittests run it on the element library, a sheet and a tagged card.
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
@@ -101,7 +132,7 @@ selected border more visible than the resting one, in both themes.
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked |
+| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
@@ -110,6 +141,7 @@ selected border more visible than the resting one, in both themes.
 | Right-click a card → **Field** | move the selected nodes into a field, or take them out (`node.field_set`) |
 | Right-click (or long-press) a card | menu: select the upstream / downstream chain of the selection, or all nodes of the card's kind; an unselected card becomes the selection first |
 | Double-click the title | rename; Enter or blur commits, Escape cancels; empty restores the automatic title |
+| A generation card's **runs fresh** / **reuses results** switch, beside its variations | turns result reuse on or off for that card (`node.cache_set`, one undo step, saved with the project, #1059): on, a run whose inputs and settings match a result already made takes that result free instead of asking the model again; model cards start off |
 | Enter on a focused generation card, ⌘/Ctrl+Enter in its prompt, or its round arrow button | quote a run of that card (`run.quote`) and show its price, anything blocking it and any unknown part (a by-usage step whose provider can quote it is asked first, `run.estimate`, and the price shown again with its answer); **Generate for …** starts priced work (`run.start` with the quote's token and totals). The confirmation counts cached reuse as **N reused, free**; with only cached results, it says results are used where needed, already-active results stay in place, and nothing generates. Its button is **Continue without generating**: `run.start` applies any needed cached results but does nothing when they are already active. Cancel or Escape starts nothing. An edit after the quote makes it stale: nothing starts until it is quoted again. If the start fails, the dialog offers only Close, since the host may have taken the run. F2 or double-click still renames a generation card |
 | ⌘/Ctrl+Enter outside text fields, or **Run changed** in the palette | quote a run of every card that changed or hasn't run (`run.changed`, mode `pending`): each generation, action and technique card whose result is stale, part-made or missing, with the upstream it needs, in dependency order (notes, decks, routers, batches and sources have nothing to run). The confirmation, titled **Run changed**, names the cards that run (**Runs N cards: …**), the total, anything blocking it and any unknown part, as a card's own run does; **Run changed for …** starts exactly the quoted cards (`run.start`, mode `pending`), and Cancel or Escape starts nothing. A card with work between two cards of the run runs too, in order. Cards after a batch the run feeds wait for its results; the dialog says so, and the next ⌘/Ctrl+Enter runs them. A card still running from an earlier run keeps the start button off until it finishes, so nothing is charged twice. When everything is up to date it says **Nothing to run** and opens no dialog. A focused field keeps its own ⌘/Ctrl+Enter (a prompt quotes its card; multiline text commits), and the key yields to drags, open menus, the palette, panels, dialogs and the recovery question. Free actions still recompute on their own when their inputs change, without a quote (#965) |
 | **Run workflow** in the palette | the same, for the whole workflow (`run.workflow`, mode `workflow`): every generation and technique card, fresh or not, plus everything **Run changed** would run; a fresh action keeps its result. Never starts without the confirmation |
@@ -121,6 +153,13 @@ selected border more visible than the resting one, in both themes.
 | Select one generation card | a toolbar above it: the model (opens the model picker), the aspect ratio (the choice tagged `aspect_ratio`, or else one whose options are all `W:H`), and Expand once it has an image |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
+
+Shortcuts are spelled one way everywhere a person reads them (the palette, the Turn into menu,
+tooltips, menus, notices and accessible names): `shortcut::format_shortcut` turns the engine's
+`Command+Shift+Z` into `Shift+⌘Z` on macOS (Ctrl, Option, Shift, then ⌘; only ⌘ is a symbol,
+since egui's default fonts have no ⇧, ⌥ or ⌃) and `Ctrl+Shift+Z` on Windows, Linux and other
+browsers, in that fixed order. This page writes `⌘/Ctrl` for short; the UI never
+shows that spelling (#1117).
 
 egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
 shortcuts yield to focused text fields. Invalid drops (different modality, a list into a single input, a node into itself, a loop, or a
@@ -658,6 +697,50 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded.
+
+## Menu and panel inventory (#959, in progress)
+
+The shared check is `panel_check::check_open_panels`
+([`panel_check.rs`](../crates/ui-egui/src/app/panel_check.rs)), run by
+[`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs) for the top bar and by each
+service-backed panel's own test once that panel is open. It finds a panel's controls through
+that panel's own accessibility node, by id. Each top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
+bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both themes. None of its
+on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
+control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
+tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
+again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+
+| Surface | Opens from | Kind | Covered by |
+|---|---|---|---|
+| Sheets, Techniques, Elements, Budgets, API keys | top bar | floating panel | `menus959_tests` (open, area, overlap, close) |
+| ComfyUI servers, Plugins | top bar (disabled without their service) | floating panel | `menus959_tests` (opened through their state), `topbar_tests` (disabled state) |
+| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` (with the layout check) |
+| Automation | top bar (with an MCP host) | floating panel | `automation::tests` (with the layout check, server running) |
+| Charges to review | palette `usage.ownership` | floating panel | `ownership_panel::tests` (with the layout check) |
+| Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
+| Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
+| PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
+| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
+| Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
+| Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+**Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
+The API keys panel sits past the window's right edge for its first placement frames at 1000 px
+and settles inside once laid out; the checks run after placement settles. The image viewer ran
+past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
+its shape, so the panel fits (`floating::body_room`).
+
+**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
+picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
+the update banner, card and field context menus, the inspector and bulk panels, notices, and the
+Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
+states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
+Escape is left for its own change: several canvas and dialog handlers read Escape without
+consuming it, so a panel close needs them fixed first.
 
 ## Saving results
 

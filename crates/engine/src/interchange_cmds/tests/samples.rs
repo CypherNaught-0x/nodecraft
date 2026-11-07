@@ -45,6 +45,11 @@ fn put(s: &mut Session, id: NodeId, kind: &str, title: &str, bytes: &[u8], mime:
     s.dispatch("node.title", &json!({"canvas":CANVAS,"id":id,"title":title})).unwrap();
 }
 fn representative() -> Session {
+    representative_with_still_at(300_000)
+}
+
+/// [`representative`] with its still starting at `still_at_us` on the timeline.
+fn representative_with_still_at(still_at_us: u64) -> Session {
     let mut project = nodecraft_graph::Project::new(ProjectId::from_bytes([42; 16]), "Original interchange sample").unwrap();
     nodecraft_graph::Change::AddCanvas { canvas: nodecraft_graph::Canvas::new(CANVAS, "Practice") }.apply(&mut project).unwrap();
     let mut s = Session::new(project).unwrap();
@@ -81,7 +86,7 @@ fn representative() -> Session {
     sound.fade_out_us = 300_000;
     sound.volume = 700;
     let mut still = Clip::wired("marker".into(), Input::Stills, STILL.to_string(), 0, 2);
-    still.at_us = 300_000;
+    still.at_us = still_at_us;
     still.out_us = Some(700_000);
     still.fade_in_us = 200_000;
     still.fade_out_us = 200_000;
@@ -119,6 +124,8 @@ fn verify_archive(path: &std::path::Path) {
     assert!(!report.lines().any(|line| line.contains(": fade:") || line.contains(": opacity:")), "{report}");
     assert!(report.contains("docs/timeline-interchange.md for editor import results and limitations"));
 }
+
+mod editor_import;
 
 #[test]
 fn original_representative_archive_roundtrips_every_media_type_and_fade() {

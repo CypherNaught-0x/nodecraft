@@ -375,6 +375,7 @@ mod keep_aside;
 mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
+mod key_endpoints;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -387,6 +388,8 @@ mod live;
 mod mask_badges;
 mod mask_editor;
 mod mentions;
+#[cfg(test)]
+mod menus959_tests;
 mod mesh_capture;
 mod mesh_saved;
 mod metrics;
@@ -399,6 +402,8 @@ mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paid_results;
 mod palette_navigation;
+#[cfg(test)]
+mod panel_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 mod paste_media;
@@ -724,7 +729,7 @@ impl NodeCraftApp {
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
         // `keys.test` sends its check on the runs' runtime and HTTP client (#237).
-        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone()));
+        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone(), store.dir().map(std::path::Path::to_path_buf)));
         let results = match nodecraft_engine::secrets::KeyWorker::spawn_with_tests(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore), key_tests) {
             Ok((worker, results)) => {
                 nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
@@ -1017,6 +1022,22 @@ impl NodeCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = change;
+    }
+
+    /// Replaces the agent's settings and writes the settings file now (#1063): the agent's settings
+    /// screen saves with one confirmed write. Why it couldn't be written, if it couldn't: the
+    /// change still holds for this session.
+    pub fn save_agent_settings(&mut self, agent: nodecraft_engine::settings::AgentSettings) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            store.update(|settings| settings.agent = agent);
+            if store.is_read_only() {
+                return Err("the settings file can't be written, so this holds until NodeCraft closes".into());
+            }
+            return store.flush().map_err(|_| "the settings file couldn't be saved; this holds until NodeCraft closes".to_owned());
+        }
+        let _ = agent;
+        Err("there is no settings file here, so this holds until NodeCraft closes".into())
     }
 
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
@@ -1572,9 +1593,9 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
-            // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
+            // Command+Enter quotes a run of everything that changed or hasn't run (#965); nothing
             // starts until the person confirms the price. A focused text field keeps its own
-            // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
+            // Command+Enter (a prompt quotes its card, a multiline value commits), and so do a
             // gesture in flight and an open menu or panel. Not while the recovery question is open
             // either: its answer may replace the document the run would be quoted on.
             #[cfg(not(target_arch = "wasm32"))]
@@ -1902,7 +1923,15 @@ impl NodeCraftApp {
                     (self.view.zoom >= card::BODY_MIN_ZOOM).then(|| crate::video::video_of(node)).flatten().filter(|_| images.0.is_empty()).map(|asset| {
                         let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
                         let assets = self.session.assets();
-                        self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
+                        let view = self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset));
+                        // Its sound track plays with the picture (#1065): only while it plays, so an
+                        // idle canvas reads and plays nothing.
+                        let (playing, at) = match &view {
+                            crate::video::VideoView::Frame { playing, position_us, .. } => (*playing, *position_us),
+                            _ => (false, 0),
+                        };
+                        self.audios.follow(ui.ctx(), node.id, asset, playing, at, || assets.preview_read(asset));
+                        view
                     });
                 // And sounds; which card plays, and where, is view state too (#106). A sound
                 // still arriving plays from its job's latest preview, then its result (#875).
@@ -1912,7 +1941,8 @@ impl NodeCraftApp {
                 let sound_so_far = self.runs.as_ref().and_then(|runs| runs.audio_preview(self.canvas, node.id));
                 let result = crate::audio::audio_of(node);
                 let finished = result.and_then(|asset| self.runs.as_ref()?.finished_take(self.canvas, node.id, asset.hash));
-                if sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
+                // A video card's sound is its video's, followed above.
+                if video.is_none() && sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
                     self.audios.let_go(node.id);
                 }
                 let audio = match (sound_so_far, result) {
@@ -2009,6 +2039,7 @@ impl NodeCraftApp {
                                     .session
                                     .generation_catalog()
                                     .is_ok_and(|catalog| !nodecraft_engine::variation_cmds::pinned_seeds(catalog, node).is_empty()),
+                            cache: nodecraft_engine::cache::enabled(node, self.session.kinds()),
                         },
                     },
                     editor,
@@ -2046,8 +2077,11 @@ impl NodeCraftApp {
                             Vec2::new(t.tag_marker_width, t.tag_row_height.min(r.rect.height())),
                         );
                         tag_painter.rect_filled(marker, t.tag_marker_width, t.tag_color(tag.color.as_deref()));
-                        ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
-                            .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
+                        let name = format!("Tag: {}", crate::tags::label(&tag.title));
+                        let response = ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover());
+                        // Colour alone doesn't say which tag it is (#1118): name it for screen readers.
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &name));
+                        response.on_hover_text(name);
                     }
                     if let Some(runs) = &self.runs
                         && let Some((label, color, why)) = queue_panel::card_status(runs, self.canvas, node.id, t)
@@ -2666,6 +2700,7 @@ impl NodeCraftApp {
                 },
                 Intent::Variations(count) => ("node.variations_set", json!({"canvas":self.canvas,"id":id,"count":count}), None),
                 Intent::VariationCards(cards) => ("canvas.set_variation_cards", json!({"canvas":self.canvas,"cards":cards}), None),
+                Intent::Cache(enabled) => ("node.cache_set", json!({"canvas":self.canvas,"id":id,"enabled":enabled}), None),
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);
@@ -2808,8 +2843,7 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
-        let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
-        self.save_accounts(changes);
+        self.keys_panel(ui.ctx(), t);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
         self.browser_providers_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]
@@ -3834,6 +3868,8 @@ fn starter_id() -> [u8; 16] {
 }
 #[cfg(test)]
 mod centering_tests;
+#[cfg(test)]
+mod names1118_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

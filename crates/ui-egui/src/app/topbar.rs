@@ -104,7 +104,7 @@ impl Control {
     }
 
     fn show(&self, ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
-        let color = if self.active { t.accent } else { t.text_muted };
+        let color = if self.active { t.selection_text } else { t.text_muted };
         let mut button = self
             .entry
             .icon()
@@ -121,14 +121,15 @@ impl Control {
         let response = ui.add_enabled(self.enabled, button);
         // Keep the run count in the established accessible name as well as the visible badge.
         let label = if self.entry == Entry::Search {
-            if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }.to_owned()
+            crate::shortcut::with_shortcut(ui.ctx(), "Search", "Command+F")
         } else if self.entry == Entry::Queue {
             self.badge.as_ref().map_or_else(|| self.entry.label().to_owned(), |badge| format!("Queue ({badge})"))
         } else {
             self.entry.label().to_owned()
         };
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, self.enabled, self.active, label.as_str()));
-        response.on_hover_text(&self.hint)
+        // The hint explains the entry whether or not it can open now (#1113).
+        response.on_hover_text(&self.hint).on_disabled_hover_text(&self.hint)
     }
 }
 
@@ -246,8 +247,8 @@ impl NodeCraftApp {
             .show(ui.ctx(), |ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(t.navigation_gap);
                 ui.spacing_mut().button_padding = Vec2::new(t.navigation_gap, t.control_vertical_padding);
-                ui.visuals_mut().selection.bg_fill = t.panel_stroke;
-                ui.visuals_mut().selection.stroke = egui::Stroke::new(t.handle_stroke, t.accent);
+                ui.visuals_mut().selection.bg_fill = t.selection_fill;
+                ui.visuals_mut().selection.stroke = egui::Stroke::new(t.handle_stroke, t.selection_text);
                 egui::Frame::NONE
                     .fill(t.panel_fill)
                     .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))
@@ -260,7 +261,8 @@ impl NodeCraftApp {
                                     menu_enabled,
                                     Icon::More.button(ui, "More", t).gap(t.control_gap).min_size(Vec2::new(0.0, t.navigation_toolbar_height)),
                                 )
-                                .on_hover_text("All menu entries; finish any active editor or gesture before opening");
+                                .on_hover_text("All menu entries; finish any active editor or gesture before opening")
+                                .on_disabled_hover_text("Finish the active editor or gesture first");
                             if let Some(menu) = egui::Popup::menu(&response).id(popup_id()).show(|ui| {
                                 egui::ScrollArea::vertical()
                                     .max_height(

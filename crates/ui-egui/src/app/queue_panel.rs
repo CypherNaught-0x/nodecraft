@@ -131,10 +131,20 @@ impl NodeCraftApp {
                     if retry.clicked() {
                         *action = Some(Action::Held("run.held_retry", view.id));
                     }
-                    if ui.add_enabled(idle, egui::Button::new("Put on canvas")).on_hover_text("Add its outputs as source nodes beside its card").clicked() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Put on canvas"))
+                        .on_hover_text("Add its outputs as source nodes beside its card")
+                        .on_disabled_hover_text("Wait for its pending request to finish")
+                        .clicked()
+                    {
                         *action = Some(Action::Held("run.held_place", view.id));
                     }
-                    if ui.add_enabled(idle, egui::Button::new("Discard")).on_hover_text("Let it go; its charge stands").clicked() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Discard"))
+                        .on_hover_text("Let it go; its charge stands")
+                        .on_disabled_hover_text("Wait for its pending request to finish")
+                        .clicked()
+                    {
                         *action = Some(Action::Held("run.held_discard", view.id));
                     }
                     if let Some(pending) = view.pending {
@@ -162,7 +172,7 @@ impl NodeCraftApp {
         let color = match &view.state {
             JobState::Failed { .. } => t.danger,
             JobState::Done | JobState::Cancelled => t.text_muted,
-            _ => t.accent,
+            _ => t.accent_text,
         };
         let status = ui.label(egui::RichText::new(view.status()).color(color));
         if let JobState::Failed { reason, cause } = &view.state {
@@ -171,12 +181,22 @@ impl NodeCraftApp {
         }
         ui.label(price(view));
         if !view.state.is_final() {
-            if ui.add_enabled(!view.cancel_requested, egui::Button::new("Cancel")).on_hover_text("Stop this job").clicked() {
+            if ui
+                .add_enabled(!view.cancel_requested, egui::Button::new("Cancel"))
+                .on_hover_text("Stop this job")
+                .on_disabled_hover_text("It is already stopping")
+                .clicked()
+            {
                 *action = Some(Action::Cancel(view.key));
             }
         } else if matches!(view.state, JobState::Failed { .. } | JobState::Cancelled) && view.provider.is_some() {
             let can = view.canvas == self.canvas && node.is_some() && self.runs.as_ref().is_some_and(|runs| !runs.is_running(view.canvas, view.node));
-            if ui.add_enabled(can, egui::Button::new("Retry")).on_hover_text("Quote this card again and run it").clicked() {
+            if ui
+                .add_enabled(can, egui::Button::new("Retry"))
+                .on_hover_text("Quote this card again and run it")
+                .on_disabled_hover_text("Open its canvas, and wait for its card to finish running, to retry it")
+                .clicked()
+            {
                 *action = Some(Action::Retry(view.node));
             }
         } else {
@@ -204,7 +224,7 @@ fn price(view: &JobView) -> String {
 /// The run status a card shows under itself: what its job is doing, or why its last run failed.
 pub(super) fn card_status(runs: &super::runs::Runs, canvas: CanvasId, node: NodeId, t: &Tokens) -> Option<(String, egui::Color32, Option<String>)> {
     if let Some(status) = runs.card_status(canvas, node) {
-        return Some((status, t.accent, None));
+        return Some((status, t.accent_text, None));
     }
     let why = runs.failure(canvas, node)?;
     let cause = cause_of(why);

@@ -16,7 +16,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948) and close-out (#374) open | 47/49 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180), SOUL 2 scene inputs (#1043) and close-out (#377) open | 11/14 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
@@ -166,29 +166,33 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   full-size render on release (#88); video actions and the Timeline run only when asked. Split
   into grid cuts an image into tiles as new Image cards (#86). A card that would compute a result
   the project already holds for the same kind, settings and inputs reuses it: on by default for
-  cards that don't call a model, opt-in per card with `node.cache_set` for those that do, and a
-  run neither quotes nor pays for what it reuses (#91); the app has no button for that switch
-  yet. Custom shader cards run their WGSL on the GPU (#90). The Plugins panel checks a
+  cards that don't call a model, opt-in per card for those that do (the model card's "runs
+  fresh"/"reuses results" switch, or `node.cache_set`, #1059), and a run neither quotes nor
+  pays for what it reuses (#91). Custom shader cards run their WGSL on the GPU (#90). The Plugins panel checks a
   `.ncraft-plugin` package, installs it disabled and, once granted and enabled, a text-action
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
-- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
-  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
-  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
-  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Black Forest Labs**: desktop Generate image and the CLI use BFL directly (#33, #1060): FLUX.2
+  klein 4B and 9B, pro, max and flex text-to-image, quoted by output megapixels from BFL's
+  published rates (#1062), and FLUX.1 Kontext pro and max image editing at a published price per
+  image, with a keychain API key, resumable polling and bounded PNG downloads. FLUX.2 editing isn't
+  offered: its API documents input images only as URLs; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
 - **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
   current Pika 2.5 through fal (#29), at 720p for 5 or 10 seconds with explicit priced consent.
-  Browser sessions refuse before payment. Text-to-video and keyframes are not included; see
-  [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
+  Pika 2.5 keyframes move through 2 to 5 frames for 5 to 25 seconds at the same rate (#1061).
+  Browser sessions refuse before payment. Text-to-video isn't offered: fal removed Pika's on
+  2026-10-29. See [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
-  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent: the
+  per-second rate is published, but how output length is set and rounded isn't (#1062);
   see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
-  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  spending remains an unknown monetary quote and needs explicit consent: Magnific publishes no
+  Precision V2 rate (#1062). Browser and Classic
   in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD
@@ -237,14 +241,17 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   is not proof that every provider, modality or input mode runs in every host. The text card's
   turn UI, mentions, streaming, connected-media thumbnails, video to text (Gemini 3.8 Flash,
   inline videos under 20 MB) and built-in models' declared context windows have landed (#84).
-  The built-in windows are far larger than a card's prompt can be, so an over-long request to
-  them is refused by the provider, not by planning; browser provider settings/option lists differ from
+  A prompt clearly past a model's declared window is refused when the run is quoted, with its
+  size and what to do, before anything is sent (#1074); one made earlier in the same run is
+  checked when its step is planned, still before the request. Browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
-  The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
-  actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
-  model cards is a per-card command (`node.cache_set`) with no button yet (#91). Module
+  The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
+  between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
+  actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
+  the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
+  model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install, as a final decision for this plugin
   contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
@@ -253,8 +260,10 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
   change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
-  OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
-  is no settings screen for them yet, and the browser build has no agent.
+  OpenAI, OpenRouter, Ollama, LM Studio), model and a local server's address are chosen on the
+  sidebar's Settings screen and saved to `[agent]` at once (#1063); keys stay in the keychain. The
+  browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
+  moves the sidebar into a shared shell crate (#1064).
 - **The browser build is a preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
   storage for the site, and projects open and save through the browser's file pickers or as
@@ -262,20 +271,24 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   requests from web pages directly with those keys (#118). **Providers** saves ComfyUI and
   LiteLLM addresses per site. Browser option lists fetch in the background when the server allows
   the app's origin (#721). Supported catalog models can also use configured custom endpoints
-  (#960). Video playback and rendering use desktop FFmpeg. The browser offers recovery from
+  (#960). Video cards play in the browser through its own decoder, with their sound
+  (#1069); rendering video (the Timeline, video actions) needs desktop FFmpeg and says so. The browser offers recovery from
   site storage (#717) and asks before leaving with unsaved work. Browser files are read
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
 
-- **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
-  default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
-  interchange is available on desktop, with Final Cut Pro and DaVinci Resolve import checks and
-  background export improvements tracked separately (#643).
+- **Desktop media limits.** A video card plays its sound track with its picture, through the
+  default output device as sound cards do (#1065), one card's sound at a time. Playback and
+  FFmpeg-backed renders run on desktop. Timeline interchange is available on desktop and exports in
+  the background with a Cancel control. Its document is checked against structural rules both
+  editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
+  Resolve yet (#1066).
 
-- **Relay transport and storage differ by client.** The relay serves plain `ws://`.
-  Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
-  remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
-  local development and remote access. The relay holds rooms in memory.
+- **Relay transport and storage differ by client.** The relay serves plain `ws://`, which
+  desktop clients use, and with a certificate also `wss://` on a second port for browsers on
+  HTTPS pages (#1067); both reach the same rooms. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
+  local development and remote access. The relay holds rooms in memory unless it is given a
+  store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100) and typed nested descriptor records/lists (#528) remain open. HTTP serve
@@ -289,7 +302,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672), account voice choices (#670), and streaming speech playback on desktop
-  (#671, #875). The CLI and browser do not request streaming previews. 3D has Tripo
+  and in the browser (#671, #875, #1070); the CLI requests streaming previews too and reports
+  how much sound has arrived. 3D has Tripo
   text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
   for model and host capabilities. Published releases track their tagged source.
@@ -310,6 +324,9 @@ The near-term order follows the remaining open issues, not an already-finished w
 
 ## Milestone log
 
+- **2026-11-06** — a batch inside a technique's own graph fans its technique node out (#1073),
+  within the same bounds as a batch on the canvas (1,000 items and 16 batches per chain), every
+  item quoted before the run, and a failed item is the only one run again.
 - **2026-11-03** — M10 closed with #381. Desktop and browser Share and Join, role-scoped links,
   presence, bounded asset transfer and deck editing/export are in the app. The real relay
   integration test covers two peers editing one canvas and a late joiner.

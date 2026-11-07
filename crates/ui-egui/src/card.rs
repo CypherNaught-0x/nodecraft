@@ -84,6 +84,8 @@ pub enum Intent {
     Variations(u64),
     /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
     VariationCards(bool),
+    /// Reuse an identical earlier result instead of running again, or run fresh each time (#1059).
+    Cache(bool),
     /// Choose a folder whose files replace the ones this Folder card holds.
     ImportFolder,
     /// Choose the folder an Export to folder card writes into (#746): a person's grant.
@@ -361,7 +363,7 @@ pub fn show(
     } else {
         t.card_stroke
     };
-    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(t.stroke_hairline / view.zoom, stroke), StrokeKind::Inside);
 
     {
         let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
@@ -585,7 +587,13 @@ pub fn show(
                                 };
                                 let preview: String = current.chars().take(t.preview_chars).collect();
                                 ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
-                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                if ui
+                                    .add_enabled(editable, egui::Button::new("Change model…"))
+                                    .labelled_by(label.id)
+                                    .on_hover_text(&preview)
+                                    .on_disabled_hover_text(format!("{preview}\n\nThe model can't be changed here right now"))
+                                    .clicked()
+                                {
                                     intents.push(Intent::Model);
                                 }
                             } else {
@@ -670,7 +678,12 @@ fn export_controls(ui: &mut egui::Ui, folder: Option<&str>, intents: &mut Vec<In
         if ui.button(choose).on_hover_text("Pick the folder this card writes into; it stays on this computer, never in the project").clicked() {
             intents.push(Intent::ChooseExportFolder);
         }
-        if ui.add_enabled(folder.is_some(), egui::Button::new("Export")).on_hover_text("Write the wired results into the chosen folder").clicked() {
+        if ui
+            .add_enabled(folder.is_some(), egui::Button::new("Export"))
+            .on_hover_text("Write the wired results into the chosen folder")
+            .on_disabled_hover_text("Choose a folder first")
+            .clicked()
+        {
             intents.push(Intent::Export);
         }
     });
@@ -895,10 +908,10 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
             }
         }
         _ => {
-            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(t.stroke_hairline, t.waveform));
         }
     }
-    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    painter.vline(playhead, bars.y_range(), Stroke::new(t.stroke_medium, t.text));
     let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.set_clip_rect(controls.intersect(ui.clip_rect()));
     let name = if *playing { "Pause sound" } else { "Play sound" };

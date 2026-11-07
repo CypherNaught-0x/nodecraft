@@ -413,6 +413,18 @@ fn mesh569_visual_format_choices() {
     }
 }
 
+/// A click a slow frame can't drop: hovered and settled first, then pressed and released one
+/// frame apart (a kittest `click` sends both in one frame, after however many frames the caller
+/// guessed the popup needs).
+fn click_at(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
+    h.hover_at(pos);
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+}
+
 #[test]
 fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
@@ -431,10 +443,10 @@ fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
         h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
         h.run_steps(3);
         let original = h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"].clone();
-        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
-        h.run_steps(2);
-        h.get_by_label("STL (geometry only)").click();
-        h.run_steps(3);
+        let at = h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").rect().center();
+        click_at(&mut h, at);
+        let at = h.get_by_label("STL (geometry only)").rect().center();
+        click_at(&mut h, at);
         assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
         assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"], original);
         h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();

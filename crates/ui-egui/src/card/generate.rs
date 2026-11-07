@@ -1,5 +1,5 @@
 //! The generation card's composer (#83): the prompt with a submit arrow and the variation
-//! counter. The arrow, Cmd/Ctrl+Enter in the prompt and Enter on the focused card ask the app to
+//! counter. The arrow, Command+Enter in the prompt and Enter on the focused card ask the app to
 //! generate; the app quotes the run and asks before anything is spent.
 use super::*;
 use nodecraft_exec::variations::MAX_VARIATIONS;
@@ -244,6 +244,8 @@ pub struct Variations {
     pub cards: bool,
     /// The card asks for several variations with a pinned seed.
     pub alike: bool,
+    /// The card reuses an identical earlier result instead of paying again (#91, #1059).
+    pub cache: bool,
 }
 
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
@@ -308,9 +310,16 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 counter(ui, node, spec, editable(&spec.name), intents, t);
             }
             variations(ui, node, shown_variations, intents, t);
+            reuse(ui, shown_variations.cache, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if submit(ui, t).on_hover_text("Generate (Enter on the card, or Cmd/Ctrl+Enter in the prompt). Shows the price first.").clicked() {
+                if submit(ui, t)
+                    .on_hover_text(format!(
+                        "Generate (Enter on the card, or {} in the prompt). Shows the price first.",
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
+                    ))
+                    .clicked()
+                {
                     intents.push(Intent::Generate);
                 }
             });
@@ -404,6 +413,29 @@ fn variations(ui: &mut egui::Ui, node: &Node, shown: Variations, intents: &mut V
             );
         }
     });
+}
+
+/// Whether the card reuses an identical earlier result (#1059): a run whose inputs and settings
+/// match a result already made, on this card or another, takes that result for free instead of
+/// paying again. Off by default for model cards, since a model asked again may answer differently.
+fn reuse(ui: &mut egui::Ui, on: bool, intents: &mut Vec<Intent>, t: &Tokens) {
+    let (text, hint) = if on {
+        (
+            "reuses results",
+            "A run with the same inputs and settings as a result already made reuses it, free, instead of asking the model again. Click to ask the model every time.",
+        )
+    } else {
+        (
+            "runs fresh",
+            "Every run asks the model again, and a paid model charges for it. Click to reuse a result already made with the same inputs and settings, free.",
+        )
+    };
+    let color = if on { t.text } else { t.text_muted };
+    let r = ui.add(egui::Button::new(egui::RichText::new(text).color(color)).small().selected(on)).on_hover_text(hint);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Reuse identical results"));
+    if r.clicked() {
+        intents.push(Intent::Cache(!on));
+    }
 }
 
 /// The round submit button with a painted up arrow; no font glyph or icon asset.

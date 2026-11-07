@@ -257,7 +257,7 @@ impl NodeCraftApp {
                                 if ui.checkbox(&mut shared, "Shared").on_hover_text("Mark it meant for others; Elements are private until you do").changed() {
                                     action = Some(Action::Share { name: entry.name.clone(), shared });
                                 }
-                                ui.menu_button("…", |ui| {
+                                let more = ui.menu_button("…", |ui| {
                                     if ui
                                         .button("Rename")
                                         .on_hover_text("Elements already on a canvas update from it only if they carry its new name")
@@ -279,6 +279,10 @@ impl NodeCraftApp {
                                         ui.close();
                                     }
                                 });
+                                // The glyph alone isn't a name (#1118).
+                                let more_name = format!("More for {}", sheet_view::line(&entry.name));
+                                more.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &more_name));
+                                more.response.on_hover_text("Rename, export or remove it");
                             });
                         }
                         if !listing.damaged.is_empty() {

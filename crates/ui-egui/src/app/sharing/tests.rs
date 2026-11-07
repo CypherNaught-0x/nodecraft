@@ -320,6 +320,37 @@ fn the_share_chip_opens_the_panel() {
     assert!(h.state().sharing.as_ref().unwrap().panel.open);
     h.get_by_label("Join a shared project in a new window");
     assert!(h.query_by_label("Stop sharing").is_none());
+    crate::app::panel_check::check_open_panels(&h, "Share, not sharing");
+}
+
+/// The Share panel, idle and live, opens inside the panel area with no crossing controls at the
+/// two window sizes the top-bar panels are checked at (#959).
+#[test]
+fn the_share_panel_keeps_its_layout_idle_and_live_at_both_sizes() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        // A relay of its own per size: a room keeps its document after everyone leaves.
+        let relay = relay();
+        let mut owner = app(&opened);
+        if let Some(sharing) = &mut owner.sharing {
+            sharing.panel.open = true;
+        }
+        let mut h = egui_kittest::Harness::builder().with_size(size).with_max_steps(60).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+        h.run();
+        crate::app::panel_check::check_open_panels(&h, &format!("Share, not sharing, at {size:?}"));
+        let mut owner = h.into_state();
+        owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+        until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+        if let Some(sharing) = &mut owner.sharing {
+            sharing.panel.open = true;
+        }
+        let mut h = egui_kittest::Harness::builder().with_size(size).with_max_steps(60).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+        h.run();
+        use egui_kittest::kittest::Queryable;
+        assert!(h.query_by_label("Stop sharing").is_some(), "the live panel is showing");
+        crate::app::panel_check::check_open_panels(&h, &format!("Share, live, at {size:?}"));
+        h.state_mut().session.dispatch("share.stop", &json!({})).unwrap();
+    }
 }
 
 /// A Train style card holding a trained Soul ID, recorded as a run records it.

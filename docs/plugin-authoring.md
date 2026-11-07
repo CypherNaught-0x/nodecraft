@@ -87,6 +87,38 @@ packages can be granted `network` and `secret`), and warns about an optional one
 refuses, one folder per mistake, named after the error code it gets. Use them to see what each
 refusal looks like.
 
+## Trying it without a key or the network
+
+`plugin try` (#866) runs one registration of a package the way the app would, with nothing
+installed, granted or enabled, and nothing sent off the machine:
+
+```sh
+nodecraft-cli plugin try shout.ncraft-plugin shout --input words="hello there"
+nodecraft-cli plugin try acme.ncraft-plugin acme --input prompt="A lighthouse" --replies replies.json
+```
+
+- **A text action** runs on the `--input name=text` values through the same compile and run the
+  app uses, and prints its outputs.
+- **A provider** template is sent by the app's own broker, over a scripted transport instead of
+  the network. Each request it makes gets the next reply from `--replies`, a JSON list of
+  `{"status": 200, "json": …}` or `{"status": 200, "text": "…"}`, with optional `"headers"`
+  (at most 64 replies). The report lists every request: method, URL, header names (never values)
+  and body. Then it gives the outputs, or the error, and whether the broker would hold that error
+  as possibly billed. The broker's rules are the real ones: the credential goes only to the API
+  origin, no redirects are followed, and outputs come only from declared origins. A template with
+  a credential gets a fixed fixture value, never a key.
+- `--model` picks a model by the template's own model id (as in its `models` list, not the
+  catalog id), other than its first; `--param name=json` sets a parameter. A text action takes
+  only `--input`.
+- Before running, the package is checked as `lint` checks it, so a package that tries cleanly is
+  one the app installs, grants and enables. A run that ends in an error exits non-zero, with the
+  report on stderr, so CI fails on it.
+- Out of replies, a request fails as a lost network reply would, so a script that stops early
+  shows how the host treats a paid request that never answered.
+
+Run it in CI next to `lint`: a provider package's request shape and its handling of the service's
+replies are then checked on every change, without an account.
+
 ## Signing
 
 An unsigned package installs as a local package. To publish one under your own name, make a key

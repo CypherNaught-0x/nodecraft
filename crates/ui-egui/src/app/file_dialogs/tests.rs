@@ -330,9 +330,19 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
     settle(&mut h);
+    assert!(!h.get_by_label("Clear recent projects").accesskit_node().is_disabled(), "a list to clear");
     h.get_by_label("Remove").click();
     settle(&mut h);
     assert!(h.state().files.projects.recent().is_empty());
+    // #1111: with nothing listed, Clear has nothing to do and says so.
+    assert!(h.query_by_label("No recent projects").is_some());
+    let clear = h.get_by_label("Clear recent projects");
+    assert!(clear.accesskit_node().is_disabled(), "an empty list can't be cleared");
+    clear.hover();
+    for _ in 0..90 {
+        h.step();
+    }
+    assert!(h.query_by_label("There are no recent projects to clear").is_some(), "the disabled button says why");
 }
 
 #[test]

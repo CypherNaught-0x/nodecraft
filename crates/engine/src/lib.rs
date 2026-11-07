@@ -86,6 +86,8 @@ pub mod plugin_providers;
 pub mod plugin_rights;
 pub mod plugin_runtime;
 pub mod plugin_text;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_try;
 pub mod private_cmds;
 pub mod provider_quotes;
 pub mod resolve_cmds;
@@ -131,7 +133,7 @@ pub mod update_check;
 pub mod update_install;
 pub mod url_import;
 
-pub use session::{DocChanged, PreparedImports, Session};
+pub use session::{DocChanged, PreparedImports, PreparedStorage, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;

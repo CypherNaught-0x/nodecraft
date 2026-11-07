@@ -1069,13 +1069,9 @@ impl<'a> Graph<'a> {
             for collect in collects {
                 let (collected, port_type) =
                     self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| vec![blocker(None, Some(upstream), reason)])?;
-                // A batch inside the version stays unsupported (#93); only one on the canvas
-                // fans a technique node.
-                if let Collected::Fanned(tags, _) = &collected
-                    && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
-                {
-                    return Err(vec![blocker(None, Some(collect.node), Reason::PublicInvalid("a batch inside its technique can't fan it out yet".into()))]);
-                }
+                // A batch inside the version fans the technique node as one on the canvas does
+                // (#1073): its items are tagged by the batch's inlined id, which is derived from
+                // the instance and stays the same from run to run.
                 let from = match collected {
                     Collected::Plain(from) => from,
                     Collected::Fanned(tags, source) => {
@@ -1308,6 +1304,13 @@ impl<'a> Graph<'a> {
             }
             if upstream.is_some_and(|u| folder::loops_over(u, up_port)) {
                 return Err(Reason::PublicInvalid("a batch collects a folder's Files or Names output, not its looping File or Name".into()));
+            }
+            // Inside a technique every node but its inputs runs with it and has no result of its
+            // own, so nothing can be run first (#1073): say what can feed the batch instead.
+            if self.inner.contains_key(&id) && self.inner.contains_key(up) && !upstream.is_some_and(|u| self.is_source(u)) {
+                return Err(Reason::PublicInvalid(
+                    "a batch inside a technique collects only its inputs and source cards; publish the technique with what feeds the batch outside it, wired to an input".into(),
+                ));
             }
             if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
                 return Err(Reason::PublicInvalid("a batch collects existing results; run the nodes feeding it first".into()));

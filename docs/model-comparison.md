@@ -44,7 +44,13 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `azure-openai.deployment` | [Documentation](https://learn.microsoft.com/en-us/azure/ai-studio/ai-services/concepts/endpoints) | 2026-10-27 |
 | `bedrock.gpt-oss-120b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html) | 2026-11-03 |
 | `bedrock.gpt-oss-20b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html) | 2026-11-03 |
+| `bfl.flux-2-flex` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `bfl.flux-2-klein-4b` | [Documentation](https://docs.bfl.ai/quick_start/generating_images) | 2026-10-27 |
+| `bfl.flux-2-klein-9b` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
@@ -79,6 +85,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.minimax-speech28-hd` | [Documentation](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api) | 2026-10-28 |
 | `fal.minimax-music3` | [Documentation](https://fal.ai/models/minimax/music-3/api) | 2026-10-28 |
 | `fal.pika25-i2v` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api) | 2026-10-28 |
+| `fal.pika25-keyframes` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes/api) | 2026-11-06 |
 | `fal.heygen-avatar4` | [Documentation](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api) | 2026-10-28 |
 | `fal.heygen-lipsync-speed` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) | 2026-10-28 |
 | `fal.heygen-lipsync-precision` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) | 2026-10-28 |
@@ -124,6 +131,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `higgsfield.genjutsu-restyle` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/restyle) | 2026-10-27 |
 | `higgsfield.kling-2.5-turbo-i2v` | [Documentation](https://docs.higgsfield.ai/docs) | 2026-10-27 |
 | `higgsfield.soul-2` | [Documentation](https://higgsfield.ai/soul-intro) | 2026-10-27 |
+| `higgsfield.soul-2-i2i` | [Documentation](https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference) | 2026-11-06 |
 | `higgsfield.soul-id-trainer` | [Documentation](https://open.higgsfield.ai/models/soul-id/api-reference) | 2026-10-27 |
 | `huggingface.gpt-oss-120b-groq` | [Documentation](https://huggingface.co/docs/inference-providers/en/guides/gpt-oss) | 2026-10-27 |
 | `kling.image_v2_1` | [Documentation](https://kling.ai/document-api/updates/api?date=2026-02-11) | 2026-10-27 |

@@ -63,6 +63,18 @@ pub fn layer(id: Id) -> egui::LayerId {
 /// The panels drawn recently, with the pass each was last drawn in.
 type Shown = Vec<(Id, u64)>;
 
+/// The panels drawn in this or the previous pass, with their rectangles (#959 tests).
+#[cfg(test)]
+pub fn shown(ctx: &Context) -> Vec<(Id, egui::Rect)> {
+    let pass = ctx.cumulative_pass_nr();
+    let shown: Shown = ctx.data(|data| data.get_temp::<Shown>(shown_id())).unwrap_or_default();
+    shown
+        .into_iter()
+        .filter(|(_, at)| at.saturating_add(1) >= pass)
+        .filter_map(|(id, _)| egui::AreaState::load(ctx, id).map(|state| (id, state.rect())))
+        .collect()
+}
+
 /// Records a fixed surface drawn in the panel layer this pass (the Shared parameters panel), so
 /// a panel opening over it steps below its header like it does for any open panel.
 pub fn occupy(ctx: &Context, id: Id) {
@@ -80,6 +92,15 @@ fn header_id(id: Id) -> Id {
 
 fn header_height_id(id: Id) -> Id {
     id.with("nodecraft.floating.header_height")
+}
+
+/// The height a panel's body can take without the panel leaving the floating panel area: the
+/// area's height less what sits above the body (the measured gap from the panel's top edge to its
+/// content: stroke, title and top padding; the cascade token until measured) and below it (the
+/// bottom padding and stroke). Never negative.
+pub fn body_room(ctx: &Context, id: Id, t: &Tokens) -> f32 {
+    let above = ctx.data(|data| data.get_temp::<f32>(header_height_id(id))).filter(|height| height.is_finite()).unwrap_or(t.panel_cascade);
+    (bounds(ctx, t).area.height() - above - t.card_padding - t.handle_stroke).max(0.0)
 }
 
 fn moved_id(id: Id) -> Id {

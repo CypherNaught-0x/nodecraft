@@ -22,3 +22,31 @@ name = "duration_seconds"
 label = "Seconds"
 control = { type = "unsigned", min = "5", max = "10", step = "5" }
 default = { type = "unsigned", value = "5" }
+
+# Current Pika 2.5 Pikaframes fal schema and rates checked 2026-11-06 (#1061):
+# https://fal.ai/models/fal-ai/pika/v2.5/pikaframes/api
+# https://fal.ai/models/fal-ai/pika/v2.5/pikaframes
+# "Billed per second: $0.03 for 480p, $0.05 for 720p, and $0.10 for 1080p. A minimum of 5
+# billable seconds applies." Resolution is fixed at 720p and the clip is at least 5 seconds,
+# so $0.05/second is exact. Pika has no text-to-video on fal now: v2.2's was removed on
+# 2026-10-29 and v2.5 has none.
+[[model]]
+id = "fal.pika25-keyframes"
+provider = "fal"
+provider_model = "fal-ai/pika/v2.5/pikaframes"
+label = "Pika 2.5 keyframes (fal)"
+description = "Move through 2 to 5 keyframes in order with a prompt at 720p, 5 to 25 seconds in all. Desktop project required. Upright static PNG/JPEG/WebP frames up to 1 MiB and 1024 px."
+latency_s = 180
+quality = 4
+pricing = { type = "per_unit", unit = "second", price = "0.05 USD", count = "duration_seconds", default_count = 5 }
+
+[[model.modes]]
+id = "keyframes"
+output = "video"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "keyframes", modality = "image", min = 2, max = 5 }]
+
+[[model.params.params]]
+name = "duration_seconds"
+label = "Seconds"
+control = { type = "unsigned", min = "5", max = "25", step = "1" }
+default = { type = "unsigned", value = "5" }

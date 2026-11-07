@@ -117,7 +117,7 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
-    /// Run changed (⌘/Ctrl+Enter) or Run workflow (#965), from the shortcut or the palette:
+    /// Run changed (Command+Enter) or Run workflow (#965), from the shortcut or the palette:
     /// quotes the run and shows its confirmation, or says there is nothing to run.
     pub(super) fn run_whole_command(&mut self, id: &str) {
         let kind = if id == "run.workflow" { super::generate::RunKind::Workflow } else { super::generate::RunKind::Changed };

@@ -138,6 +138,19 @@ means a required context that a branch's workflow never publishes leaves that pu
 forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
 open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
 
+## Image actions on the GPU
+
+The desktop app runs built-in image actions on the GPU and falls back to the CPU reference
+([decision](decisions/2026-11-06-image-actions-on-gpu.md)); `NODECRAFT_IMAGE_GPU=0` keeps it on
+the CPU. Tests never turn the GPU path on, so their results stay exact. The GPU parity tests are
+ignored by default; on Linux without a GPU, a software Vulkan driver (`mesa-vulkan-drivers`,
+lavapipe) runs them:
+
+```sh
+cargo test -p nodecraft-engine --lib image_gpu -- --ignored --nocapture
+cargo test -p nodecraft-gpu -- --ignored
+```
+
 ## Benchmarks
 
 For the bounded release collect/compare matrix, baseline policy, CI artifacts and precise timing
@@ -248,6 +261,7 @@ rather than reusing an old recorder-only nanosecond estimate.
 |---|---|
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
 | `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate and the `nodecraft-web` app |
+| `cargo xtask browser` | the browser tests (#1038), compiled to wasm32 and run in headless Chrome by `wasm-bindgen-test-runner`; needs `cargo install wasm-bindgen-cli --version <Cargo.lock's wasm-bindgen> --locked` and a `chromedriver` matching the installed Chrome (on `PATH`, or `CHROMEDRIVER`). CI's Linux leg runs it |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
 | `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
@@ -480,3 +494,15 @@ still require the desktop.
 
 Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
 UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.
+
+## Browser tests
+
+`cargo xtask browser` runs the tests that need a real browser, today the example plugin import
+through the browser's session-only store (`crates/engine/tests/browser_plugins_wasm.rs`, which
+compiles the native `browser_plugins866.rs` tests for wasm32 under `wasm-bindgen-test`). It
+checks that `wasm-bindgen-test-runner` is Cargo.lock's wasm-bindgen version first. It also fails when fewer tests ran than the target holds, so tests that stopped
+compiling in can't pass unseen. Without a matching `chromedriver`, run the runner by hand with
+`NO_HEADLESS=1` on the test's `.wasm` (`wasm32-unknown-unknown/debug/deps/browser_plugins_wasm-*.wasm`
+under the target directory, built by
+`cargo test -p nodecraft-engine --target wasm32-unknown-unknown --test browser_plugins_wasm --no-run`)
+and open the address it prints in any browser: the page shows each test's result.

@@ -8,7 +8,7 @@
 //! The panel holds the [`Agent`] and its worker thread; the shell draws it and passes the app in,
 //! so it never holds the app across frames.
 use nodecraft_agent::{Agent, Config, Focus, FocusNode, Impact, Mode, Next, Status, Step, StepKind, ToolStatus};
-use nodecraft_engine::settings::{AgentMode, AgentSettings};
+use nodecraft_engine::settings::{AgentEndpoint, AgentMode, AgentSettings};
 use nodecraft_types::{Currency, NodeId};
 use nodecraft_ui_egui::NodeCraftApp;
 use std::collections::BTreeMap;
@@ -37,6 +37,68 @@ pub enum Intent {
     Clear,
     Mention(NodeId),
     Unmention(NodeId),
+    /// Open the agent's settings, or close them without saving (#1063).
+    Settings(bool),
+    /// Save the settings form as one settings write.
+    SaveSettings,
+}
+
+/// The settings form while it is open (#1063): what the person has chosen, not yet saved.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Draft {
+    pub endpoint: AgentEndpoint,
+    pub model: String,
+    pub base_url: String,
+    /// Why the last Save was refused.
+    pub problem: Option<String>,
+}
+
+impl Draft {
+    fn of(settings: &AgentSettings) -> Self {
+        Self { endpoint: settings.endpoint, model: settings.model.clone(), base_url: settings.base_url.clone().unwrap_or_default(), problem: None }
+    }
+
+    /// The settings this form saves over `current`, or why it can't.
+    fn apply(&self, current: &AgentSettings) -> Result<AgentSettings, String> {
+        let model = self.model.trim();
+        let url = self.base_url.trim();
+        let next = AgentSettings {
+            endpoint: self.endpoint,
+            model: model.to_owned(),
+            // A cloud endpoint keeps the local server's address for when it is chosen again.
+            base_url: if local(self.endpoint) { (!url.is_empty()).then(|| url.to_owned()) } else { current.base_url.clone() },
+            ..current.clone()
+        };
+        if !model.is_empty() && next.model().is_none() {
+            return Err(format!("The model name must be at most {} bytes, with no control characters.", AgentSettings::MAX_TEXT_BYTES));
+        }
+        if worker::model(&next).is_none() {
+            return Err(format!("Choose a model for {}.", endpoint_label(self.endpoint)));
+        }
+        if local(self.endpoint) && next.base_url.is_some() && next.base_url().is_none() {
+            return Err("The server address must start with http:// or https://.".into());
+        }
+        Ok(next)
+    }
+}
+
+/// The endpoints the agent can ask, in the order the form lists them.
+const ENDPOINTS: [AgentEndpoint; 5] =
+    [AgentEndpoint::Anthropic, AgentEndpoint::Openai, AgentEndpoint::Openrouter, AgentEndpoint::Ollama, AgentEndpoint::LmStudio];
+
+fn endpoint_label(endpoint: AgentEndpoint) -> &'static str {
+    match endpoint {
+        AgentEndpoint::Anthropic => "Anthropic",
+        AgentEndpoint::Openai => "OpenAI",
+        AgentEndpoint::Openrouter => "OpenRouter",
+        AgentEndpoint::Ollama => "Ollama",
+        AgentEndpoint::LmStudio => "LM Studio",
+    }
+}
+
+/// A server on this machine, at an address the person may set; it needs no key.
+fn local(endpoint: AgentEndpoint) -> bool {
+    endpoint.account().is_none()
 }
 
 pub struct AgentPanel {
@@ -51,6 +113,8 @@ pub struct AgentPanel {
     notice: Option<String>,
     new_id: Box<dyn FnMut() -> [u8; 16]>,
     focus_input: bool,
+    /// The settings form, while it is open.
+    pub draft: Option<Draft>,
 }
 
 impl AgentPanel {
@@ -67,6 +131,7 @@ impl AgentPanel {
             notice: None,
             new_id: Box::new(toolbox::id_source()),
             focus_input: false,
+            draft: None,
         }
     }
 
@@ -182,9 +247,29 @@ impl AgentPanel {
                     self.focus_input = true;
                 }
                 Intent::Unmention(id) => self.mentions.retain(|m| *m != id),
+                Intent::Settings(true) => self.draft = Some(Draft::of(&app.agent_settings())),
+                Intent::Settings(false) => self.draft = None,
+                Intent::SaveSettings => self.save_settings(app),
             }
         }
         self.forget_unwanted();
+    }
+
+    /// Saves the form as one settings write, or says why it can't; the next message uses it.
+    fn save_settings(&mut self, app: &mut NodeCraftApp) {
+        let Some(draft) = &mut self.draft else { return };
+        match draft.apply(&app.agent_settings()) {
+            Ok(next) => {
+                let written = app.save_agent_settings(next.clone());
+                if let Some(model) = worker::model(&next) {
+                    self.agent.set_model(model);
+                }
+                self.settings = next;
+                self.draft = None;
+                self.notice = written.err().map(|why| format!("Settings changed, but {why}."));
+            }
+            Err(problem) => draft.problem = Some(problem),
+        }
     }
 
     fn ask(&mut self, app: &mut NodeCraftApp, ctx: &egui::Context) {
@@ -200,7 +285,7 @@ impl AgentPanel {
         }
         self.settings = read;
         let Some(model) = worker::model(&self.settings) else {
-            self.notice = Some("Choose the agent's model in settings ([agent] model) for this endpoint.".into());
+            self.notice = Some("Choose a model for this endpoint in the agent's Settings.".into());
             return;
         };
         self.agent.set_model(model);
@@ -257,6 +342,14 @@ impl AgentPanel {
                     if ui.add_enabled(status == Status::Idle, egui::Button::new("Clear")).on_hover_text("Start a new conversation").clicked() {
                         intents.push(Intent::Clear);
                     }
+                    let editing = self.draft.is_some();
+                    if ui
+                        .add_enabled(status == Status::Idle || editing, egui::Button::new("Settings").selected(editing))
+                        .on_hover_text("Which endpoint and model the agent asks")
+                        .clicked()
+                    {
+                        intents.push(Intent::Settings(!editing));
+                    }
                     let current = self.agent.config().mode;
                     for (mode, label, hint) in [
                         (Mode::Auto, "Auto", "Changes happen as the agent makes them; runs start while they fit the budget"),
@@ -276,6 +369,10 @@ impl AgentPanel {
                 ui.label(egui::RichText::new(notice).color(t.danger));
             }
             ui.separator();
+            if let Some(draft) = &mut self.draft {
+                settings_form(ui, draft, status == Status::Idle, &mut intents, t);
+                ui.separator();
+            }
             egui::Panel::bottom("nodecraft-agent-input").frame(egui::Frame::NONE).resizable(false).show(ui, |ui| {
                 self.controls(ui, app, status, &mut intents);
             });
@@ -391,7 +488,7 @@ fn step_row(ui: &mut egui::Ui, step: &Step, t: &nodecraft_ui_egui::theme::Tokens
         StepKind::Tool(tool) => {
             let (status, colour) = match &tool.status {
                 ToolStatus::Queued => ("waiting".to_owned(), t.text_muted),
-                ToolStatus::Planned => ("needs your approval".to_owned(), t.accent),
+                ToolStatus::Planned => ("needs your approval".to_owned(), t.accent_text),
                 ToolStatus::Ran(summary) => (if summary.is_empty() { "done".to_owned() } else { summary.clone() }, t.text_muted),
                 ToolStatus::Failed(why) => (format!("failed: {why}"), t.danger),
                 ToolStatus::Declined => ("declined".to_owned(), t.text_muted),
@@ -445,6 +542,38 @@ fn node_name(title: &str, kind: &str) -> String {
     let name = if title.trim().is_empty() { kind } else { title };
     let clipped: String = name.chars().take(MAX_NAME_CHARS).map(|c| if c.is_control() { ' ' } else { c }).collect();
     if name.chars().nth(MAX_NAME_CHARS).is_some() { format!("{clipped}…") } else { clipped }
+}
+
+/// The agent's settings form (#1063): the endpoint, its model and, for a local server, its
+/// address. Saved only with Save; keys stay in the keychain (the API keys window).
+fn settings_form(ui: &mut egui::Ui, draft: &mut Draft, idle: bool, intents: &mut Vec<Intent>, t: &nodecraft_ui_egui::theme::Tokens) {
+    ui.label(egui::RichText::new("Endpoint").color(t.text_muted).size(t.label_size));
+    egui::ComboBox::from_id_salt("nodecraft-agent-endpoint").selected_text(endpoint_label(draft.endpoint)).show_ui(ui, |ui| {
+        for endpoint in ENDPOINTS {
+            ui.selectable_value(&mut draft.endpoint, endpoint, endpoint_label(endpoint));
+        }
+    });
+    let label = ui.label(egui::RichText::new("Model").color(t.text_muted).size(t.label_size));
+    let hint = if draft.endpoint == AgentEndpoint::Anthropic { "the endpoint's default" } else { "the model's name, as the endpoint lists it" };
+    ui.add(egui::TextEdit::singleline(&mut draft.model).hint_text(hint).char_limit(AgentSettings::MAX_TEXT_BYTES)).labelled_by(label.id);
+    if local(draft.endpoint) {
+        let label = ui.label(egui::RichText::new("Server address").color(t.text_muted).size(t.label_size));
+        ui.add(egui::TextEdit::singleline(&mut draft.base_url).hint_text("its default address").char_limit(AgentSettings::MAX_TEXT_BYTES))
+            .labelled_by(label.id);
+    } else {
+        ui.label(egui::RichText::new("Its key is the one in the API keys window, kept in the system keychain.").color(t.text_muted).size(t.label_size));
+    }
+    if let Some(problem) = &draft.problem {
+        ui.label(egui::RichText::new(problem).color(t.danger));
+    }
+    ui.horizontal(|ui| {
+        if ui.add_enabled(idle, egui::Button::new("Save")).on_disabled_hover_text("Available once the agent has finished").clicked() {
+            intents.push(Intent::SaveSettings);
+        }
+        if ui.button("Cancel").clicked() {
+            intents.push(Intent::Settings(false));
+        }
+    });
 }
 
 fn mode(mode: AgentMode) -> Mode {

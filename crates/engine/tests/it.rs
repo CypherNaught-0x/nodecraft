@@ -34,6 +34,8 @@ mod batch_keys517;
 mod bedrock46;
 #[path = "bfl33.rs"]
 mod bfl33;
+#[path = "bfl_kontext1060.rs"]
+mod bfl_kontext1060;
 #[path = "billing_host298.rs"]
 mod billing_host298;
 #[path = "browser_plugins866.rs"]
@@ -50,6 +52,8 @@ mod comfy_workflow9;
 mod commands;
 #[path = "comments.rs"]
 mod comments;
+#[path = "context_window1074.rs"]
+mod context_window1074;
 #[path = "custom_endpoints960.rs"]
 mod custom_endpoints960;
 #[path = "document_input591.rs"]
