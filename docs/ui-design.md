@@ -21,9 +21,11 @@ same structure with the values inverted.
 | `panel_fill` / `panel_stroke` | `#171719` / `#2c2c30` | `#ffffff` / `#dddde1` | floating chrome, menus, windows |
 | `card_fill` | `#121214` | `#ffffff` | node card body |
 | `card_stroke` / `_hover` / `_selected` | `#343439` / `#5a5a61` / `#e6e6ea` | `#d4d4d9` / `#a0a0a8` / `#18181b` | card border by state |
-| `text` / `text_muted` | `#e8e8ec` / `#8a8a93` | `#18181b` / `#6b6b74` | body text / labels and hints |
+| `text` / `text_muted` | `#e8e8ec` / `#96969f` | `#18181b` / `#5f5f68` | body text / labels and hints (`text_muted` ≥ 4.5:1 on panels, cards and a hovered widget's `panel_stroke`) |
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
-| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
+| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline. Strokes and fills only (3:1 is enough); never text |
+| `accent_text` | `#4cc38a` | `#0f6b42` | the accent drawn as text: run status, **Running**, **Soul ID**, a verified key, links (≥ 4.5:1 on canvas, panel and card) |
+| `selection_fill` / `selection_text` | `#1d3a2c` / `#4cc38a` | `#d5eee1` / `#0f6b42` | a selected row or entry: `selectable_label`, the palette's highlighted row, the model picker, the top bar's open panel, and selected text (≥ 4.5:1) |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `mask_overlay` | `#4cc38a` at 60% | `#1f9d63` at 60% | the painted area in the mask editor, scaled by mask strength |
 | `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
@@ -34,6 +36,12 @@ same structure with the values inverted.
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` / `_style` | `#e07a5a` / `#8fc35a` / `#a0a0a8` / `#e06fa8` | `#b0482a` / `#4f8a1f` / `#6b6b74` / `#a82f6c` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 | `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
+
+No egui default colour is left un-themed: `visuals()` sets egui's selection from `selection_fill` /
+`selection_text`, its hyperlink colour from `accent_text`, and its warning and error text from `stale` and
+`danger`, and the text cursor from `text`. `theme.rs` tests hold, in both themes, selection text on
+`selection_fill`, `accent_text` on canvas, panel and card, `text_muted` on panels, cards and
+`panel_stroke`, and warning and error text on panels and the canvas at 4.5:1 or more.
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28

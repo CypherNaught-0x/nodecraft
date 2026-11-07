@@ -104,7 +104,7 @@ impl Control {
     }
 
     fn show(&self, ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
-        let color = if self.active { t.accent } else { t.text_muted };
+        let color = if self.active { t.selection_text } else { t.text_muted };
         let mut button = self
             .entry
             .icon()
@@ -246,8 +246,8 @@ impl NodeCraftApp {
             .show(ui.ctx(), |ui| {
                 ui.spacing_mut().item_spacing = Vec2::splat(t.navigation_gap);
                 ui.spacing_mut().button_padding = Vec2::new(t.navigation_gap, t.control_vertical_padding);
-                ui.visuals_mut().selection.bg_fill = t.panel_stroke;
-                ui.visuals_mut().selection.stroke = egui::Stroke::new(t.handle_stroke, t.accent);
+                ui.visuals_mut().selection.bg_fill = t.selection_fill;
+                ui.visuals_mut().selection.stroke = egui::Stroke::new(t.handle_stroke, t.selection_text);
                 egui::Frame::NONE
                     .fill(t.panel_fill)
                     .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))

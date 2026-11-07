@@ -948,7 +948,7 @@ impl NodeCraftApp {
                                             ui.label("Document changed. Review/reload or save as a new discussion; this draft is retained.");
                                         }
                                         if let Some(error) = &draft.error {
-                                            ui.colored_label(t.accent, error);
+                                            ui.colored_label(t.danger, error);
                                         }
                                         ui.horizontal_wrapped(|ui| {
                                             if ui.button("Save message").clicked() {

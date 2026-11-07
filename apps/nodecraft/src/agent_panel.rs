@@ -391,7 +391,7 @@ fn step_row(ui: &mut egui::Ui, step: &Step, t: &nodecraft_ui_egui::theme::Tokens
         StepKind::Tool(tool) => {
             let (status, colour) = match &tool.status {
                 ToolStatus::Queued => ("waiting".to_owned(), t.text_muted),
-                ToolStatus::Planned => ("needs your approval".to_owned(), t.accent),
+                ToolStatus::Planned => ("needs your approval".to_owned(), t.accent_text),
                 ToolStatus::Ran(summary) => (if summary.is_empty() { "done".to_owned() } else { summary.clone() }, t.text_muted),
                 ToolStatus::Failed(why) => (format!("failed: {why}"), t.danger),
                 ToolStatus::Declined => ("declined".to_owned(), t.text_muted),
