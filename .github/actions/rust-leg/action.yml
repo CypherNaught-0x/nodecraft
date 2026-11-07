@@ -139,3 +139,15 @@ runs:
       if: steps.plat.outputs.once == 'true'
       shell: bash
       run: cargo xtask layers && cargo run -p xtask -- decisions && cargo xtask wasm
+
+    # The browser tests (#1038) compiled to wasm32 and run in headless Chrome. The runner must be the
+    # wasm-bindgen version in Cargo.lock, so it is installed at exactly that version; the image's
+    # chromedriver matches its preinstalled Chrome.
+    - name: browser tests (headless Chrome)
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: |
+        set -eu
+        version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
+        cargo install wasm-bindgen-cli --version "$version" --locked
+        CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo xtask browser
