@@ -56,10 +56,18 @@ fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 Pointer targets are at least 24 × 24 screen points (#1114, WCAG 2.5.8): a noodle's hit band is
 `noodle_hit` (12) either side of its line in screen points, whatever its painted width, and a card
 under the pointer wins over a noodle; stale, mask and "Can't check" badges and presence avatars hit
-in a `min_target` (24) square around their painted shape (`theme::at_least`), at any zoom, painted
-as before. Ports already reach 26 points. In-card controls (19 world points tall) still shrink with
+in a `min_target` (24) square around their painted shape (`theme::at_least`; a badge grows down
+and sideways only, never into the card above it, `theme::badge_hit`), at any zoom, painted as before. Ports already reach 26 points. In-card controls (19 world points tall) still shrink with
 the canvas: refusing clicks below a zoom would break editing at overview zoom, so that part of
 #1114 is left open.
+
+Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
+item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
+submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through
+`Icon::icon_button` or `history::named` so a screen reader hears its name ("More for fox", "Previous
+result, row 2"), and a tag marker carries its tag's name ("Tag: Hero shots") rather than its colour alone.
+`a11y_check::unnamed_controls` finds any clickable AccessKit node whose name is empty or only
+punctuation; kittests run it on the element library, a sheet and a tagged card.
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
@@ -127,7 +135,7 @@ selected border more visible than the resting one, in both themes.
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked |
+| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
@@ -148,6 +156,13 @@ selected border more visible than the resting one, in both themes.
 | Select one generation card | a toolbar above it: the model (opens the model picker), the aspect ratio (the choice tagged `aspect_ratio`, or else one whose options are all `W:H`), and Expand once it has an image |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
+
+Shortcuts are spelled one way everywhere a person reads them (the palette, the Turn into menu,
+tooltips, menus, notices and accessible names): `shortcut::format_shortcut` turns the engine's
+`Command+Shift+Z` into `Shift+⌘Z` on macOS (Ctrl, Option, Shift, then ⌘; only ⌘ is a symbol,
+since egui's default fonts have no ⇧, ⌥ or ⌃) and `Ctrl+Shift+Z` on Windows, Linux and other
+browsers, in that fixed order. This page writes `⌘/Ctrl` for short; the UI never
+shows that spelling (#1117).
 
 egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
 shortcuts yield to focused text fields. Invalid drops (different modality, a list into a single input, a node into itself, a loop, or a

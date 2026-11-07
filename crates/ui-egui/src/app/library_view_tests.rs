@@ -100,6 +100,24 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     // Now the project has it too, beside the library's entry.
     assert_eq!(b.get_all_by_label("Echo · v1").count(), 2);
 
+    // #1111: the first click only asks; Keep and Escape both answer no.
+    b.get_by_label("Remove").click();
+    b.run();
+    assert!(b.query_by_label("Remove Echo v1?").is_some());
+    assert_eq!(store.saved().unwrap().versions().count(), 1, "nothing is removed on the first click");
+    assert!(b.get_by_label("Keep").is_focused(), "focus starts on Keep");
+    b.get_by_label("Keep").click();
+    b.run();
+    assert!(b.query_by_label("Remove Echo v1?").is_none());
+    b.get_by_label("Remove").click();
+    b.run();
+    b.key_press(egui::Key::Escape);
+    b.run();
+    assert!(b.query_by_label("Remove Echo v1?").is_none(), "Escape keeps it");
+    assert!(b.state().library.open, "Escape answered the question; the panel stays");
+    assert_eq!(store.saved().unwrap().versions().count(), 1);
+    b.get_by_label("Remove").click();
+    b.run();
     b.get_by_label("Remove").click();
     b.run();
     assert!(b.query_by_label_contains("The library is empty").is_some(), "{:?}", b.state().notice);
@@ -135,6 +153,29 @@ fn a_library_shader_is_placed_as_a_card_and_removed() {
     assert_eq!(shaders[0].title, "Glow");
     assert_eq!(nodecraft_nodes::shader::pinned(shaders[0]).map(|pin| pin.version), Some(1));
     assert!(app.selection.contains(shaders[0].id));
+    h.get_by_label("Remove").click();
+    h.run();
+    assert!(h.query_by_label("Remove Glow and its versions?").is_some(), "#1111: the first click asks");
+    assert!(h.query_by_label("Glow · v1").is_none(), "the question replaces the row");
+    h.get_by_label("Keep").click();
+    h.run();
+    assert!(h.query_by_label("Glow · v1").is_some(), "Keep leaves it");
+    h.get_by_label("Remove").click();
+    h.run();
+    assert!(h.get_by_label("Keep").is_focused(), "focus starts on Keep");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label("Glow · v1").is_some(), "Escape keeps it");
+    // A question left on another tab is dropped, not left waiting.
+    h.get_by_label("Remove").click();
+    h.run();
+    h.state_mut().library.browsers.tab = super::library_browsers::Tab::Assets;
+    h.run();
+    h.state_mut().library.browsers.tab = super::library_browsers::Tab::Library;
+    h.run();
+    assert!(h.query_by_label("Remove Glow and its versions?").is_none(), "switching tabs answers Keep");
+    h.get_by_label("Remove").click();
+    h.run();
     h.get_by_label("Remove").click();
     h.run();
     assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice);

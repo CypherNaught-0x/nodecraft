@@ -121,7 +121,7 @@ impl Control {
         let response = ui.add_enabled(self.enabled, button);
         // Keep the run count in the established accessible name as well as the visible badge.
         let label = if self.entry == Entry::Search {
-            if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }.to_owned()
+            crate::shortcut::with_shortcut(ui.ctx(), "Search", "Command+F")
         } else if self.entry == Entry::Queue {
             self.badge.as_ref().map_or_else(|| self.entry.label().to_owned(), |badge| format!("Queue ({badge})"))
         } else {

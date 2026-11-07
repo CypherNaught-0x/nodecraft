@@ -18,7 +18,7 @@ pub(super) enum RunKind {
     Generate,
     /// Refresh a stale result (#211): the card with whatever upstream is stale or has no result.
     Refresh,
-    /// Run changed (#965, ⌘/Ctrl+Enter): every card on the canvas whose result is stale,
+    /// Run changed (#965, Command+Enter): every card on the canvas whose result is stale,
     /// part-made or missing, with the upstream it needs.
     Changed,
     /// Run workflow (#965): every generation and technique card on the canvas, and whatever
@@ -75,7 +75,7 @@ impl RunKind {
     }
 }
 
-/// What ⌘/Ctrl+Enter and Run workflow say when the canvas has nothing to run (#965).
+/// What Command+Enter and Run workflow say when the canvas has nothing to run (#965).
 pub(super) const NOTHING_TO_RUN: &str = "Nothing to run: every card's result is up to date.";
 /// The same for a canvas with no generation, action or technique cards at all.
 pub(super) const NO_WORKFLOW: &str = "Nothing to run: this canvas has no cards that generate or compute a result.";
@@ -478,8 +478,9 @@ impl NodeCraftApp {
                 }
                 if quote.waiting > 0 {
                     ui.label(format!(
-                        "{} card(s) after a batch wait for this run's results: press ⌘/Ctrl+Enter (Run changed) again once it finishes.",
-                        quote.waiting
+                        "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
+                        quote.waiting,
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
                     ));
                 }
                 if busy > 0 {

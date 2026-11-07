@@ -112,6 +112,11 @@ commands:
   plugin lint <file> [--trust <trust.json>]
                   check a package as installing, granting and enabling it would; only keys in
                   the trust file are trusted. Nothing is installed or run
+  plugin try <file> <registration> [--input <name>=<text>]... [--model <id>]
+             [--param <name>=<json>]... [--replies <replies.json>]
+                  run one registration as the app would, with no key and no network: a text
+                  action on the inputs, or a provider template through the real broker, each
+                  request answered by the next scripted reply ([{status, json|text, headers?}])
   providers [list]
                   list the model providers and whether each can run (reads the keychain)
   providers test [all|provider-id]
@@ -578,7 +583,11 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
     let mut new_id = random_bytes();
     let mut services = Services::default();
     let session_id: String = new_id().iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let mut runner = match run::Runner::new(&mut services, session_id) {
+    // A sound that streams says how much has arrived (#1070), on stderr: stdout is the report.
+    let progress: run::Progress = Box::new(|line| {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    });
+    let mut runner = match run::Runner::with_progress(&mut services, session_id, progress) {
         Ok(runner) => runner,
         Err(error) => return fail(&error.message),
     };

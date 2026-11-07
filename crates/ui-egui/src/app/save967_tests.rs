@@ -232,7 +232,7 @@ fn save967_nested_collection_card_menu_saves_one_exact_media_leaf() {
     h.state_mut().exports.answer = Some(dir.path().join("nested.png"));
     let point = card_point(&h);
     secondary(&mut h, point);
-    h.get_by_label_contains("Save as…").click();
+    h.get_by_label_contains("Save as").click();
     h.run();
     h.get_by_label(&format!("{port}: item 3 of 3")).click();
     finish_file(&mut h);

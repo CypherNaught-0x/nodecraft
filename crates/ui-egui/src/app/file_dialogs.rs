@@ -743,7 +743,13 @@ impl NodeCraftApp {
                         }
                     });
                 }
-                if ui.button("Clear recent projects").clicked() {
+                let none = self.files.projects.recent().is_empty();
+                if ui
+                    .add_enabled(!none, egui::Button::new("Clear recent projects"))
+                    .on_hover_text("Forget every project in this list; the files stay where they are")
+                    .on_disabled_hover_text("There are no recent projects to clear")
+                    .clicked()
+                {
                     clear = true;
                 }
             });
