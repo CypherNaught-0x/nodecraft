@@ -260,7 +260,8 @@ impl NodeCraftApp {
                                     menu_enabled,
                                     Icon::More.button(ui, "More", t).gap(t.control_gap).min_size(Vec2::new(0.0, t.navigation_toolbar_height)),
                                 )
-                                .on_hover_text("All menu entries; finish any active editor or gesture before opening");
+                                .on_hover_text("All menu entries; finish any active editor or gesture before opening")
+                                .on_disabled_hover_text("Finish the active editor or gesture first");
                             if let Some(menu) = egui::Popup::menu(&response).id(popup_id()).show(|ui| {
                                 egui::ScrollArea::vertical()
                                     .max_height(

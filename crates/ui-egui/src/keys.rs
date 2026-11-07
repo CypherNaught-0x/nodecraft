@@ -443,6 +443,7 @@ impl KeysPanel {
                             && ui
                                 .add_enabled(!waiting, egui::Button::new("Test"))
                                 .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                .on_disabled_hover_text("Waiting for the keychain or the provider; try again once it answers")
                                 .clicked()
                         {
                             changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));

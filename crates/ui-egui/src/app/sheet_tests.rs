@@ -811,3 +811,20 @@ fn a_document_this_session_can_only_view_takes_no_results() {
 }
 
 pub(super) mod batch;
+
+/// #1113: a disabled sheet control still says why when hovered, instead of losing its tooltip.
+#[test]
+fn disabled_run_selected_and_cancel_explain_themselves() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    for (label, why) in [("Run selected", "Select at least one row to run"), ("Cancel", "No rows are queued or running")] {
+        let button = h.get_by_role_and_label(Role::Button, label);
+        assert!(button.accesskit_node().is_disabled(), "{label} starts disabled");
+        button.hover();
+        for _ in 0..90 {
+            h.step();
+        }
+        assert!(h.query_by_label(why).is_some(), "{label} explains: {why}");
+        h.hover_at(egui::Pos2::ZERO);
+        h.run();
+    }
+}
