@@ -1,6 +1,6 @@
 //! The shared layout check for floating panels (#959): a panel opens inside the floating panel
 //! area, and none of its own on-screen controls crosses another. Panels' own tests call
-//! [`check_open_panels`] once they have opened their panel.
+//! [`check_open_panels`] once they have opened their panel, and windows' tests [`check_window`].
 use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::NodeT};
@@ -92,4 +92,17 @@ pub(super) fn check_open_panels(h: &Harness<'static, NodeCraftApp>, what: &str) 
         let crossing = overlaps(h, id, rect);
         assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
     }
+}
+
+/// A window that isn't a floating panel (a dialog, the model picker, Project files): it is open,
+/// lies on the screen, and none of its own on-screen controls cross another. `what` names the
+/// case in a failure. Call it on a settled harness.
+pub(super) fn check_window(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    let Some(state) = egui::AreaState::load(&h.ctx, id) else { panic!("{what}: the window {id:?} isn't open") };
+    let rect = state.rect();
+    let screen = h.ctx.content_rect();
+    assert!(rect.is_finite() && rect.is_positive(), "{what}: {rect:?} has no size");
+    assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
+    let crossing = overlaps(h, id, rect);
+    assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
 }

@@ -1341,3 +1341,19 @@ fn render_file367_progress_evidence() {
     settle(&mut h);
     h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
 }
+
+/// The Project files window opens on the screen with no crossing controls at the two window
+/// sizes the panels are checked at (#959).
+#[test]
+fn project_files_keeps_its_layout_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let dir = Scratch::new("layout959");
+        let mut app = dir.app("layout");
+        app.files.menu_open = true;
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        settle(&mut h);
+        h.run();
+        crate::app::panel_check::check_window(&h, egui::Id::new("project_files407"), &format!("Project files at {size:?}"));
+    }
+}

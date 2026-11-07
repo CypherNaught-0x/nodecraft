@@ -161,6 +161,7 @@ fn review_items_steps_through_each_item_and_the_grid_picks_one() {
     click(&mut h, "Review items…");
     assert!(h.query_by_label("Item 1 of 4").is_some());
     assert!(h.query_by_label("Subjects: a fox").is_some() && h.query_by_label("Times: at dawn").is_some());
+    crate::app::panel_check::check_window(&h, egui::Id::new("nodecraft.batch_review"), "Batch items");
     // Built once, then reused frame after frame.
     let built = h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap();
 

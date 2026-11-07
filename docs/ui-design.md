@@ -705,6 +705,8 @@ on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) cr
 control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
 tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
 again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+Windows that aren't floating panels get `panel_check::check_window`: open, on the screen, and no
+crossing controls.
 
 | Surface | Opens from | Kind | Covered by |
 |---|---|---|---|
@@ -717,6 +719,11 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 | Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
 | PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
+| Batch items | a fanned card's menu, Review items… | window | `batch_review_tests` (with the window check) |
+| Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | window | `comfy_mapping::tests` (with the window check) |
+| Project files | top bar, File | window | `file_dialogs::tests` (with the window check, at 1000 × 700 and 1600 × 900) |
+| Choose a model | a card's Change model… | window | `models::comfy970_tests` (with the window check, while searching) |
+| Rename field | a field's menu, Rename field… | window | `fields_tests` (with the window check) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
@@ -728,8 +735,7 @@ and settles inside once laid out; the checks run after placement settles. The im
 past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
 its shape, so the panel fits (`floating::body_room`).
 
-**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
-picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+**Not yet reviewed or covered:** Provider servers (browser only), model-change windows, every modal (app mode, deck editor and presenter, tag
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
 Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled

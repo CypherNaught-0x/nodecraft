@@ -22,6 +22,8 @@ fn mapping947_real_checkbox_apply_and_undo_change_an_existing_card_without_reimp
     let mut h = Harness::builder().with_size(egui::Vec2::new(1100.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
     h.run();
     assert!(h.query_by_label("Workflow fields").is_some());
+    let id = egui::Id::new(("comfy_mapping", h.state().canvas, N));
+    crate::app::panel_check::check_window(&h, id, "Workflow fields");
     h.get_by_label("Show 2.strength").click();
     h.run();
     h.get_by_label("Apply fields").click();

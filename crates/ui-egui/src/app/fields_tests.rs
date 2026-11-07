@@ -249,6 +249,9 @@ fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     open_menu(&mut h, at);
     h.get_by_role_and_label(Role::Button, "Rename field…").click();
     h.run();
+    // egui ids a window with no id of its own by its title, as `Option<Cow<str>>`.
+    let window = egui::Id::new(Some(std::borrow::Cow::Borrowed("Rename field")));
+    crate::app::panel_check::check_window(&h, window, "Rename field");
     h.get_by_role_and_label(Role::TextInput, "Field name").click();
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
