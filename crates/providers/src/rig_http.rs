@@ -49,8 +49,9 @@ pub(crate) struct RigHttp {
 }
 
 struct Inner {
-    http: Arc<dyn Http>,
-    delivery: Option<DeliveryLink>,
+    /// Where requests go. Its own `Arc`, so a send kept in [`Inner::unfinished`] holds this and
+    /// never the `Inner` that keeps it: no cycle, and dropping the transport drops the send.
+    route: Arc<Route>,
     /// Headers holding credentials, sent to the request's own origin only.
     secrets: Vec<(String, String)>,
     /// Plain headers this transport adds itself.
@@ -67,6 +68,28 @@ struct Inner {
     unfinished: Mutex<Option<BoxFuture<'static, Result<HttpResponse, ProviderError>>>>,
 }
 
+/// The transport a request goes through, and the runner's delivery scope when there is one.
+struct Route {
+    http: Arc<dyn Http>,
+    delivery: Option<DeliveryLink>,
+}
+
+impl Route {
+    async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError> {
+        match &self.delivery {
+            Some(link) => link.send(self.http.as_ref(), request).await,
+            None => self.http.send(request).await,
+        }
+    }
+
+    async fn send_streaming<'a>(&'a self, request: HttpRequest, on_chunk: &'a mut crate::http::ChunkSink<'a>) -> Result<HttpResponse, ProviderError> {
+        match &self.delivery {
+            Some(link) => link.send_streaming(self.http.as_ref(), request, on_chunk).await,
+            None => self.http.send_streaming(request, on_chunk).await,
+        }
+    }
+}
+
 impl std::fmt::Debug for RigHttp {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         // Header values hold keys.
@@ -81,8 +104,7 @@ impl RigHttp {
     pub(crate) fn new(http: Arc<dyn Http>, timeout_ms: u64, max_response_bytes: usize) -> Self {
         Self {
             inner: Arc::new(Inner {
-                http,
-                delivery: None,
+                route: Arc::new(Route { http, delivery: None }),
                 secrets: Vec::new(),
                 extra: Vec::new(),
                 forward: Self::FORWARD,
@@ -105,7 +127,11 @@ impl RigHttp {
 
     /// Sends through the runner's delivery scope, so the submit's evidence stays exact.
     pub(crate) fn with_delivery(self, delivery: Option<DeliveryLink>) -> Self {
-        self.edit(|inner| inner.delivery = delivery)
+        self.edit(|inner| {
+            if let Some(route) = Arc::get_mut(&mut inner.route) {
+                route.delivery = delivery;
+            }
+        })
     }
 
     /// A header holding a credential.
@@ -128,6 +154,12 @@ impl RigHttp {
     /// Rewrites the JSON body before it is sent.
     pub(crate) fn with_fix(self, fix: BodyFix) -> Self {
         self.edit(|inner| inner.fix = Some(fix))
+    }
+
+    /// Drops a streamed send the crate stopped reading, unfinished: an exit that won't wait for
+    /// it (an error, a cancel). The send's delivery scope then counts it as possibly sent.
+    pub(crate) fn discard(&self) {
+        drop(self.inner.unfinished.lock().unwrap_or_else(PoisonError::into_inner).take());
     }
 
     /// How the exchange went.
@@ -206,10 +238,7 @@ impl Inner {
     }
 
     async fn send(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError> {
-        match &self.delivery {
-            Some(link) => link.send(self.http.as_ref(), request).await,
-            None => self.http.send(request).await,
-        }
+        self.route.send(request).await
     }
 
     /// The reply's head for the crate; an error status is recorded with its body.
@@ -292,16 +321,15 @@ impl HttpClientExt for RigHttp {
             // pulls a stream after the head. The sink feeds a channel, and the stream drives the
             // send while it drains it. The channel holds at most what the size cap lets through.
             let (chunks, mut received) = futures::channel::mpsc::unbounded::<Bytes>();
-            let sender = Arc::clone(&inner);
+            // The send holds the route only, never `inner`: it may outlive the reader in
+            // `inner.unfinished`.
+            let route = Arc::clone(&inner.route);
             let mut sending: BoxFuture<'static, Result<HttpResponse, ProviderError>> = Box::pin(async move {
                 let mut sink = move |chunk: &[u8]| -> Result<(), ProviderError> {
                     // The receiver is gone only once the reader stopped; nothing more is wanted.
                     chunks.unbounded_send(Bytes::copy_from_slice(chunk)).map_err(|_| ProviderError::new(ErrorKind::Cancelled, "the reply is no longer read"))
                 };
-                match &sender.delivery {
-                    Some(link) => link.send_streaming(sender.http.as_ref(), request, &mut sink).await,
-                    None => sender.http.send_streaming(request, &mut sink).await,
-                }
+                route.send_streaming(request, &mut sink).await
             });
             // Wait for the body's first piece (the reply is 2xx and streams) or the end.
             let first = match futures::future::select(sending.as_mut(), received.next()).await {

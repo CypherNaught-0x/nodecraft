@@ -328,6 +328,9 @@ impl LlmClient {
         if let Some(key) = &self.endpoint.key {
             transport = transport.with_secret("Authorization", format!("Bearer {}", key.expose()));
         }
+        // Whatever way this ends (an error, a cancel), a send the crate stopped reading goes with
+        // it; declared first, so it is dropped after the stream that may leave one.
+        let _discard = Discard(transport.clone());
         // The key goes with the transport, never through the crate.
         let config = OpenAIConfig::with_key(&DIALECT, "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
         // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
@@ -355,6 +358,15 @@ impl LlmClient {
             reply.usage.cost = self.reported_cost(&headers);
         }
         Ok(reply)
+    }
+}
+
+/// Drops the transport's unfinished send when `openai_chat` ends, however it ends.
+struct Discard(RigHttp);
+
+impl Drop for Discard {
+    fn drop(&mut self) {
+        self.0.discard();
     }
 }
 

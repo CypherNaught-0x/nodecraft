@@ -505,3 +505,71 @@ fn non_object_arguments_go_back_as_they_came() {
         assert_eq!(sent(&r, false)["messages"][1]["tool_calls"][0]["function"]["arguments"], sent_as);
     }
 }
+
+/// Hands over `body`, then never ends; notes when its send is dropped.
+struct Stuck {
+    body: &'static [u8],
+    dropped: Arc<std::sync::atomic::AtomicBool>,
+}
+
+struct Noted(Arc<std::sync::atomic::AtomicBool>);
+
+impl Drop for Noted {
+    fn drop(&mut self) {
+        self.0.store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
+impl Http for Stuck {
+    fn send(&self, _request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        Box::pin(async { Err(ProviderError::new(ErrorKind::Server, "only streamed requests are expected")) })
+    }
+    fn send_streaming<'a>(&'a self, _request: HttpRequest, on_chunk: &'a mut ChunkSink<'a>) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        let noted = Noted(Arc::clone(&self.dropped));
+        Box::pin(async move {
+            let _noted = noted;
+            on_chunk(self.body)?;
+            futures::future::pending::<()>().await;
+            Ok(HttpResponse { status: 200, headers: vec![], body: Vec::new() })
+        })
+    }
+}
+
+/// A stream that ends in an error, or is dropped while it runs, leaves nothing behind: its send
+/// is dropped (the connection with it), nothing keeps the transport, and the runner's scope
+/// counts the request as possibly billed.
+#[test]
+fn a_stream_that_fails_or_is_cancelled_leaves_nothing_behind() {
+    // An error event while the connection stays open.
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let http = Arc::new(Stuck { body: b"data: {\"error\":{\"message\":\"slow down\",\"code\":\"rate_limit_exceeded\"}}\n\n", dropped: dropped.clone() });
+    let c = LlmClient::new(Endpoint::openai(ApiKey::new("k")), http.clone());
+    let context = crate::SubmitContext::new();
+    context.arm();
+    let e = block_on(c.streamed(&request(), &mut |_| {}, Some(&context))).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::RateLimited);
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the send was dropped");
+    assert_eq!(Arc::strong_count(&http), 2, "only this test and the client hold the transport");
+    assert!(context.finish_error().is_none(), "possibly billed");
+
+    // Cancelled mid-stream.
+    let dropped = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let http = Arc::new(Stuck { body: b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\n", dropped: dropped.clone() });
+    let c = LlmClient::new(Endpoint::openai(ApiKey::new("k")), http.clone());
+    let context = crate::SubmitContext::new();
+    context.arm();
+    let mut pieces = Vec::new();
+    {
+        let mut on_text = |t: &str| pieces.push(t.to_owned());
+        let req = request();
+        let mut work = Box::pin(c.streamed(&req, &mut on_text, Some(&context)));
+        let waker = futures::task::noop_waker();
+        for _ in 0..20 {
+            assert!(work.as_mut().poll(&mut std::task::Context::from_waker(&waker)).is_pending());
+        }
+    }
+    assert_eq!(pieces, ["Hel"]);
+    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst), "the send was dropped");
+    assert_eq!(Arc::strong_count(&http), 2);
+    assert!(context.finish_error().is_none(), "possibly billed");
+}
