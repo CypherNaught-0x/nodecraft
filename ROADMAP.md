@@ -275,11 +275,12 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
 
-- **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
-  default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
-  interchange is available on desktop and exports in the background with a Cancel control. Its
-  document is checked against structural rules both editors are expected to need; the import
-  itself has not been checked in Final Cut Pro or DaVinci Resolve yet (#1066).
+- **Desktop media limits.** A video card plays its sound track with its picture, through the
+  default output device as sound cards do (#1065), one card's sound at a time. Playback and
+  FFmpeg-backed renders run on desktop. Timeline interchange is available on desktop and exports in
+  the background with a Cancel control. Its document is checked against structural rules both
+  editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
+  Resolve yet (#1066).
 
 - **Relay transport and storage differ by client.** The relay serves plain `ws://`.
   Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a

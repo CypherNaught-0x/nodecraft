@@ -303,6 +303,12 @@ needs desktop FFmpeg, and in the browser those cards say so. A card shows a post
 clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:
 they change nothing in the document and are not commands.
 
+A video with a sound track is heard while its card plays (#1065): the card's sound is decoded
+from the same file, through the sound cards' player, started and stopped with the picture and
+moved back to it when they drift apart by more than 0.3 s. Nothing is read for it while the card
+is still, and a video with no sound track plays silent. As for sound cards, one card is heard at a
+time.
+
 Each frame is one ffmpeg run, so playback shows the newest frame the tools can deliver rather
 than every frame at the clip's rate: each card has at most one frame in flight and drops the
 times it fell behind on. At most four frames, two imports and one asset read run at once, and
