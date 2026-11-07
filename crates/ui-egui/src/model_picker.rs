@@ -592,6 +592,9 @@ fn price_label(model: &ModelDescriptor) -> String {
             }
             label
         }
+        Pricing::PerOutputMegapixel { first, additional, .. } => {
+            format!("{} first MP + {} / extra MP", amount(first.0), amount(additional.0))
+        }
         Pricing::PerSourceSecond { prices, .. } => match prices.values().map(|price| price.0).min_by_key(|money| money.micros) {
             Some(cheapest) if prices.len() > 1 => format!("From {} / second of source", amount(cheapest)),
             Some(price) => format!("{} / second of source", amount(price)),

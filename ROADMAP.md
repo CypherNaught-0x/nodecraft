@@ -175,7 +175,7 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
 - **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
   text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
-  Pixel-based credits remain an unknown monetary price and require consent. Image editing and
+  It is quoted by output megapixels from BFL's published rates (#1062). Image editing and
   other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
@@ -185,11 +185,13 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   Browser sessions refuse before payment. Text-to-video isn't offered: fal removed Pika's on
   2026-10-29. See [`docs/providers.md`](docs/providers.md#pika-25-through-fal-29).
 - **HeyGen**: desktop projects and the native CLI animate a photo or lip-sync an MP4 with
-  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent;
+  supplied speech through fal (#43). Monetary pricing remains unknown and requires consent: the
+  per-second rate is published, but how output length is set and rounded isn't (#1062);
   see [`docs/providers.md`](docs/providers.md#heygen-through-fal-43) for client limits.
 - **Magnific**: desktop projects and the native CLI can enhance one image with Precision V2
   photo processing, 2×/4× scaling and three enhancement controls (#38). Organizational credit
-  spending remains an unknown monetary quote and needs explicit consent. Browser and Classic
+  spending remains an unknown monetary quote and needs explicit consent: Magnific publishes no
+  Precision V2 rate (#1062). Browser and Classic
   in-memory storage refuse before payment; see [`docs/providers.md`](docs/providers.md).
 - **Topaz**: desktop projects and the native CLI can enhance or upscale one image with
   Precision Standard V2 through fal (#37). Integer 1×–4× scaling stays within one 0.08 USD

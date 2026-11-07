@@ -1,15 +1,17 @@
 # Official direct API, verified 2026-10-24: https://docs.bfl.ai/quick_start/generating_images
 # https://api.bfl.ai/openapi.json ; https://bfl.ai/pricing?category=flux.2
-# Pixel-based credit pricing is not converted to a guaranteed monetary quote.
+# Price verified 2026-11-06 (#1062) at https://bfl.ai/pricing : FLUX.2 [klein] 4B "1st MP $0.014 /
+# Add'l MP $0.001", 1 credit = $0.01 (https://docs.bfl.ai/quick_start/pricing); "Resolution is
+# rounded up to the next MP" of 1024 x 1024 pixels. Text-to-image sends no reference images.
 [[model]]
 id="bfl.flux-2-klein-4b"
 provider="bfl"
 provider_model="flux-2-klein-4b"
 label="FLUX.2 klein 4B (BFL)"
-description = "Compact FLUX.2 image generation from a prompt. Usage pricing; requires a BFL account."
+description = "Compact FLUX.2 image generation from a prompt. Priced by output megapixels; requires a BFL account."
 latency_s=10
 quality=3
-pricing={type="by_usage",currency="USD"}
+pricing={type="per_output_megapixel",width="width",height="height",first="0.014 USD",additional="0.001 USD"}
 [[model.modes]]
 id="text-to-image"
 output="image"
