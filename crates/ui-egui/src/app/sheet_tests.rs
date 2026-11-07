@@ -811,3 +811,10 @@ fn a_document_this_session_can_only_view_takes_no_results() {
 }
 
 pub(super) mod batch;
+
+/// #1118: a sheet's controls all have spoken names, not bare glyphs.
+#[test]
+fn a_sheets_controls_have_names() {
+    let h = on_sheet(&["a fox", "an owl"]);
+    assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new());
+}

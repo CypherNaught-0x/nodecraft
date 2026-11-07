@@ -887,11 +887,17 @@ impl NodeCraftApp {
                 if let Some(position) = row.position
                     && row.results > 1
                 {
-                    if ui.add_enabled(position > 1, egui::Button::new("‹").small()).on_hover_text("Show this row's older result").clicked() {
+                    if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), "Older result")
+                        .on_hover_text("Show this row's older result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, false));
                     }
                     ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
-                    if ui.add_enabled(position < row.results, egui::Button::new("›").small()).on_hover_text("Show this row's newer result").clicked() {
+                    if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), "Newer result")
+                        .on_hover_text("Show this row's newer result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, true));
                     }
                 }

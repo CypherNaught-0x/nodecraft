@@ -747,7 +747,7 @@ impl NodeCraftApp {
                                         {
                                             action = Some(Action::Compose(Some(*id)));
                                         }
-                                        if ui.button("Add Note").clicked() {
+                                        if ui.button("Add note").clicked() {
                                             action = Some(Action::Note);
                                         }
                                     });
