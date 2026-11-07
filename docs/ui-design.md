@@ -56,8 +56,8 @@ fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
 item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
 submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through
-`Icon::icon_button` or `history::named` so a screen reader hears its name ("More for fox", "Older
-result"), and a tag marker carries its tag's name ("Tag: Hero shots") rather than its colour alone.
+`Icon::icon_button` or `history::named` so a screen reader hears its name ("More for fox", "Previous
+result, row 2"), and a tag marker carries its tag's name ("Tag: Hero shots") rather than its colour alone.
 `a11y_check::unnamed_controls` finds any clickable AccessKit node whose name is empty or only
 punctuation; kittests run it on the element library, a sheet and a tagged card.
 

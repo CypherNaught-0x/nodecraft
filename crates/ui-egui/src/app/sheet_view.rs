@@ -892,14 +892,14 @@ impl NodeCraftApp {
                 if let Some(position) = row.position
                     && row.results > 1
                 {
-                    if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), "Older result")
+                    if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), &format!("Previous result, row {number}"))
                         .on_hover_text("Show this row's older result")
                         .clicked()
                     {
                         actions.push(Action::Step(row.id, false));
                     }
                     ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
-                    if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), "Newer result")
+                    if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), &format!("Next result, row {number}"))
                         .on_hover_text("Show this row's newer result")
                         .clicked()
                     {
