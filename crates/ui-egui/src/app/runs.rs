@@ -417,9 +417,9 @@ impl Runs {
             session: id.iter().map(|b| format!("{b:02x}")).collect(),
             wall_clock_ms: wall_clock_ms(),
         };
-        // The desktop plays a speech card's sound while it arrives (#875); the browser can't
-        // play sound yet, so it doesn't ask for previews.
-        let host = RunHost::new(runtime, budget).with_previews(cfg!(not(target_arch = "wasm32")));
+        // A speech card plays its sound while it arrives (#875), on the desktop and, with the
+        // page's own player and `fetch` stream, in the browser (#1070).
+        let host = RunHost::new(runtime, budget).with_previews(true);
         host.register(services)?;
         host.register_estimates(services)?;
         host.register_ownership(services)?;

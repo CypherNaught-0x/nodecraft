@@ -105,7 +105,8 @@ reqwest = { workspace = true, optional = true, features = ["rustls"] }
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tungstenite = { workspace = true, optional = true }
 [target.'cfg(target_arch = "wasm32")'.dependencies]
-reqwest = { workspace = true, optional = true }
+# `stream`: a body read chunk by chunk as `fetch` delivers it, for streamed speech (#1070).
+reqwest = { workspace = true, optional = true, features = ["stream"] }
 # rsa's rand_core can still reach getrandom 0.2 through feature unification (ed25519 turns on
 # `signature/std`), and 0.2 only builds for the browser with its `js` backend. Never called.
 getrandom02 = { package = "getrandom", version = "=0.2.17", optional = true, features = ["js"] }
