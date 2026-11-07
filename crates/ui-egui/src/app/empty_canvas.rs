@@ -24,9 +24,28 @@ fn callout_dismissed_id() -> egui::Id {
 pub(crate) const NO_PROVIDER: &str = "No provider is set up yet: add an API key, or a ComfyUI server, before generating";
 
 impl NodeCraftApp {
-    /// Is any way to generate set up: a stored API key account or a ComfyUI server?
+    /// Is any way to generate set up: a stored API key account, a ComfyUI server, a LiteLLM proxy
+    /// or a provider's own base URL (a local server needs no key)?
     pub(super) fn providers_ready(&self) -> bool {
-        !self.key_accounts.accounts().is_empty() || !self.provider_settings().comfy_servers().is_empty()
+        if !self.key_accounts.accounts().is_empty() {
+            return true;
+        }
+        let settings = self.provider_settings();
+        !settings.comfy_servers().is_empty() || settings.litellm_url.as_deref().is_some_and(|url| !url.trim().is_empty()) || !settings.base_urls.is_empty()
+    }
+
+    /// [`Self::providers_ready`], looked up at most once a second: settings are cloned to answer it.
+    fn providers_ready_cached(&self, ctx: &egui::Context) -> bool {
+        let now = ctx.input(|input| input.time);
+        let cache = egui::Id::new("nodecraft.providers_ready_at");
+        if let Some((at, ready)) = ctx.data(|data| data.get_temp::<(f64, bool)>(cache))
+            && (0.0..1.0).contains(&(now - at))
+        {
+            return ready;
+        }
+        let ready = self.providers_ready();
+        ctx.data_mut(|data| data.insert_temp(cache, (now, ready)));
+        ready
     }
 
     /// Can this window add nodes? A shared-room viewer who isn't editing gets no prompts to.
@@ -38,9 +57,13 @@ impl NodeCraftApp {
     /// One frame of the first-run guidance: the empty-canvas hint or the sample card's callout,
     /// and the providers flag the cards read.
     pub(super) fn empty_canvas(&mut self, ui: &egui::Ui, viewport: Rect, blocked: bool, t: &Tokens) {
-        let ready = self.providers_ready();
+        // Programmatic and test windows without guidance pay nothing; the cards then assume ready.
+        if !self.guidance {
+            return;
+        }
+        let ready = self.providers_ready_cached(ui.ctx());
         ui.ctx().data_mut(|data| data.insert_temp(providers_ready_id(), ready));
-        if !self.guidance || !self.can_add_nodes() {
+        if !self.can_add_nodes() {
             return;
         }
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };

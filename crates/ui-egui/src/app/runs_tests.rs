@@ -1448,6 +1448,8 @@ fn quitting_during_a_save_records_the_results_that_waited_for_it() {
 fn with_no_provider_set_up_the_submit_tooltip_and_quote_say_so() {
     let mock = image(MockModel::new(MockOutput::Image));
     let mut h = scene(making(mock));
+    // The cards hear about missing providers from the first-run guidance, on in the real app.
+    h.state_mut().guidance = true;
     h.run();
     assert!(!h.state().providers_ready(), "the headless fixture has no key and no ComfyUI server");
     // The accessible node's rect is in screen points; the response's is in the card layer's.

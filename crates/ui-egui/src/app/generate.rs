@@ -577,7 +577,15 @@ impl NodeCraftApp {
         }
         if open_keys || open_comfy {
             self.keys.open |= open_keys;
-            self.comfy_server.open |= open_comfy;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.comfy_server.open |= open_comfy;
+            }
+            // The browser build has no ComfyUI panel of its own: its providers panel sets servers up.
+            #[cfg(target_arch = "wasm32")]
+            if open_comfy && let Some(providers) = &mut self.browser_providers {
+                providers.open = true;
+            }
             close = true;
         }
         close |= modal.should_close();
