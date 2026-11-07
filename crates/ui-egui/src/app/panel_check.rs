@@ -98,11 +98,24 @@ pub(super) fn check_open_panels(h: &Harness<'static, NodeCraftApp>, what: &str) 
 /// lies on the screen, and none of its own on-screen controls cross another. `what` names the
 /// case in a failure. Call it on a settled harness.
 pub(super) fn check_window(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    window(h, id, what, true);
+}
+
+/// [`check_window`] for a window that only says something, with nothing to act on: its window
+/// node must still be on screen, but it may hold no controls.
+pub(super) fn check_message_window(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    window(h, id, what, false);
+}
+
+fn window(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str, controls: bool) {
     let Some(state) = egui::AreaState::load(&h.ctx, id) else { panic!("{what}: the window {id:?} isn't open") };
     let rect = state.rect();
     let screen = h.ctx.content_rect();
     assert!(rect.is_finite() && rect.is_positive(), "{what}: {rect:?} has no size");
     assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
-    let crossing = overlaps(h, id, rect);
+    let mut crossing = overlaps(h, id, rect);
+    if !controls {
+        crossing.retain(|found| !found.starts_with("no controls found"));
+    }
     assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
 }

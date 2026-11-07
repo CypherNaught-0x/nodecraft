@@ -711,7 +711,8 @@ control and its own accessibility descendants aside). Clipping isn't checked: eg
 tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
 again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
 Windows that aren't floating panels get `panel_check::check_window`: open, on the screen, and no
-crossing controls.
+crossing controls. A window that only shows a message gets `check_message_window`, which
+allows it no controls.
 
 | Surface | Opens from | Kind | Covered by |
 |---|---|---|---|
@@ -729,6 +730,8 @@ crossing controls.
 | Project files | the File button (top left) | window | `file_dialogs::tests` (with the window check, at 1000 × 700 and 1600 × 900) |
 | Choose a model | a card's Change model… | window | `models::comfy970_tests` (with the window check, while searching) |
 | Rename field | a field's menu, Rename field… | window | `fields_tests` (with the window check) |
+| Review model change, Model preview changed | the model picker, after a choice | window | `models::tests` (with the window check) |
+| Model choice unavailable | the model picker, when it can't offer a choice | window, message only | `models::tests` (with the message-window check) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
@@ -740,7 +743,7 @@ and settles inside once laid out; the checks run after placement settles. The im
 past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
 its shape, so the panel fits (`floating::body_room`).
 
-**Not yet reviewed or covered:** Provider servers (browser only), model-change windows, every modal (app mode, deck editor and presenter, tag
+**Not yet reviewed or covered:** Provider servers (browser only), every modal (app mode, deck editor and presenter, tag
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
 Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
