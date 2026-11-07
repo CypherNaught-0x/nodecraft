@@ -1441,3 +1441,29 @@ fn quitting_during_a_save_records_the_results_that_waited_for_it() {
     let status = h.state().session.file_status();
     assert!(status.dirty && status.available, "unsaved after the result, so the journal is kept for recovery: {status:?}");
 }
+
+/// #1119: with no API key and no ComfyUI server, the submit tooltip and the quote name the missing
+/// setup, and the quote's button opens the API keys panel.
+#[test]
+fn with_no_provider_set_up_the_submit_tooltip_and_quote_say_so() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock));
+    // The cards hear about missing providers from the first-run guidance, on in the real app.
+    h.state_mut().guidance = true;
+    h.run();
+    assert!(!h.state().providers_ready(), "the headless fixture has no key and no ComfyUI server");
+    // The accessible node's rect is in screen points; the response's is in the card layer's.
+    let submit = h.get_by_role_and_label(Role::Button, "Generate").rect().center();
+    h.hover_at(submit);
+    for _ in 0..90 {
+        h.step();
+    }
+    assert!(h.query_by_label_contains(super::empty_canvas::NO_PROVIDER).is_some(), "the tooltip names the missing setup");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.get_by_label(super::empty_canvas::NO_PROVIDER);
+    h.get_by_label("Open API keys").click();
+    h.run();
+    assert!(h.state().keys.open, "the quote's button opens API keys");
+    assert!(h.state().run_confirm.is_none(), "and closes the quote");
+}

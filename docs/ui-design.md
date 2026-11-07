@@ -643,6 +643,17 @@ saved files and says in the notice what it recovered and where the old index was
 entries ticked than one request takes, the bulk buttons are disabled with the reason. In the browser My library lasts until the page is
 closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-global-library.md)).
 
+## First run and the empty canvas
+
+An empty canvas shows a quiet panel in its middle (#1119): **Double-click anywhere to add a node**
+with an **Add a node** button that opens the quick-add palette there, **Drop images, video or a
+folder here**, and **Open a Technique…**, which opens the Techniques panel. While the canvas holds
+only the sample Text card with nothing wired, a tip beside it says **Drag from + to connect to a
+model** until it is dismissed or something is wired. With no API key and no ComfyUI server set up,
+a generation card's submit tooltip and the run quote say so, and the quote offers **Open API keys**
+and **Open ComfyUI**. All of it is view state drawn by the shell: the CLI, MCP and control channel
+never see it, and a shared-room viewer who can't add nodes gets no prompt to.
+
 ## Overlays and stacking
 
 One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
