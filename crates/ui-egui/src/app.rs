@@ -1022,6 +1022,22 @@ impl NodeCraftApp {
         let _ = change;
     }
 
+    /// Replaces the agent's settings and writes the settings file now (#1063): the agent's settings
+    /// screen saves with one confirmed write. Why it couldn't be written, if it couldn't: the
+    /// change still holds for this session.
+    pub fn save_agent_settings(&mut self, agent: nodecraft_engine::settings::AgentSettings) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            store.update(|settings| settings.agent = agent);
+            if store.is_read_only() {
+                return Err("the settings file can't be written, so this holds until NodeCraft closes".into());
+            }
+            return store.flush().map_err(|_| "the settings file couldn't be saved; this holds until NodeCraft closes".to_owned());
+        }
+        let _ = agent;
+        Err("there is no settings file here, so this holds until NodeCraft closes".into())
+    }
+
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
     /// package may take an ID the app registers; no host implementation is bindable yet.
     #[cfg(not(target_arch = "wasm32"))]
