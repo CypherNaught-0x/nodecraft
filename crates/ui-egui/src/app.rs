@@ -388,6 +388,8 @@ mod live;
 mod mask_badges;
 mod mask_editor;
 mod mentions;
+#[cfg(test)]
+mod menus959_tests;
 mod mesh_capture;
 mod mesh_saved;
 mod metrics;
