@@ -31,6 +31,7 @@ pub(crate) mod result_save;
 pub mod scroll_chain;
 pub mod search;
 pub mod selection;
+pub mod shortcut;
 pub mod tags;
 pub(crate) mod text_preview;
 pub mod theme;

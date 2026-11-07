@@ -127,7 +127,7 @@ selected border more visible than the resting one, in both themes.
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked |
+| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
@@ -148,6 +148,13 @@ selected border more visible than the resting one, in both themes.
 | Select one generation card | a toolbar above it: the model (opens the model picker), the aspect ratio (the choice tagged `aspect_ratio`, or else one whose options are all `W:H`), and Expand once it has an image |
 | Edit a parameter | schema-typed value through `node.param_set`; Enter or blur commits, ⌘/Ctrl+Enter for multiline text |
 | ⌘/Ctrl+Z / ⌘/Ctrl+Shift+Z outside text fields | undo / redo document edits |
+
+Shortcuts are spelled one way everywhere a person reads them (the palette, the Turn into menu,
+tooltips, menus, notices and accessible names): `shortcut::format_shortcut` turns the engine's
+`Command+Shift+Z` into `Shift+⌘Z` on macOS (Ctrl, Option, Shift, then ⌘; only ⌘ is a symbol,
+since egui's default fonts have no ⇧, ⌥ or ⌃) and `Ctrl+Shift+Z` on Windows, Linux and other
+browsers, in that fixed order. This page writes `⌘/Ctrl` for short; the UI never
+shows that spelling (#1117).
 
 egui's own keyboard UI zoom is turned off so these keys zoom the canvas only. Canvas keyboard
 shortcuts yield to focused text fields. Invalid drops (different modality, a list into a single input, a node into itself, a loop, or a
