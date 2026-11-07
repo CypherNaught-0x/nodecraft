@@ -181,8 +181,10 @@ async fn earlier_actual_ambiguous_attempt_survives_later_native_builder_failure(
     );
     assert!(wire.starts_with(b"POST "));
     assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
-    assert_eq!(events.iter().filter(|e| matches!(e, Event::Started { .. })).count(), 2);
-    assert_eq!(events.iter().filter(|e| matches!(e, Event::Retrying { .. })).count(), 1);
+    // A chat request that may have been sent is never resent (#1122): no later attempt is made,
+    // so the replacement builder never runs and the first attempt's charge stands.
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::Started { .. })).count(), 1);
+    assert_eq!(events.iter().filter(|e| matches!(e, Event::Retrying { .. })).count(), 0);
     assert_eq!(spent(&budget), 100_000);
     assert_eq!(budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
     runner.settle(JobId(1));

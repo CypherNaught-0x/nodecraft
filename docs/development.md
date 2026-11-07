@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable ≥ 1.95 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
+- Rust stable ≥ 1.97.1 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
   target: `rustup target add wasm32-unknown-unknown`.
 - Linux: the usual eframe/wgpu system libraries (X11/Wayland, xkbcommon, Vulkan or GL drivers).
 - Optional: [cargo-nextest](https://nexte.st) for faster test runs (`.config/nextest.toml`).

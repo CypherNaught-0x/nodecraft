@@ -123,85 +123,6 @@ fn opaque_blocks_go_only_to_their_dialect() {
 }
 
 #[test]
-fn openai_tool_requests() {
-    let b = openai::body(&tool_turns(), false, true);
-    assert_eq!(
-        b["tools"][0],
-        json!({"type": "function", "function": {"name": "get_weather", "description": "Current weather for a city", "parameters": weather().input_schema, "strict": true}})
-    );
-    let m = &b["messages"];
-    assert_eq!(m[1]["content"], "Let me check.");
-    assert_eq!(m[1]["tool_calls"][0], json!({"id": "call_1", "type": "function", "function": {"name": "get_weather", "arguments": "{\"city\":\"Oslo\"}"}}));
-    assert_eq!(m[2], json!({"role": "tool", "tool_call_id": "call_1", "content": "4 °C, rain"}), "tool results straight after the calls");
-    assert_eq!(m[3], json!({"role": "user", "content": "Thanks"}));
-    assert!(b.get("tool_choice").is_none());
-
-    let mut r = tool_turns();
-    r.messages[1].parts = vec![Part::ToolUse { id: "call_1".into(), name: "get_weather".into(), input: Value::String("{city: Oslo".into()) }];
-    r.messages[2].parts = vec![Part::ToolResult { id: "call_1".into(), content: "unknown city".into(), is_error: true }];
-    r.tools[0].strict = false;
-    let b = openai::body(&r, false, false);
-    assert_eq!(b["messages"][1]["content"], Value::Null, "a turn of only calls has null content");
-    assert_eq!(b["messages"][1]["tool_calls"][0]["function"]["arguments"], "{city: Oslo", "unparsed arguments go back as they came");
-    assert_eq!(b["messages"][2]["content"], "Error: unknown city");
-    assert_eq!(b["messages"].as_array().unwrap().len(), 3, "no empty user message after the results");
-    assert!(b["tools"][0]["function"].get("strict").is_none(), "strict only when asked");
-}
-
-#[test]
-fn openai_tool_replies() {
-    let r = openai::parse(
-        br#"{"choices":[{"message":{"content":null,"tool_calls":[
-            {"id":"call_a","type":"function","function":{"name":"get_weather","arguments":"{\"city\":\"Oslo\"}"}},
-            {"type":"function","function":{"name":"get_time","arguments":{"tz":"CET"}}},
-            {"id":"call_c","type":"function","function":{"name":"broken","arguments":"{nope"}}
-        ]},"finish_reason":"tool_calls"}],"usage":{"prompt_tokens":20,"completion_tokens":9}}"#,
-    )
-    .unwrap();
-    assert_eq!(r.stop, StopReason::ToolUse);
-    assert_eq!(r.text, "");
-    let calls: Vec<_> = r.tool_calls().collect();
-    assert_eq!(calls.len(), 3);
-    assert_eq!((calls[0].id, calls[0].name, calls[0].input), ("call_a", "get_weather", &json!({"city": "Oslo"})));
-    assert_eq!((calls[1].id, calls[1].input), ("call_1", &json!({"tz": "CET"})), "missing ids are filled in; object arguments accepted");
-    assert_eq!(calls[2].input, &json!("{nope"), "arguments that aren't JSON stay text");
-    assert_eq!((r.usage.input_tokens, r.usage.output_tokens), (Some(20), Some(9)));
-    assert_eq!(r.message.role, Role::Assistant);
-    assert_eq!(openai::parse(br#"{"choices":[{"message":{"tool_calls":[{"id":"x","function":{}}]}}]}"#).unwrap_err().kind, ErrorKind::Malformed);
-}
-
-#[test]
-fn openai_streamed_tool_calls() {
-    let mut s = StreamState::default();
-    let ev = |d: &str| sse::SseEvent { event: None, data: d.into() };
-    for d in [
-        r#"{"choices":[{"delta":{"role":"assistant","content":"Checking"}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_a","type":"function","function":{"name":"get_weather","arguments":""}}]}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":1,"id":"call_b","function":{"name":"get_time","arguments":"{}"}}]}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"ci"}}]}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"name":"get_weather","arguments":"ty\":\"Oslo\"}"}}]}}]}"#,
-        r#"{"choices":[{"delta":{},"finish_reason":"tool_calls"}]}"#,
-    ] {
-        openai::stream_event(&ev(d), &mut s).unwrap();
-    }
-    let parts = openai::stream_parts(&mut s).unwrap();
-    assert_eq!(
-        parts,
-        vec![
-            Part::Text("Checking".into()),
-            Part::ToolUse { id: "call_a".into(), name: "get_weather".into(), input: json!({"city": "Oslo"}) },
-            Part::ToolUse { id: "call_b".into(), name: "get_time".into(), input: json!({}) },
-        ]
-    );
-    assert_eq!(s.stop, Some(StopReason::ToolUse));
-    // A server can't make endless calls.
-    let mut s = StreamState::default();
-    let flood: Vec<Value> = (0..=MAX_REPLY_BLOCKS as u64).map(|i| json!({"index": i, "id": "x", "function": {"name": "f"}})).collect();
-    let flood = json!({"choices": [{"delta": {"tool_calls": flood}}]}).to_string();
-    assert_eq!(openai::stream_event(&ev(&flood), &mut s).unwrap_err().kind, ErrorKind::Malformed);
-}
-
-#[test]
 fn anthropic_tool_requests() {
     let mut r = tool_turns();
     r.messages[1].parts.insert(0, Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type": "thinking", "thinking": "plan", "signature": "sig"}) });
@@ -345,23 +266,7 @@ fn litellm_key_spend() {
 #[test]
 fn review_regressions() {
     let ev = |d: &str| sse::SseEvent { event: None, data: d.into() };
-    // Calls without an index, one per chunk, stay separate.
-    let mut s = StreamState::default();
-    for d in [
-        r#"{"choices":[{"delta":{"tool_calls":[{"id":"a","function":{"name":"f","arguments":"{\"x\":"}}]}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"function":{"arguments":"1}"}}]}}]}"#,
-        r#"{"choices":[{"delta":{"tool_calls":[{"id":"b","function":{"name":"g","arguments":"{}"}}]}}]}"#,
-    ] {
-        openai::stream_event(&ev(d), &mut s).unwrap();
-    }
-    assert_eq!(
-        openai::stream_parts(&mut s).unwrap(),
-        vec![Part::ToolUse { id: "a".into(), name: "f".into(), input: json!({"x": 1}) }, Part::ToolUse { id: "b".into(), name: "g".into(), input: json!({}) },]
-    );
-    // Unnamed calls are malformed in every path.
-    let mut s = StreamState::default();
-    openai::stream_event(&ev(r#"{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"a","function":{"arguments":"{}"}}]}}]}"#), &mut s).unwrap();
-    assert_eq!(openai::stream_parts(&mut s).unwrap_err().kind, ErrorKind::Malformed);
+    // Unnamed calls are malformed in every path (the OpenAI-compatible ones: `openai::tests`).
     let mut s = StreamState::default();
     anthropic::stream_event(&ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t"}}"#), &mut s).unwrap();
     assert_eq!(anthropic::stream_parts(&mut s).unwrap_err().kind, ErrorKind::Malformed);

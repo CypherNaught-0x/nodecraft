@@ -30,7 +30,8 @@ fn prior_ambiguous_attempt_is_not_released_by_later_proven_local_failure() {
     let (runner, budget) = budgeted(Some(1_000_000));
     let http = Arc::new(LegacyHttp(AtomicU64::new(0)));
     runner.register(JobId(1), llm(http.clone(), true));
-    assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+    // A lost chat reply may be billed, so it is final rather than retried (#1122).
+    assert!(matches!(block_on(runner.run(job(1), CancelToken::default())), Outcome::Failed { transient: false, .. }));
     assert_eq!(spent(&budget), 100_000);
     assert_eq!(http.0.load(Ordering::SeqCst), 1);
     runner.register(JobId(1), llm(http.clone(), false));
@@ -74,7 +75,8 @@ fn a_proven_local_failure_credits_the_run_ceiling_through_the_runner() {
     // The room is still whole for a job that reaches the provider and keeps its debit once its
     // reply is lost.
     runner.register(JobId(4), authorized(llm(http.clone(), true), &ceiling));
-    assert!(matches!(block_on(runner.run(job(4), CancelToken::default())), Outcome::Failed { transient: true, .. }));
+    // Final, not retried: the chat request may have been billed (#1122).
+    assert!(matches!(block_on(runner.run(job(4), CancelToken::default())), Outcome::Failed { transient: false, .. }));
     assert_eq!(http.0.load(Ordering::SeqCst), 1);
     runner.settle(JobId(4));
     assert_eq!(ceiling.status(nodecraft_types::Currency::USD), (100_000, 100_000));

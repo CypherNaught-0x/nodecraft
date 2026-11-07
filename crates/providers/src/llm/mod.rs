@@ -2,7 +2,8 @@
 //!
 //! Two wire dialects cover the endpoints in #10:
 //! - [`Dialect::OpenAi`]: Chat Completions, spoken by OpenAI, Ollama, LM Studio, vLLM, OpenRouter
-//!   and LiteLLM (which also reports per-request spend);
+//!   and LiteLLM (which also reports per-request spend), through `rig-core`'s wire over our own
+//!   transport (#1122);
 //! - [`Dialect::Anthropic`]: the Anthropic Messages API.
 //!
 //! [`LlmClient`] sends a [`ChatRequest`] (a conversation of text, images, tool calls and tool
@@ -544,24 +545,23 @@ impl LlmClient {
         &self.endpoint
     }
 
-    fn request(&self, req: &ChatRequest, stream: bool) -> Result<HttpRequest, ProviderError> {
+    /// `req` checked for what the endpoint would refuse, before anything is sent (or billed).
+    fn validated(&self, req: &ChatRequest) -> Result<ChatRequest, ProviderError> {
         let mut req = req.clone();
         req.validate(self.endpoint.dialect)?;
-        let req = &req;
-        let (path, body) = match self.endpoint.dialect {
-            Dialect::OpenAi => {
-                ("chat/completions", openai::body(req, stream, matches!(self.endpoint.id.as_str(), "openai" | "azure-openai" | bedrock::BEDROCK)))
-            }
-            Dialect::Anthropic => ("messages", anthropic::body(req, stream)),
-        };
-        // A stream carries ~200–250 bytes of framing per token: size the cap from the reply length,
-        // so a long, already-billed reply isn't cut off by a cap meant for whole replies.
-        // With no limit sent (OpenAI-style default), the server may write up to the model's maximum.
+        Ok(req)
+    }
+
+    /// The reply's size cap and timeout. A stream carries ~200–250 bytes of framing per token:
+    /// the cap is sized from the reply length, so a long, already-billed reply isn't cut off by a
+    /// cap meant for whole replies. With no limit sent (OpenAI-style default), the server may
+    /// write up to the model's maximum.
+    fn limits(&self, req: &ChatRequest, stream: bool) -> (usize, u64) {
         let sent_limit = match self.endpoint.dialect {
             Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
             Dialect::OpenAi => req.max_tokens,
         };
-        let (cap, timeout) = if stream {
+        if stream {
             let cap = match sent_limit {
                 Some(tokens) => usize::try_from(u64::from(tokens.max(1)).saturating_mul(400)).unwrap_or(usize::MAX).clamp(MAX_REPLY_BYTES, MAX_STREAM_BYTES),
                 None => MAX_STREAM_BYTES,
@@ -569,8 +569,15 @@ impl LlmClient {
             (cap, STREAM_TIMEOUT_MS)
         } else {
             (MAX_REPLY_BYTES, CHAT_TIMEOUT_MS)
-        };
-        let http = HttpRequest::post_json(self.endpoint.url(path), &body)?.timeout_ms(timeout).max_response_bytes(cap);
+        }
+    }
+
+    /// The Anthropic request.
+    fn request(&self, req: &ChatRequest, stream: bool) -> Result<HttpRequest, ProviderError> {
+        let req = &self.validated(req)?;
+        let body = anthropic::body(req, stream);
+        let (cap, timeout) = self.limits(req, stream);
+        let http = HttpRequest::post_json(self.endpoint.url("messages"), &body)?.timeout_ms(timeout).max_response_bytes(cap);
         Ok(self.auth(http))
     }
 
@@ -594,17 +601,18 @@ impl LlmClient {
 
     /// Sends the request and waits for the whole reply.
     pub async fn chat(&self, req: &ChatRequest) -> Result<ChatResponse, ProviderError> {
+        if self.endpoint.dialect == Dialect::OpenAi {
+            return self.openai_chat(req, None, None).await;
+        }
         let response = self.http.send(self.request(req, false)?).await?;
         self.chat_response(response)
     }
 
+    /// An Anthropic reply.
     fn chat_response(&self, response: HttpResponse) -> Result<ChatResponse, ProviderError> {
         let cost = self.reported_cost(&response.headers);
         let response = self.error_for(response)?;
-        let mut reply = match self.endpoint.dialect {
-            Dialect::OpenAi => openai::parse(&response.body)?,
-            Dialect::Anthropic => anthropic::parse(&response.body)?,
-        };
+        let mut reply = anthropic::parse(&response.body)?;
         reply.usage.cost = cost;
         Ok(reply)
     }
@@ -621,18 +629,17 @@ impl LlmClient {
         on_text: &mut (dyn FnMut(&str) + Send),
         context: Option<&crate::SubmitContext>,
     ) -> Result<ChatResponse, ProviderError> {
+        if self.endpoint.dialect == Dialect::OpenAi {
+            return self.openai_chat(req, Some(on_text), context).await;
+        }
         let request = self.request(req, true)?;
         let mut parser = sse::SseParser::new();
         let mut state = StreamState::default();
-        let dialect = self.endpoint.dialect;
         let mut failure: Option<ProviderError> = None;
         let mut sink = |chunk: &[u8]| -> Result<(), ProviderError> {
             let events = parser.feed(chunk).map_err(|m| ProviderError::new(ErrorKind::Malformed, m))?;
             for e in events {
-                let delta = match dialect {
-                    Dialect::OpenAi => openai::stream_event(&e, &mut state),
-                    Dialect::Anthropic => anthropic::stream_event(&e, &mut state),
-                };
+                let delta = anthropic::stream_event(&e, &mut state);
                 match delta {
                     Ok(Some(text)) => on_text(&text),
                     Ok(None) => {}
@@ -651,10 +658,7 @@ impl LlmClient {
         // A server may close right after the last event without a blank line.
         if failure.is_none() && head.as_ref().is_ok_and(|h| h.is_success()) {
             for last in parser.finish() {
-                let flushed = match dialect {
-                    Dialect::OpenAi => openai::stream_event(&last, &mut state),
-                    Dialect::Anthropic => anthropic::stream_event(&last, &mut state),
-                };
+                let flushed = anthropic::stream_event(&last, &mut state);
                 match flushed {
                     Ok(Some(text)) => on_text(&text),
                     Ok(None) => {}
@@ -674,10 +678,7 @@ impl LlmClient {
         if !state.finished {
             return Err(ProviderError::new(ErrorKind::Network, "the reply stream ended early"));
         }
-        let parts = match dialect {
-            Dialect::OpenAi => openai::stream_parts(&mut state)?,
-            Dialect::Anthropic => anthropic::stream_parts(&mut state)?,
-        };
+        let parts = anthropic::stream_parts(&mut state)?;
         let stop = state.stop.take().unwrap_or(StopReason::EndTurn);
         Ok(ChatResponse::new(parts, stop, Usage { cost, ..state.usage }))
     }
@@ -732,9 +733,14 @@ impl LlmClient {
             Dialect::OpenAi => openai::error(response.status, &response.body),
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
         };
-        e.retry_after_ms = response.header("retry-after").and_then(|v| v.trim().parse::<u64>().ok()).map(|s| s.saturating_mul(1000));
+        e.retry_after_ms = retry_after(response.header("retry-after"));
         Err(e)
     }
+}
+
+/// A `Retry-After` in seconds, as milliseconds; the HTTP-date form is treated as absent.
+fn retry_after(value: Option<&str>) -> Option<u64> {
+    value.and_then(|v| v.trim().parse::<u64>().ok()).map(|s| s.saturating_mul(1000))
 }
 
 /// A LiteLLM key's spend and budget, in USD; `None` where the proxy doesn't say (no budget set).
@@ -744,15 +750,15 @@ pub struct KeySpend {
     pub max_budget: Option<Money>,
 }
 
-/// What a stream has accumulated.
+/// What an Anthropic stream has accumulated.
 #[derive(Debug, Default)]
 pub(crate) struct StreamState {
-    /// The text so far (OpenAI; Anthropic keeps text in its blocks too).
+    /// The text so far (Anthropic keeps text in its blocks too).
     text: String,
     stop: Option<StopReason>,
     usage: Usage,
     finished: bool,
-    /// Content blocks (Anthropic) or tool calls (OpenAI) by the index the server gives them.
+    /// Content blocks by the index the server gives them.
     blocks: BTreeMap<u64, StreamBlock>,
 }
 
@@ -821,8 +827,8 @@ pub fn chat_request(job: &ProviderJob) -> Result<ChatRequest, ProviderError> {
 }
 
 /// Text generations finish within one request, so `submit` returns the result directly
-/// ([`Submission::Finished`]). Chat APIs offer no idempotency keys; a retry may run (and bill) the
-/// prompt again, which is cheap for text.
+/// ([`Submission::Finished`]). Chat APIs offer no idempotency keys, so a request that may have been
+/// sent is never sent again by itself (#1122): its charge stays unresolved at its quote.
 impl Provider for LlmClient {
     fn id(&self) -> &str {
         &self.endpoint.id
@@ -833,11 +839,12 @@ impl Provider for LlmClient {
     }
 
     fn retry_ambiguous_submit(&self) -> bool {
-        // Azure v1 and Bedrock's Chat Completions route offer no idempotency guarantee. A lost
-        // synchronous reply may already have been billed; preserve legacy endpoint policies while
-        // making them terminal. A custom base URL is assumed to ignore idempotency keys too,
-        // whatever model it serves (#960, #961). Endpoints at their own address keep their policy.
-        !matches!(self.endpoint.id.as_str(), "azure-openai" | bedrock::BEDROCK) && !self.custom
+        // No Chat Completions endpoint offers an idempotency guarantee: a lost reply may already
+        // have been billed, so an OpenAI-compatible request is never resent (#1122, as Azure v1
+        // and Bedrock always were). A custom base URL is assumed to ignore idempotency keys too,
+        // whatever model it serves (#960, #961). Anthropic at its own address keeps its policy
+        // until it moves to the same client.
+        self.endpoint.dialect == Dialect::Anthropic && !self.custom
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {
@@ -854,6 +861,8 @@ impl Provider for LlmClient {
             let reply = if context.wants_text() {
                 // The answer streams in, each piece reported to the runner as it arrives (#504).
                 self.streamed(&self.provider_request(job)?, &mut |piece| context.push_text(piece), Some(context)).await?
+            } else if self.endpoint.dialect == Dialect::OpenAi {
+                self.openai_chat(&self.provider_request(job)?, None, Some(context)).await?
             } else {
                 let request = self.request(&self.provider_request(job)?, false)?;
                 let response = context.send(self.http.as_ref(), request).await?;
@@ -972,13 +981,7 @@ pub(crate) mod tests {
             claude["messages"][0]["content"][1],
             serde_json::json!({"type": "document", "source": {"type": "base64", "media_type": "application/pdf", "data": "JSUl"}})
         );
-        r.messages[0].parts.push(pdf(3));
-        let gpt = openai::body(&r, false, true);
-        assert_eq!(
-            gpt["messages"][1]["content"][1],
-            serde_json::json!({"type": "file", "file": {"filename": "document-1.pdf", "file_data": "data:application/pdf;base64,JSUl"}})
-        );
-        assert_eq!(gpt["messages"][1]["content"][2]["file"]["filename"], "document-2.pdf", "several PDFs get distinct names");
+        // The OpenAI-compatible shape: `openai::tests::pdfs_are_sent_as_documents`.
     }
 
     #[test]

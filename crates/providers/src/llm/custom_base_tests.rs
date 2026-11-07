@@ -26,7 +26,7 @@ fn the_default_endpoint_is_unchanged_when_no_base_url_is_set() {
     let http = Canned::with_headers(200, REPLY, cost_header());
     let client = LlmClient::new(Endpoint::openai(ApiKey::new("sk-fixture")), http.clone());
     assert_eq!(client.custom_base_url(), None);
-    assert!(client.retry_ambiguous_submit(), "the default endpoint keeps its retry policy");
+    assert!(!client.retry_ambiguous_submit(), "a chat request that may have been sent is never resent (#1122)");
     let Submission::Finished(done) = block_on(client.submit(&job())).unwrap() else { panic!("queued") };
     assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 1200)), "an endpoint at its own address reads the header as before");
     let request = http.request();
@@ -73,7 +73,7 @@ fn anthropic_can_be_served_from_a_custom_base_url_too() {
 #[test]
 fn the_litellm_profile_is_unchanged() {
     let proxy = LlmClient::new(Endpoint::litellm("http://127.0.0.1:4000", None), Canned::with_headers(200, REPLY, cost_header()));
-    assert!(proxy.retry_ambiguous_submit(), "its policy is the #489 catalog work's to change");
+    assert!(!proxy.retry_ambiguous_submit(), "a chat request that may have been sent is never resent (#1122)");
     assert_eq!(proxy.custom_base_url(), None, "the LiteLLM profile is its own provider, not a catalog provider moved elsewhere");
     let Submission::Finished(done) = block_on(proxy.submit(&job())).unwrap() else { panic!("queued") };
     assert_eq!(done.usage.cost, Some(Money::new(Currency::USD, 1200)));
