@@ -219,6 +219,21 @@ pub struct Tokens {
     pub timeline_track_height: f32,
     pub timeline_ruler_height: f32,
     pub timeline_trim_grip: f32,
+    /// Stroke widths (#1124): a hairline outline (panel and frame edges, guides), a medium line
+    /// (a playhead, a traced shape) and a strong one (a chosen thumbnail or clip, a drop marker).
+    pub stroke_hairline: f32,
+    pub stroke_medium: f32,
+    pub stroke_strong: f32,
+    /// A heading in an overlay (the drop hint), and the large message on an empty deck slide.
+    pub heading_size: f32,
+    pub display_size: f32,
+    /// How far a thumbnail's image sits inside its outline, and the radius of a small swatch.
+    pub inset: f32,
+    /// How much a dimmed fill keeps of its colour (`gamma_multiply`), for a shape drawn behind
+    /// what is being edited.
+    pub dim: f32,
+    /// A number inside a round badge, as a fraction of the badge's radius (input order badges).
+    pub badge_text_ratio: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -373,6 +388,14 @@ pub const DARK: Tokens = Tokens {
     timeline_track_height: 84.0,
     timeline_ruler_height: 22.0,
     timeline_trim_grip: 6.0,
+    stroke_hairline: 1.0,
+    stroke_medium: 1.5,
+    stroke_strong: 2.0,
+    heading_size: 19.5,
+    display_size: 24.0,
+    inset: 2.0,
+    dim: 0.6,
+    badge_text_ratio: 1.2,
 };
 
 pub const LIGHT: Tokens = Tokens {
@@ -467,12 +490,12 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
     };
     v.panel_fill = t.canvas_bg;
     v.window_fill = t.panel_fill;
-    v.window_stroke = Stroke::new(1.0, t.panel_stroke);
+    v.window_stroke = Stroke::new(t.stroke_hairline, t.panel_stroke);
     v.window_corner_radius = CornerRadius::same(t.panel_radius);
     v.menu_corner_radius = CornerRadius::same(t.panel_radius);
     v.extreme_bg_color = t.canvas_bg;
     v.selection.bg_fill = t.selection_fill;
-    v.selection.stroke = Stroke::new(1.0, t.selection_text);
+    v.selection.stroke = Stroke::new(t.stroke_hairline, t.selection_text);
     v.text_cursor.stroke = Stroke::new(v.text_cursor.stroke.width, t.text);
     v.hyperlink_color = t.accent_text;
     v.warn_fg_color = t.stale;
@@ -489,16 +512,45 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
 /// Install the theme on a context. Call once at startup and on theme change.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
+    let label = kind.tokens().label_size;
+    ctx.all_styles_mut(|style| style_text(style, label));
+}
+
+/// egui's `Small` text (`.small()`, 9 pt by default) is never smaller than a card label (#1124).
+fn style_text(style: &mut egui::Style, label_size: f32) {
+    style.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(label_size));
+}
+
+/// The framed group used inside panels and windows (#1124): `panel_fill`, a hairline
+/// `panel_stroke` edge, `panel_radius` corners and `card_padding` inside.
+pub fn panel_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(Stroke::new(t.stroke_hairline, t.panel_stroke)).corner_radius(t.panel_radius)
 }
 
 impl Tokens {
     pub fn marquee_stroke(&self) -> Stroke {
-        Stroke::new(1.0, self.accent)
+        Stroke::new(self.stroke_hairline, self.accent)
     }
 
     pub fn tag_color(&self, color: Option<&str>) -> Color32 {
         crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
     }
+}
+
+/// `text` without its inline test modules (`#[cfg(test)] mod x { … }` to the end of the file),
+/// for source guards. A `#[cfg(test)] mod x_tests;` declaration doesn't end the code.
+#[cfg(test)]
+pub(crate) fn non_test_code(text: &str) -> &str {
+    let mut from = 0;
+    while let Some(at) = text.get(from..).and_then(|rest| rest.find("#[cfg(test)]")).map(|found| found + from) {
+        let after = text.get(at + "#[cfg(test)]".len()..).unwrap_or_default().trim_start();
+        let line = after.lines().next().unwrap_or_default();
+        if line.contains("mod ") && line.trim_end().ends_with('{') {
+            return text.get(..at).unwrap_or_default();
+        }
+        from = at + 1;
+    }
+    text
 }
 
 #[cfg(test)]
@@ -565,6 +617,71 @@ mod tests {
                 assert!(contrast(v.error_fg_color, bg) >= 4.5, "{kind:?} error text");
             }
         }
+    }
+
+    #[test]
+    fn small_text_is_never_below_the_label_size() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let ctx = egui::Context::default();
+            apply(&ctx, kind);
+            let small = ctx.global_style().text_styles.get(&egui::TextStyle::Small).map(|font| font.size);
+            assert_eq!(small, Some(kind.tokens().label_size), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_source_guards_skip_only_inline_test_modules() {
+        let text = "#[cfg(test)]\nmod a_tests;\nfn real() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+        assert_eq!(non_test_code(text), "#[cfg(test)]\nmod a_tests;\nfn real() {}\n");
+        assert_eq!(non_test_code("fn only() {}"), "fn only() {}");
+    }
+
+    #[test]
+    fn the_panel_frame_is_the_shared_recipe() {
+        let t = &DARK;
+        let frame = panel_frame(t);
+        assert_eq!(frame.fill, t.panel_fill);
+        assert_eq!(frame.stroke, Stroke::new(t.stroke_hairline, t.panel_stroke));
+        assert_eq!(frame.corner_radius, CornerRadius::same(t.panel_radius));
+        assert_eq!(frame.inner_margin, egui::Margin::same(16));
+    }
+
+    /// #1124: stroke widths come from tokens; a literal `Stroke::new(<number>, …)` outside this
+    /// file and tests fails here.
+    #[test]
+    fn no_literal_stroke_widths_outside_the_theme() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if !name.ends_with(".rs")
+                    || name == "theme.rs"
+                    || name == "tests.rs"
+                    || name.ends_with("_tests.rs")
+                    || path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // Stop at the file's own test module.
+                let code = crate::theme::non_test_code(&text);
+                for (n, line) in code.lines().enumerate() {
+                    if let Some(at) = line.find("Stroke::new(")
+                        && line[at + "Stroke::new(".len()..].starts_with(|c: char| c.is_ascii_digit())
+                    {
+                        found.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "literal stroke widths: {found:#?}");
     }
 
     #[test]

@@ -3370,6 +3370,7 @@ name = "nodecraft-engine"
 version = "0.6.0"
 dependencies = [
  "allocation-counter",
+ "base64 0.22.1",
  "blake3",
  "craft-atomic",
  "craft-settings",

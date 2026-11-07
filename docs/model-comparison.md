@@ -44,7 +44,13 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `azure-openai.deployment` | [Documentation](https://learn.microsoft.com/en-us/azure/ai-studio/ai-services/concepts/endpoints) | 2026-10-27 |
 | `bedrock.gpt-oss-120b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html) | 2026-11-03 |
 | `bedrock.gpt-oss-20b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html) | 2026-11-03 |
+| `bfl.flux-2-flex` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `bfl.flux-2-klein-4b` | [Documentation](https://docs.bfl.ai/quick_start/generating_images) | 2026-10-27 |
+| `bfl.flux-2-klein-9b` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |

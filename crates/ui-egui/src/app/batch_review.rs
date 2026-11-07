@@ -287,8 +287,7 @@ impl NodeCraftApp {
         let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, open_review.node));
         let mut open = true;
         let mut pick = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
+        let frame = crate::theme::panel_frame(t);
         egui::Window::new("Batch items")
             .id(egui::Id::new("nodecraft.batch_review"))
             .open(&mut open)

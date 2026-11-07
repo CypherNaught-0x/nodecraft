@@ -388,6 +388,8 @@ mod live;
 mod mask_badges;
 mod mask_editor;
 mod mentions;
+#[cfg(test)]
+mod menus959_tests;
 mod mesh_capture;
 mod mesh_saved;
 mod metrics;
@@ -400,6 +402,8 @@ mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paid_results;
 mod palette_navigation;
+#[cfg(test)]
+mod panel_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 mod paste_media;
@@ -1018,6 +1022,22 @@ impl NodeCraftApp {
         }
         #[cfg(target_arch = "wasm32")]
         let _ = change;
+    }
+
+    /// Replaces the agent's settings and writes the settings file now (#1063): the agent's settings
+    /// screen saves with one confirmed write. Why it couldn't be written, if it couldn't: the
+    /// change still holds for this session.
+    pub fn save_agent_settings(&mut self, agent: nodecraft_engine::settings::AgentSettings) -> Result<(), String> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(store) = &mut self.store {
+            store.update(|settings| settings.agent = agent);
+            if store.is_read_only() {
+                return Err("the settings file can't be written, so this holds until NodeCraft closes".into());
+            }
+            return store.flush().map_err(|_| "the settings file couldn't be saved; this holds until NodeCraft closes".to_owned());
+        }
+        let _ = agent;
+        Err("there is no settings file here, so this holds until NodeCraft closes".into())
     }
 
     /// The `plugins` service over the package store in `dir` (`store/`, `trust.json`). No
@@ -1903,7 +1923,15 @@ impl NodeCraftApp {
                     (self.view.zoom >= card::BODY_MIN_ZOOM).then(|| crate::video::video_of(node)).flatten().filter(|_| images.0.is_empty()).map(|asset| {
                         let edge = t.card_width * self.view.zoom * ui.ctx().pixels_per_point();
                         let assets = self.session.assets();
-                        self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset))
+                        let view = self.videos.view(ui.ctx(), node.id, asset, edge, || assets.preview_read(asset));
+                        // Its sound track plays with the picture (#1065): only while it plays, so an
+                        // idle canvas reads and plays nothing.
+                        let (playing, at) = match &view {
+                            crate::video::VideoView::Frame { playing, position_us, .. } => (*playing, *position_us),
+                            _ => (false, 0),
+                        };
+                        self.audios.follow(ui.ctx(), node.id, asset, playing, at, || assets.preview_read(asset));
+                        view
                     });
                 // And sounds; which card plays, and where, is view state too (#106). A sound
                 // still arriving plays from its job's latest preview, then its result (#875).
@@ -1913,7 +1941,8 @@ impl NodeCraftApp {
                 let sound_so_far = self.runs.as_ref().and_then(|runs| runs.audio_preview(self.canvas, node.id));
                 let result = crate::audio::audio_of(node);
                 let finished = result.and_then(|asset| self.runs.as_ref()?.finished_take(self.canvas, node.id, asset.hash));
-                if sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
+                // A video card's sound is its video's, followed above.
+                if video.is_none() && sound_so_far.is_none() && (result.is_none() || (!shows_audio && finished.is_none())) {
                     self.audios.let_go(node.id);
                 }
                 let audio = match (sound_so_far, result) {

@@ -135,7 +135,7 @@ impl TurnInto {
         let area = egui::Area::new(egui::Id::new("turn_into_menu")).order(egui::Order::Foreground).fixed_pos(self.screen).show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(t.panel_fill)
-                .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+                .stroke(egui::Stroke::new(t.stroke_hairline, t.panel_stroke))
                 .corner_radius(t.panel_radius)
                 .inner_margin(t.control_gap * 2.0)
                 .show(ui, |ui| {
