@@ -402,6 +402,8 @@ mod ownership_panel;
 #[cfg(not(target_arch = "wasm32"))]
 mod paid_results;
 mod palette_navigation;
+#[cfg(test)]
+mod panel_check;
 #[cfg(not(target_arch = "wasm32"))]
 mod paste_image;
 mod paste_media;
