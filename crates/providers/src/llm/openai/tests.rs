@@ -573,3 +573,15 @@ fn a_stream_that_fails_or_is_cancelled_leaves_nothing_behind() {
     assert_eq!(Arc::strong_count(&http), 2);
     assert!(context.finish_error().is_none(), "possibly billed");
 }
+
+/// A tool call index from the wire is refused past the reply's limit before anything is sized by
+/// it: one small hostile event must not allocate the index's worth of slots.
+#[test]
+fn a_huge_tool_call_index_is_refused_not_allocated() {
+    for index in ["100000000000", "1024", "4294967295"] {
+        let event = format!(r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":{index},"id":"a","function":{{"name":"f","arguments":"{{}}"}}}}]}}}}]}}"#);
+        let (e, _) = streamed(&[&event, "[DONE]"]);
+        let e = e.unwrap_err();
+        assert_eq!((e.kind, e.message.as_str()), (ErrorKind::Malformed, "the reply has too many tool calls"), "{index}");
+    }
+}

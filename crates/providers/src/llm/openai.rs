@@ -220,6 +220,20 @@ fn fix(body: &mut Value, raw: &HashMap<String, String>) {
     }
 }
 
+/// Checks a streamed reply's events before the wire reads them: a tool call index past the
+/// reply's limit is refused, as the wire sizes the reply by it.
+fn guard() -> crate::rig_http::events::Guard {
+    Box::new(|data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
+        let choices = event.get("choices").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let calls = choices.iter().filter_map(|c| c.pointer("/delta/tool_calls").and_then(Value::as_array)).flatten();
+        if calls.filter_map(|c| c.get("index").and_then(Value::as_u64)).any(|i| i >= MAX_REPLY_BLOCKS as u64) {
+            return Err(malformed("the reply has too many tool calls"));
+        }
+        Ok(None)
+    })
+}
+
 /// The crate's reply as ours: its text, then its tool calls in order.
 fn reply(response: &CompletionResponse) -> Result<ChatResponse, ProviderError> {
     // The wire leaves out a call that never names its tool; here such a reply is malformed, as
@@ -296,7 +310,8 @@ impl LlmClient {
         let (request, raw) = request(&req, completion_cap)?;
         let mut transport = RigHttp::new(Arc::clone(&self.http), timeout, cap)
             .with_delivery(context.map(crate::SubmitContext::link))
-            .with_fix(Box::new(move |body| fix(body, &raw)));
+            .with_fix(Box::new(move |body| fix(body, &raw)))
+            .with_guard(guard);
         if let Some(key) = &self.endpoint.key {
             transport = transport.with_secret("Authorization", format!("Bearer {}", key.expose()));
         }

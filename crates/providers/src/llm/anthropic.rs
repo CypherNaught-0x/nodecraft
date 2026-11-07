@@ -218,6 +218,40 @@ fn part(block: Value, invalid: Option<&String>) -> Result<Option<Part>, Provider
     })
 }
 
+/// Checks a streamed reply's events before the wire reads them:
+/// - a block index past the reply's block limit is refused: the wire sizes the reply by it;
+/// - a stream that reaches `message_stop` without a stop reason (a gateway that sends
+///   `"stop_reason": null`) ends the turn, as it always did here: the wire ends a stream only at
+///   a stop reason, so one is added just before, with the counts the last `message_delta` gave.
+fn guard() -> crate::rig_http::events::Guard {
+    let mut stopped = false;
+    let mut usage: Option<Value> = None;
+    Box::new(move |data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
+        if event.get("index").and_then(Value::as_u64).is_some_and(|i| i >= MAX_REPLY_BLOCKS as u64) {
+            return Err(malformed("the reply has too many parts"));
+        }
+        match event.get("type").and_then(Value::as_str) {
+            Some("message_delta") => {
+                stopped |= event.pointer("/delta/stop_reason").and_then(Value::as_str).is_some();
+                if let Some(counts) = event.get("usage").filter(|u| u.is_object()) {
+                    usage = Some(counts.clone());
+                }
+                Ok(None)
+            }
+            Some("message_stop") if !stopped => {
+                stopped = true;
+                let mut delta = json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } });
+                if let Some(counts) = usage.take() {
+                    delta["usage"] = counts;
+                }
+                Ok(Some(format!("event: message_delta\ndata: {delta}\n\n")))
+            }
+            _ => Ok(None),
+        }
+    })
+}
+
 /// A whole reply the wire reads only when it says it is a `message`, which a compatible server
 /// may leave out: a reply with `content` and no `type` is one.
 fn whole_message(reply: &mut Value) {
@@ -255,7 +289,8 @@ fn reply(response: &CompletionResponse, streamed: bool) -> Result<ChatResponse, 
         })
         .collect();
     let mut parts = Vec::new();
-    for b in content {
+    // A gap in a stream's block indexes leaves an empty slot: no block, nothing to send back.
+    for b in content.iter().filter(|b| b.is_object()) {
         let id = b.get("id").and_then(Value::as_str).unwrap_or_default();
         parts.extend(part(b.clone(), invalid.get(id))?);
     }
@@ -296,6 +331,7 @@ impl LlmClient {
             .with_url(self.endpoint.url("messages"))
             .with_header("anthropic-version", VERSION)
             .with_reply_fix(whole_message)
+            .with_guard(guard)
             .with_fix(Box::new(move |body| fix(body, &results)));
         // Anthropic answers a page's request only when it says it comes from a browser with the
         // person's own key (#118); the key is theirs, kept in their browser.

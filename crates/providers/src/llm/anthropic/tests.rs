@@ -572,3 +572,53 @@ fn a_stream_that_fails_or_is_cancelled_leaves_nothing_behind() {
     assert_eq!(Arc::strong_count(&http), 2);
     assert!(context.finish_error().is_none(), "possibly billed");
 }
+
+/// A block index from the wire is refused past the reply's limit before anything is sized by it:
+/// one small hostile event must not allocate the index's worth of slots.
+#[test]
+fn a_huge_block_index_is_refused_not_allocated() {
+    for index in ["100000000000", "1024", "4294967295"] {
+        let start = format!(r#"{{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}"#);
+        let (e, _) = streamed(&[START, ("content_block_start", &start), STOP]);
+        let e = e.unwrap_err();
+        assert_eq!((e.kind, e.message.as_str()), (ErrorKind::Malformed, "the reply has too many parts"), "{index}");
+    }
+    let delta = r#"{"type":"content_block_delta","index":18446744073709551615,"delta":{"type":"text_delta","text":"x"}}"#;
+    assert_eq!(streamed(&[START, ("content_block_delta", delta), STOP]).0.unwrap_err().kind, ErrorKind::Malformed);
+}
+
+/// A gap in the block indexes leaves no empty block to send back.
+#[test]
+fn a_gap_in_block_indexes_adds_no_block() {
+    let (r, _) = streamed(&[
+        START,
+        ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"a"}}"#),
+        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
+        ("content_block_start", r#"{"type":"content_block_start","index":2,"content_block":{"type":"thinking","thinking":"t","signature":"s"}}"#),
+        ("content_block_stop", r#"{"type":"content_block_stop","index":2}"#),
+        ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"}}"#),
+        STOP,
+    ]);
+    let r = r.unwrap();
+    assert_eq!(
+        r.message.parts,
+        vec![Part::Text("a".into()), Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type": "thinking", "thinking": "t", "signature": "s"}) }]
+    );
+}
+
+/// A gateway that sends `"stop_reason": null` and then `message_stop` ends the turn, as before.
+#[test]
+fn a_stream_without_a_stop_reason_ends_at_message_stop() {
+    let (r, pieces) = streamed(&[
+        START,
+        ("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
+        ("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"done"}}"#),
+        ("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
+        ("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":null},"usage":{"output_tokens":7}}"#),
+        STOP,
+    ]);
+    let r = r.unwrap();
+    assert_eq!(pieces, ["done"]);
+    assert_eq!((r.text.as_str(), r.stop, r.usage.input_tokens, r.usage.output_tokens), ("done", StopReason::EndTurn, Some(12), Some(7)));
+}
