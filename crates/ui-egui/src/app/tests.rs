@@ -1192,6 +1192,33 @@ fn noodles_are_clickable_box_selectable_and_deletable() {
     assert_eq!(h.state().session.document(), &before);
 }
 
+/// #1112: a noodle under the pointer is painted wider and brighter; moving away restores it.
+#[test]
+fn a_hovered_noodle_is_drawn_wider_and_brighter() {
+    let mut h = chain_harness();
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let t = *h.state().theme.tokens();
+    // Wider and in the tinted colour, not just wider.
+    let tinted = crate::theme::State::Hovered.tint(t.wire(nodecraft_types::Modality::Text), t.card_stroke_selected);
+    let hovered = |h: &Harness<'static, NodeCraftApp>| {
+        h.output().shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::CubicBezier(curve)
+                if (curve.stroke.width - t.wire_width_hover).abs() < 1e-3 && curve.stroke.color == egui::epaint::ColorMode::Solid(tinted))
+        })
+    };
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    h.hover_at(Pos2::new(990.0, 20.0));
+    h.run();
+    assert!(!hovered(&h), "no noodle is hovered at rest");
+    h.hover_at(a + (b - a) * 0.5);
+    h.run();
+    assert!(hovered(&h), "the noodle under the pointer widens");
+    h.hover_at(a + (b - a) * 0.5 + Vec2::new(0.0, 60.0));
+    h.run();
+    assert!(!hovered(&h), "and goes back once the pointer leaves its band");
+}
+
 #[test]
 fn list_inputs_collect_in_order_reject_duplicates_and_accept_reroutes() {
     let mut h = chain_harness();
