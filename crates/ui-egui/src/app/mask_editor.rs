@@ -437,7 +437,7 @@ fn paint_area(
     // The stroke in progress, and the brush under the pointer.
     let painter = ui.painter().with_clip_rect(frame);
     if let Some(stroke) = &editor.stroke {
-        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(0.6) } else { t.mask_overlay };
+        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(t.dim) } else { t.mask_overlay };
         let points: Vec<Pos2> = stroke.points.iter().map(|p| at(p[0] * frame_w, p[1] * frame_h)).collect();
         for pair in points.windows(2) {
             if let [a, b] = pair {

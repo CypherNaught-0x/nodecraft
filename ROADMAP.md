@@ -259,8 +259,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
   change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
-  OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
-  is no settings screen for them yet, and the browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
+  OpenAI, OpenRouter, Ollama, LM Studio), model and a local server's address are chosen on the
+  sidebar's Settings screen and saved to `[agent]` at once (#1063); keys stay in the keychain. The
+  browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
   moves the sidebar into a shared shell crate (#1064).
 - **The browser build is a preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
@@ -275,11 +276,12 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
 
-- **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
-  default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
-  interchange is available on desktop and exports in the background with a Cancel control. Its
-  document is checked against structural rules both editors are expected to need; the import
-  itself has not been checked in Final Cut Pro or DaVinci Resolve yet (#1066).
+- **Desktop media limits.** A video card plays its sound track with its picture, through the
+  default output device as sound cards do (#1065), one card's sound at a time. Playback and
+  FFmpeg-backed renders run on desktop. Timeline interchange is available on desktop and exports in
+  the background with a Cancel control. Its document is checked against structural rules both
+  editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
+  Resolve yet (#1066).
 
 - **Relay transport and storage differ by client.** The relay serves plain `ws://`.
   Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a

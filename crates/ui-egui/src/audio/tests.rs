@@ -326,3 +326,99 @@ mod ring {
         assert!(!output.failed());
     }
 }
+
+/// A still video card reads and plays nothing for its sound (#1065): following a video that
+/// doesn't play, on a card that never played, asks for no bytes.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+fn a_still_video_card_reads_no_sound() {
+    let ctx = egui::Context::default();
+    let mut audios = Audios::default();
+    let video = AssetRef { hash: Blake3::from_bytes([8; 32]), mime: "video/mp4".parse().unwrap(), meta: Default::default() };
+    audios.follow(&ctx, NodeId::from_bytes([3; 16]), &video, false, 0, || panic!("nothing is read for a still card"));
+    assert_eq!(audios.test_counts(), (0, 0, 0, false));
+}
+
+/// A video card with a sound track plays it while its picture plays, from the picture's place,
+/// and stops with it (#1065); a video with no sound track plays silent. Opt-in like the other
+/// real-tool tests:
+/// `NODECRAFT_VIDEO_TEST_FFMPEG=/abs/ffmpeg NODECRAFT_VIDEO_TEST_FFPROBE=/abs/ffprobe
+/// cargo test -p nodecraft-ui-egui video_sound -- --ignored`.
+#[cfg(not(target_arch = "wasm32"))]
+#[test]
+#[ignore = "needs installed ffmpeg and ffprobe"]
+fn actual_video_sound_follows_its_picture() {
+    let ffmpeg = std::path::PathBuf::from(std::env::var("NODECRAFT_VIDEO_TEST_FFMPEG").unwrap());
+    let ffprobe = std::path::PathBuf::from(std::env::var("NODECRAFT_VIDEO_TEST_FFPROBE").unwrap());
+    let make = |name: &str, sound: bool| {
+        let path = std::env::temp_dir().join(format!("nodecraft-video1065-{name}-{}.mp4", std::process::id()));
+        let mut args = vec!["-v", "error", "-nostdin", "-y", "-f", "lavfi", "-i", "testsrc=size=64x48:rate=10:duration=4"];
+        if sound {
+            args.extend(["-f", "lavfi", "-i", "sine=frequency=440:duration=4", "-c:a", "aac"]);
+        }
+        args.extend(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-shortest"]);
+        let made = std::process::Command::new(&ffmpeg).args(&args).arg(&path).status().unwrap();
+        assert!(made.success());
+        let bytes = std::fs::read(&path).unwrap();
+        std::fs::remove_file(&path).unwrap();
+        bytes
+    };
+    let mut session =
+        nodecraft_engine::Session::new(nodecraft_graph::Project::new(nodecraft_types::ProjectId::from_bytes([76; 16]), "Clips").unwrap()).unwrap();
+    let with = AssetRef { hash: session.import_asset(&make("sound", true)).unwrap(), mime: "video/mp4".parse().unwrap(), meta: Default::default() };
+    let without = AssetRef { hash: session.import_asset(&make("silent", false)).unwrap(), mime: "video/mp4".parse().unwrap(), meta: Default::default() };
+    let ctx = egui::Context::default();
+    let mut audios = Audios::default();
+    audios.configure(Some((&ffmpeg, &ffprobe)));
+    let card = NodeId::from_bytes([1; 16]);
+    let follow = |audios: &mut Audios, asset: &AssetRef, playing: bool, at: u64, until: &dyn Fn(&Audios) -> bool| {
+        for _ in 0..2000 {
+            audios.poll(&ctx);
+            audios.follow(&ctx, card, asset, playing, at, || session.assets().preview_read(asset));
+            if until(audios) {
+                return true;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        false
+    };
+    // The picture plays from a second in: the sound starts there.
+    assert!(follow(&mut audios, &with, true, 1_000_000, &|a| a.test_counts().3), "its sound plays with the picture");
+    let AudioView::Sound { position_us, .. } = audios.view(&ctx, card, &with, || session.assets().preview_read(&with)) else { panic!("a sound") };
+    assert!(position_us >= 1_000_000, "from the picture's place: {position_us}");
+    // Another video card starts: it takes the one player, and the first doesn't take it back
+    // while both play on.
+    let second = NodeId::from_bytes([4; 16]);
+    let mut heard_second = false;
+    for _ in 0..2000 {
+        audios.poll(&ctx);
+        audios.follow(&ctx, card, &with, true, 1_100_000, || session.assets().preview_read(&with));
+        audios.follow(&ctx, second, &with, true, 500_000, || session.assets().preview_read(&with));
+        if matches!(audios.sound_only(&ctx, second, &with, || session.assets().preview_read(&with)), AudioView::Sound { playing: true, .. }) {
+            heard_second = true;
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(heard_second, "the second card is heard");
+    for _ in 0..20 {
+        audios.follow(&ctx, card, &with, true, 1_200_000, || session.assets().preview_read(&with));
+        audios.follow(&ctx, second, &with, true, 600_000, || session.assets().preview_read(&with));
+    }
+    assert!(
+        matches!(audios.sound_only(&ctx, second, &with, || session.assets().preview_read(&with)), AudioView::Sound { playing: true, .. }),
+        "no fight over the player"
+    );
+    audios.follow(&ctx, second, &with, false, 600_000, || session.assets().preview_read(&with));
+    // The picture stops: so does the sound.
+    assert!(follow(&mut audios, &with, false, 1_200_000, &|a| !a.test_counts().3), "and stops with it");
+    // A video with no sound track plays silent, without fault.
+    let silent = NodeId::from_bytes([2; 16]);
+    for _ in 0..400 {
+        audios.poll(&ctx);
+        audios.follow(&ctx, silent, &without, true, 0, || session.assets().preview_read(&without));
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(!audios.test_counts().3, "nothing plays for a silent video");
+    audios.stop();
+}
