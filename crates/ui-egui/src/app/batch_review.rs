@@ -287,14 +287,10 @@ impl NodeCraftApp {
         let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, open_review.node));
         let mut open = true;
         let mut pick = None;
-        let frame = crate::theme::panel_frame(t);
-        egui::Window::new("Batch items")
-            .id(egui::Id::new("nodecraft.batch_review"))
+        // A tool worked alongside the canvas: a floating panel, clamped and stacked (#1116).
+        crate::floating::panel(ctx, "Batch items", egui::Id::new("nodecraft.batch_review"), crate::floating::Home::CenterTop, t)
             .open(&mut open)
-            .constrain_to(self.viewport)
             .default_width(t.batch_review_width)
-            .collapsible(false)
-            .frame(frame)
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(&title).strong());
                 if running {

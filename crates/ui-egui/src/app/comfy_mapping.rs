@@ -244,13 +244,9 @@ impl NodeCraftApp {
         }
         let mut open = true;
         let (mut apply, mut reload, mut read, mut cancel) = (false, false, false, false);
-        egui::Window::new("Workflow fields")
-            .id(egui::Id::new(("comfy_mapping", editor.canvas, editor.node)))
+        // A tool worked alongside the canvas: a floating panel, clamped and stacked (#1116).
+        crate::floating::panel(ctx, "Workflow fields", egui::Id::new(("comfy_mapping", editor.canvas, editor.node)), crate::floating::Home::CenterTop, t)
             .open(&mut open)
-            .collapsible(false)
-            .order(egui::Order::Foreground)
-            .default_pos(ctx.content_rect().center() - egui::vec2(t.dialog_width * 0.75, t.card_max_height * 0.3))
-            .resizable(true)
             .default_width(t.dialog_width * 1.5)
             .show(ctx, |ui| {
                 ui.label("Choose what appears on this card.");

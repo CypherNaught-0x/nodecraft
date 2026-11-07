@@ -640,6 +640,17 @@ closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-glob
 
 ## Overlays and stacking
 
+**Questions and tools (#1116).** A *question* the person must answer before going on (rename a
+field, review a model change, unsaved changes in the browser) is a modal from
+`floating::question`: it dims and blocks the canvas, the primary action is on Enter (unless it
+would throw work away: the browser's unsaved-changes question starts focused on Cancel), and
+Escape cancels. A *tool* worked alongside the canvas (Workflow fields, Batch items, Project files)
+is a `floating::panel`; Escape closes Project files. Nothing else uses a raw `egui::Window`: the
+shared-parameters panel pinned under the application row is built by `floating::pinned` and the
+model picker's window by `floating::picker`, and a test
+fails on a new `egui::Window::new` outside `floating.rs`. A model choice that can't be used shows
+its reason at the top of the picker instead of in a window of its own.
+
 One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
 implemented once, in [`crates/ui-egui/src/floating.rs`](../crates/ui-egui/src/floating.rs);
 panels do not position themselves. See the [decision](decisions/2026-10-28-floating-panel-rule.md).

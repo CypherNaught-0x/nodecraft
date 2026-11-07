@@ -141,6 +141,62 @@ impl<'open> Panel<'open> {
     }
 }
 
+/// Consumes a fresh Enter press (not a key repeat) when no widget has focus: a question's primary
+/// action. With a button focused, Enter belongs to that button; held Enter from the step before
+/// never answers the next question (#1116).
+pub fn take_enter(ctx: &Context) -> bool {
+    if ctx.memory(|memory| memory.focused().is_some()) {
+        return false;
+    }
+    ctx.input_mut(|input| {
+        let mut taken = false;
+        input.events.retain(|event| {
+            let fresh = matches!(event, egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat: false, modifiers, .. } if modifiers.is_none());
+            taken |= fresh;
+            !fresh
+        });
+        taken
+    })
+}
+
+/// A question the person must answer before going on (#1116): an `egui::Modal` that dims and
+/// blocks the canvas behind it, titled `title` (its accessible window name), no wider than
+/// `dialog_width` or the window. Callers put the primary action on Enter and cancel on Escape.
+pub fn question<R>(ctx: &Context, id: Id, title: &str, t: &Tokens, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> egui::ModalResponse<R> {
+    let width = t.dialog_width.min((ctx.content_rect().width() - t.card_padding * 4.0).max(t.field_min_width));
+    let frame = egui::Frame::NONE
+        .inner_margin(t.card_padding)
+        .fill(t.panel_fill)
+        .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))
+        .corner_radius(t.panel_radius);
+    let shown = egui::Modal::new(id).frame(frame).show(ctx, |ui| {
+        ui.set_max_width(width);
+        // The title is painted, not a label, so the window's name is its only accessible name.
+        let font = egui::FontId::proportional(t.body_size);
+        let galley = ui.painter().layout_no_wrap(title.to_owned(), font, t.text);
+        let (rect, _) = ui.allocate_exact_size(galley.size(), egui::Sense::hover());
+        ui.painter().galley(rect.min, galley, t.text);
+        add_contents(ui)
+    });
+    shown.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Window, true, title));
+    shown
+}
+
+/// The model picker's window (#1116): in front of the canvas, with a close button, at
+/// `dialog_width` or the window's width if that is narrower.
+pub fn picker(ctx: &Context, title: &str, id: Id, t: &Tokens) -> egui::Window<'static> {
+    let width = t.dialog_width.min((ctx.content_rect().width() - t.card_padding * 4.0).max(t.field_min_width));
+    egui::Window::new(title.to_owned()).id(id).order(egui::Order::Foreground).collapsible(false).default_width(width)
+}
+
+/// A panel pinned to one place rather than floating (#1116): the shared-parameters panel under
+/// the application row. Built here so the shell's only raw `egui::Window`s live in this module.
+pub fn pinned(ctx: &Context, title: &str, id: Id, anchor: Align2, offset: Vec2, t: &Tokens) -> egui::Window<'static> {
+    egui::Window::new(title.to_owned()).id(id).anchor(anchor, offset).resizable(false).collapsible(false).movable(false).frame(
+        egui::Frame::window(&ctx.global_style()).fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).corner_radius(t.panel_radius),
+    )
+}
+
 /// The header's move handle: the title strip above the content, left of the close button.
 /// Only this senses a drag, so pressing or dragging inside the body never moves the panel.
 fn header_drag(ui: &mut egui::Ui, id: Id) {
@@ -311,6 +367,39 @@ fn header(rect: Rect, step: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1116: questions use `question` (a Modal) and tools `panel`; the only raw
+    /// `egui::Window`s in the shell are the two built in this module.
+    #[test]
+    fn no_raw_windows_outside_this_module() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if !name.ends_with(".rs")
+                    || name == "floating.rs"
+                    || name == "tests.rs"
+                    || name.ends_with("_tests.rs")
+                    || path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                let code = crate::theme::non_test_code(&text);
+                if code.contains(concat!("egui::Window", "::new")) {
+                    found.push(path.display().to_string());
+                }
+            }
+        }
+        assert!(found.is_empty(), "raw egui::Window in {found:#?}; use floating::question or floating::panel");
+    }
 
     #[test]
     fn a_panel_opening_over_another_steps_below_its_header() {

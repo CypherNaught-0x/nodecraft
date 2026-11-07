@@ -3869,6 +3869,8 @@ fn starter_id() -> [u8; 16] {
 #[cfg(test)]
 mod centering_tests;
 #[cfg(test)]
+mod dialogs1116_tests;
+#[cfg(test)]
 mod names1118_tests;
 #[cfg(test)]
 mod tests;
