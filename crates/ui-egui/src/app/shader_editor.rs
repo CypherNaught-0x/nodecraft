@@ -204,7 +204,7 @@ impl NodeCraftApp {
                 }
                 ui.horizontal(|ui| {
                     let valid = matches!(editor.check, Some(Ok(())));
-                    if ui.add_enabled(valid, egui::Button::new("Apply")).on_hover_text("Store this shader on the card; one undo step").clicked() {
+                    if ui.add_enabled(valid, egui::Button::new("Apply")).on_hover_text("Store this shader on the card; one undo step").on_disabled_hover_text("Fix the shader's errors first; it applies once it compiles").clicked() {
                         action = Some(Action::Store);
                     }
                     if ui.button("Revert").on_hover_text("Go back to the card's shader").clicked() {
@@ -270,7 +270,7 @@ impl NodeCraftApp {
                     let asked = !editor.request.trim().is_empty();
                     if ui
                         .add_enabled(asked && !busy, egui::Button::new("Write with a model"))
-                        .on_hover_text("Add a text card asked for this shader; you see its price before it runs")
+                        .on_hover_text("Add a text card asked for this shader; you see its price before it runs").on_disabled_hover_text(if asked { "A text card is already writing; wait for it" } else { "Say what the shader should do first" })
                         .clicked()
                     {
                         action = Some(Action::Write { fix: false });
@@ -278,7 +278,7 @@ impl NodeCraftApp {
                     if editor.message().is_some()
                         && ui
                             .add_enabled(!busy, egui::Button::new("Fix with a model"))
-                            .on_hover_text("Add a text card asked to fix the shader for this message; you see its price before it runs")
+                            .on_hover_text("Add a text card asked to fix the shader for this message; you see its price before it runs").on_disabled_hover_text("A text card is already writing; wait for it")
                             .clicked()
                     {
                         action = Some(Action::Write { fix: true });

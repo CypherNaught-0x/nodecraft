@@ -693,7 +693,8 @@ impl NodeCraftApp {
                             }
                             let r = ui
                                 .add_enabled(editable(nodecraft_nodes::generation::MODEL), egui::Button::new(&short))
-                                .on_hover_text(format!("Model: {model}. Click to change it."));
+                                .on_hover_text(format!("Model: {model}. Click to change it."))
+                                .on_disabled_hover_text(format!("Model: {model}. It can't be changed here right now."));
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));

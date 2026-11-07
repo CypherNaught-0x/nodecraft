@@ -53,6 +53,11 @@ input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size`
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 
+A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
+disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
+as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own
+`enabled` reason. A test in `ui_ext.rs` fails on a new call site that drops it.
+
 Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
 item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
 submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through
