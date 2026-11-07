@@ -86,9 +86,18 @@ See [provider and browser limits](providers.md).
 
 Open **Share** to start a room or join one. The browser uses the same `nodecraft-cli relay`
 as the desktop. For local development, a page served over HTTP can connect to a relay on plain
-WebSocket (`ws://`). For a remote relay used from an HTTPS page, put a TLS proxy in front of
-the relay and use its `wss://` address. The desktop client uses `ws://`, so desktop peers
-need a plain WebSocket address for the same room.
+WebSocket (`ws://`). A page served over HTTPS may only open a secure WebSocket (`wss://`): start
+the relay with a certificate chain and its private key (PEM files, for example from Let's
+Encrypt) and it serves `wss://` too, on the next port or `--tls-listen`:
+
+```sh
+nodecraft-cli relay --listen 0.0.0.0:7342 --tls-cert fullchain.pem --tls-key privkey.pem
+```
+
+Browsers then use `wss://<host>:7343/`, and desktop peers keep `ws://<host>:7342/`, which the
+desktop client uses; both reach the same rooms. A link shared from the desktop app names its
+`ws://` address: for a browser on an HTTPS page, change its start to `wss://<host>:7343/` and keep
+the `#room=` or `#link=` part. A TLS proxy in front of the relay works as well.
 
 A relay keeps its rooms only in memory unless you start it with a store folder:
 `nodecraft-cli relay --store <folder>` keeps each room, its share links and its media there, so
