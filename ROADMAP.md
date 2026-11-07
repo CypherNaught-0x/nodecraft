@@ -263,7 +263,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   requests from web pages directly with those keys (#118). **Providers** saves ComfyUI and
   LiteLLM addresses per site. Browser option lists fetch in the background when the server allows
   the app's origin (#721). Supported catalog models can also use configured custom endpoints
-  (#960). Video playback and rendering use desktop FFmpeg. The browser offers recovery from
+  (#960). Video cards play in the browser through its own decoder, with their sound
+  (#1069); rendering video (the Timeline, video actions) needs desktop FFmpeg and says so. The browser offers recovery from
   site storage (#717) and asks before leaving with unsaved work. Browser files are read
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
