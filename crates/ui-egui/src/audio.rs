@@ -6,8 +6,9 @@
 //! imported into a video service of its own; its waveform is made once per content hash, and a
 //! playing card asks for a couple of seconds of decoded sound at a time, one request in flight,
 //! into a bounded buffer the sound device's callback plays from. One card plays at a time.
-//! Browsers have no video service: there the page's own `<audio>` element plays each card's
-//! sound (#1070), with no waveform.
+//! Browsers have no video service: there the page's own `<audio>` element plays each sound card's
+//! sound (#1070), with no waveform, and a video card plays its own sound through the page's video
+//! element (#1069).
 //!
 //! A speech card also plays its job's latest preview while the sound arrives (#875): the MP3 so
 //! far, imported like any sound but never given a waveform, and dropped once a newer one or the

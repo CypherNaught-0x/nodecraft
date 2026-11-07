@@ -3,6 +3,7 @@
 # https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api
 # https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api
 # Output duration/billing rounding is not a strict contract, so monetary quotes stay unknown.
+# Re-checked 2026-11-06 (#1062): rates unchanged; still no stated duration rule or rounding.
 
 [[model]]
 id = "fal.heygen-avatar4"

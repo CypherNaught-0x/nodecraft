@@ -2,6 +2,7 @@
 # https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview
 # https://docs.magnific.com/pricing
 # Organizational credits have no verified current per-job currency conversion.
+# Re-checked 2026-11-06 (#1062): no Precision V2 rate, unit or currency is published.
 [[model]]
 id = "magnific.precision-v2"
 provider = "magnific"

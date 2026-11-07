@@ -21,6 +21,10 @@ pub struct Asks {
     pub optional: BTreeSet<Capability>,
     /// Every origin its provider templates name: their API and output origins.
     pub origins: BTreeSet<String>,
+    /// The origins among those that receive a key: the API of each template that takes one. The
+    /// others are output origins, which results are downloaded from without it. Shown apart at consent; a grant
+    /// still covers [`Self::origins`] as a whole.
+    pub key_origins: BTreeSet<String>,
     /// What its provider templates say of their services, one per provider.
     pub claims: Vec<Claim>,
 }
@@ -53,7 +57,7 @@ impl Asks {
     pub fn to_json(&self) -> Value {
         let names = |c: &BTreeSet<Capability>| c.iter().map(|c| c.as_str()).collect::<Vec<_>>();
         let claims: Vec<Value> = self.claims.iter().map(Claim::to_json).collect();
-        json!({"required": names(&self.required), "optional": names(&self.optional), "origins": self.origins, "claims": claims})
+        json!({"required": names(&self.required), "optional": names(&self.optional), "origins": self.origins, "key_origins": self.key_origins, "claims": claims})
     }
 
     /// The rights a grant of `chosen` capabilities is: every origin when network is among them.
@@ -83,13 +87,16 @@ pub fn asks(package: &Package) -> Result<Asks, Error> {
             Optional::Unknown(_) => None,
         })
         .collect();
-    let mut asks = Asks { required: caps.required.clone(), optional, origins: BTreeSet::new(), claims: Vec::new() };
+    let mut asks = Asks { required: caps.required.clone(), optional, origins: BTreeSet::new(), key_origins: BTreeSet::new(), claims: Vec::new() };
     if matches!(package.manifest.runtime, Runtime::ProviderOperations { .. }) {
         for r in package.manifest.registrations.iter().filter(|r| r.kind == RegistrationKind::Provider) {
             let refuse = |why: String| Error::new(ErrorKind::InvalidInput, format!("its provider {} can't be used: {why}", r.id));
             let bytes = package.files.get(&r.descriptor).ok_or_else(|| refuse("its template is missing".into()))?;
             let template = Template::decode(bytes).map_err(|e| refuse(e.to_string()))?;
             asks.origins.extend(template.origins().map(|o| o.as_str().to_owned()));
+            if template.credential.is_some() {
+                asks.key_origins.insert(template.origin.as_str().to_owned());
+            }
             asks.claims.push(Claim {
                 provider: template.label.clone(),
                 prices: template.models.iter().map(|m| (m.label.clone(), m.price)).collect(),

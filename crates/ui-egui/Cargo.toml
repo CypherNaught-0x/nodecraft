@@ -68,7 +68,8 @@ fs4 = { version = "=1.1.0", default-features = false, features = ["sync"] }
 # Recovery (#717): IndexedDB for unsaved work, Web Locks (reflected too) to tell tabs apart.
 # Runs (#118): spawned on the page's queue, timed by `setTimeout` and `performance.now()`.
 # Live sharing (#699): the page's `WebSocket` to the relay, and `web-time`'s clock (egui's own),
-# since `std`'s isn't there.
+# since `std`'s isn't there. Video cards (#1069): a `<video>` element decodes and plays them, and
+# a canvas takes its frames into the card.
 wasm-bindgen-futures = "0.4.79"
 web-time = "1.1.0"
 js-sys = "0.3.106"
@@ -77,6 +78,7 @@ web-sys = { version = "0.3.106", features = [
     "BinaryType",
     "Blob",
     "BlobPropertyBag",
+    "CanvasRenderingContext2d",
     "CloseEvent",
     "Document",
     "DomException",
@@ -91,9 +93,11 @@ web-sys = { version = "0.3.106", features = [
     "DataTransfer",
     "HtmlAnchorElement",
     "HtmlAudioElement",
+    "HtmlCanvasElement",
     "HtmlElement",
     "HtmlInputElement",
     "HtmlMediaElement",
+    "HtmlVideoElement",
     "IdbCursor",
     "IdbCursorWithValue",
     "IdbDatabase",
@@ -104,6 +108,7 @@ web-sys = { version = "0.3.106", features = [
     "IdbRequest",
     "IdbTransaction",
     "IdbTransactionMode",
+    "ImageData",
     "Location",
     "MediaError",
     "MessageEvent",

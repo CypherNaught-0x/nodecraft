@@ -7,7 +7,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
 | **Deepgram** | `deepgram` | API key (`Authorization: Token`), keychain account `deepgram` | English audio file → text | Nova-3, smart formatting, unknown usage cost, no uncertain replay. See below. |
-| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and unknown usage price; no automatic ambiguous submit replay or remote cancellation. See below. |
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and a quote by output megapixels (#1062); no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
 | **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
@@ -30,13 +30,13 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
 | **HeyGen through fal** | `fal` | the existing fal key | supplied speech and one photo → Photo Avatar4, or MP4 → Speed/Precision lip sync | Native streamed storage required. Unknown monetary price with explicit consent; supplied PCM WAV, no TTS/stock voices. See below. |
-| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds | Native streamed project storage required; $0.25/$0.50 estimates. Current image-to-video only; see below. |
+| **Pika 2.5 through fal** | `fal` | the existing fal key | prompt and one first frame → 720p video, 5/10 seconds; prompt and 2–5 keyframes → 720p video, 5–25 seconds | Native streamed project storage required; $0.05 a second. No text-to-video (removed by fal); see below. |
 | **Topaz Precision through fal** | `fal` | the existing fal key | one upright image → Standard V2 upscale PNG | Native streamed project storage required; integer 1–4× within one $0.08 output block. Existing queue/resume and no ambiguous paid replay; see below. |
 | **Seedream 4.5 (BytePlus ModelArk)** | `seedream` | API key (`Authorization: Bearer`) | text → one image; ordered multi-reference editing | Dated `seedream-4-5-251128`; one JPEG, 2K/4K, up to 14 references. No automatic paid replay or remote cancellation; no builtin browser no-redirect transport. |
 | **Seedance 2.5 and 2.0 (BytePlus ModelArk)** | `seedance` | the Seedream key (`Authorization: Bearer`) | text, a first (and last) frame or reference images → video with sound | 2.5, 2.0, 2.0 Fast and 2.0 Mini, dated; 4–30 s (2.5) or 4–15 s, 480p to 1080p (4K on 2.0). Quoted per second at an upper bound; billed only when a video succeeds. Cancel while queued; no automatic paid replay. See below. |
 | **Tripo** | `tripo` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multiview (front/left/back/right) → 3D | One textured PBR GLB per task on a Generate 3D card; dated per-task estimates. No remote cancellation and no automatic paid replay. See below. |
 | **Meshy** | `meshy` | API key (`Authorization: Bearer`) | text → 3D, image → 3D, multi-image → 3D, retexture and remesh a wired GLB | One GLB per task on a Generate 3D card; dated per-task estimates. Tasks can't be cancelled. No automatic paid replay. See below. |
-| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
+| **Higgsfield** | `higgsfield` | key id and secret, stored as `id:secret` (`Authorization: Key`) | SOUL 2 text, or text and one scene image, → 1 or 4 images, optionally with an account Soul ID; Kling 2.5 Turbo Pro image → video; Genjutsu motion transfer and object swap (video + images → video); Soul ID training (images → identity) | Credits priced by plan, so SOUL and Kling prices are unknown; the adapter can ask Higgsfield for an estimate. Genjutsu is quoted per second of source at list price, an upper bound. Idempotent submits, replayed after a lost reply; cancel while queued. See below. |
 | **Runway** | `runway` (feature `runway`) | API key (`Authorization: Bearer`, keychain account `runway`) | Gen-4.5 text or first frame → video; Gen-4 Turbo first frame → video | Standard MP4, 2–10 seconds. 0.12/0.05 USD per second before tax. No submission deduplication; uncertain creates are never replayed. See below. |
 | **Kling** | `kling` (feature `kling`) | API key (`Authorization: Bearer`), or access key and secret key stored as `ak:sk`, which sign a 30-minute HS256 token per request | Kling 2.5 Turbo, 2.1 Master and 1.6 text → video and start frame (+ end frame) → video; Kling 1.6 up to four references → video; Kling Image 2.1 text → image | Billed in prepaid Kling units, so no quote before the run. One create per job carrying an `external_task_id` from the idempotency key; never replayed automatically; no remote cancellation. See below. |
 | **Comfy Cloud** | `comfy-cloud` (feature `comfy-cloud`) | Comfy API key (`Authorization: Bearer` on v2, `X-API-Key` on `/api/object_info`) | whatever the workflow does, on Comfy-hosted GPUs | The same job shape as ComfyUI. Inputs upload as assets; one idempotency key per run, never charged twice; no automatic paid replay. Partner (API) nodes are not supported. See below. |
@@ -94,9 +94,12 @@ to do, and a node routed to it is refused before planning, so no request is sent
 OpenAI chat, Anthropic chat and OpenAI Images can be served from another server that speaks the
 same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). On the desktop and in the CLI, set
 the base URL, including the API's version path, under `[providers.base_urls]` in `config.toml`.
-The desktop app reads this table when it starts, so restart it after editing the file. In the
-browser, only OpenAI chat can take a base URL: use the Providers panel's **Custom endpoints**
-field (`providers.settings_set {base_urls}`).
+In the desktop app, the API keys panel's **Endpoints** rows show the address each provider uses
+(its default, or the one set) and set, change or reset it next to the key (#962): an address is
+checked before anything is saved, written to `config.toml` at once, and runs and **Test** follow
+it without a restart. The app reads a hand edit of the file when it starts, so restart it after
+editing the file. In the browser, only OpenAI chat can take a base URL: use the Providers panel's
+**Custom endpoints** field (`providers.settings_set {base_urls}`).
 
 ```toml
 [providers.base_urls]
@@ -113,7 +116,11 @@ openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edi
   - another adapter that reads the same account but has no base URL of its own is refused. With
     `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
     (`openai-audio`, which takes no base URL) can't run until the entry is removed;
-  - `keys.test` answers *unverifiable* for that account and sends nothing;
+  - `keys.test` checks the key at that server instead (#962): `GET <base>/models` with the key as
+    `Authorization: Bearer` for `openai`, `GET <base>/models?limit=1` with `x-api-key` for
+    `anthropic`, redirects not followed. If the settings disagree on one server for the account
+    (OpenAI chat and OpenAI Images set to different ones, or the file now names another address,
+    or none, than the app saved), it answers *unverifiable* and sends nothing;
   - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses. It also
     refuses until a restart if the file now names a different base URL than at startup.
 - **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
@@ -1364,6 +1371,19 @@ control characters or echoes the key, are left out and counted; a list over 1,02
 refused whole. A restyle without a preset, or with one that isn't a UUID, is refused before
 anything is uploaded or paid, and a preset the latest list doesn't have is reported on the card.
 
+**SOUL 2 image to image (#1043).** **Higgsfield SOUL 2 image to image**
+(`higgsfield.soul-2-i2i`, `higgsfield-ai/soul/v2/image-to-image`, checked 2026-11-06 against its
+[API reference](https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference))
+takes a prompt and exactly one scene image wired to **image** (PNG, JPEG or WebP, under the same
+size limit as Kling's image), plus SOUL 2's aspect ratio, resolution, 1 or 4 images, seed and
+optional Soul ID with its strength. The scene image is staged through the upload grant, without
+the key, and sent as `image_url`; a Soul ID is confirmed ready on the account first, so an
+identity that isn't is refused before any upload or payment. No scene image is refused before
+anything is sent: an identity never stands in for it. Higgsfield always reworks this model's
+prompt from the image, so it has no **Enhance prompt** switch and none is sent. The page states no
+price; like SOUL 2 it is priced in credits, so the run is estimated by Higgsfield or needs the
+unknown-price consent, and its submit is idempotent like the other queue models.
+
 **Soul IDs (#180).** A Soul ID is an identity trained on the Higgsfield account. SOUL 2's
 optional **Soul ID** field (`custom_reference_id`) names one, and **Soul ID strength**
 (`custom_reference_strength`, 0 to 1, default 1) is sent only with one. **Refresh option lists**
@@ -1804,10 +1824,15 @@ credentials or redirects. Replies are capped at 64 KiB, image bytes at 32 MiB, d
 image allocation at 64 MiB, and output geometry must match the request. Native desktop
 transport is supported; the built-in browser transport returns an unsupported error.
 
-[BFL pricing](https://bfl.ai/pricing?category=flux.2) depends on pixels and credits.
-NodeCraft currently marks the cost as unknown usage pricing. Running requires explicit
-acceptance of an unpriced job; a finite budget cannot admit it. The API's credit fields
-are not recorded as dollars. Once the paid request is sent, lost replies are never retried
+**Price (#1062, checked 2026-11-06).** [BFL pricing](https://bfl.ai/pricing) lists FLUX.2
+[klein] 4B at "1st MP $0.014 / Add'l MP $0.001" (and $0.001/MP per reference image, which
+text-to-image doesn't send), billed in credits of $0.01
+([docs](https://docs.bfl.ai/quick_start/pricing)), with "Resolution … rounded up to the next MP"
+of 1024 × 1024 pixels. The card's width and height are known before the run, so the quote follows
+BFL's list price as checked (the invoice itself is in credits): 0.014 USD for the default 1024 × 1024, 0.001 USD more per started megapixel above the
+first (at most 0.017 USD at 1984 × 1984), through the catalog's `per_output_megapixel` pricing.
+A run needs that price accepted, and a budget counts it. The API's credit fields are not
+recorded as dollars. Once the paid request is sent, lost replies are never retried
 automatically: BFL documents no idempotency key. Cancellation stops local waiting but
 cannot confirm a remote stop or prevent billing. A successful saved handle can be resumed
 without sending another create request.
@@ -2236,7 +2261,12 @@ and [overview](https://docs.magnific.com/api-reference/image-upscaler-precision-
 were checked on **2026-10-27**. [API pricing](https://docs.magnific.com/pricing) consumes
 organizational credits even when a plan includes unlimited use in the web app. No verified
 current credit-to-currency rate is available, so the quote is **unknown**, never free or a
-fixed EUR amount. Running requires explicit acceptance of one unpriced job; finite monetary
+fixed EUR amount. Re-checked 2026-11-06 (#1062): the [pricing page](https://docs.magnific.com/pricing)
+says only that calls deduct credits, and the
+[Precision V2 overview](https://docs.magnific.com/api-reference/image-upscaler-precision-v2/overview)
+that pricing "is based on output image area in pixels … See the Pricing page for current
+rates", which states none; the detailed credit page it links refused to load. Third-party
+figures disagree and aren't a source. Running requires explicit acceptance of one unpriced job; finite monetary
 budgets cannot establish that an unknown price fits. The adapter does not invent an invoice.
 
 Submission stores a task UUID for polling after restart. Lost or ambiguous paid replies are
@@ -2431,8 +2461,22 @@ the encoded image is bounded before decoding or base64 allocation. Resolution, n
 seed, frame rate, audio, safety and output-count controls are not exposed or sent. The service's
 other defaults apply; the absence of a safety field is not a claim about moderation.
 
-This initial integration covers **current image-to-video only**. Text-to-video, multiple
-keyframes, Pikaframes, effects, the separate native Pika API and Pika 2.2 are outside this scope.
+**Keyframes (#1061).** **Pika 2.5 keyframes (fal)** (`fal.pika25-keyframes`,
+`fal-ai/pika/v2.5/pikaframes`, checked **2026-11-06** against fal's
+[model/rates](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes),
+[API](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes/api) and
+[formal schema](https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=fal-ai/pika/v2.5/pikaframes))
+takes a prompt and **2 to 5** images wired to **keyframes**, in order, under the same image
+limits as the first frame. Its one setting is the whole clip's length, **5 to 25 seconds**,
+split across the transitions in whole seconds (the first ones a second longer when it doesn't
+divide). fal bills "$0.05 for 720p" a second with a 5-second minimum; the catalog fixes 720p and
+starts at 5 seconds, so the quote of **$0.05 per second** is exact. The request has exactly
+`prompt`, `image_urls`, `transitions` (each a `duration`) and `resolution="720p"`; per-transition
+prompts, negative prompt and seed aren't sent. Results are admitted up to 26 seconds.
+
+**Not offered.** Pika text-to-video: fal's v2.2 model was removed on 2026-10-29 and v2.5 has
+none (checked 2026-11-06). Pikaframes v2.2 was removed the same day. Effects, the separate
+native Pika API and other Pika 2.2 models are outside this scope.
 The native service uses a separate credential/protocol; it is not configured with a fal key.
 
 The [fal queue contract](https://fal.ai/docs/api-reference/inference-api/queue/submit-path)
@@ -2493,7 +2537,10 @@ The three current aliases are `fal-ai/heygen/avatar4/image-to-video`,
 [Speed](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) and
 [Precision](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) schemas and prices
 were checked **2026-10-28**. Published rates are **USD 0.10, USD 0.05 and USD 0.10 per output
-second**, respectively. They do not establish strict output-duration or rounding guarantees.
+second**, respectively. They do not establish strict output-duration or rounding guarantees. Re-checked 2026-11-06 (#1062): each page still reads "Billed per second of output video"
+($0.1000/s, $0.0500/s, $0.1000/s), and none says how the output's length follows from the
+inputs (lip sync allows `enable_dynamic_duration` "to match the new audio") or how it is
+rounded, so the consent gate stays.
 Quotes therefore remain **unknown/by usage USD** and require explicit consent to one
 unpriced job. A measured input length is not a monetary ceiling; finite money budgets
 cannot establish that an unknown price fits. No currency invoice is invented.
