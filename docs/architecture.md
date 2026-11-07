@@ -854,7 +854,9 @@ connection is the page's `WebSocket`, and the same work runs in the frame, a bat
 Each peer also says where it is (`Presence`: canvas, pointer, selection); the relay names it and
 passes that on, and the app draws the others over the canvas. Presence never enters the document
 ([decision](decisions/2026-10-23-presence.md)).
-`nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
+`nodecraft-cli relay [--listen <addr>] [--store <folder>]` hosts the rooms; with a store it keeps
+each room, its links and its media on disk, bounded and expired, so they survive a restart
+([decision](decisions/2026-11-06-relay-room-store.md)). Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.
 Desktop transfers for assets over 16 MiB are paced by the receiver and spooled to temporary

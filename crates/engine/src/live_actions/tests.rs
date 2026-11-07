@@ -678,3 +678,39 @@ fn an_equal_document_and_revision_do_not_authorize_another_sessions_outcome() {
     assert!(!apply(&mut replacement, outcome).unwrap());
     assert_eq!(replacement.document(), &document);
 }
+
+/// A round taken a job at a time (#1072, the browser's way) gives back control after every job,
+/// ends with what [`compute`] makes, and once cancelled ends at its next step with the same
+/// error as a cancelled worker; stepping an ended round is an error, not a panic.
+#[test]
+fn a_round_taken_a_job_at_a_time_ends_as_compute_does_and_stops_when_cancelled() {
+    let mut s = session();
+    connect(&mut s);
+    let job = pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap();
+    let mut round = LiveRound::new(job);
+    let mut steps = 0usize;
+    let outcome = loop {
+        steps += 1;
+        assert!(steps < 100, "the round never ended");
+        if let Some(outcome) = round.step() {
+            break outcome.unwrap();
+        }
+    };
+    // Starting, the source, the blur, then ending: control came back between each.
+    assert!(steps >= 3, "{steps} steps");
+    assert!(outcome.failed.is_empty(), "{:?}", outcome.failed);
+    let stepped = outcome.results.iter().map(|(id, g)| (*id, g.outputs.clone())).collect::<Vec<_>>();
+    let whole = compute(pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap()).unwrap();
+    assert_eq!(stepped, whole.results.iter().map(|(id, g)| (*id, g.outputs.clone())).collect::<Vec<_>>(), "same results either way");
+    assert!(round.step().is_some_and(|ended| ended.is_err()), "an ended round doesn't run again");
+    assert!(apply(&mut s, outcome).unwrap());
+
+    // Cancelled part-way, it ends at the next step and records nothing.
+    s.dispatch("node.param_set", &json!({"canvas": CANVAS, "id": BLUR, "name": "sigma", "value": Value::Number(nodecraft_types::Number::new(3.0).unwrap())}))
+        .unwrap();
+    let mut round = LiveRound::new(pending(&s, CANVAS, &BTreeMap::new()).unwrap().unwrap());
+    assert!(round.step().is_none(), "started");
+    round.cancel_handle().cancel();
+    let ended = round.step().expect("a cancelled round ends at once");
+    assert_eq!(ended.err().map(|e| e.kind), Some(ErrorKind::Conflict));
+}

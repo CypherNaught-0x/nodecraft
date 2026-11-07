@@ -90,6 +90,12 @@ WebSocket (`ws://`). For a remote relay used from an HTTPS page, put a TLS proxy
 the relay and use its `wss://` address. The desktop client uses `ws://`, so desktop peers
 need a plain WebSocket address for the same room.
 
+A relay keeps its rooms only in memory unless you start it with a store folder:
+`nodecraft-cli relay --store <folder>` keeps each room, its share links and its media there, so
+a restart loses nothing and a share link works while its owner is away. A room nobody joined for
+`--keep-days` (default 30) is forgotten, and past `--store-max-gib` (default 8) the rooms used
+longest ago go first. Folders are named by a hash of the room id; the id is never written.
+
 The browser has a single window, so joining replaces the project in the current tab. It is refused
 while that tab has changes of its own; save them first, or join in a new tab.
 
