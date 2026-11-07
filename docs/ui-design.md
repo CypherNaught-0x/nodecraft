@@ -689,7 +689,9 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 | Automation | top bar (with an MCP host) | floating panel | `automation::tests` (with the layout check, server running) |
 | Charges to review | palette `usage.ownership` | floating panel | `ownership_panel::tests` (with the layout check) |
 | Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
-| Share | top bar | floating panel | `sharing::tests` |
+| Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
+| PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
+| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
@@ -697,9 +699,11 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 
 **Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
 The API keys panel sits past the window's right edge for its first placement frames at 1000 px
-and settles inside once laid out; the checks run after placement settles.
+and settles inside once laid out; the checks run after placement settles. The image viewer ran
+past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
+its shape, so the panel fits (`floating::body_room`).
 
-**Not yet reviewed or covered:** Provider servers (browser only), the layout check for Share, the PDF and image viewers, Batch items, Workflow fields, Project files, the model
+**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
 picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the

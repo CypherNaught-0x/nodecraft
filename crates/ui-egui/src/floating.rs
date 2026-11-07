@@ -94,6 +94,15 @@ fn header_height_id(id: Id) -> Id {
     id.with("nodecraft.floating.header_height")
 }
 
+/// The height a panel's body can take without the panel leaving the floating panel area: the
+/// area's height less what sits above the body (the measured gap from the panel's top edge to its
+/// content: stroke, title and top padding; the cascade token until measured) and below it (the
+/// bottom padding and stroke). Never negative.
+pub fn body_room(ctx: &Context, id: Id, t: &Tokens) -> f32 {
+    let above = ctx.data(|data| data.get_temp::<f32>(header_height_id(id))).filter(|height| height.is_finite()).unwrap_or(t.panel_cascade);
+    (bounds(ctx, t).area.height() - above - t.card_padding - t.handle_stroke).max(0.0)
+}
+
 fn moved_id(id: Id) -> Id {
     id.with("nodecraft.floating.moved")
 }
