@@ -216,7 +216,9 @@ fn a_provider_package_is_granted_exactly_the_rights_it_showed() {
     let origins = json!(["https://api.acme.example", "https://cdn.acme.example"]);
     // The template's price and (lack of an) idempotency claim are shown as its publisher's word.
     let claims = json!([{"provider": "Acme", "prices": [{"model": "acme/v1", "price": {"currency": "USD", "micros": "40000"}}], "idempotency_header": null}]);
-    assert_eq!(imported["rights"], json!({"required": ["network", "secret"], "optional": [], "origins": origins, "claims": claims}));
+    // Only the API origin receives the key; the CDN only serves results.
+    let keyed = json!(["https://api.acme.example"]);
+    assert_eq!(imported["rights"], json!({"required": ["network", "secret"], "optional": [], "origins": origins, "key_origins": keyed, "claims": claims}));
     let shown = s.dispatch("plugins.rights", &json!({"package_id": "io.example.acme"})).unwrap();
     assert_eq!((&shown["origins"], &shown["grant"]), (&origins, &Value::Null));
     assert_eq!(shown["claims"], claims, "claims are shown, never granted");

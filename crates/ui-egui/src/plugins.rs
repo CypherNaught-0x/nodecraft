@@ -80,6 +80,9 @@ pub struct Consent {
     pub required: Vec<String>,
     pub optional: Vec<String>,
     pub origins: Vec<String>,
+    /// Those of `origins` that receive a key (each keyed provider's API); `None` from a host
+    /// that doesn't say.
+    pub key_origins: Option<Vec<String>>,
     /// What its provider templates say of their services, one line each: the publisher's word,
     /// shown so the person can weigh it, never part of the grant (#174).
     pub claims: Vec<String>,
@@ -320,6 +323,7 @@ impl PluginsPanel {
                     required: strings(answer.get("required")),
                     optional: strings(answer.get("optional")),
                     origins: strings(answer.get("origins")),
+                    key_origins: answer.get("key_origins").map(|k| strings(Some(k))),
                     claims: claim_lines(answer.get("claims")),
                     chosen: BTreeSet::new(),
                 });
@@ -657,8 +661,8 @@ impl PluginsPanel {
                 }
             }
             let network = consent.required.iter().chain(consent.chosen.iter()).any(|c| c == "network");
-            if network && !consent.origins.is_empty() {
-                ui.label(egui::RichText::new(format!("It may reach: {}", consent.origins.join(", "))).color(t.text_muted));
+            if network {
+                origin_lines(ui, &consent.origins, consent.key_origins.as_deref(), t);
             }
             if !consent.claims.is_empty() {
                 ui.add_space(t.control_gap);
@@ -745,10 +749,8 @@ fn preview_body(ui: &mut egui::Ui, report: &Value, t: &Tokens) {
             } else {
                 ui.label(egui::RichText::new(format!("If granted, it may {}.", asks.join("; "))).color(t.text));
             }
-            let origins = strings(rights.get("origins"));
-            if !origins.is_empty() {
-                ui.label(egui::RichText::new(format!("Addresses it may reach: {}", origins.join(", "))).color(t.text_muted));
-            }
+            let keyed = rights.get("key_origins").map(|k| strings(Some(k)));
+            origin_lines(ui, &strings(rights.get("origins")), keyed.as_deref(), t);
         }
         None => {}
     }
@@ -854,3 +856,22 @@ mod pick {
 
 #[cfg(test)]
 mod tests;
+
+/// The addresses a grant covers: where a key is sent, apart from where results only come from
+/// (#174 review). Without `keyed` (a host that doesn't say), one list, as before.
+fn origin_lines(ui: &mut egui::Ui, origins: &[String], keyed: Option<&[String]>, t: &Tokens) {
+    if origins.is_empty() {
+        return;
+    }
+    let Some(keyed) = keyed else {
+        ui.label(egui::RichText::new(format!("It may reach: {}", origins.join(", "))).color(t.text_muted));
+        return;
+    };
+    let (sent, others): (Vec<&str>, Vec<&str>) = origins.iter().map(String::as_str).partition(|o| keyed.iter().any(|k| k == o));
+    if !sent.is_empty() {
+        ui.label(egui::RichText::new(format!("It sends your key to: {}", sent.join(", "))).color(t.text));
+    }
+    if !others.is_empty() {
+        ui.label(egui::RichText::new(format!("It downloads results from, without the key: {}", others.join(", "))).color(t.text_muted));
+    }
+}

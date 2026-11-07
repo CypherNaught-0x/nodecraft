@@ -3,6 +3,7 @@
 //! Pure Rust (std + serde_json). External tools (`cargo`) are invoked through
 //! `std::process::Command`.
 
+mod browser;
 mod decisions;
 mod layers;
 mod perf;
@@ -27,6 +28,8 @@ commands:
   layers          enforce the crate dependency layering (docs/architecture.md), and that every
                   integration test file is built
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
+  browser         run the browser tests compiled to wasm32 in a headless browser (needs
+                  wasm-bindgen-test-runner at Cargo.lock's wasm-bindgen version, and chromedriver)
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
   decisions       check docs/decisions/: one dated file per decision, none in decisions.md
   ci [--quick [--base REF]]
@@ -68,7 +71,7 @@ fn main() -> ExitCode {
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
     // Held until main returns: the shared build directory stays locked for the whole command.
     let shared = match args.first().map(String::as_str) {
-        Some("ci" | "wasm" | "catalog-check" | "slow-tests") => match share() {
+        Some("ci" | "wasm" | "browser" | "catalog-check" | "slow-tests") => match share() {
             Ok(guard) => guard,
             Err(error) => {
                 eprintln!("error: {error}");
@@ -92,12 +95,13 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "slow-tests" | "version" | "update-key" | "update-feed")) => root()
-            .and_then(|root| {
+        Some(command @ ("layers" | "wasm" | "browser" | "ci" | "catalog-check" | "decisions" | "slow-tests" | "version" | "update-key" | "update-feed")) => {
+            root().and_then(|root| {
                 eprintln!("xtask workspace: {}", root.display());
                 match command {
                     "layers" => cmd_layers(&root),
                     "wasm" => cmd_wasm(&root),
+                    "browser" => browser::run(&root),
                     "ci" => cmd_ci(&root, &rest),
                     "catalog-check" => cmd_catalog_check(&root),
                     "decisions" => decisions::check(&root),
@@ -106,7 +110,8 @@ fn main() -> ExitCode {
                     "update-feed" => update_feed::feed(&root, &rest),
                     _ => version::run(&root, &rest),
                 }
-            }),
+            })
+        }
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())

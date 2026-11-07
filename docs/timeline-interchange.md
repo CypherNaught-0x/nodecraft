@@ -139,7 +139,65 @@ The export and preview commands check connected media before enabling. The write
 trim and frame bounds and the fade keyframe budget when the command runs. A failure names
 the affected clip or the limit reached.
 
-Unit tests check the document's elements and frame timing. FCPXML DTD validation remains open.
+Unit tests check the document's elements and frame timing. FCPXML DTD validation remains open:
+Apple's DTD isn't under a licence this repository can vendor.
+
+**Import rules (#1066).** `the_document_follows_the_rules_editors_need_on_import` and
+`a_layer_past_the_main_track_hangs_from_a_trailing_gap`
+(`crates/engine/src/interchange_cmds/tests/samples/editor_import.rs`) export the representative
+cut and read the `.fcpxml` back as a document, as an editor does. They check structural rules we
+expect both editors to need, inferred from the FCPXML format rather than taken from Apple's DTD
+or tested in either editor:
+
+- well-formed XML, root `fcpxml version="1.10"`, `resources` then one
+  `library > event > project > sequence > spine`;
+- unique resource ids, every `ref` naming a resource, the sequence's `format` a `<format>` with
+  a size and a frame duration;
+- every time attribute a rational time in seconds (`48/30s`, `2s`);
+- one `original-media` `media-rep` per asset whose `src` is relative, stays inside the folder and
+  names a file in the archive;
+- spine items one after another with no gap or overlap, on the frame grid, the sequence as long
+  as the spine, each transition between two clips and centred on their cut;
+- connected clips on a non-zero lane, starting within their spine item, on the frame grid,
+  including a layer that runs past the main track and hangs from a trailing gap;
+- every clip starting and ending within its media (stills and titles aside).
+
+Whole-frame `start` times are this writer's own invariant (one rate throughout), not an editor
+rule.
+
+It doesn't run either editor. That is the manual check below.
+
+### Checking an import
+
+Run the ignored sample test to write the archive:
+
+```sh
+NODECRAFT_INTERCHANGE643_SAMPLES=/tmp/interchange cargo xtask shared -- test -p nodecraft-engine write_representative_interchange643_samples -- --ignored
+```
+
+(`cargo xtask shared` needs `NODECRAFT_SHARED_TARGET`; with a checkout of your own, plain
+`cargo test` with the same arguments works too.)
+
+Extract `practice-cut.zip` and import `Practice-cut.fcpxml`. The cut is right when it shows:
+
+1. one 48-frame (1.6 s) sequence at 30 fps, at the frame size in the document's `<format>`, with
+   no offline media (every file found through its relative path). **Known risk:** Final Cut Pro
+   may expect absolute `file://` URLs in a bare `.fcpxml` (relative ones are documented for a
+   `.fcpxmld` bundle); if its media shows offline, relink it to the `media/` folder and record
+   that here;
+2. two clips of the moving-marker video on the main track, the second playing source frames 9–30
+   (its 0.2 s trim plus the dissolve's half), with a six-frame Cross Dissolve centred on frame 27;
+3. the still on a connected lane above and the stereo tone on a lane below, at their offsets;
+4. opacity and volume fades as keyframes on the clips that have them;
+5. the caption as a title, or, where the editor skips FCPXML titles, from `Practice-cut.srt`
+   imported into the same sequence.
+
+- **Final Cut Pro:** File > Import > XML…, then choose the `.fcpxml`. It makes a new event
+  holding the project; open the project. FCPXML 1.10 needs Final Cut Pro 10.6 or later.
+- **DaVinci Resolve:** File > Import > Timeline…, then choose the `.fcpxml`, and keep the option
+  to import its source clips into the media pool on, so Resolve looks for the media through the
+  relative paths. Which Resolve release first reads FCPXML 1.10 isn't recorded here; note the
+  version you use in the table below.
 
 ### Editor import evidence for #643
 
@@ -148,8 +206,8 @@ The maintainer selected FilmCraft for the FCPXML import check and deferred DaVin
 | Editor | Version | Observed result |
 |---|---|---|
 | FilmCraft | 0.17.0 (macOS) | Opened `Practice-cut.fcpxml` as a 48-frame, 30 fps sequence. Found all three files via relative media URLs. Kept both primary clips, the connected still and audio on separate lanes, the second clip's source trim at frames 9–30, and the six-frame cross dissolve centered on frame 27. The three picture clips each carried four opacity keyframes. The linked video audio carried 14 volume keyframes per clip and the separate WAV carried 20. FilmCraft skipped the FCPXML title and imported the companion SRT as one caption without warnings. |
-| Final Cut Pro | — | Direct import untested. |
-| DaVinci Resolve | — | Deferred by the maintainer. |
+| Final Cut Pro | — | Not yet checked: needs a person with macOS and Final Cut Pro to follow "Checking an import" (#1066). |
+| DaVinci Resolve | — | Not yet checked; deferred by the maintainer (#1066). |
 
 The ignored sample-export test writes an original project and portable ZIP to
 `NODECRAFT_INTERCHANGE643_SAMPLES`. Extract the ZIP, import `Practice-cut.fcpxml`, then import

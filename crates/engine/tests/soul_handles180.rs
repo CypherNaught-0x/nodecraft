@@ -423,3 +423,20 @@ fn a_technique_using_a_soul_id_says_so_in_the_shared_library_and_when_placed() {
     assert!(copy.nodes().values().any(|n| n.params.get("custom_reference_id") == Some(&Value::Text(SOUL_ID.into()))), "the setting travels as it was");
     assert!(silent.requests.lock().unwrap().is_empty());
 }
+
+/// A Soul ID is used on a SOUL 2 image-to-image card as on a text-to-image one (#1043): it sets
+/// the card's Soul ID, and the card counts as holding an account-bound handle.
+#[test]
+fn a_soul_id_is_used_on_a_soul_2_image_to_image_card_too() {
+    let mut s = session(None);
+    let card = NodeId::from_bytes([42; 16]);
+    let kinds = s.kinds_shared();
+    let node = image_card(&kinds, card, "higgsfield.soul-2-i2i", None);
+    s.dispatch("node.add", &json!({"canvas": C, "node": node})).unwrap();
+    let edge = nodecraft_types::EdgeId::from_bytes([43; 16]);
+    let used = s.dispatch("style.use", &json!({"canvas": C, "style": MARA, "target": card, "edge": edge})).unwrap();
+    assert_eq!((used["param"].clone(), used["soul_id"].clone()), (json!("custom_reference_id"), json!(SOUL_ID)), "{used}");
+    let set = s.document().canvases().get(&C).unwrap().nodes().get(&card).unwrap().params.get("custom_reference_id").cloned();
+    assert_eq!(set, Some(Value::Text(SOUL_ID.into())));
+    assert!(s.document().canvases().get(&C).unwrap().edges().is_empty(), "no wire");
+}

@@ -258,14 +258,15 @@ fn bfl33_lost_reply_error_redaction_and_unconfirmed_cancel() {
 }
 
 #[test]
-fn bfl33_catalog_selects_direct_text_to_image_with_unknown_price() {
+fn bfl33_catalog_selects_direct_text_to_image_priced_by_output_megapixels() {
     use nodecraft_catalog::{Catalog, Pricing, Wiring};
     use nodecraft_types::Modality;
     let catalog = Catalog::builtin().unwrap();
     let model = catalog.get("bfl.flux-2-klein-4b").unwrap();
     assert_eq!(model.provider_model, MODEL);
     assert_eq!(model.provider, "bfl");
-    assert!(matches!(model.pricing, Pricing::ByUsage { .. }));
+    // Priced from BFL's published per-megapixel rates (#1062).
+    assert!(matches!(model.pricing, Pricing::PerOutputMegapixel { .. }));
     assert!(Wiring::new(Modality::Image).with_inline_prompt().fit(model).is_ok());
     assert!(Wiring::new(Modality::Image).with_inline_prompt().with(Modality::Image, 1).fit(model).is_err());
 }

@@ -121,14 +121,21 @@ pub enum Pricing {
         #[serde(default)]
         input_fee: Option<InputFee>,
     },
+    /// By the output's area (#1062, Black Forest Labs' FLUX.2): `first` for the first megapixel
+    /// and `additional` for each further one, the area (`width` × `height` settings) rounded up
+    /// to whole megapixels of 1024 × 1024 pixels, never less than one.
+    PerOutputMegapixel { width: String, height: String, first: Price, additional: Price },
 }
+
+/// Pixels in one priced megapixel (1024 × 1024).
+pub const MEGAPIXEL: u64 = 1024 * 1024;
 
 impl Pricing {
     pub fn currency(&self) -> Option<Currency> {
         match self {
             Self::Free => None,
             Self::ByUsage { currency } => Some(*currency),
-            Self::PerCall { price } | Self::PerUnit { price, .. } => Some(price.0.currency),
+            Self::PerCall { price } | Self::PerUnit { price, .. } | Self::PerOutputMegapixel { first: price, .. } => Some(price.0.currency),
             Self::PerSourceSecond { prices, .. } | Self::PerUnitByChoice { prices, .. } => prices.values().next().map(|price| price.0.currency),
         }
     }
@@ -178,6 +185,16 @@ impl Pricing {
                     (_, Some(_), None) => Ok(None),
                     _ => Ok(base),
                 }
+            }
+            Self::PerOutputMegapixel { width, height, first, additional } => {
+                let side = |name: &str| match get(name) {
+                    Some(Value::Unsigned(n)) => Ok(n.0),
+                    Some(Value::Integer(n)) => u64::try_from(n.0).map_err(|_| invalid("an image side can't be negative")),
+                    _ => Err(invalid("the price depends on the image's width and height")),
+                };
+                let area = side(width)?.checked_mul(side(height)?).ok_or_else(|| invalid("the image's area is out of range"))?;
+                let megapixels = area.div_ceil(MEGAPIXEL).max(1);
+                first.0.checked_add(additional.0.checked_mul_ratio(megapixels - 1, 1, Rounding::Up)?).map(Some)
             }
             Self::Free => Ok(Some(Money::zero(fallback))),
             Self::ByUsage { .. } => Ok(None),
