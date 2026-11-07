@@ -249,7 +249,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
   The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
   between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
-  actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
+  actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
+  the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
@@ -282,9 +283,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
   Resolve yet (#1066).
 
-- **Relay transport and storage differ by client.** The relay serves plain `ws://`.
-  Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
-  remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
+- **Relay transport and storage differ by client.** The relay serves plain `ws://`, which
+  desktop clients use, and with a certificate also `wss://` on a second port for browsers on
+  HTTPS pages (#1067); both reach the same rooms. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
   local development and remote access. The relay holds rooms in memory unless it is given a
   store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
@@ -300,7 +301,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672), account voice choices (#670), and streaming speech playback on desktop
-  (#671, #875). The CLI and browser do not request streaming previews. 3D has Tripo
+  and in the browser (#671, #875, #1070); the CLI requests streaming previews too and reports
+  how much sound has arrived. 3D has Tripo
   text/image/multiview and fal Trellis (#22), plus Meshy
   text/image/multi-image/retexture/remesh (#23). Consult [`docs/providers.md`](docs/providers.md)
   for model and host capabilities. Published releases track their tagged source.

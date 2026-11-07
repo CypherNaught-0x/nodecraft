@@ -649,11 +649,12 @@ impl NodeCraftApp {
                     let name = ui.label("Filter");
                     ui.add(egui::TextEdit::singleline(&mut self.sheet.filter).hint_text("Filter prompts").desired_width(t.sheet_title_width))
                         .labelled_by(name.id);
-                    egui::ComboBox::from_id_salt("sheet_status_filter").selected_text(self.sheet.status.label()).show_ui(ui, |ui| {
+                    let status = egui::ComboBox::from_id_salt("sheet_status_filter").selected_text(self.sheet.status.label()).show_ui(ui, |ui| {
                         for status in StatusFilter::ALL {
                             ui.selectable_value(&mut self.sheet.status, status, status.label());
                         }
                     });
+                    status.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Show rows by status"));
                     if shown.len() != rows.rows.len() {
                         ui.label(egui::RichText::new(format!("Showing {} of {}", shown.len(), rows.rows.len())).color(t.text_muted));
                         let ids: Vec<NodeId> = shown.iter().filter_map(|index| rows.rows.get(*index)).map(|row| row.id).collect();
@@ -729,7 +730,11 @@ impl NodeCraftApp {
         ui.horizontal(|ui| {
             ui.set_height(height);
             let mut chosen = self.selection.contains(row.id);
-            if ui.add_sized([widths.index, height], egui::Checkbox::without_text(&mut chosen)).on_hover_text("Select this row").changed() {
+            let pick = ui.add_sized([widths.index, height], egui::Checkbox::without_text(&mut chosen));
+            // Named for screen readers: a bare checkbox is announced as nothing (#1118).
+            let number = index.saturating_add(1);
+            pick.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, chosen, format!("Select row {number}")));
+            if pick.on_hover_text("Select this row").changed() {
                 self.selection.toggle(row.id);
             }
             ui.add_sized([widths.index, height], egui::Label::new(egui::RichText::new(format!("{}", index.saturating_add(1))).color(t.text_muted)));
@@ -887,11 +892,17 @@ impl NodeCraftApp {
                 if let Some(position) = row.position
                     && row.results > 1
                 {
-                    if ui.add_enabled(position > 1, egui::Button::new("‹").small()).on_hover_text("Show this row's older result").clicked() {
+                    if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), &format!("Previous result, row {number}"))
+                        .on_hover_text("Show this row's older result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, false));
                     }
                     ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
-                    if ui.add_enabled(position < row.results, egui::Button::new("›").small()).on_hover_text("Show this row's newer result").clicked() {
+                    if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), &format!("Next result, row {number}"))
+                        .on_hover_text("Show this row's newer result")
+                        .clicked()
+                    {
                         actions.push(Action::Step(row.id, true));
                     }
                 }
