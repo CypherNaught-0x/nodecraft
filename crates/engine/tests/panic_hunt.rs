@@ -667,6 +667,7 @@ fn template(id: &str) -> (Session, Value) {
         "options.refresh" | "options.status" => json!({}),
         // No fetch service here: the refresh must be refused cleanly.
         "comfy.nodes.refresh" | "comfy.nodes.status" => json!({}),
+        "models.catalog_refresh" | "models.catalog_status" => json!({}),
         "comfy.server.use" => json!({"canvas":canvas(),"id":node_id(7),"server":"studio"}),
         "comfy.models.list" => json!({"canvas":canvas(),"nodes":[node_id(7)]}),
         "comfy.models.preview" => json!({"canvas":canvas(),"nodes":[node_id(7)],"group":"checkpoints","name":"juggernaut_xl.safetensors"}),
@@ -1045,6 +1046,8 @@ fn typed_template_panic_hunt() {
                             | "options.status"
                             | "comfy.nodes.refresh"
                             | "comfy.nodes.status"
+                            | "models.catalog_refresh"
+                            | "models.catalog_status"
                             | "comfy.models.list"
                             | "comfy.models.preview"
                             | "app.check_updates"

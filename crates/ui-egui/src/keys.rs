@@ -146,6 +146,9 @@ pub struct KeysPanel {
     was_open: bool,
     confirm_remove: Option<Account>,
     pub notice: Option<String>,
+    /// The LiteLLM proxy's address, shown with its key (desktop; the browser has Provider servers).
+    #[cfg(not(target_arch = "wasm32"))]
+    pub litellm: litellm::LitellmAddress,
 }
 
 impl Default for KeysPanel {
@@ -164,6 +167,8 @@ impl Default for KeysPanel {
             was_open: false,
             confirm_remove: None,
             notice: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            litellm: litellm::LitellmAddress::default(),
         }
     }
 }
@@ -464,6 +469,11 @@ impl KeysPanel {
             if let Some(notice) = &self.notice {
                 ui.label(egui::RichText::new(notice).color(t.danger));
             }
+            #[cfg(not(target_arch = "wasm32"))]
+            if self.account == "litellm" || self.rows.iter().any(|(account, _)| account.as_str() == "litellm") {
+                ui.separator();
+                self.litellm.show(ui, t);
+            }
         });
         if !open {
             // Closing forgets anything typed: the key lives only in the keychain.
@@ -528,5 +538,7 @@ fn unknown_outcome(op: Op) -> &'static str {
 
 #[cfg(test)]
 pub(crate) mod fake;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod litellm;
 #[cfg(test)]
 mod tests;

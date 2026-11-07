@@ -40,6 +40,10 @@ gemini-video = ["dep:base64"]
 fal = ["dep:base64", "dep:zip"]
 # Seedance 2.5 and 2.0 video on ModelArk: one paid task, polling, cancelling while queued and the MP4 download.
 seedance = ["dep:base64"]
+# OpenRouter's Images API: one synchronous request per job, inline base64, reported USD cost.
+openrouter-images = ["dep:base64"]
+# OpenRouter's speech (synchronous MP3) and video (queued jobs, polling, keyed download) APIs.
+openrouter-media = ["dep:base64"]
 # Dated Seedream text generation and ordered multi-reference edits.
 seedream = ["dep:base64"]
 # Black Forest Labs' direct FLUX queue and bounded PNG delivery.
