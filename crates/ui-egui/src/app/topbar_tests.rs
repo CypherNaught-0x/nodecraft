@@ -6,8 +6,10 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+/// The Search entry's name as the harness spells it: kittest reports Linux on every host, so the
+/// shortcut reads Ctrl+F even on macOS (`shortcut::format_shortcut` follows `ctx.os()`).
 fn search_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }
+    "Search (Ctrl+F)"
 }
 
 pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {

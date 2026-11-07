@@ -29,8 +29,9 @@ fn wheel(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, modifiers: egui::Mod
     h.run();
 }
 
-fn label(entry: &palette::Entry) -> String {
-    palette::row_name(&egui::Context::default(), entry)
+/// A row's accessible name as the harness spells it (kittest reports Linux on every host).
+fn label(h: &Harness<'static, NodeCraftApp>, entry: &palette::Entry) -> String {
+    palette::row_name(&h.ctx, entry)
 }
 
 #[test]
@@ -38,7 +39,7 @@ fn wheel_reaches_a_later_palette_row_without_moving_canvas_and_click_selects_it(
     let mut h = open_palette();
     let entry = h.state().palette_entries().get(16).unwrap().clone();
     let palette::Target::Kind(kind) = &entry.target else { panic!("fixture must offer a kind") };
-    assert!(h.query_by_label(&label(&entry)).is_none(), "later row starts outside the viewport");
+    assert!(h.query_by_label(&label(&h, &entry)).is_none(), "later row starts outside the viewport");
     let view = h.state().view;
     let document = h.state().session.document().clone();
     let pos = menu_rect(&h, "quick_add_palette").center();
@@ -46,7 +47,7 @@ fn wheel_reaches_a_later_palette_row_without_moving_canvas_and_click_selects_it(
     assert!(h.state().palette.is_some(), "wheel must scroll the palette instead of closing it");
     assert_eq!(h.state().view, view);
     assert_eq!(h.state().session.document(), &document);
-    h.get_by_label(&label(&entry)).click();
+    h.get_by_label(&label(&h, &entry)).click();
     h.run();
     assert!(h.state().palette.is_none());
     let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
@@ -63,7 +64,7 @@ fn keyboard_reaches_later_rows_and_filtering_resets_the_scroll() {
         h.run();
     }
     assert_eq!(h.state().palette.as_ref().unwrap().highlighted, 17);
-    let row = h.get_by_label(&label(&entry)).rect();
+    let row = h.get_by_label(&label(&h, &entry)).rect();
     assert!(menu_rect(&h, "quick_add_palette").contains_rect(row), "keyboard highlight is visible");
     h.event(egui::Event::Text("Audio".into()));
     h.run();
@@ -121,7 +122,7 @@ fn reopening_each_menu_resets_its_scroll_to_the_highlighted_first_row() {
     for palette in [true, false] {
         let mut h = if palette { open_palette() } else { open_turn_into() };
         let area = if palette { "quick_add_palette" } else { "turn_into_menu" };
-        let first_label = if palette { label(h.state().palette_entries().first().unwrap()) } else { "Turn into Choice 00".into() };
+        let first_label = if palette { label(&h, h.state().palette_entries().first().unwrap()) } else { "Turn into Choice 00".into() };
         let pos = menu_rect(&h, area).center();
         wheel(&mut h, pos, egui::Modifiers::NONE);
         assert!(h.query_by_label(&first_label).is_none());
