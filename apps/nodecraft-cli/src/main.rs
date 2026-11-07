@@ -112,6 +112,11 @@ commands:
   plugin lint <file> [--trust <trust.json>]
                   check a package as installing, granting and enabling it would; only keys in
                   the trust file are trusted. Nothing is installed or run
+  plugin try <file> <registration> [--input <name>=<text>]... [--model <id>]
+             [--param <name>=<json>]... [--replies <replies.json>]
+                  run one registration as the app would, with no key and no network: a text
+                  action on the inputs, or a provider template through the real broker, each
+                  request answered by the next scripted reply ([{status, json|text, headers?}])
   providers [list]
                   list the model providers and whether each can run (reads the keychain)
   providers test [all|provider-id]

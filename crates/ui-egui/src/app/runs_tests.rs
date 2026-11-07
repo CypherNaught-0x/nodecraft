@@ -871,6 +871,8 @@ fn the_toolbar_expands_a_result_into_the_viewer() {
     press(&mut h, Role::Button, "Expand");
     assert_eq!(h.state().viewer, Some(N));
     assert!(h.query_by_label("Image").is_some(), "the viewer window is open");
+    h.run();
+    crate::app::panel_check::check_open_panels(&h, "Image viewer");
     h.state_mut().selection.clear();
     let canvas = C;
     h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": N})).unwrap();

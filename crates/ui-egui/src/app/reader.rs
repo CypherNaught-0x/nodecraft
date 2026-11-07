@@ -229,7 +229,7 @@ impl NodeCraftApp {
                                 let area = Rect::from_center_size(cell.center(), fit(page_size(&preview, slot.x), slot));
                                 card::show_image(ui, area, &preview, None, &t);
                                 // An edge, so a white page shows on a light window.
-                                ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(1.0, t.card_stroke), egui::StrokeKind::Outside);
+                                ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(t.stroke_hairline, t.card_stroke), egui::StrokeKind::Outside);
                                 let current = index == reader.page;
                                 if current {
                                     ui.painter().rect_stroke(
@@ -259,7 +259,7 @@ impl NodeCraftApp {
                         let (area, response) = ui.allocate_exact_size(size, if ready { Sense::drag() } else { Sense::hover() });
                         reader.area = ready.then_some(area);
                         card::show_image(ui, area, &preview, None, &t);
-                        ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(1.0, t.card_stroke), egui::StrokeKind::Inside);
+                        ui.painter().rect_stroke(area, 0.0, egui::Stroke::new(t.stroke_hairline, t.card_stroke), egui::StrokeKind::Inside);
                         let fraction = |pos: Pos2| {
                             let at = (pos - area.min) / area.size().max(Vec2::splat(1.0));
                             Pos2::new(at.x.clamp(0.0, 1.0), at.y.clamp(0.0, 1.0))

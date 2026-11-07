@@ -58,6 +58,7 @@ fn a_held_result_from_the_last_session_is_listed_and_can_be_discarded() {
     h.get_by_label("1 paid result couldn't be kept");
     h.get_by_label("They are kept across restarts until you decide. Nothing here is sent or charged again.");
     h.get_by_label("its card was deleted");
+    crate::app::panel_check::check_open_panels(&h, "Queue with a held result");
     assert!(h.query_by_label("until quit").is_none(), "a saved result isn't marked");
     if let Ok(shot) = std::env::var("NODECRAFT_HELD_TEST_SHOT") {
         h.render().unwrap().save(shot).unwrap();

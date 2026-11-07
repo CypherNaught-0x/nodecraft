@@ -43,6 +43,16 @@ No egui default colour is left un-themed: `visuals()` sets egui's selection from
 `selection_fill`, `accent_text` on canvas, panel and card, `text_muted` on panels, cards and
 `panel_stroke`, and warning and error text on panels and the canvas at 4.5:1 or more.
 
+Stroke widths, a few sizes and egui's small text are tokens too (#1124): `stroke_hairline` (1),
+`stroke_medium` (1.5) and `stroke_strong` (2) for outlines, playheads and chosen thumbnails or
+clips; `heading_size` (19.5) for the drop hint and `display_size` (24) for an empty deck slide's
+message; `inset` (2) between a thumbnail and its outline and for a swatch's corners; `dim` (0.6) for
+a fill drawn dimmed behind what is being edited; and `badge_text_ratio` (1.2) for the number in an
+input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
+`.small()` hints are never below a card label. `theme::panel_frame(t)` is the one framed-group
+recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
+fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
+
 Keyboard focus on painted canvas widgets (cards and Note cards and their titles, field headers,
 stale and mask badges, the minimap) shows a ring (#1108): `accent`, `focus_ring_width` (2) wide,
 `focus_ring_gap` (1) outside the widget (inside the minimap, whose edge clips), in screen points at
@@ -676,6 +686,50 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded.
+
+## Menu and panel inventory (#959, in progress)
+
+The shared check is `panel_check::check_open_panels`
+([`panel_check.rs`](../crates/ui-egui/src/app/panel_check.rs)), run by
+[`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs) for the top bar and by each
+service-backed panel's own test once that panel is open. It finds a panel's controls through
+that panel's own accessibility node, by id. Each top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
+bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both themes. None of its
+on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
+control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
+tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
+again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+
+| Surface | Opens from | Kind | Covered by |
+|---|---|---|---|
+| Sheets, Techniques, Elements, Budgets, API keys | top bar | floating panel | `menus959_tests` (open, area, overlap, close) |
+| ComfyUI servers, Plugins | top bar (disabled without their service) | floating panel | `menus959_tests` (opened through their state), `topbar_tests` (disabled state) |
+| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` (with the layout check) |
+| Automation | top bar (with an MCP host) | floating panel | `automation::tests` (with the layout check, server running) |
+| Charges to review | palette `usage.ownership` | floating panel | `ownership_panel::tests` (with the layout check) |
+| Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
+| Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
+| PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
+| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
+| Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
+| Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+**Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
+The API keys panel sits past the window's right edge for its first placement frames at 1000 px
+and settles inside once laid out; the checks run after placement settles. The image viewer ran
+past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
+its shape, so the panel fits (`floating::body_room`).
+
+**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
+picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
+the update banner, card and field context menus, the inspector and bulk panels, notices, and the
+Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
+states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
+Escape is left for its own change: several canvas and dialog handlers read Escape without
+consuming it, so a panel close needs them fixed first.
 
 ## Saving results
 
