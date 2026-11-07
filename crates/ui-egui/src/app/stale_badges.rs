@@ -103,7 +103,11 @@ pub(super) fn badge(ui: &egui::Ui, painter: &egui::Painter, view: &CanvasView, v
     let rect = Rect::from_min_size(card.right_bottom() + Vec2::new(-size.x, t.control_gap), size);
     painter.rect_filled(rect, size.y / 2.0, t.stale);
     painter.galley(rect.center() - galley.size() / 2.0, galley, t.card_fill);
-    let response = ui.interact(view.rect_to_screen(viewport.min, rect), ui.id().with(("stale_badge", id)), Sense::click());
+    let response = ui.interact(
+        crate::theme::badge_hit(view.rect_to_screen(viewport.min, rect), t.min_target, view.rect_to_screen(viewport.min, card).bottom()),
+        ui.id().with(("stale_badge", id)),
+        Sense::click(),
+    );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stale result: refresh"));
     response.on_hover_text("This result no longer matches its inputs. Click to refresh it.").clicked()
 }
@@ -117,7 +121,11 @@ pub(super) fn unchecked_badge(ui: &egui::Ui, painter: &egui::Painter, view: &Can
     let rect = Rect::from_min_size(card.right_bottom() + Vec2::new(-size.x, t.control_gap), size);
     painter.rect_filled(rect, size.y / 2.0, t.danger);
     painter.galley(rect.center() - galley.size() / 2.0, galley, t.card_fill);
-    let response = ui.interact(view.rect_to_screen(viewport.min, rect), ui.id().with(("unchecked_badge", id)), Sense::hover());
+    let response = ui.interact(
+        crate::theme::badge_hit(view.rect_to_screen(viewport.min, rect), t.min_target, view.rect_to_screen(viewport.min, card).bottom()),
+        ui.id().with(("unchecked_badge", id)),
+        Sense::hover(),
+    );
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, "Inputs can't be checked"));
     response.on_hover_text(hover);
 }

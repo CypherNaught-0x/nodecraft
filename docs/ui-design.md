@@ -53,6 +53,14 @@ input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size`
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 
+Pointer targets are at least 24 × 24 screen points (#1114, WCAG 2.5.8): a noodle's hit band is
+`noodle_hit` (12) either side of its line in screen points, whatever its painted width, and a card
+under the pointer wins over a noodle; stale, mask and "Can't check" badges and presence avatars hit
+in a `min_target` (24) square around their painted shape (`theme::at_least`; a badge grows down
+and sideways only, never into the card above it, `theme::badge_hit`), at any zoom, painted as before. Ports already reach 26 points. In-card controls (19 world points tall) still shrink with
+the canvas: refusing clicks below a zoom would break editing at overview zoom, so that part of
+#1114 is left open.
+
 Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
 item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
 submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through
