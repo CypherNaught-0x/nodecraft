@@ -622,7 +622,7 @@ pub fn show(
             }
 
             if let Some((_, error)) = &editor.error {
-                ui.label(error);
+                crate::feedback::inline_error(ui, t, error);
             }
         });
         // Inner regions (a long text field) have taken their share already; this body takes what

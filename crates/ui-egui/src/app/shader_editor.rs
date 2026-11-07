@@ -107,7 +107,7 @@ impl NodeCraftApp {
                 let library = self.library_shaders();
                 self.shader_editor = Some(ShaderEditor::new(self.canvas, node, shader, from.as_ref(), library));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 

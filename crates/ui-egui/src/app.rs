@@ -395,6 +395,7 @@ mod mesh_saved;
 mod metrics;
 mod models;
 mod navigation;
+mod notices;
 mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
@@ -489,6 +490,8 @@ pub struct NodeCraftApp {
     web_recovery: Option<web_journal::WebRecovery>,
     pub viewport: Rect,
     pub notice: Option<String>,
+    /// What the canvas shows for `notice` and the typed notices beside it (#1110); view state.
+    notices: notices::Notices,
     stale_snapshot: Option<stale::StaleSnapshot>,
     /// Which cards show a stale badge, as of a revision (#211).
     stale_badges: Option<stale_badges::StaleBadges>,
@@ -1226,6 +1229,7 @@ impl NodeCraftApp {
             web_recovery: None,
             viewport: Rect::NOTHING,
             notice: None,
+            notices: notices::Notices::default(),
             stale_snapshot: None,
             stale_badges: None,
             mask_badges: None,
@@ -1521,7 +1525,7 @@ impl NodeCraftApp {
                 Ok(()) => self.notice = None,
                 Err(error) => {
                     self.bulk.failed(error.message.clone());
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
             }
         }
@@ -1587,7 +1591,7 @@ impl NodeCraftApp {
             };
             if let Some(command) = command {
                 if let Err(error) = self.session.dispatch(command, &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 } else {
                     self.notice = None;
                     // Invalid drafts remain view state across unrelated undo/redo.
@@ -1636,7 +1640,7 @@ impl NodeCraftApp {
                 )
             });
             if overlays && let Err(error) = self.dispatch_navigation(ui.ctx(), "canvas.prompt_overlays_toggle", &json!({})) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 // Drop ids an undo or canvas switch removed, so they don't fail the delete.
@@ -1690,7 +1694,7 @@ impl NodeCraftApp {
             });
             if copy || cut || duplicate {
                 match self.selection_payload() {
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                     Ok(None) => {}
                     Ok(Some(payload)) => {
                         if duplicate {
@@ -2388,7 +2392,7 @@ impl NodeCraftApp {
                             match nodecraft_engine::turn_into_cmds::output_type(canvas, self.session.kinds(), &wiring.anchor) {
                                 Ok(port_type) => wiring.port_type = port_type,
                                 Err(error) => {
-                                    self.notice = Some(error.message);
+                                    self.notice = self.notices.error(error.message);
                                     proposed = None;
                                 }
                             }
@@ -2587,7 +2591,7 @@ impl NodeCraftApp {
         self.pdf_reader(ui.ctx());
         if let Some(action) = tag_action {
             if let Err(error) = self.apply_tag_action(action) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
             ui.ctx().request_repaint();
         }
@@ -2599,7 +2603,7 @@ impl NodeCraftApp {
         if let Some((id, server)) = comfy_server_request
             && let Err(error) = self.use_comfy_server(id, server)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if let Some(node) = comfy_mapping_request {
@@ -2657,7 +2661,7 @@ impl NodeCraftApp {
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
                 Ok(_) => self.notice = None,
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             }
         }
         if let Some((mode, owner)) = layout_mode {
@@ -2669,7 +2673,7 @@ impl NodeCraftApp {
         if let Some(id) = intents.iter().find_map(|(id, intent)| matches!(intent, Intent::Model).then_some(*id))
             && let Err(error) = self.open_model_picker(self.canvas, vec![id], self.session.revision())
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         for (id, intent) in intents {
             // A model-opening click can make a text draft lose focus in this same pass.
@@ -2738,7 +2742,7 @@ impl NodeCraftApp {
                 // After this pass's edits above it, so a prompt submitted with Cmd+Enter is quoted.
                 Intent::Generate => {
                     if let Err(error) = self.request_generate(id) {
-                        self.notice = Some(error.message);
+                        self.notice = self.notices.error(error.message);
                     }
                     continue;
                 }
@@ -2766,13 +2770,13 @@ impl NodeCraftApp {
         if let Some(id) = refresh
             && let Err(error) = self.request_run(id, generate::RunKind::Refresh)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         if !ui.input(|i| i.pointer.primary_down())
             && let Some(drag) = self.drag.take()
             && let Err(error) = self.session.dispatch("node.move", &json!({"canvas":self.canvas,"id":drag.id,"pos":drag.pos,"gesture":drag.gesture}))
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             self.marquee = None;
@@ -2801,9 +2805,9 @@ impl NodeCraftApp {
                     // The report is for reading elsewhere: put it on the clipboard.
                     Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
-                        self.notice = Some("Performance report copied to the clipboard.".into());
+                        self.notify(notices::NoticeKind::Success, "Performance report copied to the clipboard.");
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                 },
                 palette::Outcome::Chosen(palette::Target::Command(id)) => {
                     #[cfg(not(target_arch = "wasm32"))]
@@ -3001,7 +3005,7 @@ impl NodeCraftApp {
         if let Some(runs) = &mut self.runs
             && let Err(error) = runs.forget_adapters(&mut self.session)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
     }
 
@@ -3111,7 +3115,7 @@ impl NodeCraftApp {
                 self.selection.clear();
                 self.fields.selected = None;
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -3156,7 +3160,7 @@ impl NodeCraftApp {
                 self.selection.clear();
                 self.notice = None;
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
     /// Paste copied nodes centred on `centre` (one undo step) and select them.
@@ -3173,7 +3177,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.replace(pasted);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -3205,7 +3209,7 @@ impl NodeCraftApp {
                 let extracted = match self.session.preview_created_node("history.extract", &params, node) {
                     Ok(extracted) => extracted,
                     Err(error) => {
-                        self.notice = Some(error.message);
+                        self.notice = self.notices.error(error.message);
                         return None;
                     }
                 };
@@ -3273,7 +3277,7 @@ impl NodeCraftApp {
                         self.notice = None;
                         self.selection.only(id);
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                 }
             }
             Err(message) => self.notice = Some(message),
@@ -3337,7 +3341,7 @@ impl NodeCraftApp {
         let size = match self.creation_size(kind, id, pos, None, t) {
             Ok(size) => size,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };
@@ -3347,7 +3351,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -3380,7 +3384,7 @@ impl NodeCraftApp {
             match current {
                 Ok(port_type) => port_type,
                 Err(error) => {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                     return;
                 }
             }
@@ -3396,7 +3400,7 @@ impl NodeCraftApp {
         let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, port_type)), t) {
             Ok(geometry) => geometry,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };
@@ -3417,7 +3421,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -3870,6 +3874,8 @@ fn starter_id() -> [u8; 16] {
 mod centering_tests;
 #[cfg(test)]
 mod names1118_tests;
+#[cfg(test)]
+mod notices1110_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]

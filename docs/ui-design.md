@@ -742,6 +742,31 @@ states, tokens), before-and-after screenshots, and Escape closing a floating pan
 Escape is left for its own change: several canvas and dialog handlers read Escape without
 consuming it, so a panel close needs them fixed first.
 
+### Notices
+
+A notice says what just happened (#1110). It has one of four kinds, and colour is never its only
+cue: each kind has its own icon and a coloured edge `notice_edge` wide.
+
+| Kind | Icon | Edge | Stays | Screen reader (AccessKit live region) |
+|---|---|---|---|---|
+| Information | `Info` | `text_muted` | 6 s while visible | polite |
+| Success | `Success` | `accent` | 6 s while visible | polite |
+| Warning | `Warning` | `stale` | 6 s while visible | polite |
+| Error | `Error` | `danger` | until dismissed | assertive |
+
+Up to three show at once, newest on top, in the bottom-left notice area (above the staleness
+check and the hidden-draft reminder). A timed notice's clock waits while the pointer is over it
+or one of its buttons has focus. Every notice has a close button (AccessKit "Dismiss notice";
+Escape dismisses the focused one) and may carry one command button, which runs its command by id
+as the palette would (a staleness check that lost its context offers **Check again**). The same
+message again moves to the top instead of showing twice. Notices are view state.
+
+In code, `NodeCraftApp::notice` stays the latest message; `self.notice = self.notices.error(…)`
+(or `success`, `warning`, `notify(kind, …)`, `with_action`) queues a typed notice and keeps the
+slot in step. A slot change made any other way shows as information that follows the slot until
+it changes. An error that belongs to one control (a card's parameter) is not a notice: it uses
+`feedback::inline_error`, the `Error` icon beside the message in `danger`.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**
@@ -795,6 +820,11 @@ them and one attribution row per file. See the [choice and comparison](decisions
 | `More` | `dots.svg` | application menu overflow |
 | `Apps` | `apps.svg` | Open as app |
 | `Cloud` | `cloud.svg` | browser Providers |
+| `Info` | `info-circle.svg` | information notice |
+| `Success` | `circle-check.svg` | success notice |
+| `Warning` | `alert-triangle.svg` | warning notice |
+| `Error` | `alert-circle.svg` | error notice, inline control error |
+| `Close` | `x.svg` | a notice's dismiss button |
 
 Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
 keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which

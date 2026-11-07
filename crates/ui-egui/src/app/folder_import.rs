@@ -335,7 +335,7 @@ impl NodeCraftApp {
                 let added = format!("Added {} files from {}.", imported.files, read.name);
                 self.notice = Some(left_out.map_or(added.clone(), |left_out| format!("{added} {left_out}")));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 

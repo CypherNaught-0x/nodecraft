@@ -34,7 +34,7 @@ impl NodeCraftApp {
                 }
                 self.notice = imported.notice();
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
         true
     }

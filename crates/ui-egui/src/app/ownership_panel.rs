@@ -193,7 +193,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.ownership = Some(OwnershipReview { groups, unsettled, unresolved, group: None, resolving: None });
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -207,7 +207,7 @@ impl NodeCraftApp {
     fn refresh_ownership(&mut self, review: &mut OwnershipReview) {
         match self.ownership_listings() {
             Ok((groups, unsettled, unresolved)) => (review.groups, review.unsettled, review.unresolved) = (groups, unsettled, unresolved),
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -249,7 +249,7 @@ impl NodeCraftApp {
         match action {
             Action::Review(session, currency) => match self.load_group(session, currency, 0) {
                 Ok(group) => review.group = Some(group),
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             },
             Action::Back => {
                 review.group = None;

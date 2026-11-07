@@ -118,7 +118,7 @@ impl NodeCraftApp {
             Ok(Some(settings)) => settings,
             Ok(None) => return,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };
@@ -134,7 +134,7 @@ impl NodeCraftApp {
         if let Some(runs) = &mut self.runs
             && let Err(error) = runs.settings_changed(&mut self.session, &settings)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
     }
 }

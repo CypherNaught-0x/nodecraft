@@ -675,7 +675,7 @@ impl NodeCraftApp {
         if let Some((id, params)) = command
             && let Err(error) = self.session.dispatch(id, &params)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
     }
 }

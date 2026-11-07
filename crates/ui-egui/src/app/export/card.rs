@@ -74,7 +74,7 @@ impl NodeCraftApp {
                 }
                 grants.hosts.insert((canvas, id), host);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -90,7 +90,7 @@ impl NodeCraftApp {
         let preview = match dispatch_with_host(&mut self.session, &host, "export.node_plan", &plan) {
             Ok(preview) => preview,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };
@@ -137,7 +137,7 @@ impl NodeCraftApp {
                 Some(watch) => self.exports.card = Some((watch, host.label())),
                 None => self.notice = Some("The export didn't start; export again.".into()),
             },
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -178,7 +178,7 @@ impl NodeCraftApp {
                 cancel = ui.add_enabled(status.cancellable && current, egui::Button::new("Cancel export")).clicked();
             });
         if cancel && let Err(error) = self.session.dispatch("export.cancel", &json!({"id": status.id})) {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         self.exports.card = Some((watch, folder));
@@ -217,7 +217,7 @@ impl NodeCraftApp {
             self.exports.confirm = None;
             // The project or the grant may have gone while the question was open.
             if !Arc::ptr_eq(&session, &self.session.view_identity()) || canvas != self.canvas {
-                self.notice = Some("The project changed; nothing was exported.".into());
+                self.notice = self.notices.warning("The project changed; nothing was exported.");
             } else if let Some(host) = self.export_ready(id) {
                 self.write_card(id, host);
             }

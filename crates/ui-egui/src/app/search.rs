@@ -246,14 +246,14 @@ impl NodeCraftApp {
         if !self.search_context(&ctx).blocked {
             let open = ui.input_mut(|i| consume_shortcut(i, "Command+F") || consume_shortcut(i, "Ctrl+F"));
             if open && let Err(error) = self.dispatch_search(&ctx, "canvas.search_open", &json!({})) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
             if self.search.open
                 && !self.search_context(&ctx).blocked
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
                 && let Err(error) = self.dispatch_search(&ctx, "canvas.search_close", &json!({}))
             {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
         }
         if !self.search.open {
@@ -343,7 +343,7 @@ impl NodeCraftApp {
         if changed {
             let query = self.search.draft.clone();
             if let Err(error) = self.dispatch_search(&ctx, "canvas.search_query", &json!({"query":query})) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 query_ok = false;
             }
         }
@@ -355,7 +355,7 @@ impl NodeCraftApp {
         {
             // A failed open must not leave a stale focus request for a later open.
             self.search_focus_pending = false;
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let was_scanning = self.search.scanning;

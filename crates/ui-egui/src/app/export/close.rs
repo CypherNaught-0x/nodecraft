@@ -69,7 +69,7 @@ impl NodeCraftApp {
                 && let Err(error) = self.session.dispatch("export.cancel", &serde_json::json!({"id": status.id}))
                 && watch.status().cancellable
             {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         }

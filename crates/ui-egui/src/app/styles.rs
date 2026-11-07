@@ -94,7 +94,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -108,7 +108,7 @@ impl NodeCraftApp {
         let params = json!({"canvas": self.canvas, "style": style, "target": target, "edge": edge});
         match self.session.dispatch("style.use", &params) {
             Ok(_) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 }

@@ -254,7 +254,7 @@ impl NodeCraftApp {
                 return match self.request_runs(vec![app.node], super::generate::RunKind::Refresh) {
                     Ok(()) => true,
                     Err(error) => {
-                        self.notice = Some(error.message);
+                        self.notice = self.notices.error(error.message);
                         false
                     }
                 };
@@ -284,7 +284,7 @@ impl NodeCraftApp {
                 if let Some(target) = target {
                     app.editor.failed(target, error.message.clone());
                 }
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 false
             }
         }
@@ -328,7 +328,7 @@ impl NodeCraftApp {
             Ok(asset) => {
                 self.app_ask(app, Ask::Fill(port.to_owned(), placed(filled, many, slot, Value::Media(asset)), None), &t);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 }

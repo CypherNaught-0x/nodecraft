@@ -475,7 +475,7 @@ impl NodeCraftApp {
         self.element_library.listed = None;
         match result {
             Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 

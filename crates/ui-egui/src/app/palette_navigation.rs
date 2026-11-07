@@ -31,7 +31,7 @@ impl NodeCraftApp {
             Palette::release_text_focus(ctx);
             self.text_focused = canvas::text_input_focused(ctx);
             if let Err(error) = self.dispatch_navigation(ctx, id, &self.palette_command_params(id)) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
         } else {
             self.dispatch_palette_command(id);

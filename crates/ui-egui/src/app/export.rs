@@ -246,7 +246,7 @@ impl NodeCraftApp {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
                         self.notice = Some(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                 }
             }
             Target::Folder(command, files) => {

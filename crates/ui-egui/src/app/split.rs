@@ -36,7 +36,7 @@ impl NodeCraftApp {
         let size = match tile {
             Ok(tile) => super::payload_rect(&self.session, &tile, t).size(),
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };
@@ -47,7 +47,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.replace(made.into_iter().collect());
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 }

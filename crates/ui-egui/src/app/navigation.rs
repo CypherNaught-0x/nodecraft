@@ -240,7 +240,7 @@ impl NodeCraftApp {
                 })
             {
                 if let Err(error) = self.dispatch_navigation(ui.ctx(), spec.id, &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
                 break;
             }
@@ -288,7 +288,7 @@ impl NodeCraftApp {
                 let home = self.home();
                 self.view.reset(self.viewport, home);
             } else if let Err(error) = self.dispatch_navigation(ui.ctx(), id, &params) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
         }
         blocked

@@ -79,7 +79,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 }
