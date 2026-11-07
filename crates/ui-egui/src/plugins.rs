@@ -536,7 +536,7 @@ impl PluginsPanel {
             }
         });
         let Some(preview) = self.preview.clone() else { return };
-        egui::Frame::NONE.inner_margin(t.card_padding).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius).show(ui, |ui| {
+        crate::theme::panel_frame(t).show(ui, |ui| {
             preview_body(ui, &preview.report, t);
             if self.drops_grant(&preview) {
                 ui.label(egui::RichText::new("Updating removes its grant: it can't run until you grant it again.").color(t.danger));
@@ -640,7 +640,7 @@ impl PluginsPanel {
 
     /// What granting would allow, with the optional capabilities to tick.
     fn consent_body(&mut self, ui: &mut egui::Ui, session: &mut Session, mut consent: Consent, t: &Tokens) {
-        egui::Frame::NONE.inner_margin(t.card_padding).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius).show(ui, |ui| {
+        crate::theme::panel_frame(t).show(ui, |ui| {
             if consent.required.is_empty() && consent.optional.is_empty() {
                 ui.label(egui::RichText::new(format!("Let {} run? It asks for nothing beyond its own work.", consent.package_id)).color(t.text));
             } else {

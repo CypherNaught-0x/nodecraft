@@ -227,6 +227,32 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // By output megapixels (#1062); quoted in bfl_klein_is_priced_per_output_megapixel_rounded_up.
             assert!(matches!(&model.pricing, Pricing::PerOutputMegapixel { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 14_000)));
+        } else if model.provider == "bfl" {
+            // The other direct BFL models (#1060), from bfl.ai/pricing on 2026-11-06: FLUX.2 by
+            // output megapixels (the default 1024 x 1024 is one), Kontext per image.
+            let first = match model.id.as_str() {
+                "bfl.flux-2-klein-9b" => 15_000,
+                "bfl.flux-2-pro" => 30_000,
+                "bfl.flux-2-max" => 70_000,
+                "bfl.flux-2-flex" => 50_000,
+                "bfl.flux-kontext-pro" => 40_000,
+                "bfl.flux-kontext-max" => 80_000,
+                other => panic!("an unlisted BFL model {other}"),
+            };
+            assert!(matches!(&model.pricing, Pricing::PerOutputMegapixel { .. } | Pricing::PerCall { .. }), "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, first)), "{}", model.id);
+            // Two megapixels (2048 x 1024) adds one `additional` for FLUX.2.
+            let additional = match model.id.as_str() {
+                "bfl.flux-2-klein-9b" => Some(2_000),
+                "bfl.flux-2-pro" => Some(15_000),
+                "bfl.flux-2-max" => Some(30_000),
+                "bfl.flux-2-flex" => Some(50_000),
+                _ => None,
+            };
+            if let Some(additional) = additional {
+                let two: ParamValues = [("width".into(), Value::Unsigned(Unsigned(1984))), ("height".into(), Value::Unsigned(Unsigned(1056)))].into();
+                assert_eq!(model.quote(&two).unwrap(), Some(Money::new(Currency::USD, first + additional)), "{}", model.id);
+            }
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -274,7 +300,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert_eq!(
         order,
         vec![
+            ("bfl.flux-2-max", true),
+            ("bfl.flux-2-flex", true),
+            ("bfl.flux-2-pro", true),
             ("bfl.flux-2-klein-4b", true),
+            ("bfl.flux-2-klein-9b", true),
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
@@ -305,6 +335,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("azure-openai.deployment", false),
             ("bedrock.gpt-oss-120b", false),
             ("bedrock.gpt-oss-20b", false),
+            ("bfl.flux-kontext-max", false),
+            ("bfl.flux-kontext-pro", false),
             ("deepgram.nova-3", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),

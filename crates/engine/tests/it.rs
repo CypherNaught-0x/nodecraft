@@ -34,6 +34,8 @@ mod batch_keys517;
 mod bedrock46;
 #[path = "bfl33.rs"]
 mod bfl33;
+#[path = "bfl_kontext1060.rs"]
+mod bfl_kontext1060;
 #[path = "billing_host298.rs"]
 mod billing_host298;
 #[path = "browser_plugins866.rs"]

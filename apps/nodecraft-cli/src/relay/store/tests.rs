@@ -66,8 +66,10 @@ fn past_its_bytes_a_kept_room_that_grows_lets_the_longest_unused_go_first_and_a_
         probe.save([0; 32], snapshot(0), &BTreeSet::new()).unwrap();
         probe.held().1
     };
-    // Room for three rooms' bytes, two kept.
-    let mut store = Store::open(&dir.path().join("store"), 3600, one * 3, 0).unwrap();
+    // Room for three rooms' bytes, not four. Half a room of slack: rooms that differ in a few
+    // bytes (a longer `used`, the document's encoding) must not decide whether the third fits.
+    let cap = one * 3 + one / 2;
+    let mut store = Store::open(&dir.path().join("store"), 3600, cap, 0).unwrap();
     store.save([1; 32], snapshot(10), &BTreeSet::new()).unwrap();
     store.save([2; 32], snapshot(5), &BTreeSet::new()).unwrap();
     // A new room fits in the free space; the next new one doesn't, and pushes nobody out
@@ -81,7 +83,7 @@ fn past_its_bytes_a_kept_room_that_grows_lets_the_longest_unused_go_first_and_a_
     grown.assets.push((*blake3::hash(&more).as_bytes(), more));
     store.save([1; 32], grown, &[[2; 32]].into()).unwrap();
     assert!(store.has(&[1; 32]) && store.has(&[2; 32]) && !store.has(&[3; 32]), "the oldest idle room went: {:?}", store.held());
-    assert!(store.held().1 <= one * 3);
+    assert!(store.held().1 <= cap);
     // Saving a room again doesn't count its old bytes twice.
     store.save([2; 32], snapshot(50), &BTreeSet::new()).unwrap();
     assert!(store.has(&[1; 32]) && store.has(&[2; 32]), "{:?}", store.held());

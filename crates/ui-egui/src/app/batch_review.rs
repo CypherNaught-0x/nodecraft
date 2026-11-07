@@ -287,8 +287,7 @@ impl NodeCraftApp {
         let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, open_review.node));
         let mut open = true;
         let mut pick = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
+        let frame = crate::theme::panel_frame(t);
         egui::Window::new("Batch items")
             .id(egui::Id::new("nodecraft.batch_review"))
             .open(&mut open)
@@ -299,7 +298,7 @@ impl NodeCraftApp {
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(&title).strong());
                 if running {
-                    ui.label(egui::RichText::new("Running: these are the results from before; they update when it finishes.").color(t.accent));
+                    ui.label(egui::RichText::new("Running: these are the results from before; they update when it finishes.").color(t.accent_text));
                 }
                 let Some(review) = &review else {
                     ui.label(egui::RichText::new("This card's result wasn't made per batch item. Run it with a batch wired in.").color(t.text_muted));
