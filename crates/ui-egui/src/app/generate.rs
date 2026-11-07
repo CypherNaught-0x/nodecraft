@@ -848,6 +848,8 @@ impl NodeCraftApp {
         let assets = self.session.assets();
         let preview = self.previews.request_asset(ctx, hash, edge, || assets.preview_read(&asset));
         let mut open = true;
+        // A tall image is shown smaller rather than past the bottom of the window (#959).
+        let room = crate::floating::body_room(ctx, egui::Id::new("image_viewer"), &t);
         crate::floating::panel(ctx, "Image", egui::Id::new("image_viewer"), crate::floating::Home::CenterTop, &t)
             .open(&mut open)
             .default_width(t.viewer_width)
@@ -859,7 +861,10 @@ impl NodeCraftApp {
                     _ => width,
                 };
                 let height = if height.is_finite() { height.clamp(1.0, width.max(1.0) * 4.0) } else { width };
-                let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                // Scaled down to fit, keeping its shape, and centred in the panel's width.
+                let (shown, height) = if height > room && room >= 1.0 { (width * room / height, room) } else { (width, height) };
+                let (row, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+                let area = Rect::from_center_size(row.center(), Vec2::new(shown, height));
                 card::show_image(ui, area, &preview, None, &t);
             });
         if !open {
