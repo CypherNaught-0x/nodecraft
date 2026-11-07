@@ -859,7 +859,7 @@ impl NodeCraftApp {
                     let edge = side * ui.ctx().pixels_per_point();
                     let assets = self.session.assets();
                     let preview = self.previews.request_asset(ui.ctx(), asset.hash, edge, || assets.preview_read(asset));
-                    crate::card::show_image(ui, rect.shrink(2.0), &preview, None, t);
+                    crate::card::show_image(ui, rect.shrink(t.inset), &preview, None, t);
                 }
                 Preview::Text(text) => {
                     ui.put(rect.shrink(t.control_gap), egui::Label::new(egui::RichText::new(text).size(t.label_size).color(t.text)).wrap().selectable(false));
@@ -875,7 +875,7 @@ impl NodeCraftApp {
             let badge = Rect::from_min_size(rect.min + Vec2::splat(t.control_gap), size + Vec2::splat(t.control_gap));
             ui.painter().rect_filled(badge, radius, t.panel_fill);
             ui.put(badge, egui::Label::new(text).selectable(false));
-            let stroke = if chosen { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+            let stroke = if chosen { egui::Stroke::new(t.stroke_strong, t.accent) } else { egui::Stroke::new(t.stroke_hairline, t.panel_stroke) };
             ui.painter().rect_stroke(rect, radius, stroke, egui::StrokeKind::Inside);
             let response = response.on_hover_text(line(&row.prompt));
             if response.clicked() {
@@ -955,8 +955,7 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let sources = self.image_sources(revision);
         let Some(draft) = self.sheet.template.as_mut() else { return };
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
+        let frame = crate::theme::panel_frame(t);
         frame.show(ui, |ui| {
             ui.horizontal(|ui| {
                 let name = ui.label("Template");

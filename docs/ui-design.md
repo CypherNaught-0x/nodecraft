@@ -43,6 +43,16 @@ No egui default colour is left un-themed: `visuals()` sets egui's selection from
 `selection_fill`, `accent_text` on canvas, panel and card, `text_muted` on panels, cards and
 `panel_stroke`, and warning and error text on panels and the canvas at 4.5:1 or more.
 
+Stroke widths, a few sizes and egui's small text are tokens too (#1124): `stroke_hairline` (1),
+`stroke_medium` (1.5) and `stroke_strong` (2) for outlines, playheads and chosen thumbnails or
+clips; `heading_size` (19.5) for the drop hint and `display_size` (24) for an empty deck slide's
+message; `inset` (2) between a thumbnail and its outline and for a swatch's corners; `dim` (0.6) for
+a fill drawn dimmed behind what is being edited; and `badge_text_ratio` (1.2) for the number in an
+input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
+`.small()` hints are never below a card label. `theme::panel_frame(t)` is the one framed-group
+recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
+fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
+
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
 points across; the generation toolbar is 32 high, 10 above its card; the image viewer opens 720 wide. A sheet's table has 32-wide checkbox and number columns and

@@ -381,9 +381,7 @@ impl NodeCraftApp {
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .frame(
-                egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius),
-            )
+            .frame(crate::theme::panel_frame(t))
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(format!("Open {name}? This project's unsaved changes will be lost.")).color(t.text));
                 ui.add_space(t.control_gap);

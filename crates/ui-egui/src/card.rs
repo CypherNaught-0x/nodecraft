@@ -363,7 +363,7 @@ pub fn show(
     } else {
         t.card_stroke
     };
-    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(t.stroke_hairline / view.zoom, stroke), StrokeKind::Inside);
 
     {
         let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
@@ -897,10 +897,10 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
             }
         }
         _ => {
-            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(t.stroke_hairline, t.waveform));
         }
     }
-    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    painter.vline(playhead, bars.y_range(), Stroke::new(t.stroke_medium, t.text));
     let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.set_clip_rect(controls.intersect(ui.clip_rect()));
     let name = if *playing { "Pause sound" } else { "Play sound" };
