@@ -60,7 +60,7 @@ fn within_tolerance(cpu: &ImageResult, gpu: &ImageResult) -> Result<(), String> 
         if (c.width(), c.height()) != (g.width(), g.height()) {
             return Err("different sizes".into());
         }
-        for (a, b) in c.pixels().chunks_exact(4).zip(g.pixels().chunks_exact(4)) {
+        for (a, b) in c.pixels().as_chunks::<4>().0.iter().zip(g.pixels().as_chunks::<4>().0) {
             let diff = a.iter().zip(b).map(|(x, y)| x.abs_diff(*y)).max().unwrap_or(0);
             let faint = a[3].min(b[3]) <= 2 && a[3].abs_diff(b[3]) <= 2;
             if diff > 2 && !faint {
