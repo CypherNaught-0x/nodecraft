@@ -427,7 +427,7 @@ impl KeysPanel {
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
                         KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
-                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent),
+                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent_text),
                         KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
                         KeyStatus::Failed(why) => (why.clone(), t.danger),
                         KeyStatus::Unknown(what) => (what.clone(), t.text),

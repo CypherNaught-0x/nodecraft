@@ -948,7 +948,7 @@ pub(super) fn show(
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(sheet_view::line(name)).color(t.text));
                     if entry.identity {
-                        ui.label(egui::RichText::new("Soul ID").small().color(t.accent)).on_hover_text("A trained identity, picked on SOUL 2 cards");
+                        ui.label(egui::RichText::new("Soul ID").small().color(t.accent_text)).on_hover_text("A trained identity, picked on SOUL 2 cards");
                     }
                 });
                 let mut facts = vec![sheet_view::line(&entry.canvas_title)];

@@ -34,8 +34,15 @@ pub struct Tokens {
     /// The `+` output handle on a card's edge.
     pub handle_fill: Color32,
     pub handle_glyph: Color32,
-    /// Accent for focus and selection outside cards.
+    /// Accent for focus and selection outside cards: strokes and fills, where 3:1 is enough.
     pub accent: Color32,
+    /// The accent drawn as text (status words, marks): at least 4.5:1 on canvas, panel and card.
+    pub accent_text: Color32,
+    /// Background of a selected row or entry (`selectable_label`, the palette's highlighted row,
+    /// the top bar's open panel) and of selected text.
+    pub selection_fill: Color32,
+    /// Text on `selection_fill`: at least 4.5:1 against it.
+    pub selection_text: Color32,
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
     /// The painted area in the mask editor (#102), at full mask strength.
@@ -224,10 +231,13 @@ pub const DARK: Tokens = Tokens {
     card_stroke_hover: Color32::from_rgb(0x5a, 0x5a, 0x61),
     card_stroke_selected: Color32::from_rgb(0xe6, 0xe6, 0xea),
     text: Color32::from_rgb(0xe8, 0xe8, 0xec),
-    text_muted: Color32::from_rgb(0x8a, 0x8a, 0x93),
+    text_muted: Color32::from_rgb(0x96, 0x96, 0x9f),
     handle_fill: Color32::from_rgb(0x08, 0x08, 0x09),
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
+    accent_text: Color32::from_rgb(0x4c, 0xc3, 0x8a),
+    selection_fill: Color32::from_rgb(0x1d, 0x3a, 0x2c),
+    selection_text: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
     mask_overlay: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x99),
     danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
@@ -375,10 +385,13 @@ pub const LIGHT: Tokens = Tokens {
     card_stroke_hover: Color32::from_rgb(0xa0, 0xa0, 0xa8),
     card_stroke_selected: Color32::from_rgb(0x18, 0x18, 0x1b),
     text: Color32::from_rgb(0x18, 0x18, 0x1b),
-    text_muted: Color32::from_rgb(0x6b, 0x6b, 0x74),
+    text_muted: Color32::from_rgb(0x5f, 0x5f, 0x68),
     handle_fill: Color32::from_rgb(0xff, 0xff, 0xff),
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
+    accent_text: Color32::from_rgb(0x0f, 0x6b, 0x42),
+    selection_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
+    selection_text: Color32::from_rgb(0x0f, 0x6b, 0x42),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
     mask_overlay: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x99),
     danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
@@ -458,7 +471,12 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
     v.window_corner_radius = CornerRadius::same(t.panel_radius);
     v.menu_corner_radius = CornerRadius::same(t.panel_radius);
     v.extreme_bg_color = t.canvas_bg;
-    v.selection.stroke = Stroke::new(1.0, t.accent);
+    v.selection.bg_fill = t.selection_fill;
+    v.selection.stroke = Stroke::new(1.0, t.selection_text);
+    v.text_cursor.stroke = Stroke::new(v.text_cursor.stroke.width, t.text);
+    v.hyperlink_color = t.accent_text;
+    v.warn_fg_color = t.stale;
+    v.error_fg_color = t.danger;
     let hover = t.panel_stroke;
     craft_ui::theme::WidgetPalette { noninteractive: t.panel_fill, inactive: t.panel_fill, hovered: hover, active: hover, open: hover }.apply_to(
         &mut v.widgets,
@@ -513,6 +531,39 @@ mod tests {
             assert!(contrast(t.text, t.prompt_fill) >= 7.0, "{kind:?} prompt");
             assert!(contrast(t.text_muted, t.prompt_fill) >= 4.5, "{kind:?} prompt hint");
             assert!(contrast(t.text, t.mention_fill) >= 7.0, "{kind:?} mention chip");
+        }
+    }
+
+    #[test]
+    fn selection_accent_text_and_hints_meet_wcag_aa() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.selection_text, t.selection_fill) >= 4.5, "{kind:?} selection: {}", contrast(t.selection_text, t.selection_fill));
+            assert!(contrast(t.text, t.selection_fill) >= 4.5, "{kind:?} selected text in a field");
+            for bg in [t.canvas_bg, t.panel_fill, t.card_fill] {
+                assert!(contrast(t.accent_text, bg) >= 4.5, "{kind:?} accent text on {bg:?}: {}", contrast(t.accent_text, bg));
+            }
+            assert!(contrast(t.text_muted, t.panel_stroke) >= 4.5, "{kind:?} hint on a hovered widget: {}", contrast(t.text_muted, t.panel_stroke));
+            assert!(contrast(t.text_muted, t.panel_fill) >= 4.5, "{kind:?} hint on a panel");
+            assert!(contrast(t.text_muted, t.card_fill) >= 4.5, "{kind:?} hint on a card");
+        }
+    }
+
+    #[test]
+    fn no_egui_default_colour_is_left_unthemed() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            let v = visuals(kind);
+            assert_eq!(v.selection.bg_fill, t.selection_fill, "{kind:?}");
+            assert_eq!(v.selection.stroke.color, t.selection_text, "{kind:?}");
+            assert_eq!(v.hyperlink_color, t.accent_text, "{kind:?}");
+            assert_eq!(v.warn_fg_color, t.stale, "{kind:?}");
+            assert_eq!(v.error_fg_color, t.danger, "{kind:?}");
+            assert_eq!(v.text_cursor.stroke.color, t.text, "{kind:?}");
+            for bg in [t.panel_fill, t.canvas_bg] {
+                assert!(contrast(v.warn_fg_color, bg) >= 4.5, "{kind:?} warning text");
+                assert!(contrast(v.error_fg_color, bg) >= 4.5, "{kind:?} error text");
+            }
         }
     }
 

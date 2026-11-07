@@ -1130,7 +1130,7 @@ impl NodeCraftApp {
     fn row_status(&self, id: NodeId, t: &Tokens) -> egui::RichText {
         if let Some(runs) = &self.runs {
             if let Some(status) = runs.card_status(self.canvas, id) {
-                return egui::RichText::new(status).color(t.accent);
+                return egui::RichText::new(status).color(t.accent_text);
             }
             let card = runs.card(self.canvas, id);
             if card.held {
@@ -1359,7 +1359,7 @@ pub(super) use tools::CONTRACTS_READ;
 /// A grid tile's badge for a row in `state`.
 fn state_badge(state: StatusFilter, t: &Tokens) -> (&'static str, egui::Color32) {
     match state {
-        StatusFilter::Running => ("Running", t.accent),
+        StatusFilter::Running => ("Running", t.accent_text),
         StatusFilter::Failed => ("Failed", t.danger),
         StatusFilter::Held => ("Held", t.stale),
         StatusFilter::Cancelled => ("Cancelled", t.text_muted),
