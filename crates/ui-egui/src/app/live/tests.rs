@@ -673,3 +673,58 @@ fn a_live_result_waits_for_a_background_save_and_frames_go_on() {
     assert!(output(h.state()).unwrap().contains("sea"));
     assert!(h.state().session.file_status().location.is_some(), "the save published");
 }
+
+/// Taken in the frame, as the browser does (#1072), a round with no time to spare runs one job a
+/// frame: frames come back between its jobs, and it records what a worker would.
+#[test]
+fn a_round_taken_in_the_frame_lets_frames_through_and_records_its_result() {
+    let mut app = app();
+    app.live.in_frame = true;
+    app.live.set_budget(std::time::Duration::ZERO);
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, app.canvas, &BTreeMap::new()).unwrap().unwrap();
+    app.live_spawn(&ctx, job);
+    assert!(app.live.stepping(), "nothing ran yet: the round waits for the frames");
+    let mut frames_while_stepping = 0usize;
+    for _ in 0..100 {
+        app.live_recompute(&ctx);
+        if app.live.stepping() {
+            frames_while_stepping += 1;
+        }
+        if output(&app).is_some() && app.live.running.is_none() {
+            break;
+        }
+    }
+    assert!(frames_while_stepping >= 2, "the round spread over frames: {frames_while_stepping}");
+    let result = output(&app).expect("recorded");
+    assert!(result.contains("sea") && !result.contains("forest"), "{result}");
+}
+
+/// A round taken in the frame that an edit makes out of date is cancelled at its next step and
+/// never recorded; the next round, from the edited document, is.
+#[test]
+fn an_edit_cancels_a_round_taken_in_the_frame() {
+    let mut app = app();
+    app.live.in_frame = true;
+    app.live.set_budget(std::time::Duration::ZERO);
+    let canvas = app.canvas;
+    let ctx = egui::Context::default();
+    let job = live_actions::pending(&app.session, canvas, &BTreeMap::new()).unwrap().unwrap();
+    let superseded = job.cancel_handle();
+    app.live_spawn(&ctx, job);
+    app.live_recompute(&ctx);
+    assert!(app.live.stepping(), "part-way through");
+    app.session.dispatch("node.param_set", &json!({"canvas": canvas, "id": REPLACE, "name": "replacement", "value": Value::Text("lake".into())})).unwrap();
+    app.live_recompute(&ctx);
+    assert!(superseded.is_cancelled(), "the edit cancelled the round it made out of date");
+    for _ in 0..100 {
+        app.live_recompute(&ctx);
+        if output(&app).is_some_and(|o| o.contains("lake")) && app.live.running.is_none() {
+            break;
+        }
+    }
+    let result = output(&app).expect("the round from the edited document recorded");
+    assert!(result.contains("lake") && !result.contains("sea"), "{result}");
+    let node = app.session.document().canvases().get(&canvas).unwrap().nodes().get(&REPLACE).unwrap().clone();
+    assert_eq!(node.history.len(), 1, "only the round from the edited document recorded");
+}
