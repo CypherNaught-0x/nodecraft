@@ -7,7 +7,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
 | **Deepgram** | `deepgram` | API key (`Authorization: Token`), keychain account `deepgram` | English audio file → text | Nova-3, smart formatting, unknown usage cost, no uncertain replay. See below. |
-| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B text → PNG | Direct queued generation with resumable cluster polling, bounded downloads and a quote by output megapixels (#1062); no automatic ambiguous submit replay or remote cancellation. See below. |
+| **Black Forest Labs** | `bfl` | BFL API key in account `bfl` (`x-key`) | FLUX.2 klein 4B and 9B, pro, max and flex text → PNG; FLUX.1 Kontext pro and max image editing → PNG (#1060) | Direct queued generation with resumable cluster polling, bounded downloads and a quote by output megapixels (#1062); no automatic ambiguous submit replay or remote cancellation. See below. |
 | **OpenAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`) | text → text, image + text → text, streaming | No idempotency keys on chat: a retried prompt may be billed again. Builtin catalog (`assets/catalog/openai.toml`, #503): GPT-6.1 Sol, GPT-6 Luna, GPT-4.1 mini, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input billed on top; GPT-6.1 Sol and GPT-6 Luna at their 1.5x rate for prompts over 272K tokens, so the quote stays an upper bound); only GPT-4.1 mini offers `temperature`. |
 | **OpenAI Audio** | `openai-audio` | existing `openai` API key (`Authorization: Bearer`) | text → MP3, audio file → text | Unknown upfront usage price; no automatic paid replay. Speech model shuts down January 6, 2027; Realtime is not supported. See below. |
 | **Hugging Face Inference Providers** | `huggingface` | HF token with Inference Providers permission, keychain account `huggingface` | text → text, streaming | GPT OSS 120B through the explicit Groq route; direct router with the existing chat client, unknown usage price, no ambiguous replay. See below. |
@@ -1808,13 +1808,37 @@ two paid requests only with separately authorized spending, `OPENAI_API_KEY`, an
 `NODECRAFT_LIVE_OPENAI_AUDIO=1` and `NODECRAFT_LIVE_OPENAI_AUDIO_ACKNOWLEDGE_COST=1`.
 No live service availability or quality claim follows from offline tests.
 
-## Black Forest Labs: direct FLUX.2 klein 4B (#33)
+## Black Forest Labs: direct FLUX.2 and Kontext (#33, #1060)
 
-In **API keys**, save your Black Forest Labs key under account `bfl`, then select
-**FLUX.2 klein 4B (BFL)** on an image generation card. This uses BFL directly, with no
-aggregator account. The built-in catalog supports one text prompt (up to 16 KiB), optional
-32-bit seed, and width/height from 64 to 1984 pixels in steps of 16. It requests one PNG.
-Image references, editing, webhooks and custom endpoints are not exposed by this adapter.
+In **API keys**, save your Black Forest Labs key under account `bfl`, then select a BFL model on
+an image generation card. This uses BFL directly, with no aggregator account.
+
+| Model | Catalog id | Input | Price ([bfl.ai/pricing](https://bfl.ai/pricing), 2026-11-06) |
+|---|---|---|---|
+| FLUX.2 klein 4B | `bfl.flux-2-klein-4b` | prompt | 0.014 USD first megapixel, 0.001 each more |
+| FLUX.2 klein 9B | `bfl.flux-2-klein-9b` | prompt | 0.015 USD first megapixel, 0.002 each more |
+| FLUX.2 pro | `bfl.flux-2-pro` | prompt | 0.03 USD first megapixel, 0.015 each more |
+| FLUX.2 max | `bfl.flux-2-max` | prompt | 0.07 USD first megapixel, 0.03 each more |
+| FLUX.2 flex | `bfl.flux-2-flex` | prompt | 0.05 USD first megapixel, 0.05 each more |
+| FLUX.1 Kontext pro | `bfl.flux-kontext-pro` | prompt and one image | 0.04 USD per image |
+| FLUX.1 Kontext max | `bfl.flux-kontext-max` | prompt and one image | 0.08 USD per image |
+
+- **FLUX.2 text-to-image** takes one text prompt (up to 16 KiB), an optional 32-bit seed, and
+  width/height from 64 to 1984 pixels in steps of 16, and requests one PNG of exactly that size.
+  For pro and max, `disable_pup` is not sent; flex's `prompt_upsampling` (on by default), steps
+  (50) and guidance (5.0) stay at BFL's defaults. None of those is exposed yet.
+- **Kontext editing** takes one text prompt and one PNG, JPEG or WebP image of at most 10 MiB,
+  whose bytes must match its type and whose header must read as a whole image of at most 8192
+  pixels a side, sent base64-encoded as the schema's `input_image` ("Base64
+  encoded image or URL"), plus an optional seed. The output's size follows the input, so the
+  request fixes none, and any PNG of at most 4,000,000 pixels and 2048 on a side is accepted.
+  Kontext's experimental extra reference images and its aspect ratio are not exposed.
+- **Why FLUX.2 editing isn't offered:** the FLUX.2 schemas describe `input_image` only as
+  "Path to the input image", their examples are HTTPS URLs, and nothing documents base64 for them.
+  NodeCraft doesn't host the person's images at a public URL, so it would have to guess an
+  encoding the API may refuse after charging. Kontext's schema documents base64, so editing goes
+  there.
+- Webhooks, custom endpoints and BFL's safety-tolerance setting are not exposed.
 
 The [official generation API](https://docs.bfl.ai/quick_start/generating_images) returns a
 job and its cluster polling URL. NodeCraft validates and saves those, polls the same task

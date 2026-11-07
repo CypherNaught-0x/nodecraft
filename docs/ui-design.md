@@ -21,9 +21,11 @@ same structure with the values inverted.
 | `panel_fill` / `panel_stroke` | `#171719` / `#2c2c30` | `#ffffff` / `#dddde1` | floating chrome, menus, windows |
 | `card_fill` | `#121214` | `#ffffff` | node card body |
 | `card_stroke` / `_hover` / `_selected` | `#343439` / `#5a5a61` / `#e6e6ea` | `#d4d4d9` / `#a0a0a8` / `#18181b` | card border by state |
-| `text` / `text_muted` | `#e8e8ec` / `#8a8a93` | `#18181b` / `#6b6b74` | body text / labels and hints |
+| `text` / `text_muted` | `#e8e8ec` / `#96969f` | `#18181b` / `#5f5f68` | body text / labels and hints (`text_muted` ≥ 4.5:1 on panels, cards and a hovered widget's `panel_stroke`) |
 | `handle_fill` / `handle_glyph` | canvas / text | canvas / text | the `+` handle |
-| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline |
+| `accent` | `#4cc38a` | `#1f9d63` | focus and selection in chrome; box-select outline. Strokes and fills only (3:1 is enough); never text |
+| `accent_text` | `#4cc38a` | `#0f6b42` | the accent drawn as text: run status, **Running**, **Soul ID**, a verified key, links (≥ 4.5:1 on canvas, panel and card) |
+| `selection_fill` / `selection_text` | `#1d3a2c` / `#4cc38a` | `#d5eee1` / `#0f6b42` | a selected row or entry: `selectable_label`, the palette's highlighted row, the model picker, the top bar's open panel, and selected text (≥ 4.5:1) |
 | `marquee_fill` | `#4cc38a` at 14% | `#1f9d63` at 11% | box-select rectangle fill |
 | `mask_overlay` | `#4cc38a` at 60% | `#1f9d63` at 60% | the painted area in the mask editor, scaled by mask strength |
 | `duplicate_offset` | 40 world points | 40 world points | duplicate displacement on both axes, independent of zoom |
@@ -34,6 +36,12 @@ same structure with the values inverted.
 | `wire_text` / `_image` / `_video` | `#d9b45a` / `#5aa7e0` / `#c678dd` | `#9a7414` / `#1f6fb0` / `#8a3fb0` | noodles and port rings by modality |
 | `wire_audio` / `_mesh` / `_document` / `_style` | `#e07a5a` / `#8fc35a` / `#a0a0a8` / `#e06fa8` | `#b0482a` / `#4f8a1f` / `#6b6b74` / `#a82f6c` | (a test keeps each ≥ 3:1 against canvas and cards, and all distinct) |
 | `waveform` | `#5c5c66` | `#a8a8b2` | a sound card's waveform still to play (≥ 2:1 against the canvas); what has played is `wire_audio` |
+
+No egui default colour is left un-themed: `visuals()` sets egui's selection from `selection_fill` /
+`selection_text`, its hyperlink colour from `accent_text`, and its warning and error text from `stale` and
+`danger`, and the text cursor from `text`. `theme.rs` tests hold, in both themes, selection text on
+`selection_fill`, `accent_text` on canvas, panel and card, `text_muted` on panels, cards and
+`panel_stroke`, and warning and error text on panels and the canvas at 4.5:1 or more.
 
 Sizes (points at 100% zoom): grid spacing 20, dot radius 1 (fixed on screen), card radius 14,
 panel radius 12, card padding 16, label gap 6, label 10.5 pt monospace, body 13 pt, handle radius 9, input port radius 5. Noodles are 2 points wide (3.5 selected, over a `card_stroke_selected` halo), at any zoom. Cards are 320 points wide. Ordinary parameter bodies use deterministic, control-specific row metrics plus padding, rather than a 220-point minimum plus 64 points per schema field. Longer bodies scroll internally at the 720-point parameter-body cap. The separate `composer_body_height` token reserves 220 points for a generation composer; `card_min_height` remains only a legacy deterministic creation-ID seed, not a card geometry input. Previews and answers retain their separate 180-point regions. Conditional controls keep their declared space so changing a value does not move ports and wires. Composer prompts, admitted generated-image count controls and hidden workflow-model fields do not reserve duplicate rows. Renderer, payload admission, navigation, formatting and creation geometry share the admitted composer roles; descriptor-only callers retain conservative bounds. Count ownership follows the contract meaning, independent of provider parameter names, current count or composer visibility. Control gaps are 6 points; `control_vertical_padding` is 2 points so native button rows agree with the logical metrics. Image actions reserve their 180-point preview before the first live result, and PDF source previews reserve the same region. History uses two compact rows rather than an extra 64-point parameter row. Multi-port cards retain a port-spacing height floor without enlarging the parameter viewport; vertical hit cells keep adjacent ports independently selectable at overview zoom and during legacy-input previews. Sliders use the full content width, with an exact numeric input below; text inputs and choice buttons also fill that width. The composer's submit button is 28
@@ -659,6 +667,50 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded.
+
+## Menu and panel inventory (#959, in progress)
+
+The shared check is `panel_check::check_open_panels`
+([`panel_check.rs`](../crates/ui-egui/src/app/panel_check.rs)), run by
+[`menus959_tests.rs`](../crates/ui-egui/src/app/menus959_tests.rs) for the top bar and by each
+service-backed panel's own test once that panel is open. It finds a panel's controls through
+that panel's own accessibility node, by id. Each top-bar floating panel opens as exactly one panel inside the floating panel area (below the top
+bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both themes. None of its
+on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
+control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
+tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
+again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+
+| Surface | Opens from | Kind | Covered by |
+|---|---|---|---|
+| Sheets, Techniques, Elements, Budgets, API keys | top bar | floating panel | `menus959_tests` (open, area, overlap, close) |
+| ComfyUI servers, Plugins | top bar (disabled without their service) | floating panel | `menus959_tests` (opened through their state), `topbar_tests` (disabled state) |
+| Queue | top bar (disabled without runs) | floating panel | `held_restart_tests` (with the layout check) |
+| Automation | top bar (with an MCP host) | floating panel | `automation::tests` (with the layout check, server running) |
+| Charges to review | palette `usage.ownership` | floating panel | `ownership_panel::tests` (with the layout check) |
+| Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
+| Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
+| PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
+| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
+| Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
+| Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+**Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
+The API keys panel sits past the window's right edge for its first placement frames at 1000 px
+and settles inside once laid out; the checks run after placement settles. The image viewer ran
+past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
+its shape, so the panel fits (`floating::body_room`).
+
+**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
+picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
+the update banner, card and field context menus, the inspector and bulk panels, notices, and the
+Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
+states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
+Escape is left for its own change: several canvas and dialog handlers read Escape without
+consuming it, so a panel close needs them fixed first.
 
 ## Saving results
 

@@ -173,10 +173,11 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
   run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
-- **Black Forest Labs**: desktop Generate image and the CLI can use the direct FLUX.2 klein 4B
-  text-to-image adapter (#33), with a keychain API key, resumable polling and bounded PNG downloads.
-  It is quoted by output megapixels from BFL's published rates (#1062). Image editing and
-  other direct BFL models are not yet included; see [`docs/providers.md`](docs/providers.md).
+- **Black Forest Labs**: desktop Generate image and the CLI use BFL directly (#33, #1060): FLUX.2
+  klein 4B and 9B, pro, max and flex text-to-image, quoted by output megapixels from BFL's
+  published rates (#1062), and FLUX.1 Kontext pro and max image editing at a published price per
+  image, with a keychain API key, resumable polling and bounded PNG downloads. FLUX.2 editing isn't
+  offered: its API documents input images only as URLs; see [`docs/providers.md`](docs/providers.md).
 - **MiniMax**: H3 text/first-frame video, Speech 2.8 HD and Music 3 share Fal's key and queue
   (#27), with explicit priced settings and native streamed storage. See [provider limits](docs/providers.md#minimax-video-speech-and-music-through-fal-27).
 - **Pika**: desktop projects and the native CLI animate one first frame with a prompt using
@@ -246,7 +247,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
-  The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
+  The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
+  between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
   actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
@@ -256,8 +258,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
   change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
-  OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
-  is no settings screen for them yet, and the browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
+  OpenAI, OpenRouter, Ollama, LM Studio), model and a local server's address are chosen on the
+  sidebar's Settings screen and saved to `[agent]` at once (#1063); keys stay in the keychain. The
+  browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
   moves the sidebar into a shared shell crate (#1064).
 - **The browser build is a preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
@@ -272,16 +275,18 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   asynchronously and added as nodes (#319).
   The browser can paste PNG images (#633).
 
-- **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
-  default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
-  interchange is available on desktop and exports in the background with a Cancel control. Its
-  document is checked against structural rules both editors are expected to need; the import
-  itself has not been checked in Final Cut Pro or DaVinci Resolve yet (#1066).
+- **Desktop media limits.** A video card plays its sound track with its picture, through the
+  default output device as sound cards do (#1065), one card's sound at a time. Playback and
+  FFmpeg-backed renders run on desktop. Timeline interchange is available on desktop and exports in
+  the background with a Cancel control. Its document is checked against structural rules both
+  editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
+  Resolve yet (#1066).
 
 - **Relay transport and storage differ by client.** The relay serves plain `ws://`.
   Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
   remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
-  local development and remote access. The relay holds rooms in memory.
+  local development and remote access. The relay holds rooms in memory unless it is given a
+  store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,
   the Layer Editor, Elements and PDF cards have shipped in some form. The first signed release
   (#100) and typed nested descriptor records/lists (#528) remain open. HTTP serve

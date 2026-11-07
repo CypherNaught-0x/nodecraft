@@ -10,7 +10,8 @@ struct View {
 fn bfl33_model_is_selectable_with_its_megapixel_price() {
     let catalog = Catalog::builtin().unwrap();
     let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
-    picker.set_query("BFL").unwrap();
+    // Several BFL models now (#1060): narrow to this one.
+    picker.set_query("klein 4B").unwrap();
     let state = View { catalog, picker, outcome: Outcome::Open };
     let mut h = Harness::builder().with_size(egui::vec2(1000.0, 650.0)).build_ui_state(
         |ui, state: &mut View| {

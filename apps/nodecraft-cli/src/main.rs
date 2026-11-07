@@ -86,11 +86,16 @@ commands:
                   (default 3600 seconds). A run may name a webhook under a
                   --webhook-allow URL, called when it ends and signed with the webhook secret;
                   private addresses need --webhook-allow-private. The project file is not changed
-  relay [--listen <addr>]
+  relay [--listen <addr>] [--store <folder> [--keep-days <n>] [--store-max-gib <n>]]
                   pass projects shared live between the people working on them (default
-                  127.0.0.1:7342). Each project gets a room whose random id is its key; the
-                  relay keeps nothing on disk. It speaks plain ws://, so put it behind a TLS
-                  proxy before people reach it over the internet
+                  127.0.0.1:7342). Each project gets a room whose random id is its key.
+                  Without --store the relay keeps nothing on disk and a restart ends every
+                  room; with it, each room, its share links and its media are kept in the
+                  folder (named by a hash of the room id, never the id) and come back after a
+                  restart. A room nobody used for --keep-days (default 30) is forgotten, and
+                  past --store-max-gib (default 8) or 256 rooms the rooms used longest ago go
+                  first. It speaks plain ws://, so put it behind a TLS proxy before people
+                  reach it over the internet
   webhook-secret [--delete]
                   keep the secret `serve` signs webhooks with in the keychain, read from stdin
                   (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
@@ -469,18 +474,15 @@ fn serve_command(args: &[String]) -> ExitCode {
     }
 }
 
-/// `relay [--listen <addr>]`: passes shared projects between peers until the process is stopped.
+/// `relay [--listen <addr>] [--store <folder> …]`: passes shared projects between peers until the
+/// process is stopped, keeping its rooms in the folder when given one (#1068).
 fn relay_command(args: &[String]) -> ExitCode {
-    let listen = match args {
-        [] => Ok(std::net::SocketAddr::from(([127, 0, 0, 1], 7342))),
-        [flag, addr] if flag == "--listen" => addr.parse().map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7342, not `{addr}`")),
-        _ => Err("`relay` takes only `--listen <addr>`".into()),
-    };
-    let listen = match listen {
-        Ok(listen) => listen,
+    let parsed = relay_args(args);
+    let (listen, keeping) = match parsed {
+        Ok(parsed) => parsed,
         Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
     };
-    match relay::start(listen) {
+    match relay::start(listen, keeping) {
         Ok(relay) => {
             let _ = writeln!(std::io::stderr(), "Relaying on ws://{}/. Stop with Ctrl-C.", relay.addr);
             relay.wait();
@@ -488,6 +490,40 @@ fn relay_command(args: &[String]) -> ExitCode {
         }
         Err(error) => fail(&error.message),
     }
+}
+
+/// The most days a relay keeps a room nobody uses, and the most GiB its store may take.
+const MAX_KEEP_DAYS: u64 = 3650;
+const MAX_STORE_GIB: u64 = 1 << 20;
+
+fn relay_args(args: &[String]) -> Result<(std::net::SocketAddr, Option<relay::Keeping>), String> {
+    let mut listen = std::net::SocketAddr::from(([127, 0, 0, 1], 7342));
+    let (mut dir, mut keep_days, mut max_gib) = (None, None, None);
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let Some(value) = rest.next() else { return Err(format!("`{flag}` needs a value")) };
+        let number = |most: u64| match value.parse::<u64>() {
+            Ok(n) if (1..=most).contains(&n) => Ok(n),
+            _ => Err(format!("`{flag}` takes a whole number from 1 to {most}, not `{value}`")),
+        };
+        match flag.as_str() {
+            "--listen" => listen = value.parse().map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7342, not `{value}`"))?,
+            "--store" if !value.is_empty() => dir = Some(std::path::PathBuf::from(value)),
+            "--keep-days" => keep_days = Some(number(MAX_KEEP_DAYS)?),
+            "--store-max-gib" => max_gib = Some(number(MAX_STORE_GIB)?),
+            _ => return Err("`relay` takes `--listen <addr>`, `--store <folder>`, `--keep-days <n>` and `--store-max-gib <n>`".into()),
+        }
+    }
+    let Some(dir) = dir else {
+        return if keep_days.is_some() || max_gib.is_some() {
+            Err("`--keep-days` and `--store-max-gib` need `--store <folder>`".into())
+        } else {
+            Ok((listen, None))
+        };
+    };
+    let keep = keep_days.unwrap_or(30).saturating_mul(24 * 3600);
+    let max_bytes = max_gib.unwrap_or(8).saturating_mul(1 << 30);
+    Ok((listen, Some(relay::Keeping { dir, keep, max_bytes })))
 }
 
 /// `webhook-secret [--delete]`: keeps `serve`'s webhook signing secret, read from stdin, in the

@@ -285,6 +285,19 @@ impl Audios {
         }
     }
 
+    /// The page's video element plays a video card's own sound (#1069), so there is nothing to
+    /// follow here.
+    pub fn follow(
+        &mut self,
+        _: &egui::Context,
+        _: NodeId,
+        _: &nodecraft_types::AssetRef,
+        _: bool,
+        _: u64,
+        _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
+    ) {
+    }
+
     /// Lets go of the players of cards no longer shown on the canvas.
     pub fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
         self.players.retain(|id, _| keep(*id));

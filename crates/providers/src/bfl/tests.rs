@@ -81,7 +81,7 @@ fn bfl33_underscore_task_queue_resume_download_and_credential_boundary() {
     let requests = wire.requests.lock().unwrap();
     assert_eq!(requests.len(), 6);
     let create = requests.first().unwrap();
-    assert_eq!((create.method, create.url.as_str()), (HttpMethod::Post, API));
+    assert_eq!((create.method, create.url.as_str()), (HttpMethod::Post, "https://api.bfl.ai/v1/flux-2-klein-4b"));
     assert_eq!(
         serde_json::from_slice::<serde_json::Value>(&create.body).unwrap(),
         json!({"prompt":"A public harbour","width":64,"height":64,"seed":42,"output_format":"png"})
@@ -269,4 +269,115 @@ fn bfl33_catalog_selects_direct_text_to_image_priced_by_output_megapixels() {
     assert!(matches!(model.pricing, Pricing::PerOutputMegapixel { .. }));
     assert!(Wiring::new(Modality::Image).with_inline_prompt().fit(model).is_ok());
     assert!(Wiring::new(Modality::Image).with_inline_prompt().with(Modality::Image, 1).fit(model).is_err());
+}
+
+/// #1060: each FLUX.2 model posts the same text-to-image body to its own path on the one origin.
+#[test]
+fn every_flux2_model_posts_to_its_own_path() {
+    for model in ["flux-2-klein-4b", "flux-2-klein-9b", "flux-2-pro", "flux-2-max", "flux-2-flex"] {
+        let wire = Wire::new([receipt()]);
+        let mut j = job();
+        j.model = model.into();
+        assert!(matches!(block_on(provider(wire.clone()).submit(&j)).unwrap(), Submission::Queued(_)), "{model}");
+        let requests = wire.requests.lock().unwrap();
+        let [create] = requests.as_slice() else { panic!("{model}") };
+        assert_eq!(create.url, format!("https://api.bfl.ai/v1/{model}"));
+        assert_eq!(serde_json::from_slice::<serde_json::Value>(&create.body).unwrap()["output_format"], "png");
+    }
+}
+
+fn edit_job(model: &str) -> ProviderJob {
+    ProviderJob {
+        model: model.into(),
+        params: json!({"seed":7}).as_object().unwrap().clone(),
+        inputs: vec![
+            JobInput::Text { role: "prompt".into(), text: "Make the sky orange".into() },
+            JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png().body) },
+        ],
+        idempotency_key: "public-key".into(),
+    }
+}
+
+/// #1060: a Kontext edit sends its one image base64-encoded, fixes no output size, and accepts a
+/// PNG of any size within BFL's bounds.
+#[test]
+fn a_kontext_edit_sends_its_image_and_takes_the_size_it_gets() {
+    use base64::Engine as _;
+    for model in ["flux-kontext-pro", "flux-kontext-max"] {
+        let wire = Wire::new([receipt(), ready(IMAGE), png()]);
+        let p = provider(wire.clone());
+        let Submission::Queued(handle) = block_on(p.submit(&edit_job(model))).unwrap() else { panic!("queue") };
+        assert_eq!(
+            (handle.data["v"].clone(), handle.data["width"].clone(), handle.data["height"].clone()),
+            (json!(2), json!(0), json!(0)),
+            "the size follows the input"
+        );
+        assert!(matches!(block_on(p.poll(&handle)).unwrap(), JobProgress::Done(_)), "{model}");
+        let requests = wire.requests.lock().unwrap();
+        let create = requests.first().unwrap();
+        assert_eq!(create.url, format!("https://api.bfl.ai/v1/{model}"));
+        let body: serde_json::Value = serde_json::from_slice(&create.body).unwrap();
+        let sent = base64::engine::general_purpose::STANDARD.decode(body["input_image"].as_str().unwrap()).unwrap();
+        assert_eq!(sent, png().body, "the image itself, not a link");
+        assert_eq!((body["prompt"].as_str(), body["seed"].as_u64(), body["output_format"].as_str()), (Some("Make the sky orange"), Some(7), Some("png")));
+        assert!(body.get("width").is_none() && body.get("height").is_none());
+    }
+}
+
+#[test]
+fn a_kontext_edit_refuses_what_it_cannot_send_before_sending_anything() {
+    let mut cases = vec![];
+    let mut j = edit_job("flux-kontext-pro");
+    j.inputs.pop();
+    cases.push(j);
+    let mut j = edit_job("flux-kontext-pro");
+    j.inputs[1] = JobInput::Media { role: "image".into(), mime: "image/jpeg".into(), bytes: Arc::from(png().body) };
+    cases.push(j);
+    let mut j = edit_job("flux-kontext-pro");
+    j.inputs[1] = JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(vec![0u8; 10 * 1024 * 1024 + 1]) };
+    cases.push(j);
+    let mut j = edit_job("flux-kontext-pro");
+    j.params.insert("width".into(), json!(1024));
+    cases.push(j);
+    let mut j = edit_job("flux-kontext-pro");
+    j.inputs.push(JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(png().body) });
+    cases.push(j);
+    // A text-to-image model doesn't take an image, and an edit model isn't a text-to-image one.
+    let mut j = edit_job("flux-2-pro");
+    j.params.clear();
+    cases.push(j);
+    let wire = Wire::new([]);
+    let p = provider(wire.clone());
+    for j in cases {
+        assert!(block_on(p.submit(&j)).is_err(), "{:?}", j.model);
+    }
+    assert!(wire.requests.lock().unwrap().is_empty());
+}
+
+/// A saved text-to-image handle (version 1) can't claim an edit's size-free output check, and an
+/// edit handle (version 2) must fix no size: both are refused before anything is sent.
+#[test]
+fn a_forged_handle_cannot_widen_the_output_check() {
+    let wire = Wire::new([]);
+    let p = provider(wire.clone());
+    for data in [
+        json!({"v":1,"polling_url":POLL,"width":0,"height":0}),
+        json!({"v":2,"polling_url":POLL,"width":64,"height":64}),
+        json!({"v":3,"polling_url":POLL,"width":0,"height":0}),
+    ] {
+        assert!(block_on(p.poll(&JobHandle { remote_id: ID.into(), data: data.clone() })).is_err(), "{data}");
+    }
+    assert!(wire.requests.lock().unwrap().is_empty());
+}
+
+/// An edit's image must read as a whole image, not just start like one.
+#[test]
+fn a_truncated_edit_image_is_refused() {
+    let mut j = edit_job("flux-kontext-pro");
+    let mut bytes = png().body;
+    bytes.truncate(24);
+    j.inputs[1] = JobInput::Media { role: "image".into(), mime: "image/png".into(), bytes: Arc::from(bytes) };
+    let wire = Wire::new([]);
+    assert!(block_on(provider(wire.clone()).submit(&j)).is_err());
+    assert!(wire.requests.lock().unwrap().is_empty());
 }

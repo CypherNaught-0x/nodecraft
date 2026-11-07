@@ -162,7 +162,7 @@ impl NodeCraftApp {
         let color = match &view.state {
             JobState::Failed { .. } => t.danger,
             JobState::Done | JobState::Cancelled => t.text_muted,
-            _ => t.accent,
+            _ => t.accent_text,
         };
         let status = ui.label(egui::RichText::new(view.status()).color(color));
         if let JobState::Failed { reason, cause } = &view.state {
@@ -204,7 +204,7 @@ fn price(view: &JobView) -> String {
 /// The run status a card shows under itself: what its job is doing, or why its last run failed.
 pub(super) fn card_status(runs: &super::runs::Runs, canvas: CanvasId, node: NodeId, t: &Tokens) -> Option<(String, egui::Color32, Option<String>)> {
     if let Some(status) = runs.card_status(canvas, node) {
-        return Some((status, t.accent, None));
+        return Some((status, t.accent_text, None));
     }
     let why = runs.failure(canvas, node)?;
     let cause = cause_of(why);

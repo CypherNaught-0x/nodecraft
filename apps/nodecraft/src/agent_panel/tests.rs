@@ -520,3 +520,74 @@ fn approval_and_replies_wait_for_a_background_open() {
     pump_until(&mut panel, &mut app, &ctx, |p| said(p, "Renamed."));
     assert_eq!(script.sent.lock().unwrap().len(), 2);
 }
+
+/// The agent's settings screen (#1063): choosing an endpoint and a model is saved as one settings
+/// write when Save is pressed, used for the next message, and kept in the settings file. A bad
+/// address or a missing model is refused with a reason and nothing is saved; Cancel drops the form.
+#[test]
+fn the_settings_screen_chooses_the_endpoint_and_model_and_refuses_what_wont_work() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let dir = tempfile::tempdir().unwrap();
+    let location = nodecraft_engine::settings::Location::Dir(dir.path().to_path_buf());
+    let (store, _) = nodecraft_engine::settings::open(location.clone());
+    let (panel, script) = panel(AgentSettings::default());
+    let ctx = egui::Context::default();
+    let app = NodeCraftApp::with_settings(&ctx, store).unwrap();
+    let shell = crate::shell::Shell { app, agent: panel, channel: None, storage_window: None, storage_window_pending: None, mcp: None };
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(frame, shell);
+    h.run_steps(2);
+    let click = |h: &mut Harness<'_, crate::shell::Shell>, label: &str| {
+        h.get_by_label(label).click();
+        h.run_steps(2);
+    };
+    click(&mut h, "Settings");
+    assert!(h.state().agent.draft.is_some(), "the form opens");
+    // Ollama with no model: refused, nothing saved.
+    h.state_mut().agent.draft.as_mut().unwrap().endpoint = AgentEndpoint::Ollama;
+    h.run_steps(2);
+    assert!(h.query_by_label("Server address").is_some(), "a local server's address can be set");
+    click(&mut h, "Save");
+    assert!(h.query_by_label_contains("Choose a model for Ollama").is_some());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Anthropic, "nothing saved");
+    // A model, but an address that isn't http(s): refused too.
+    assert!(h.query_by_label("Model").is_some());
+    let draft = h.state_mut().agent.draft.as_mut().unwrap();
+    draft.model = "llama3.2".into();
+    draft.base_url = "file:///etc/passwd".into();
+    h.run_steps(2);
+    click(&mut h, "Save");
+    assert!(h.query_by_label_contains("must start with http:// or https://").is_some());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Anthropic, "still nothing saved");
+    // A good address: saved at once, the form closes, and the agent asks that model.
+    h.state_mut().agent.draft.as_mut().unwrap().base_url = "http://127.0.0.1:11434".into();
+    h.run_steps(1);
+    click(&mut h, "Save");
+    assert!(h.state().agent.draft.is_none(), "saved, the form closes");
+    let saved = h.state().app.agent_settings();
+    assert_eq!((saved.endpoint, saved.model(), saved.base_url()), (AgentEndpoint::Ollama, Some("llama3.2"), Some("http://127.0.0.1:11434")));
+    assert_eq!(h.state().agent.agent().config().model, "llama3.2");
+    // Cancel drops a changed form.
+    click(&mut h, "Settings");
+    h.state_mut().agent.draft.as_mut().unwrap().endpoint = AgentEndpoint::Openai;
+    // The form loses its address field: lay it out again before pressing.
+    h.run_steps(2);
+    click(&mut h, "Cancel");
+    assert!(h.state().agent.draft.is_none());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Ollama, "Cancel saves nothing");
+    // The next message goes to the saved endpoint and model.
+    h.state_mut().agent.input = "Hello".into();
+    let mut shell = h.into_state();
+    let ctx = egui::Context::default();
+    shell.agent.apply(vec![Intent::Ask], &mut shell.app, &ctx);
+    let start = Instant::now();
+    while script.sent.lock().unwrap().is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (settings, request) = script.sent.lock().unwrap().first().cloned().unwrap();
+    assert_eq!((settings.endpoint, request.model.as_str()), (AgentEndpoint::Ollama, "llama3.2"));
+    // And it is in the settings file already: Save wrote it.
+    let (reopened, _) = nodecraft_engine::settings::open(location);
+    assert_eq!(reopened.get().agent.endpoint, AgentEndpoint::Ollama);
+    assert_eq!(reopened.get().agent.model(), Some("llama3.2"));
+}
