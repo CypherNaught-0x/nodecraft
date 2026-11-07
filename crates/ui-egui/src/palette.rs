@@ -55,6 +55,22 @@ pub fn filter<'a>(entries: &'a [Entry], query: &str) -> Vec<&'a Entry> {
     ranked.into_iter().map(|(_, _, entry)| entry).collect()
 }
 
+/// A row's accessible name: its label, then its shortcut as this platform spells it,
+/// `Undo (Ctrl+Z)` or `Undo (⌘Z)`.
+pub fn row_name(ctx: &egui::Context, entry: &Entry) -> String {
+    match &entry.shortcut {
+        Some(key) => crate::shortcut::with_shortcut(ctx, &entry.label, key),
+        None => entry.label.clone(),
+    }
+}
+
+/// A row's shortcut, right-aligned in monospace: `text_muted` at rest, the selection colour on
+/// the highlighted row so it keeps its contrast there.
+pub(crate) fn shortcut_chip(ctx: &egui::Context, shortcut: &str, selected: bool, t: &Tokens) -> egui::RichText {
+    let text = egui::RichText::new(crate::shortcut::format_shortcut(ctx, shortcut)).monospace().size(t.label_size);
+    if selected { text } else { text.color(t.text_muted) }
+}
+
 /// An open palette: where it was opened and what is typed.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Palette {
@@ -153,12 +169,15 @@ impl Palette {
                     scroll.show_rows(ui, row_height, matches.len(), |ui, range| {
                         for row in range {
                             let Some(entry) = matches.get(row) else { continue };
-                            let text = match &entry.shortcut {
-                                Some(key) => format!("{}    {key}", entry.label),
-                                None => entry.label.clone(),
-                            };
-                            let response = ui
-                                .add(egui::Button::selectable(row == self.highlighted, text).truncate().min_size(Vec2::new(ui.available_width(), row_height)));
+                            let selected = row == self.highlighted;
+                            let mut button = egui::Button::selectable(selected, entry.label.as_str()).truncate();
+                            if let Some(key) = &entry.shortcut {
+                                button = button.right_text(shortcut_chip(ui.ctx(), key, selected, t));
+                            }
+                            let response = ui.add(button.min_size(Vec2::new(ui.available_width(), row_height)));
+                            // Named before `widget_info`, whose closure runs under the context's lock.
+                            let name = row_name(ui.ctx(), entry);
+                            response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, true, selected, &name));
                             // Follow the pointer only when it moves, so resting it doesn't fight ↑/↓.
                             if response.hovered() && ui.input(|i| i.pointer.delta() != Vec2::ZERO) {
                                 self.highlighted = row;

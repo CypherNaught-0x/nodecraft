@@ -1573,9 +1573,9 @@ impl NodeCraftApp {
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
-            // ⌘/Ctrl+Enter quotes a run of everything that changed or hasn't run (#965); nothing
+            // Command+Enter quotes a run of everything that changed or hasn't run (#965); nothing
             // starts until the person confirms the price. A focused text field keeps its own
-            // ⌘/Ctrl+Enter (a prompt quotes its card, a multiline value commits), and so do a
+            // Command+Enter (a prompt quotes its card, a multiline value commits), and so do a
             // gesture in flight and an open menu or panel. Not while the recovery question is open
             // either: its answer may replace the document the run would be quoted on.
             #[cfg(not(target_arch = "wasm32"))]

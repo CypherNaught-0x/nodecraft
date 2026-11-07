@@ -30,10 +30,7 @@ fn wheel(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, modifiers: egui::Mod
 }
 
 fn label(entry: &palette::Entry) -> String {
-    match &entry.shortcut {
-        Some(key) => format!("{}    {key}", entry.label),
-        None => entry.label.clone(),
-    }
+    palette::row_name(&egui::Context::default(), entry)
 }
 
 #[test]
@@ -182,4 +179,35 @@ fn render_palette_scroll_evidence() {
     let pos = menu_rect(&h, "turn_into_menu").center();
     wheel(&mut h, pos, egui::Modifiers::NONE);
     h.render().unwrap().save(root.join("turn-into-scrolled.png")).unwrap();
+}
+
+/// #1117: a row's shortcut is spelled for this platform and painted right-aligned, apart from
+/// its label, rather than a few spaces after it.
+#[test]
+fn palette_shortcuts_are_platform_spelled_and_right_aligned() {
+    let h = open_palette();
+    let entry = h.state().palette_entries().into_iter().find(|entry| entry.shortcut.as_deref() == Some("A")).expect("a kind with a one-key shortcut");
+    let name = palette::row_name(&h.ctx, &entry);
+    assert_eq!(name, format!("{} (A)", entry.label));
+    let row = h.get_by_label(&name).rect();
+    let galleys = |text: &str| -> Vec<egui::Rect> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => Some(shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| rect.center().y > row.top() && rect.center().y < row.bottom())
+            .collect()
+    };
+    let label = galleys(&entry.label).into_iter().next().expect("the label is painted in its row");
+    let key = galleys("A").into_iter().next().expect("the shortcut is painted in its row");
+    assert!(key.left() > label.right() + 20.0, "a gap separates the shortcut from the label: {label:?} {key:?}");
+    assert!(row.right() - key.right() < 16.0, "the shortcut sits against the row's right edge: {row:?} {key:?}");
+    // The engine's raw "Command" never reaches the screen: the palette's own entries are spelled.
+    let spelled: Vec<String> =
+        h.state().palette_entries().iter().filter_map(|entry| entry.shortcut.as_deref()).map(|key| crate::shortcut::format_shortcut(&h.ctx, key)).collect();
+    assert!(!spelled.is_empty(), "some entries have shortcuts");
+    assert!(spelled.iter().all(|key| !key.contains("Command")), "{spelled:?}");
 }
