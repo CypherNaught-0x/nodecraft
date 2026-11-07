@@ -49,3 +49,22 @@ fn the_sample_cards_tip_shows_until_dismissed() {
     h.run();
     assert!(h.query_by_label("Drag from + to connect to a model").is_none());
 }
+
+#[test]
+fn the_add_node_button_stays_with_nodes_on_the_canvas_and_opens_the_palette() {
+    let mut h = super::tests::harness();
+    h.state_mut().guidance = true;
+    h.run();
+    assert!(!h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().is_empty());
+    assert!(h.state().palette.is_none());
+    h.get_by_label("+ Add node").click();
+    h.run();
+    assert!(h.state().palette.is_some(), "the button opens the quick-add palette");
+}
+
+#[test]
+fn without_guidance_there_is_no_add_node_button() {
+    let mut h = super::tests::harness();
+    h.run();
+    assert!(h.query_by_label("+ Add node").is_none(), "programmatic and headless windows get no first-run chrome");
+}

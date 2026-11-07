@@ -66,6 +66,7 @@ impl NodeCraftApp {
         if !self.can_add_nodes() {
             return;
         }
+        self.add_node_button(ui.ctx(), viewport, blocked, t);
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         if canvas.nodes().is_empty() {
             self.empty_hint(ui.ctx(), viewport, blocked, t);
@@ -79,6 +80,41 @@ impl NodeCraftApp {
             && let Some(card) = self.painted.get(&node)
         {
             self.sample_callout(ui.ctx(), viewport, *card, t);
+        }
+    }
+
+    /// Opens the quick-add palette in the middle of the canvas.
+    fn open_palette_in_middle(&mut self, viewport: Rect) {
+        let at = viewport.center();
+        self.palette = Some(Palette::new(self.view.to_world(viewport.min, at), at));
+        self.turn_into = None;
+    }
+
+    /// The always-there way to add a node without double-clicking (#1119): a floating button in
+    /// the canvas's lower-left corner that opens the quick-add palette in the middle.
+    fn add_node_button(&mut self, ctx: &egui::Context, viewport: Rect, blocked: bool, t: &Tokens) {
+        let mut add = false;
+        egui::Area::new(egui::Id::new("nodecraft.add_node"))
+            .order(egui::Order::Foreground)
+            .pivot(egui::Align2::LEFT_BOTTOM)
+            .fixed_pos(viewport.left_bottom() + Vec2::new(t.card_padding, -t.card_padding))
+            .constrain_to(viewport)
+            .interactable(!blocked)
+            .show(ctx, |ui| {
+                egui::Frame::NONE
+                    .fill(t.panel_fill)
+                    .stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke))
+                    .corner_radius(t.panel_radius)
+                    .inner_margin(t.card_padding * 0.5)
+                    .show(ui, |ui| {
+                        add = ui
+                            .button("+ Add node")
+                            .on_hover_text("Open the quick-add palette in the middle of the canvas (or double-click the canvas)")
+                            .clicked();
+                    });
+            });
+        if add {
+            self.open_palette_in_middle(viewport);
         }
     }
 
@@ -110,9 +146,7 @@ impl NodeCraftApp {
                     });
             });
         if add {
-            let at = viewport.center();
-            self.palette = Some(Palette::new(self.view.to_world(viewport.min, at), at));
-            self.turn_into = None;
+            self.open_palette_in_middle(viewport);
         }
         if techniques && !self.library.open {
             self.toggle_techniques();
