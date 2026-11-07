@@ -645,8 +645,8 @@ fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
     assert!(h.query_by_label("Done 2/2").is_some(), "the table says which result of how many");
     show_grid(&mut h);
     assert!(h.query_by_label("2 of 2").is_some());
-    assert!(h.get_by_role_and_label(Role::Button, "›").accesskit_node().is_disabled());
-    press(&mut h, Role::Button, "‹");
+    assert!(h.get_by_role_and_label(Role::Button, "Next result, row 1").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "Previous result, row 1");
     assert_eq!(
         active(&h),
         Some(history[0]),
@@ -827,4 +827,11 @@ fn disabled_run_selected_and_cancel_explain_themselves() {
         h.hover_at(egui::Pos2::ZERO);
         h.run();
     }
+}
+
+/// #1118: a sheet's controls all have spoken names, not bare glyphs.
+#[test]
+fn a_sheets_controls_have_names() {
+    let h = on_sheet(&["a fox", "an owl"]);
+    assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new());
 }

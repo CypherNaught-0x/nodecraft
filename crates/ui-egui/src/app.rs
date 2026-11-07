@@ -2077,8 +2077,11 @@ impl NodeCraftApp {
                             Vec2::new(t.tag_marker_width, t.tag_row_height.min(r.rect.height())),
                         );
                         tag_painter.rect_filled(marker, t.tag_marker_width, t.tag_color(tag.color.as_deref()));
-                        ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover())
-                            .on_hover_text(format!("Tag: {}", crate::tags::label(&tag.title)));
+                        let name = format!("Tag: {}", crate::tags::label(&tag.title));
+                        let response = ui.interact(self.view.rect_to_screen(viewport.min, marker), ui.id().with(("tag_marker", node.id)), Sense::hover());
+                        // Colour alone doesn't say which tag it is (#1118): name it for screen readers.
+                        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, &name));
+                        response.on_hover_text(name);
                     }
                     if let Some(runs) = &self.runs
                         && let Some((label, color, why)) = queue_panel::card_status(runs, self.canvas, node.id, t)
@@ -3865,6 +3868,8 @@ fn starter_id() -> [u8; 16] {
 }
 #[cfg(test)]
 mod centering_tests;
+#[cfg(test)]
+mod names1118_tests;
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
