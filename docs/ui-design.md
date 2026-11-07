@@ -721,7 +721,7 @@ crossing controls.
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
 | Batch items | a fanned card's menu, Review items… | window | `batch_review_tests` (with the window check) |
 | Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | window | `comfy_mapping::tests` (with the window check) |
-| Project files | top bar, File | window | `file_dialogs::tests` (with the window check, at 1000 × 700 and 1600 × 900) |
+| Project files | the File button (top left) | window | `file_dialogs::tests` (with the window check, at 1000 × 700 and 1600 × 900) |
 | Choose a model | a card's Change model… | window | `models::comfy970_tests` (with the window check, while searching) |
 | Rename field | a field's menu, Rename field… | window | `fields_tests` (with the window check) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |

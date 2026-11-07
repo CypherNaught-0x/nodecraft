@@ -440,19 +440,22 @@ impl NodeCraftApp {
         let Some((id, mut title)) = self.fields.rename.take() else { return };
         let mut keep = true;
         let mut save = false;
-        egui::Window::new("Rename field").order(egui::Order::Foreground).collapsible(false).resizable(false).show(ctx, |ui| {
-            let label = ui.label("Field name");
-            let edit = ui.add(egui::TextEdit::singleline(&mut title).char_limit(4096)).labelled_by(label.id);
-            if !edit.has_focus() && !edit.lost_focus() && ctx.memory(|m| m.focused().is_none()) {
-                edit.request_focus();
-            }
-            ui.horizontal(|ui| {
-                save = ui.button("Save field name").clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if ui.button("Cancel rename").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                    keep = false;
+        egui::Window::new("Rename field").id(egui::Id::new("nodecraft.rename_field")).order(egui::Order::Foreground).collapsible(false).resizable(false).show(
+            ctx,
+            |ui| {
+                let label = ui.label("Field name");
+                let edit = ui.add(egui::TextEdit::singleline(&mut title).char_limit(4096)).labelled_by(label.id);
+                if !edit.has_focus() && !edit.lost_focus() && ctx.memory(|m| m.focused().is_none()) {
+                    edit.request_focus();
                 }
-            });
-        });
+                ui.horizontal(|ui| {
+                    save = ui.button("Save field name").clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+                    if ui.button("Cancel rename").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                        keep = false;
+                    }
+                });
+            },
+        );
         if save && keep {
             if title.len() > 4096 {
                 self.notice = Some("A field name is at most 4096 bytes.".into());
