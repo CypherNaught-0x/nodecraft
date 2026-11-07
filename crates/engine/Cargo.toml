@@ -71,6 +71,8 @@ nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
+# Read exported FCPXML back as an editor would, to check the rules editors enforce on import (#1066).
+roxmltree = "=0.20.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.

@@ -268,8 +268,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 - **Desktop media limits.** Card video playback is silent. Sound cards play separately through the
   default output device. Playback and FFmpeg-backed renders run on desktop. Timeline
-  interchange is available on desktop, with Final Cut Pro and DaVinci Resolve import checks and
-  background export improvements tracked separately (#643).
+  interchange is available on desktop and exports in the background with a Cancel control. Its
+  document is checked against structural rules both editors are expected to need; the import
+  itself has not been checked in Final Cut Pro or DaVinci Resolve yet (#1066).
 
 - **Relay transport and storage differ by client.** The relay serves plain `ws://`.
   Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
