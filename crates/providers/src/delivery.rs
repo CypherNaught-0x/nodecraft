@@ -227,14 +227,17 @@ impl SubmitContext {
     /// [`Self::send`], for a transport whose futures must own what they use (the chat client's
     /// HTTP seam, #1122). It adds no way to assert anything: each request it sends is a child of
     /// this scope, registered when its send is constructed.
+    #[cfg(feature = "llm")]
     pub(crate) fn link(&self) -> DeliveryLink {
         DeliveryLink { state: Arc::clone(&self.state) }
     }
 }
 /// See [`SubmitContext::link`]. Not `Clone`: one transport owns it.
+#[cfg(feature = "llm")]
 pub(crate) struct DeliveryLink {
     state: Arc<Mutex<Operation>>,
 }
+#[cfg(feature = "llm")]
 impl DeliveryLink {
     /// [`SubmitContext::send`].
     pub(crate) fn send<'a>(&'a self, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {

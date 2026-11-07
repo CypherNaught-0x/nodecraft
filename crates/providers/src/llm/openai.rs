@@ -119,8 +119,15 @@ fn request(req: &ChatRequest, completion_cap: bool) -> Result<(CompletionRequest
                 for p in &m.parts {
                     if let Part::ToolUse { id, name, input } = p {
                         names.insert(id, name);
-                        if let Value::String(text) = input {
-                            raw.insert(id.clone(), text.clone());
+                        // The wire sends any input but an object as `{}`.
+                        match input {
+                            Value::Object(_) => {}
+                            Value::String(text) => {
+                                raw.insert(id.clone(), text.clone());
+                            }
+                            other => {
+                                raw.insert(id.clone(), other.to_string());
+                            }
                         }
                         content
                             .push(AssistantContent::ToolCall(RigCall::new(CallId::from_wire(id.clone()), ToolFunction::new(tool_name(name)?, input.clone()))));
@@ -340,6 +347,9 @@ impl LlmClient {
             }
         };
         let response = response.map_err(|e| failure(&e, transport.exchange(), streamed))?;
+        // The crate stops reading a stream at its last event; the send runs to its end, so the
+        // reply's head is read and its delivery closes as the transport finished it.
+        transport.finish().await?;
         let mut reply = reply(&response)?;
         if let Exchange::Answered { headers, .. } = transport.exchange() {
             reply.usage.cost = self.reported_cost(&headers);

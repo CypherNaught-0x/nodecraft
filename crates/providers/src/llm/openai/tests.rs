@@ -427,3 +427,81 @@ fn a_tool_loop_round_trips() {
     );
     assert_eq!(sent["messages"][2], json!({"role": "tool", "tool_call_id": "call_9", "content": "4 °C, rain"}));
 }
+
+/// Hands the body over a piece at a time, letting the reader run between pieces and after the
+/// last one before the send ends, as a real connection does: the client stops reading at the
+/// last event, before the transport has finished.
+struct Slow {
+    body: Vec<u8>,
+    headers: Vec<(String, String)>,
+    finished: std::sync::atomic::AtomicBool,
+}
+
+/// Pending once, so whoever polls gets to run.
+async fn yield_once() {
+    let mut yielded = false;
+    futures::future::poll_fn(|cx| {
+        if yielded {
+            return std::task::Poll::Ready(());
+        }
+        yielded = true;
+        cx.waker().wake_by_ref();
+        std::task::Poll::Pending
+    })
+    .await;
+}
+
+impl Http for Slow {
+    fn send(&self, _request: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
+        Box::pin(async { Err(ProviderError::new(ErrorKind::Server, "only streamed requests are expected")) })
+    }
+    fn send_streaming<'a>(&'a self, _request: HttpRequest, on_chunk: &'a mut ChunkSink<'a>) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        Box::pin(async move {
+            for piece in self.body.chunks(11) {
+                yield_once().await;
+                on_chunk(piece)?;
+            }
+            // The connection closes a moment after the last event.
+            yield_once().await;
+            yield_once().await;
+            self.finished.store(true, std::sync::atomic::Ordering::SeqCst);
+            Ok(HttpResponse { status: 200, headers: self.headers.clone(), body: Vec::new() })
+        })
+    }
+}
+
+#[test]
+fn a_stream_read_to_its_last_event_still_ends_its_send() {
+    let slow = || {
+        let body = b"data: {\"choices\":[{\"delta\":{\"content\":\"Hel\"}}]}\n\ndata: {\"choices\":[{\"delta\":{\"content\":\"lo\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n".to_vec();
+        Arc::new(Slow { body, headers: vec![("x-litellm-response-cost".into(), "0.0012".into())], finished: Default::default() })
+    };
+    // The spend the head reports is read once the send ends.
+    let http = slow();
+    let c = LlmClient::new(Endpoint::litellm("http://proxy:4000", None), http.clone());
+    let mut pieces = Vec::new();
+    let r = block_on(c.chat_stream(&request(), &mut |t| pieces.push(t.to_owned()))).unwrap();
+    assert_eq!((r.text.as_str(), pieces.len()), ("Hello", 2));
+    assert_eq!(r.usage.cost, Some(nodecraft_types::Money::new(nodecraft_types::Currency::USD, 1200)));
+    assert!(http.finished.load(std::sync::atomic::Ordering::SeqCst));
+    // Through a runner's scope, the request is one of its sends, finished by the transport.
+    let http = slow();
+    let c = LlmClient::new(Endpoint::litellm("http://proxy:4000", None), http.clone());
+    let context = crate::SubmitContext::new();
+    context.arm();
+    let r = block_on(c.streamed(&request(), &mut |_| {}, Some(&context))).unwrap();
+    assert_eq!(r.usage.cost, Some(nodecraft_types::Money::new(nodecraft_types::Currency::USD, 1200)));
+    assert!(http.finished.load(std::sync::atomic::Ordering::SeqCst), "the send ran to its end");
+    assert!(context.finish_error().is_none(), "a sent request may be billed");
+}
+
+/// Arguments that are JSON but not an object go back as they came, not as `{}`.
+#[test]
+fn non_object_arguments_go_back_as_they_came() {
+    for (input, sent_as) in [(json!([1, 2]), "[1,2]"), (json!(3), "3"), (json!(true), "true"), (Value::Null, "null"), (json!("{x"), "{x")] {
+        let mut r = tool_turns();
+        r.messages[1].parts = vec![Part::ToolUse { id: "call_1".into(), name: "get_weather".into(), input }];
+        r.messages[2].parts = vec![Part::ToolResult { id: "call_1".into(), content: "ok".into(), is_error: false }];
+        assert_eq!(sent(&r, false)["messages"][1]["tool_calls"][0]["function"]["arguments"], sent_as);
+    }
+}

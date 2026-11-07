@@ -62,6 +62,9 @@ struct Inner {
     max_response_bytes: usize,
     fix: Option<BodyFix>,
     exchange: Mutex<Exchange>,
+    /// A streamed send the crate stopped reading before it ended (it stops at `[DONE]`), with
+    /// its body still draining: [`RigHttp::finish`] runs it to its end.
+    unfinished: Mutex<Option<BoxFuture<'static, Result<HttpResponse, ProviderError>>>>,
 }
 
 impl std::fmt::Debug for RigHttp {
@@ -87,6 +90,7 @@ impl RigHttp {
                 max_response_bytes,
                 fix: None,
                 exchange: Mutex::new(Exchange::Unsent),
+                unfinished: Mutex::new(None),
             }),
         }
     }
@@ -129,6 +133,24 @@ impl RigHttp {
     /// How the exchange went.
     pub(crate) fn exchange(&self) -> Exchange {
         self.inner.exchange.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Runs a streamed send the crate stopped reading to its end, so its head (and the spend it
+    /// reports) is recorded and its delivery scope closes as the transport finished it. Bounded by
+    /// the request's own timeout and size cap. An error is the transport's, as it raised it.
+    pub(crate) async fn finish(&self) -> Result<(), ProviderError> {
+        let unfinished = self.inner.unfinished.lock().unwrap_or_else(PoisonError::into_inner).take();
+        let Some(work) = unfinished else { return Ok(()) };
+        match work.await {
+            Ok(reply) => {
+                self.inner.record(Exchange::Answered { status: reply.status, headers: reply.headers, body: Vec::new() });
+                Ok(())
+            }
+            Err(e) => {
+                self.inner.record(Exchange::Failed(e.clone()));
+                Err(e)
+            }
+        }
     }
 }
 
@@ -380,6 +402,23 @@ impl Body {
                 Poll::Pending => return Poll::Pending,
             }
         }
+    }
+}
+
+impl Drop for Body {
+    /// The crate stops reading at the end of the reply's last event, usually before the
+    /// transport has ended the send. The send is kept, with the channel it still writes into, for
+    /// [`RigHttp::finish`]; dropped unfinished, it would lose the reply's head and leave its
+    /// delivery scope open.
+    fn drop(&mut self) {
+        let Some(sending) = self.sending.take() else { return };
+        let received = std::mem::replace(&mut self.received, futures::channel::mpsc::unbounded().1);
+        let work: BoxFuture<'static, Result<HttpResponse, ProviderError>> = Box::pin(async move {
+            // Held so the sink can still deliver; what arrives now is no longer read.
+            let _received = received;
+            sending.await
+        });
+        *self.inner.unfinished.lock().unwrap_or_else(PoisonError::into_inner) = Some(work);
     }
 }
 

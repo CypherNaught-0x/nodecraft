@@ -266,7 +266,10 @@ fn cmd_layers(root: &Path) -> Result<(), String> {
         println!("OK: {} crates, no layering violations.", crates.len());
         let rig = layers::rig_mentions(root)?;
         if !rig.is_empty() {
-            return Err(format!("the LLM client crate is named outside nodecraft-providers (its types stay there): {}", rig.join(", ")));
+            return Err(format!(
+                "the LLM client crate is named outside nodecraft-providers, or by a public item of it (its types stay inside it): {}",
+                rig.join(", ")
+            ));
         }
         println!("OK: the LLM client crate is used only inside nodecraft-providers.");
         test_layout::check(root)
