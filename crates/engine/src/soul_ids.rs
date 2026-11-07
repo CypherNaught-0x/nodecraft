@@ -13,8 +13,16 @@ use nodecraft_types::{AssetRef, OptionKey, OptionLists, OptionLookup, Value};
 
 /// The style family of a trained Soul ID.
 pub const FAMILY: &str = nodecraft_providers::higgsfield::SOUL_FAMILY;
-/// The catalog model that takes a Soul ID, and the parameter that names it.
+/// The catalog model that takes a Soul ID, and the parameter that names it. Its option list is
+/// the account's, shared by every model in [`SOUL_MODELS`].
 pub const SOUL_MODEL: &str = "higgsfield.soul-2";
+/// Every catalog model that takes a Soul ID: SOUL 2 text to image and image to image (#1043).
+pub const SOUL_MODELS: [&str; 2] = [SOUL_MODEL, "higgsfield.soul-2-i2i"];
+
+/// Whether catalog model `model` takes a Soul ID.
+pub fn takes(model: &str) -> bool {
+    SOUL_MODELS.contains(&model)
+}
 pub const PARAM: &str = "custom_reference_id";
 /// Why a Soul ID is never written out as a file.
 pub const ACCOUNT_BOUND: &str = "a Soul ID works only on the Higgsfield account that trained it: the project keeps a handle to that account's identity, \
@@ -112,7 +120,7 @@ pub fn canvas_handles(canvas: &Canvas) -> Handles {
                 found.identities = found.identities.saturating_add(1);
             }
         } else if is_generation(&node.kind)
-            && matches!(node.params.get(MODEL), Some(Value::Text(model)) if model == SOUL_MODEL)
+            && matches!(node.params.get(MODEL), Some(Value::Text(model)) if takes(model))
             && matches!(node.params.get(PARAM), Some(Value::Text(id)) if !id.trim().is_empty())
         {
             found.uses = found.uses.saturating_add(1);

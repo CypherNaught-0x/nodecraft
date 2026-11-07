@@ -127,15 +127,28 @@ fn prompts(app: &NodeCraftApp, canvas: CanvasId) -> Vec<String> {
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     crate::app::topbar_tests::reveal(h, label);
+    settle(h);
     let pos = h.get_by_role_and_label(role, label).rect().center();
     click(h, pos);
+}
+
+/// A few frames for layouts that measure over two (the grid, a growing panel), so a control is
+/// read where it will be clicked. A worker may keep repainting, so a fixed number is stepped.
+fn settle(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..4 {
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_runs(&ctx);
+        h.step();
+    }
 }
 
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
     h.hover_at(pos);
     h.run();
+    // Press and release one frame apart: `run` can step many frames while something repaints, and
+    // a press held past egui's longest click no longer counts as a click.
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-    h.run();
+    h.step();
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.run();
 }
@@ -569,9 +582,12 @@ fn history_of(app: &NodeCraftApp, row: NodeId) -> Vec<nodecraft_types::Generatio
 }
 
 fn show_grid(h: &mut Harness<'static, NodeCraftApp>) {
+    settle(h);
     let at = h.get_by_label("Grid").rect().center();
     click(h, at);
     assert_eq!(h.state().sheet.mode, super::sheet_view::ViewMode::Grid);
+    // The grid lays its tiles out over two frames: read them where they settle.
+    settle(h);
 }
 
 #[test]
@@ -597,6 +613,7 @@ fn the_grid_shows_rows_with_results_badged_and_selects_and_sends_them_to_the_can
     h.run();
 
     // Clicking a tile selects its row, as its checkbox does in the table.
+    settle(&mut h);
     let owl = h.get_by_label("Row 2").rect().center();
     click(&mut h, owl);
     assert!(h.state().selection.contains(rows[1]) && !h.state().selection.contains(rows[0]));
@@ -630,7 +647,14 @@ fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
     assert!(h.query_by_label("2 of 2").is_some());
     assert!(h.get_by_role_and_label(Role::Button, "›").accesskit_node().is_disabled());
     press(&mut h, Role::Button, "‹");
-    assert_eq!(active(&h), Some(history[0]), "the older result is active again");
+    assert_eq!(
+        active(&h),
+        Some(history[0]),
+        "the older result is active again; history now {:?}, was {history:?}; notice {:?}; 1 of 2 shown {}",
+        history_of(h.state(), row),
+        h.state().notice,
+        h.query_by_label("1 of 2").is_some()
+    );
     assert!(h.query_by_label("1 of 2").is_some());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();

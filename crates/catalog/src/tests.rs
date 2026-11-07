@@ -86,7 +86,7 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 Some(250_000)
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
-        } else if model.id == "fal.pika25-i2v" {
+        } else if model.id == "fal.pika25-i2v" || model.id == "fal.pika25-keyframes" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
         } else if model.id == "fal.topaz-precision" {
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
@@ -223,6 +223,10 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Fixed Balanced rendering and one output (#34), checked 2026-10-27.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 60_000)));
+        } else if model.id == "bfl.flux-2-klein-4b" {
+            // By output megapixels (#1062); quoted in bfl_klein_is_priced_per_output_megapixel_rounded_up.
+            assert!(matches!(&model.pricing, Pricing::PerOutputMegapixel { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 14_000)));
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -316,6 +320,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.minimax-music3", false),
             ("fal.minimax-speech28-hd", false),
             ("fal.pika25-i2v", false),
+            ("fal.pika25-keyframes", false),
             ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
@@ -360,6 +365,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
+            ("higgsfield.soul-2-i2i", false),
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("huggingface.gpt-oss-120b-groq", false),
@@ -1186,5 +1192,65 @@ fn reading_capabilities_are_explicit_and_need_the_inputs_they_describe() {
     ] {
         let error = watcher(inputs, reads, output).unwrap_err();
         assert!(error.message.contains(reason), "{reads}: {}", error.message);
+    }
+}
+
+/// #1062: FLUX.2 [klein] 4B is priced by output megapixels, rounded up (bfl.ai/pricing).
+#[test]
+fn bfl_klein_is_priced_per_output_megapixel_rounded_up() {
+    let catalog = Catalog::builtin().unwrap();
+    let model = catalog.get("bfl.flux-2-klein-4b").unwrap();
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    let size = |w: u64, h: u64| -> ParamValues { [("width".into(), Value::Unsigned(Unsigned(w))), ("height".into(), Value::Unsigned(Unsigned(h)))].into() };
+    assert_eq!(model.quote(&Default::default()).unwrap(), usd(14_000), "the default 1024 x 1024 is one megapixel");
+    assert_eq!(model.quote(&size(64, 64)).unwrap(), usd(14_000), "never less than one");
+    assert_eq!(model.quote(&size(1024, 1040)).unwrap(), usd(15_000), "a pixel over is the next megapixel");
+    assert_eq!(model.quote(&size(1984, 1984)).unwrap(), usd(17_000), "3.75 MP is charged as 4");
+}
+
+/// #1062: megapixel pricing reads two distinct settings that are always there; anything else is
+/// refused when the catalog loads, never at quote time.
+#[test]
+fn impossible_megapixel_pricing_is_refused() {
+    let model = |pricing: &str, height: &str| {
+        format!(
+            r#"
+[[model]]
+id = "test.image"
+provider = "test"
+provider_model = "image-v1"
+label = "Test Image"
+description = "Priced by area."
+latency_s = 1
+quality = 1
+pricing = {pricing}
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}]
+[[model.params.params]]
+name = "width"
+label = "Width"
+control = {{ type = "unsigned", min = "64", max = "2048", step = "16" }}
+default = {{ type = "unsigned", value = "1024" }}
+{height}"#
+        )
+    };
+    let height = r#"[[model.params.params]]
+name = "height"
+label = "Height"
+control = { type = "unsigned", min = "64", max = "2048", step = "16" }
+default = { type = "unsigned", value = "1024" }"#;
+    let priced = |w: &str, h: &str, first: &str| {
+        format!(r#"{{ type = "per_output_megapixel", width = "{w}", height = "{h}", first = "{first}", additional = "0.001 USD" }}"#)
+    };
+    assert!(Catalog::from_toml(&model(&priced("width", "height", "0.014 USD"), height)).is_ok());
+    for (pricing, height) in [
+        (priced("width", "width", "0.014 USD"), height),
+        (priced("width", "height", "0.014 USD"), ""),
+        (priced("width", "height", "0 USD"), height),
+        (priced("width", "height", "0.014 EUR"), height),
+    ] {
+        assert!(Catalog::from_toml(&model(&pricing, height)).is_err(), "{pricing} with {height:?}");
     }
 }

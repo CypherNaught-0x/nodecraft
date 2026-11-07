@@ -296,6 +296,10 @@ pub(super) struct Runs {
     runtime: Arc<dyn Runtime>,
     #[cfg(not(target_arch = "wasm32"))]
     http: Option<Arc<dyn Http>>,
+    /// The provider settings `keys.test` checks against as the app last saved them, so Test
+    /// follows an endpoint changed in the keys panel (#962).
+    #[cfg(not(target_arch = "wasm32"))]
+    key_settings: Arc<Mutex<ProviderSettings>>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
@@ -384,6 +388,13 @@ impl Runs {
         Self::on(services, Maker::inline(make))
     }
 
+    /// Gives `keys.test` checks `http`, as [`Self::new`] gives them the runs' client.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(super) fn with_key_http(mut self, http: Arc<dyn Http>) -> Self {
+        self.http = Some(http);
+        self
+    }
+
     fn on(services: &mut nodecraft_engine::commands::Services, maker: Maker) -> Result<Self, Error> {
         #[cfg(not(target_arch = "wasm32"))]
         let tokio = tokio::runtime::Builder::new_multi_thread()
@@ -432,6 +443,8 @@ impl Runs {
             runtime: key_runtime,
             #[cfg(not(target_arch = "wasm32"))]
             http: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            key_settings: Arc::default(),
             journal_problem: None,
             plugins: Board::default(),
             plugin_grants: Grants::new(Mutex::new(GrantCheck::this_window())),
@@ -442,13 +455,27 @@ impl Runs {
     /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
     /// so a check goes out like a run's request does. `None` for a test host without a client.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn key_test_host(&self, loaded: nodecraft_engine::settings::ProviderSettings) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+    /// `dir` is the settings folder the app's store writes, read afresh at each check.
+    pub(super) fn key_test_host(
+        &self,
+        loaded: nodecraft_engine::settings::ProviderSettings,
+        dir: Option<std::path::PathBuf>,
+    ) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        // The settings loaded at startup and the file as it is now, read at each check: either
-        // marking the account redirected is enough (#960), so an unreadable file never lowers
-        // protection below what was loaded.
-        let providers: nodecraft_engine::key_test::ProviderSettingsSource =
-            Arc::new(move || vec![loaded.clone(), nodecraft_engine::settings::peek().providers]);
+        self.keep_key_settings(&loaded);
+        // The settings as the app last saved them (first those loaded at startup) and the file
+        // as it is now, read at each check: either marking the account redirected is enough
+        // (#960), so an unreadable file never lowers protection below what was loaded, and a
+        // check goes to a custom endpoint only when both name the same one (#962).
+        let kept = Arc::clone(&self.key_settings);
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(move || {
+            let saved = kept.lock().map(|settings| settings.clone()).unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+            let file = match &dir {
+                Some(dir) => nodecraft_engine::settings::peek_at(dir),
+                None => nodecraft_engine::settings::peek(),
+            };
+            vec![saved, file.providers]
+        });
         Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
@@ -684,10 +711,20 @@ impl Runs {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_key_settings(&self, settings: &ProviderSettings) {
+        match self.key_settings.lock() {
+            Ok(mut kept) => *kept = settings.clone(),
+            Err(poisoned) => *poisoned.into_inner() = settings.clone(),
+        }
+    }
+
     pub(super) fn settings_changed(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
         if let Some(waiting) = &mut self.waiting {
             waiting.settings = settings.clone();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.keep_key_settings(settings);
         self.forget_adapters(session)
     }
 
