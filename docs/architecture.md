@@ -64,6 +64,11 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
+- **The LLM client crate stays in `providers`.** Only `nodecraft-providers` may depend on
+  `rig-core` (or any `rig-*` crate), and no other crate's source may name it (`rig_core`,
+  `rig::`), so none of its types reaches `engine`, `agent` or the shell. Inside `providers`,
+  `rig_http` implements its HTTP trait over our own `Http`, and `llm::openai` speaks Chat
+  Completions through it ([the decision](decisions/2026-11-06-llm-layer-rig.md), #1122).
 - **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
   tooling keep their existing exemption; standalone media permits neither. The provider facade's
   workspace dependencies are restricted to providers and types in every dependency kind,
