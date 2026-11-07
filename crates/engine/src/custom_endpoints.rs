@@ -221,6 +221,23 @@ pub fn account_redirected(settings: &ProviderSettings, account: &str) -> bool {
     PROVIDERS.iter().any(|entry| crate::provider_setup::key_account(entry.provider) == Some(account) && entry_set(settings, entry.provider))
 }
 
+/// The one usable base URL every provider that reads keychain `account` is set to, in `settings`
+/// (#962): what `keys.test` checks that key against, as a run would send it. `None` when the
+/// account isn't redirected, when its providers name different addresses (no single place to
+/// check), or when one is unusable.
+pub fn account_base_url(settings: &ProviderSettings, account: &str) -> Option<BaseUrl> {
+    let mut found: Option<BaseUrl> = None;
+    for entry in PROVIDERS.iter().filter(|entry| crate::provider_setup::key_account(entry.provider) == Some(account) && entry_set(settings, entry.provider)) {
+        let url = base_url(settings, entry.provider).ok()??;
+        match &found {
+            Some(seen) if seen.as_str() != url.as_str() => return None,
+            Some(_) => {}
+            None => found = Some(url),
+        }
+    }
+    found
+}
+
 /// Reads `[providers.base_urls]` leniently. Text entries are kept as written; anything else is
 /// kept as [`BaseUrlEntry::Unreadable`], which refuses its provider. A value that isn't a table
 /// is kept under [`UNREADABLE_TABLE`], which refuses them all. Nothing here resets `[providers]`

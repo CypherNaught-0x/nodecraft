@@ -94,9 +94,12 @@ to do, and a node routed to it is refused before planning, so no request is sent
 OpenAI chat, Anthropic chat and OpenAI Images can be served from another server that speaks the
 same API, such as a LiteLLM proxy, vLLM or LM Studio (#960). On the desktop and in the CLI, set
 the base URL, including the API's version path, under `[providers.base_urls]` in `config.toml`.
-The desktop app reads this table when it starts, so restart it after editing the file. In the
-browser, only OpenAI chat can take a base URL: use the Providers panel's **Custom endpoints**
-field (`providers.settings_set {base_urls}`).
+In the desktop app, the API keys panel's **Endpoints** rows show the address each provider uses
+(its default, or the one set) and set, change or reset it next to the key (#962): an address is
+checked before anything is saved, written to `config.toml` at once, and runs and **Test** follow
+it without a restart. The app reads a hand edit of the file when it starts, so restart it after
+editing the file. In the browser, only OpenAI chat can take a base URL: use the Providers panel's
+**Custom endpoints** field (`providers.settings_set {base_urls}`).
 
 ```toml
 [providers.base_urls]
@@ -113,7 +116,11 @@ openai-images = "http://127.0.0.1:4000/v1" # /images/generations and /images/edi
   - another adapter that reads the same account but has no base URL of its own is refused. With
     `openai` set, OpenAI Images needs its own entry, and OpenAI speech and transcription
     (`openai-audio`, which takes no base URL) can't run until the entry is removed;
-  - `keys.test` answers *unverifiable* for that account and sends nothing;
+  - `keys.test` checks the key at that server instead (#962): `GET <base>/models` with the key as
+    `Authorization: Bearer` for `openai`, `GET <base>/models?limit=1` with `x-api-key` for
+    `anthropic`, redirects not followed. If the settings disagree on one server for the account
+    (OpenAI chat and OpenAI Images set to different ones, or the file now names another address,
+    or none, than the app saved), it answers *unverifiable* and sends nothing;
   - the desktop agent panel follows the OpenAI or Anthropic base URL, or refuses. It also
     refuses until a restart if the file now names a different base URL than at startup.
 - **The address.** A base URL must be HTTPS, or plain HTTP to a local address: loopback, a
