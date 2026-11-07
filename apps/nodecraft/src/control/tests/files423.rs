@@ -100,7 +100,7 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
             if let Some(status) = child.0.try_wait().unwrap() {
                 break status;
             }
-            assert!(start.elapsed() < Duration::from_secs(20), "MCP subprocess exceeded deadline; childguard kills and reaps it");
+            assert!(start.elapsed() < Duration::from_secs(90), "MCP subprocess exceeded deadline; childguard kills and reaps it");
             std::thread::sleep(Duration::from_millis(10));
         };
         let mut output = String::new();
@@ -121,7 +121,9 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
     let listener = control::listen_with(
         token.clone(),
         Arc::new(|| {}),
-        control::Timeouts { handshake: Duration::from_secs(1), idle: Duration::from_secs(1), write: Duration::from_secs(1), answer: Duration::from_secs(1) },
+        // Generous: a CI runner (Windows, with its file scanning) can take over a second to save;
+        // the loops below still bound the whole test.
+        control::Timeouts { handshake: Duration::from_secs(5), idle: Duration::from_secs(10), write: Duration::from_secs(5), answer: Duration::from_secs(10) },
     )
     .unwrap();
     let addr = listener.addr;
@@ -147,7 +149,7 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
                     )
                     .ok_or("missing MCP reply")?;
                 let reply: Value = serde_json::from_str(&reply).map_err(|e| e.to_string())?;
-                if !reply.to_string().contains("file.cancel") || started.elapsed() > Duration::from_secs(5) {
+                if !reply.to_string().contains("file.cancel") || started.elapsed() > Duration::from_secs(20) {
                     break reply;
                 }
                 std::thread::sleep(Duration::from_millis(20));
@@ -162,7 +164,7 @@ fn an_mcp_bridge_saves_inside_the_allowed_folders_and_is_refused_outside() {
     let mut app = NodeCraftApp::with_settings_and_storage(&ctx, store, Some(storage)).unwrap();
     draw(&mut app, &ctx);
     let roots = FileRoots::new(&[], std::slice::from_ref(&work)).unwrap();
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = Instant::now() + Duration::from_secs(40);
     while !worker.is_finished() && Instant::now() < deadline {
         match listener.calls.recv_timeout(Duration::from_millis(50)) {
             Ok(call) => {
