@@ -375,6 +375,7 @@ mod keep_aside;
 mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
+mod key_endpoints;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -724,7 +725,7 @@ impl NodeCraftApp {
         // Keychain calls run on their own thread, so an unlock prompt never freezes the window.
         // If the thread can't start, the app runs without the keychain (the panel says so).
         // `keys.test` sends its check on the runs' runtime and HTTP client (#237).
-        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone()));
+        let key_tests = runs.as_ref().and_then(|runs| runs.key_test_host(settings.providers.clone(), store.dir().map(std::path::Path::to_path_buf)));
         let results = match nodecraft_engine::secrets::KeyWorker::spawn_with_tests(std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore), key_tests) {
             Ok((worker, results)) => {
                 nodecraft_engine::secrets::register_key_worker(&mut services, worker)?;
@@ -2009,6 +2010,7 @@ impl NodeCraftApp {
                                     .session
                                     .generation_catalog()
                                     .is_ok_and(|catalog| !nodecraft_engine::variation_cmds::pinned_seeds(catalog, node).is_empty()),
+                            cache: nodecraft_engine::cache::enabled(node, self.session.kinds()),
                         },
                     },
                     editor,
@@ -2666,6 +2668,7 @@ impl NodeCraftApp {
                 },
                 Intent::Variations(count) => ("node.variations_set", json!({"canvas":self.canvas,"id":id,"count":count}), None),
                 Intent::VariationCards(cards) => ("canvas.set_variation_cards", json!({"canvas":self.canvas,"cards":cards}), None),
+                Intent::Cache(enabled) => ("node.cache_set", json!({"canvas":self.canvas,"id":id,"enabled":enabled}), None),
                 Intent::Model => continue,
                 Intent::Migrate => {
                     self.migrate_card(id);
@@ -2808,8 +2811,7 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         self.web_file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
-        let changes = self.keys.show(ui.ctx(), &mut self.session, &self.key_accounts, t);
-        self.save_accounts(changes);
+        self.keys_panel(ui.ctx(), t);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
         self.browser_providers_panel(ui.ctx(), t);
         #[cfg(not(target_arch = "wasm32"))]

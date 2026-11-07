@@ -167,7 +167,15 @@ impl Broker {
     /// An error for a non-2xx reply. A reply that echoes the credential is not quoted at all, so
     /// not even the part of it an excerpt would cut keeps.
     fn status_error(&self, reply: &HttpResponse) -> ProviderError {
-        let mut error = ProviderError::from_status(reply.status, if self.echoes(&reply.body) { b"" } else { &reply.body });
+        let echoed = self.echoes(&reply.body);
+        let mut error = ProviderError::from_status(reply.status, if echoed { b"" } else { &reply.body });
+        // The reply is the service's own text: quote it as such (#174 review), unless it repeated
+        // the key, when none of it is quoted.
+        error.message = if echoed {
+            format!("HTTP {}: its reply repeated your key, so it isn't quoted", reply.status)
+        } else {
+            format!("HTTP {}: {}", reply.status, super::plan::untrusted(&crate::error::excerpt(&reply.body)))
+        };
         if (300..400).contains(&reply.status) {
             error = ProviderError::new(
                 ErrorKind::Malformed,

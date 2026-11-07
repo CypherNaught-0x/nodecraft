@@ -256,7 +256,8 @@ fn restyle_presets_come_from_higgsfield_with_their_names_as_labels_even_without_
     // weren't asked for here.
     let refused: Vec<(&str, &str)> =
         report.refused.iter().filter(|r| r.source.starts_with("higgsfield.")).map(|r| (r.source.as_str(), r.reason.as_str())).collect();
-    assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again")], "{report:?}");
+    // Both SOUL 2 models (text and image to image, #1043) offer the Soul IDs.
+    assert_eq!(refused, [("higgsfield.soul_ids", "not part of this fetch; refresh again"); 2], "{report:?}");
     assert!(report.unavailable.iter().any(|r| r.source == "comfyui.checkpoints" && r.reason.contains("[[providers.comfyui]]")), "{report:?}");
     // The restyle card offers the presets by name; the id is what it keeps and sends.
     let listed = session.dispatch("node.options", &json!({"canvas": C, "id": RESTYLE, "param": "preset_id"})).unwrap();
@@ -336,7 +337,7 @@ fn soul_ids_are_listed_by_name_for_soul_2_even_when_the_presets_fail() {
     assert_eq!(report.error, None);
     let installed: Vec<_> = report.installed.iter().map(|i| (i.owner.as_str(), i.source.as_str(), i.values, i.skipped)).collect();
     // Only the ready SOUL 2 identity is listed; the unreadable entry is counted.
-    assert_eq!(installed, [("higgsfield.soul-2", "higgsfield.soul_ids", 1, 1)]);
+    assert_eq!(installed, [("higgsfield.soul-2", "higgsfield.soul_ids", 1, 1), ("higgsfield.soul-2-i2i", "higgsfield.soul_ids", 1, 1)]);
     assert!(report.refused.iter().any(|r| r.source == "higgsfield.restyle_presets" && r.reason.contains("restyle presets")), "{report:?}");
     let lists = session.option_lists().unwrap();
     let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };

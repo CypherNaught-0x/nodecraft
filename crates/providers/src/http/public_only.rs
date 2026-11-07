@@ -60,6 +60,73 @@ pub(super) use resolver::PublicOnly;
 mod resolver {
     use super::public_address;
     use std::net::{SocketAddr, ToSocketAddrs};
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+    use std::task::{Poll, Waker};
+
+    /// The most name lookups running at once (#174 review). The system resolver blocks and can't
+    /// be cancelled, so each runs on a thread of its own; past this, a lookup waits for one to
+    /// finish rather than starting another thread. Refusing instead would make a submit look as
+    /// if it may have been sent. A lookup that never returns keeps its slot; the request's own
+    /// timeout bounds how long another waits.
+    const MAX_LOOKUPS: usize = 8;
+    /// The most lookups remembered as waiting for a slot.
+    const MAX_WAITERS: usize = 256;
+
+    /// Running lookups, and the lookups waiting for one of them to finish.
+    static LOOKUPS: Mutex<(usize, Vec<Waker>)> = Mutex::new((0, Vec::new()));
+
+    fn lookups() -> MutexGuard<'static, (usize, Vec<Waker>)> {
+        LOOKUPS.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// One running lookup's slot, given back when the lookup's thread ends.
+    struct Slot;
+
+    impl Slot {
+        /// A slot now, if one is free.
+        #[cfg(test)]
+        fn take() -> Option<Self> {
+            let mut state = lookups();
+            (state.0 < MAX_LOOKUPS).then(|| {
+                state.0 += 1;
+                Self
+            })
+        }
+
+        /// A slot, once one is free.
+        async fn wait() -> Self {
+            std::future::poll_fn(|cx| {
+                let mut state = lookups();
+                if state.0 < MAX_LOOKUPS {
+                    state.0 += 1;
+                    return Poll::Ready(Self);
+                }
+                // At most one waker per waiting lookup; a waiter polled again replaces its own.
+                // The list is bounded too: past MAX_WAITERS the oldest is let go, and the request
+                // waiting on it ends at its own timeout.
+                if !state.1.iter().any(|w| w.will_wake(cx.waker())) {
+                    if state.1.len() >= MAX_WAITERS {
+                        state.1.remove(0);
+                    }
+                    state.1.push(cx.waker().clone());
+                }
+                Poll::Pending
+            })
+            .await
+        }
+    }
+
+    impl Drop for Slot {
+        fn drop(&mut self) {
+            let waiting = {
+                let mut state = lookups();
+                state.0 = state.0.saturating_sub(1);
+                std::mem::take(&mut state.1)
+            };
+            // Every waiter tries again; those that don't get the slot wait again.
+            waiting.into_iter().for_each(Waker::wake);
+        }
+    }
 
     type BoxError = Box<dyn std::error::Error + Send + Sync>;
 
@@ -71,16 +138,35 @@ mod resolver {
     /// private record among public ones is refused whole, so a rebinding answer can't pick it.
     pub struct PublicOnly;
 
+    #[cfg(test)]
+    #[test]
+    fn at_most_max_lookups_run_at_once_and_the_next_waits() {
+        // Process-wide: nextest runs each test in a process of its own.
+        let mut slots: Vec<Slot> = std::iter::from_fn(Slot::take).take(MAX_LOOKUPS + 1).collect();
+        assert_eq!(slots.len(), MAX_LOOKUPS, "no more start at once");
+        let mut waiting = Box::pin(Slot::wait());
+        let waker = futures::task::noop_waker();
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(waiting.as_mut().poll(&mut cx).is_pending(), "the next one waits");
+        slots.pop();
+        assert!(waiting.as_mut().poll(&mut cx).is_ready(), "and goes once a lookup finishes");
+    }
+
     impl reqwest::dns::Resolve for PublicOnly {
         fn resolve(&self, name: reqwest::dns::Name) -> reqwest::dns::Resolving {
             let host = name.as_str().to_owned();
-            let (tx, rx) = futures::channel::oneshot::channel();
-            // The system resolver blocks; it runs on its own thread so no runtime is assumed.
-            let spawned = std::thread::Builder::new().name("nodecraft-dns".into()).spawn(move || {
-                let _ = tx.send((host.as_str(), 0u16).to_socket_addrs().map(Iterator::collect::<Vec<SocketAddr>>));
-            });
             Box::pin(async move {
-                spawned.map_err(|_| refused("the name lookup could not start"))?;
+                // The system resolver blocks; it runs on its own thread so no runtime is assumed,
+                // and at most MAX_LOOKUPS such threads run at once.
+                let slot = Slot::wait().await;
+                let (tx, rx) = futures::channel::oneshot::channel();
+                std::thread::Builder::new()
+                    .name("nodecraft-dns".into())
+                    .spawn(move || {
+                        let _slot = slot;
+                        let _ = tx.send((host.as_str(), 0u16).to_socket_addrs().map(Iterator::collect::<Vec<SocketAddr>>));
+                    })
+                    .map_err(|_| refused("the name lookup could not start"))?;
                 let addrs = rx.await.map_err(|_| refused("the name lookup stopped"))?.map_err(|_| refused("the name didn't resolve"))?;
                 if addrs.is_empty() || !addrs.iter().all(|a| public_address(a.ip())) {
                     return Err(refused("the name resolves to an address that isn't public"));

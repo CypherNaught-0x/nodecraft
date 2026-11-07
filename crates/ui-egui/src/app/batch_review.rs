@@ -147,7 +147,15 @@ fn item_value(node: &Node, index: usize) -> Option<&Value> {
 
 /// The review of `node`'s active result, labelled with its batches' current items. `None` when
 /// the result wasn't fanned out or its items don't match its outputs.
-pub(crate) fn review(canvas: &Canvas, kinds: &nodecraft_nodes::Registry, node: &Node) -> Option<Review> {
+///
+/// `canvases` are the project's: a result fanned by a batch inside a technique (#1073) names the
+/// batch by its inlined id, so its labels are read from the canvas with its techniques inlined.
+pub(crate) fn review(
+    canvases: &std::collections::BTreeMap<nodecraft_types::CanvasId, Canvas>,
+    canvas: &Canvas,
+    kinds: &nodecraft_nodes::Registry,
+    node: &Node,
+) -> Option<Review> {
     let generation = active(node).filter(|_| reviewable(node))?;
     let Some(Value::List(values)) = generation.outputs.first() else { return None };
     if values.len() != generation.items.len() {
@@ -156,7 +164,11 @@ pub(crate) fn review(canvas: &Canvas, kinds: &nodecraft_nodes::Registry, node: &
     let missing: BTreeMap<usize, Missing> =
         generation.incomplete.iter().flat_map(|incomplete| &incomplete.missing).filter_map(|m| Some((usize::try_from(m.item).ok()?, m.why))).collect();
     let shape: Vec<NodeId> = generation.items.first()?.iter().map(|key| key.batch).collect();
-    let axes: Vec<Axis> = shape.iter().enumerate().map(|(index, batch)| axis(canvas, kinds, *batch, index, &generation.items)).collect();
+    // Inline only when a batch isn't on the canvas: one inside a technique node's version.
+    let expanded =
+        shape.iter().any(|batch| !canvas.nodes().contains_key(batch)).then(|| nodecraft_exec::technique::expand(canvases, canvas, kinds).ok()).flatten();
+    let labelled: &Canvas = expanded.as_ref().map_or(canvas, |expanded| &*expanded.canvas);
+    let axes: Vec<Axis> = shape.iter().enumerate().map(|(index, batch)| axis(labelled, kinds, *batch, index, &generation.items)).collect();
     let items = generation
         .items
         .iter()
@@ -248,7 +260,7 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let fresh = open_review.cache.as_ref().is_some_and(|c| c.canvas == self.canvas && c.generation == generation && c.revision == revision);
         if !fresh {
-            let review = review(canvas, self.session.kinds(), node).map(std::sync::Arc::new);
+            let review = review(self.session.document().canvases(), canvas, self.session.kinds(), node).map(std::sync::Arc::new);
             open_review.cache = Some(Cached { canvas: self.canvas, generation, revision, review });
         }
         let review = open_review.cache.as_ref().and_then(|cached| cached.review.clone());
