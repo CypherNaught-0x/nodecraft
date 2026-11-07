@@ -83,6 +83,7 @@ impl Limits {
                 | Model::HeygenSpeed
                 | Model::HeygenPrecision
                 | Model::Pika
+                | Model::PikaFrames
                 | Model::Wan3Text
                 | Model::Wan3Frames
                 | Model::GrokText
@@ -107,7 +108,8 @@ impl Limits {
             }),
             request_bytes: self.request_bytes.min(if model.heygen() {
                 Self::HEYGEN_HARD.request_bytes
-            } else if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages) {
+            } else if matches!(model, Model::GrokEdit | Model::QwenEdit | Model::RodinImages | Model::RodinFastImages | Model::PikaFrames) {
+                // Pika keyframes: five 1 MiB frames as data URIs.
                 Self::GROK_HARD.request_bytes
             } else {
                 Self::HARD.request_bytes

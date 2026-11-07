@@ -5,8 +5,9 @@
 //! (`[media]`), never ones a project names. Everything here is view state: which card plays, and
 //! where; nothing is written to the document. Natively, a video's bytes are read on a thread of
 //! their own, imported into the service, and frames are asked for one at a time per card, so a
-//! playing card shows the newest frame the service could make, not every frame. Browsers have no
-//! video service, so cards say playback needs the desktop app.
+//! playing card shows the newest frame the service could make, not every frame. The browser has
+//! no video service: there the page's own `<video>` element decodes the card's video and plays
+//! its sound, and its current frame is drawn into the card (#1069, [`web`]).
 use nodecraft_graph::Node;
 use nodecraft_types::{AssetRef, Value};
 
@@ -73,40 +74,7 @@ pub(crate) mod import;
 pub use web::Videos;
 
 #[cfg(target_arch = "wasm32")]
-mod web {
-    use super::{VideoIntent, VideoView};
-    use nodecraft_types::NodeId;
-
-    /// Browsers have no video service yet.
-    #[derive(Default)]
-    pub struct Videos;
-
-    impl Videos {
-        pub fn configure(&mut self, _: Option<(&std::path::Path, &std::path::Path)>) {}
-        pub fn poll(&mut self, _: &egui::Context) {}
-        pub fn view(
-            &mut self,
-            _: &egui::Context,
-            _: NodeId,
-            _: &nodecraft_types::AssetRef,
-            _: f32,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> VideoView {
-            VideoView::Unavailable("Video playback needs the desktop app")
-        }
-        pub fn still(
-            &mut self,
-            _: &egui::Context,
-            _: &nodecraft_types::AssetRef,
-            _: f32,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> (Option<u64>, Option<(egui::TextureId, [u32; 2])>) {
-            (None, None)
-        }
-        pub fn act(&mut self, _: &egui::Context, _: NodeId, _: VideoIntent) {}
-        pub fn retain(&mut self, _: impl Fn(NodeId) -> bool) {}
-    }
-}
+mod web;
 
 #[cfg(not(target_arch = "wasm32"))]
 mod native {

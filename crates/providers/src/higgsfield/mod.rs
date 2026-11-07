@@ -23,6 +23,9 @@ use std::sync::{Arc, Mutex};
 
 /// SOUL 2 text to image. Higgsfield's SOUL 1 lives on another path; this is the v2 model.
 pub const SOUL: &str = "higgsfield-ai/soul/v2/standard";
+/// SOUL 2 image to image (#1043): a prompt and one scene image, optionally drawn with a Soul ID.
+/// Checked 2026-11-06 against https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference.
+pub const SOUL_I2I: &str = "higgsfield-ai/soul/v2/image-to-image";
 /// Kling 2.5 Turbo Pro: one image animated into a 5 or 10 second clip.
 pub const KLING_I2V: &str = "kling-video/v2.5-turbo/pro/image-to-video";
 /// Genjutsu motion transfer: the source video's motion, performed by the reference images' subjects.
@@ -622,6 +625,7 @@ impl Higgsfield {
     fn record(data: &serde_json::Value) -> Result<(&'static str, u64), ProviderError> {
         let model = match data.get("model").and_then(serde_json::Value::as_str) {
             Some(SOUL) => SOUL,
+            Some(SOUL_I2I) => SOUL_I2I,
             Some(KLING_I2V) => KLING_I2V,
             Some(MOTION_TRANSFER) => MOTION_TRANSFER,
             Some(OBJECT_SWAP) => OBJECT_SWAP,
@@ -629,7 +633,7 @@ impl Higgsfield {
             Some(SOUL_TRAINER) => SOUL_TRAINER,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
-        let count = data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));
+        let count = data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || model == SOUL_I2I || *n == 1));
         match (data.get("v").and_then(serde_json::Value::as_u64), count) {
             (Some(1), Some(count)) => Ok((model, count)),
             _ => Err(invalid("Higgsfield handle record refused")),

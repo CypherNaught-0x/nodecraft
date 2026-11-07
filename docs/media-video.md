@@ -295,8 +295,11 @@ ffmpeg = "/opt/homebrew/bin/ffmpeg"
 ffprobe = "/opt/homebrew/bin/ffprobe"
 ```
 
-They come from the trusted native host, never from a project. Without them, or in the browser build, the
-card says what is missing instead of a frame. A card shows a poster frame from the start of the
+They come from the trusted native host, never from a project. Without them the card says what is
+missing instead of a frame. The browser build needs neither: there the page's own `<video>`
+element decodes the card's video and plays its sound, and the card draws its current frame
+(#1069); a video the browser can't decode says so. Rendering (the Timeline, video actions) still
+needs desktop FFmpeg, and in the browser those cards say so. A card shows a poster frame from the start of the
 clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:
 they change nothing in the document and are not commands.
 
@@ -376,4 +379,6 @@ from all four clips confirmed their distinct pictures and audible signals. The d
 the same engine path as [the two-clip integration test](../crates/engine/tests/timeline109.rs).
 
 This check covers the rendered video. Importing exported cuts into Final Cut Pro and
-DaVinci Resolve is tracked in [#643](https://github.com/CypherNaught-0x/nodecraft/issues/643).
+DaVinci Resolve can be checked by hand (see "Checking an import" in
+[timeline-interchange.md](timeline-interchange.md)); that hasn't been done yet. It is tracked in
+[#1066](https://github.com/CypherNaught-0x/nodecraft/issues/1066).
