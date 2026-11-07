@@ -144,7 +144,7 @@ node kind, and the CLI and the MCP server create the same card with the same `no
 
 ### Tags, and a filter that highlights what matches
 
-![The tag filter panel highlights the Look-tagged dawn treatment cards inside their coloured field.](assets/readme/tags.png)
+![The tag filter panel lists the canvas tags and highlights the Look-tagged cards across the coloured fields.](assets/readme/tags.png)
 
 Named colour tags per canvas, a bounded highlight filter, and a small colour marker on every
 tagged card.
