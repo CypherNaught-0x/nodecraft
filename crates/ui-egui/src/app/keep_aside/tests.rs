@@ -476,3 +476,21 @@ fn decide_later_while_only_looking_for_earlier_copies_still_takes_the_journal_ov
     let canvas = h.state().canvas;
     h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": nodecraft_graph::Node::new(ADDED, "source.text")})).unwrap();
 }
+
+/// #367: each replay of an earlier copy is charged, as the live journal's is. A copy whose replay
+/// wouldn't fit stops the scan: the window still takes the journal over, says the earlier work
+/// wasn't checked, and the copy stays.
+#[test]
+fn an_earlier_copy_whose_replay_would_not_fit_is_left_for_next_time() {
+    let dir = Scratch::new("earlier-space");
+    let good = crash(&dir);
+    std::fs::write(dir.0.join("session.journal.unrecovered-1"), &good).unwrap();
+    std::fs::remove_file(dir.journal()).unwrap();
+    let mut storage = NativeStorage::new(dir.journal()).unwrap();
+    storage.set_space_probe(Arc::new(|_| SpaceProbe { recovery_free: Some(1), ..SpaceProbe::default() }));
+    let kept = keep(&dir.journal(), &storage, &TransferCancel::default(), &Progress::default(), true).unwrap();
+    assert!(kept.skipped && kept.offer.is_none() && kept.kept.is_none());
+    let why = kept.skipped_why.expect("the reason is kept for the notice");
+    assert!(why.contains("free") && !why.contains(dir.0.to_str().unwrap()), "sizes, never paths: {why}");
+    assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), good, "the copy is left as it was");
+}

@@ -77,6 +77,9 @@ pub const MINIMAX_SPEECH: &str = "fal-ai/minimax/speech-2.8-hd";
 pub const MINIMAX_MUSIC: &str = "minimax/music-3";
 /// Current Pika2.5 image-to-video through fal (#29).
 pub const PIKA_I2V: &str = "fal-ai/pika/v2.5/image-to-video";
+/// Current Pika 2.5 keyframes (Pikaframes) through fal (#1061): 2 to 5 frames, a transition
+/// between each pair.
+pub const PIKA_FRAMES: &str = "fal-ai/pika/v2.5/pikaframes";
 /// HeyGen supplied-audio Photo Avatar4 and video lip sync through fal (#43).
 pub const HEYGEN_AVATAR: &str = "fal-ai/heygen/avatar4/image-to-video";
 pub const HEYGEN_SPEED: &str = "fal-ai/heygen/v3/lipsync/speed";
@@ -192,6 +195,7 @@ enum Model {
     Ideogram,
     Topaz,
     Pika,
+    PikaFrames,
     HeygenAvatar,
     HeygenSpeed,
     HeygenPrecision,
@@ -242,6 +246,7 @@ impl Model {
             IDEOGRAM => Ok(Self::Ideogram),
             TOPAZ_IMAGE => Ok(Self::Topaz),
             PIKA_I2V => Ok(Self::Pika),
+            PIKA_FRAMES => Ok(Self::PikaFrames),
             HEYGEN_AVATAR => Ok(Self::HeygenAvatar),
             HEYGEN_SPEED => Ok(Self::HeygenSpeed),
             HEYGEN_PRECISION => Ok(Self::HeygenPrecision),
@@ -289,6 +294,7 @@ impl Model {
             Self::Ideogram => IDEOGRAM,
             Self::Topaz => TOPAZ_IMAGE,
             Self::Pika => PIKA_I2V,
+            Self::PikaFrames => PIKA_FRAMES,
             Self::HeygenAvatar => HEYGEN_AVATAR,
             Self::HeygenSpeed => HEYGEN_SPEED,
             Self::HeygenPrecision => HEYGEN_PRECISION,
@@ -314,6 +320,7 @@ impl Model {
                 | Self::MiniMaxText
                 | Self::MiniMaxFrames
                 | Self::Pika
+                | Self::PikaFrames
                 | Self::Wan3Text
                 | Self::Wan3Frames
                 | Self::GrokText
@@ -326,6 +333,10 @@ impl Model {
                 | Self::LtxText
                 | Self::LtxFrames
         )
+    }
+    /// Pika's models, which share its delivery bucket and result policy.
+    fn pika(self) -> bool {
+        matches!(self, Self::Pika | Self::PikaFrames)
     }
     fn heygen(self) -> bool {
         matches!(self, Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision)
@@ -365,7 +376,7 @@ impl Model {
             Self::Photon => LUMA_PHOTON,
             Self::Ideogram => "fal-ai/ideogram",
             Self::Topaz => "topaz/upscale",
-            Self::Pika => "fal-ai/pika",
+            Self::Pika | Self::PikaFrames => "fal-ai/pika",
             Self::HeygenAvatar | Self::HeygenSpeed | Self::HeygenPrecision => "fal-ai/heygen",
             Self::Image => "fal-ai/flux",
             Self::Video | Self::Frames | Self::Speech => "fal-ai/wan",
@@ -757,8 +768,8 @@ impl Fal {
                     return Err(malformed("HeyGen declared geometry disagrees with actual video"));
                 }
             }
-            if record.model == Model::Pika && (f.width.is_some() || f.height.is_some()) {
-                let info = media::pika::probe(&reply.body, limits)?;
+            if record.model.pika() && (f.width.is_some() || f.height.is_some()) {
+                let info = media::pika::probe(&reply.body, limits, record.model)?;
                 if f.width.is_some_and(|n| n != u64::from(info.0)) || f.height.is_some_and(|n| n != u64::from(info.1)) {
                     return Err(malformed("Pika declared geometry disagrees with actual video"));
                 }

@@ -485,14 +485,39 @@ impl Session {
         if self.persistence.is_some() {
             return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
         }
-        let snapshot = Snapshot { project: self.document.clone(), assets: self.assets.clone(), epoch: 0 };
         // No origin: the document keeps its identity, so nothing is migrated.
-        let (persistence, document) = crate::persistence::Persistence::new(crate::persistence::Store::Sendable(storage), snapshot, None)?;
-        if document.migration.is_some() || document.snapshot.project.id() != self.document.id() {
+        let prepared = Self::prepare_storage(storage, Snapshot { project: self.document.clone(), assets: self.assets.clone(), epoch: 0 })?;
+        self.attach_prepared(prepared)
+    }
+    /// [`Self::attach_storage`]'s disk work, done on another thread (#367): checkpoints
+    /// `snapshot` (the document a held session shows, and its assets) into `storage`, so the UI
+    /// thread only installs the result with [`Self::attach_prepared`]. That checkpoint replaces
+    /// the storage's journal, as attaching does.
+    pub fn prepare_storage(storage: Box<dyn ProjectStorage + Send>, snapshot: Snapshot) -> Result<PreparedStorage, Error> {
+        snapshot.project.validate()?;
+        let project = snapshot.project.clone();
+        let asset_hashes: Vec<nodecraft_types::Blake3> = snapshot.assets.hashes().copied().collect();
+        let mut storage = storage;
+        let (opening, document) = crate::persistence::Persistence::open_in(storage.as_mut(), snapshot, None)?;
+        if document.migration.is_some() || document.snapshot.project.id() != project.id() {
             return Err(Error::new(ErrorKind::Internal, "attaching storage changed the project's identity"));
         }
-        self.assets = document.snapshot.assets;
-        self.persistence = Some(persistence);
+        Ok(PreparedStorage { storage, opening, project, asset_hashes, assets: document.snapshot.assets })
+    }
+    /// Installs storage [`Self::prepare_storage`] checkpointed, when this session still shows
+    /// exactly the document and assets it was prepared from (a held session can't change). A
+    /// session that changed meanwhile is refused rather than given a checkpoint without its
+    /// changes; the storage, and its lock, go with the refusal.
+    pub fn attach_prepared(&mut self, prepared: PreparedStorage) -> Result<(), Error> {
+        if self.persistence.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
+        }
+        let hashes: Vec<nodecraft_types::Blake3> = self.assets.hashes().copied().collect();
+        if prepared.project != self.document || prepared.asset_hashes != hashes {
+            return Err(Error::new(ErrorKind::Conflict, "the project changed while its storage was prepared"));
+        }
+        self.assets = prepared.assets;
+        self.persistence = Some(crate::persistence::Persistence::assemble(crate::persistence::Store::Sendable(prepared.storage), prepared.opening));
         self.storage_hold = false;
         self.status_revision = self.status_revision.saturating_add(1);
         Ok(())
@@ -2208,3 +2233,15 @@ mod admission_tests;
 
 #[cfg(test)]
 mod clipboard_tests;
+
+/// Project storage checkpointed off the UI thread for a session to take over (#367): see
+/// [`Session::prepare_storage`].
+pub struct PreparedStorage {
+    storage: Box<dyn ProjectStorage + Send>,
+    opening: crate::persistence::Opening,
+    /// The document and assets it was checkpointed from, to check the session against.
+    project: nodecraft_graph::Project,
+    asset_hashes: Vec<nodecraft_types::Blake3>,
+    /// Those assets, moved into the storage's context.
+    assets: nodecraft_format::AssetStore,
+}
