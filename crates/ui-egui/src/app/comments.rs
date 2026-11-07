@@ -1088,7 +1088,7 @@ mod tests {
         h.run();
         h.get_by_role_and_label(Role::Button, "Save message").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, "Add Note").click();
+        h.get_by_role_and_label(Role::Button, "Add note").click();
         h.run();
         let note =
             h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().find(|node| node.kind == "structure.note").unwrap().id;
@@ -1197,7 +1197,7 @@ mod tests {
         h.get_by_role_and_label(Role::Button, "Resolved · A local discussion · 2 messages");
         h.get_by_role_and_label(Role::Button, "Reopen").click();
         h.run();
-        h.get_by_role_and_label(Role::Button, "Add Note").click();
+        h.get_by_role_and_label(Role::Button, "Add note").click();
         h.run();
         assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().values().any(|node| node.kind == "structure.note"));
         h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();

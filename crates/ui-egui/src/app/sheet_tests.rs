@@ -645,8 +645,8 @@ fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
     assert!(h.query_by_label("Done 2/2").is_some(), "the table says which result of how many");
     show_grid(&mut h);
     assert!(h.query_by_label("2 of 2").is_some());
-    assert!(h.get_by_role_and_label(Role::Button, "›").accesskit_node().is_disabled());
-    press(&mut h, Role::Button, "‹");
+    assert!(h.get_by_role_and_label(Role::Button, "Newer result").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "Older result");
     assert_eq!(
         active(&h),
         Some(history[0]),
