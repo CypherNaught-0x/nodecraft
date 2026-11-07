@@ -712,7 +712,7 @@ tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-
 again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
 Windows that aren't floating panels get `panel_check::check_window`: open, on the screen, and no
 crossing controls. A window that only shows a message gets `check_message_window`, which
-allows it no controls.
+accepts a window with no controls.
 
 | Surface | Opens from | Kind | Covered by |
 |---|---|---|---|

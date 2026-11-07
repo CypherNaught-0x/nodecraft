@@ -1,6 +1,7 @@
 //! The shared layout check for floating panels (#959): a panel opens inside the floating panel
 //! area, and none of its own on-screen controls crosses another. Panels' own tests call
-//! [`check_open_panels`] once they have opened their panel, and windows' tests [`check_window`].
+//! [`check_open_panels`] once they have opened their panel, windows' tests [`check_window`], or
+//! [`check_message_window`] for a window that only shows a message.
 use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::NodeT};
