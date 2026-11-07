@@ -75,7 +75,7 @@ default = { type = "unsigned", value = "1" }
 - **Parameters** use the node parameter schema (`ParamControl` in `crates/types`): resolutions,
   aspect ratios and durations are `choice` or numeric controls. Integer values are written as
   strings (`"28"`) so 64-bit values survive JSON.
-- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second` or `per_unit` (`unit` = `call`, `image`, `second`,
+- **Pricing** is `free`, `by_usage` (`currency`), `per_call` (`price`), `per_source_second`, `per_output_megapixel` or `per_unit` (`unit` = `call`, `image`, `second`,
   `megapixel`, `thousand_tokens`, `thousand_characters` or `thousand_steps`; `price`; a `count`
   parameter and/or a `default_count` ≥ 1). The count is the parameter's value *after* schema
   defaults, so the quote matches what runs; `count` must be a numeric control (`unsigned`,
@@ -109,6 +109,13 @@ default = { type = "unsigned", value = "1" }
   must be positive and in the same currency as the output rates. Every mode uses the same
   minimum/maximum count bounds for the charged role; use separate model descriptors when
   modes need different bounds.
+  `per_output_megapixel` (`width`, `height`, `first`, `additional`, #1062) prices an image by its
+  area: `first` for the first megapixel and `additional` for each further one, the
+  `width` × `height` settings rounded up to whole megapixels of 1024 × 1024 pixels (never less
+  than one), as Black Forest Labs bills FLUX.2:
+  `pricing = { type = "per_output_megapixel", width = "width", height = "height", first = "0.014 USD", additional = "0.001 USD" }`.
+  Both settings must be unsigned with defaults; `first` is above zero, and both prices are in one
+  currency.
   `by_usage` describes composite measured usage without a reliable pre-submit amount. It always
   returns an unknown quote, never zero: finite caps refuse it; an uncapped authorized host must
   make the incomplete price explicit. Token counters are not an exact monetary invoice.

@@ -11,7 +11,7 @@ fn delivery(s: &str, key: &Secret, model: Model) -> Result<(), ProviderError> {
     if s.contains(key.expose()) {
         return Err(malformed("fal output URL refused or redacted"));
     }
-    if (model.recraft() || model == Model::Pika) && recraft_bucket(s) {
+    if (model.recraft() || model.pika()) && recraft_bucket(s) {
         return Ok(());
     }
     storage(s)
@@ -94,6 +94,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
         | Model::HeygenSpeed
         | Model::HeygenPrecision
         | Model::Pika
+        | Model::PikaFrames
         | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
@@ -189,6 +190,7 @@ pub(super) fn outputs(b: &[u8], r: Record, l: Limits, key: &Secret) -> Result<Ve
             | Model::HeygenSpeed
             | Model::HeygenPrecision
             | Model::Pika
+            | Model::PikaFrames
             | Model::Wan3Text
             | Model::Wan3Frames
             | Model::GrokText

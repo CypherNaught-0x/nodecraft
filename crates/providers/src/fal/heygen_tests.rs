@@ -174,6 +174,8 @@ fn heygen43_larger_input_request_envelopes_are_isolated_from_every_legacy_model(
         assert_eq!(l.for_model(model).request_bytes, 4 * 1024 * 1024);
     }
     assert_eq!(l.for_model(Model::GrokEdit).request_bytes, 8 * 1024 * 1024);
+    // Pika keyframes (#1061) take five 1 MiB frames in one request.
+    assert_eq!((l.for_model(Model::PikaFrames).input_bytes, l.for_model(Model::PikaFrames).request_bytes), (1024 * 1024, 8 * 1024 * 1024));
     let mut b = CLIP.to_vec();
     b.extend_from_slice(&(2 * 1024 * 1024u32 + 8).to_be_bytes());
     b.extend_from_slice(b"free");

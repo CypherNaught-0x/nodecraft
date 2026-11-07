@@ -103,6 +103,8 @@ pub(super) struct Kept {
     /// Looking for an earlier copy to offer was stopped: the live journal held nothing, so the
     /// session may still take it over, and the copies stay to be offered next time.
     pub skipped: bool,
+    /// Why, when it wasn't a cancel (a copy's replay wouldn't fit): said with the notice.
+    pub skipped_why: Option<String>,
 }
 
 /// Whether there is nothing to keep aside or offer: no journal (or an empty one) and no kept
@@ -156,13 +158,20 @@ pub(super) fn keep(recovery: &Path, storage: &NativeStorage, cancel: &TransferCa
     }
     let Some(replayed) = work else {
         if !earlier {
-            return Ok(Kept { kept: None, offer: None, skipped: false });
+            return Ok(Kept { kept: None, offer: None, skipped: false, skipped_why: None });
         }
         progress.set(Step::Earlier);
-        return Ok(match RecoveryOffer::earlier(recovery, cancel) {
-            Ok(offer) => Kept { kept: None, offer, skipped: false },
-            Err(error) if TransferCancel::is_cancellation(&error) => Kept { kept: None, offer: None, skipped: true },
-            Err(error) => return Err(error),
+        // Stopped (cancelled, or a copy's replay wouldn't fit): the copies stay for next time,
+        // and the window takes the journal over all the same.
+        return Ok(match RecoveryOffer::earlier(recovery, cancel, &probe) {
+            Ok(offer) => Kept { kept: None, offer, skipped: false, skipped_why: None },
+            Err(error) => {
+                let why = (!TransferCancel::is_cancellation(&error)).then(|| error.message.clone());
+                if let Some(why) = &why {
+                    log::warn!("earlier unsaved work wasn't checked: {why}");
+                }
+                Kept { kept: None, offer: None, skipped: true, skipped_why: why }
+            }
         });
     };
     let kept = keep_copy(recovery, cancel, progress, &probe)?;
@@ -174,7 +183,7 @@ pub(super) fn keep(recovery: &Path, storage: &NativeStorage, cancel: &TransferCa
         log::warn!("the kept journal's project file wasn't recorded: {error}");
     }
     let offer = RecoveryOffer::from_replay(kept.clone(), replayed);
-    Ok(Kept { kept: Some(kept), offer: Some(offer), skipped: false })
+    Ok(Kept { kept: Some(kept), offer: Some(offer), skipped: false, skipped_why: None })
 }
 
 fn unkeepable(_: impl std::fmt::Debug) -> Error {
@@ -255,8 +264,10 @@ pub(super) fn copy_aside(from: &Path, to: &Path, cancel: &TransferCancel, copied
 
 /// How a keep-aside ended.
 pub(super) enum Outcome {
-    /// Settled: the storage, its lock still held, for the session to take over.
-    Kept(Box<(NativeStorage, Kept)>),
+    /// Settled: the storage, its lock still held and its first checkpoint already written off
+    /// the UI thread (#367), for the session to take over; or why that checkpoint failed after
+    /// the journal was kept aside.
+    Kept(Box<(Result<nodecraft_engine::PreparedStorage, Error>, Kept)>),
     Failed(Error),
     /// "Decide later" or quitting stopped it; the journal is as it was.
     Cancelled,
@@ -283,7 +294,9 @@ pub(super) struct KeepAside {
 
 impl KeepAside {
     /// Starts keeping the journal at `journal` aside on `spawn`, `storage` holding its lock.
-    pub(super) fn start(journal: PathBuf, storage: NativeStorage, spawn: &Spawn) -> Self {
+    /// Once it is kept, the same thread checkpoints `snapshot` (what the held session shows)
+    /// into the storage, so taking it over on the UI thread writes nothing.
+    pub(super) fn start(journal: PathBuf, storage: NativeStorage, snapshot: nodecraft_format::Snapshot, spawn: &Spawn) -> Self {
         let cancel = TransferCancel::default();
         let progress = Arc::new(Progress::default());
         let (send, settled) = mpsc::channel();
@@ -291,7 +304,7 @@ impl KeepAside {
             let (journal, cancel, progress) = (journal.clone(), cancel.clone(), Arc::clone(&progress));
             Box::new(move || {
                 let outcome = match keep(&journal, &storage, &cancel, &progress, true) {
-                    Ok(kept) => Outcome::Kept(Box::new((storage, kept))),
+                    Ok(kept) => Outcome::Kept(Box::new((nodecraft_engine::Session::prepare_storage(Box::new(storage), snapshot), kept))),
                     // The storage, and with it the journal's lock, goes before the window hears.
                     Err(error) => {
                         drop(storage);
@@ -432,8 +445,8 @@ impl NodeCraftApp {
         let mut owns = false;
         let problem = match outcome {
             Outcome::Kept(settled) => {
-                let (storage, kept) = *settled;
-                let attached = self.session.attach_storage(Box::new(storage)).map(|()| kept);
+                let (prepared, kept) = *settled;
+                let attached = prepared.and_then(|prepared| self.session.attach_prepared(prepared)).map(|()| kept);
                 match attached {
                 Ok(kept) => {
                     owns = true;
@@ -441,9 +454,11 @@ impl NodeCraftApp {
                         log::info!("recovery: kept the earlier session's journal as {}", kept.display());
                     }
                     if kept.skipped {
-                        self.notice = Some(
-                            "Earlier unsaved work wasn't checked. It stays in the recovery folder and is offered the next time NodeCraft starts.".into(),
-                        );
+                        // A space refusal says what is short and by how much (sizes, never paths).
+                        let why = kept.skipped_why.as_deref().map(|why| format!(" {}", sentence(why))).unwrap_or_default();
+                        self.notice = Some(format!(
+                            "Earlier unsaved work wasn't checked.{why} It stays in the recovery folder and is offered the next time NodeCraft starts."
+                        ));
                     }
                     self.attach_recovery_offer(journal, kept.offer);
                     None

@@ -45,6 +45,13 @@ impl Store {
         }
     }
 }
+/// A first checkpoint written by [`Persistence::open_in`], for [`Persistence::assemble`] (#367).
+pub(crate) struct Opening {
+    capability: StorageCapability,
+    epoch: u64,
+    adopted: CheckpointState,
+    metrics: StreamMetrics,
+}
 /// What a save published: the destination's access, and the new checkpoint unless writing it
 /// failed after the destination was already replaced.
 struct Published {
@@ -259,8 +266,15 @@ pub(crate) struct Persistence {
 }
 impl Persistence {
     pub fn new(mut store: Store, snapshot: Snapshot, origin: Option<StorageLocation>) -> Result<(Self, OpenedDocument), Error> {
+        let (opening, document) = Self::open_in(store.get()?, snapshot, origin)?;
+        Ok((Self::assemble(store, opening), document))
+    }
+    /// [`Self::new`]'s disk work, on `storage` alone (#367): prepares the document and its
+    /// assets and writes the first checkpoint. Run where the storage is, so a host can do it off
+    /// the UI thread and [`Self::assemble`] the result there.
+    pub(crate) fn open_in(storage: &mut dyn ProjectStorage, snapshot: Snapshot, origin: Option<StorageLocation>) -> Result<(Opening, OpenedDocument), Error> {
         let scope = if snapshot.project.id() == project_identity::LEGACY {
-            origin.as_ref().map(|location| guard(|| store.get()?.project_identity_scope(location))).transpose()?
+            origin.as_ref().map(|location| guard(|| storage.project_identity_scope(location))).transpose()?
         } else {
             None
         };
@@ -268,7 +282,6 @@ impl Persistence {
         let snapshot = &mut document.snapshot;
         let cancel = TransferCancel::default();
         let metrics = StreamMetrics::default();
-        let storage = store.get()?;
         let capability = guard(|| Ok(storage.capability()))?;
         if capability == StorageCapability::StreamingV2 {
             let context = guard(|| Ok(storage.asset_context()))?
@@ -278,13 +291,19 @@ impl Persistence {
         let archive = ArchivePlan::prepare(snapshot, capability, &cancel, &metrics)?;
         let checkpoint = CheckpointPlan::new(archive)?;
         let adopted = CheckpointState::prepare(&checkpoint)?;
+        guard(|| storage.checkpoint_plan(&checkpoint, &cancel, &metrics))?;
+        Ok((Opening { capability, epoch: snapshot.epoch, adopted, metrics }, document))
+    }
+    /// The persistence over `store` once [`Self::open_in`] checkpointed it: no disk work.
+    pub(crate) fn assemble(store: Store, opening: Opening) -> Self {
+        let Opening { capability, epoch, adopted, metrics } = opening;
         let mut state = Self {
             store,
             pending: None,
             capability,
             location: None,
             saved_state: None,
-            epoch: snapshot.epoch,
+            epoch,
             checkpoint: adopted.identity,
             assets: RecordedAssets::default(),
             sequence: 0,
@@ -296,9 +315,8 @@ impl Persistence {
             metrics,
             last: None,
         };
-        guard(|| state.store.get()?.checkpoint_plan(&checkpoint, &cancel, &state.metrics))?;
         state.adopt(adopted);
-        Ok((state, document))
+        state
     }
     fn adopt(&mut self, checkpoint: CheckpointState) {
         self.checkpoint = checkpoint.identity;
