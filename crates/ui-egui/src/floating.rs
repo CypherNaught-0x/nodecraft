@@ -95,12 +95,12 @@ fn header_height_id(id: Id) -> Id {
 }
 
 /// The height a panel's body can take without the panel leaving the floating panel area: the
-/// area's height less the panel's measured header (the cascade token until it is measured) and
-/// its frame's margins. Never negative.
+/// area's height less what sits above the body (the measured gap from the panel's top edge to its
+/// content: stroke, title and top padding; the cascade token until measured) and below it (the
+/// bottom padding and stroke). Never negative.
 pub fn body_room(ctx: &Context, id: Id, t: &Tokens) -> f32 {
-    let header = ctx.data(|data| data.get_temp::<f32>(header_height_id(id))).filter(|height| height.is_finite()).unwrap_or(t.panel_cascade);
-    let spacing = ctx.global_style().spacing.item_spacing.y;
-    (bounds(ctx, t).area.height() - header - t.card_padding * 2.0 - spacing * 2.0).max(0.0)
+    let above = ctx.data(|data| data.get_temp::<f32>(header_height_id(id))).filter(|height| height.is_finite()).unwrap_or(t.panel_cascade);
+    (bounds(ctx, t).area.height() - above - t.card_padding - t.handle_stroke).max(0.0)
 }
 
 fn moved_id(id: Id) -> Id {

@@ -682,7 +682,7 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 | Custom shader | a shader card's menu | floating panel | `shader_editor_tests` (opened at 1000 × 700 and 1600 × 900, with the layout check) |
 | Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
 | PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
-| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check) |
+| Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |

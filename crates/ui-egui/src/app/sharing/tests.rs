@@ -328,8 +328,9 @@ fn the_share_chip_opens_the_panel() {
 #[test]
 fn the_share_panel_keeps_its_layout_idle_and_live_at_both_sizes() {
     let opened = Rc::new(RefCell::new(Vec::new()));
-    let relay = relay();
     for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        // A relay of its own per size: a room keeps its document after everyone leaves.
+        let relay = relay();
         let mut owner = app(&opened);
         if let Some(sharing) = &mut owner.sharing {
             sharing.panel.open = true;
