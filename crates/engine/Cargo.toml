@@ -71,6 +71,8 @@ nodecraft-format = { workspace = true, features = ["validation-metrics"] }
 tempfile = { workspace = true }
 futures = { workspace = true, features = ["executor"] }
 serde_json = { workspace = true }
+# Read exported FCPXML back as an editor would, to check the rules editors enforce on import (#1066).
+roxmltree = "=0.20.0"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
 # Real native Reqwest/Driver fixtures need an entered reactor, not the virtual test runtime.
@@ -80,6 +82,11 @@ tokio = { workspace = true, features = ["rt", "macros", "time", "net"] }
 [[test]]
 name = "it"
 path = "tests/it.rs"
+
+# The example plugin import run in a real browser (#1038): wasm32 only, under wasm-bindgen-test.
+[[test]]
+name = "browser_plugins_wasm"
+path = "tests/browser_plugins_wasm.rs"
 
 [[test]]
 name = "panic_hunt"
@@ -92,3 +99,8 @@ path = "tests/physical_zip64147.rs"
 [[test]]
 name = "template_catalog"
 path = "tests/template_catalog.rs"
+
+# Runs `tests/browser_plugins_wasm.rs` in a headless browser (#1038). Pinned to the release built
+# against the locked wasm-bindgen, which the runner (wasm-bindgen-cli) must match too.
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.79"

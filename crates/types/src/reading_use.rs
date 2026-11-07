@@ -117,7 +117,10 @@ impl ReadingUse {
         }
         Err(Error::new(
             ErrorKind::InvalidInput,
-            format!("{CONTEXT_LIMIT}: the prompt alone is at least {tokens} tokens and {model} reads at most {window}; {CONTEXT_LIMIT_FIX}"),
+            format!(
+                "{CONTEXT_LIMIT}: the prompt alone is {} of text, at least {tokens} tokens, and {model} reads at most {window}; {CONTEXT_LIMIT_FIX}",
+                size(text_bytes)
+            ),
         ))
     }
 
@@ -197,6 +200,19 @@ fn every(ms: u32) -> String {
     }
 }
 
+/// A byte count as a person reads it, rounded down so it never overstates.
+fn size(bytes: usize) -> String {
+    const KIB: usize = 1024;
+    const MIB: usize = 1024 * 1024;
+    if bytes >= MIB {
+        format!("{}.{} MiB", bytes / MIB, (bytes % MIB) * 10 / MIB)
+    } else if bytes >= KIB {
+        format!("{} KiB", bytes / KIB)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,6 +261,8 @@ mod tests {
         assert_eq!(refused.kind, ErrorKind::InvalidInput);
         assert!(refused.message.starts_with(CONTEXT_LIMIT), "{refused}");
         assert!(refused.message.contains("at least 11 tokens") && refused.message.contains("fixture.model reads at most 10"), "{refused}");
+        assert!(refused.message.contains("the prompt alone is 61 bytes of text"), "says how large the input is (#1074): {refused}");
+        assert_eq!((size(2047), size(3 * 1024 * 1024 + 600 * 1024), size(usize::MAX).is_empty()), ("1 KiB".to_owned(), "3.5 MiB".to_owned(), false));
         assert!(refused.message.ends_with(CONTEXT_LIMIT_FIX), "says what to do: {refused}");
         assert!(ReadingUse::default().context_fits("fixture.model", usize::MAX).is_ok(), "an undeclared window refuses nothing");
         assert!(full().context_fits("m", usize::MAX).is_err(), "no overflow on hostile sizes");
