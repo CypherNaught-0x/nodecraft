@@ -237,8 +237,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   is not proof that every provider, modality or input mode runs in every host. The text card's
   turn UI, mentions, streaming, connected-media thumbnails, video to text (Gemini 3.8 Flash,
   inline videos under 20 MB) and built-in models' declared context windows have landed (#84).
-  The built-in windows are far larger than a card's prompt can be, so an over-long request to
-  them is refused by the provider, not by planning; browser provider settings/option lists differ from
+  A prompt clearly past a model's declared window is refused when the run is quoted, with its
+  size and what to do, before anything is sent (#1074); one made earlier in the same run is
+  checked when its step is planned, still before the request. Browser provider settings/option lists differ from
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
