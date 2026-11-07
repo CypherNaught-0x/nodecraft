@@ -207,18 +207,21 @@ impl NodeCraftApp {
         let mut back = false;
         let mut apply = false;
         if choice.stale {
-            egui::Window::new("Model preview changed").order(egui::Order::Foreground).collapsible(false).show(ui.ctx(), |ui| {
-                ui.label("The document, selection or model catalog changed. Nothing was applied. Refresh and review the new proposal.");
-                if let Some(error) = &choice.error {
-                    ui.label(error);
-                }
-                if ui.button("Refresh models").clicked() {
-                    refresh = true;
-                }
-                if ui.button("Cancel model change").clicked() {
-                    close = true;
-                }
-            });
+            egui::Window::new("Model preview changed").id(egui::Id::new("nodecraft.model_stale")).order(egui::Order::Foreground).collapsible(false).show(
+                ui.ctx(),
+                |ui| {
+                    ui.label("The document, selection or model catalog changed. Nothing was applied. Refresh and review the new proposal.");
+                    if let Some(error) = &choice.error {
+                        ui.label(error);
+                    }
+                    if ui.button("Refresh models").clicked() {
+                        refresh = true;
+                    }
+                    if ui.button("Cancel model change").clicked() {
+                        close = true;
+                    }
+                },
+            );
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 close = true;
             }
@@ -273,7 +276,7 @@ impl NodeCraftApp {
                     },
                 },
                 Step::Review(preview) => {
-                    egui::Window::new("Review model change").order(egui::Order::Foreground).collapsible(false).default_width(t.dialog_width).show(
+                    egui::Window::new("Review model change").id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).default_width(t.dialog_width).show(
                         ui.ctx(),
                         |ui| {
                             ui.label(format!("Change {} node(s) to {}", preview.targets.len(), preview.model));
@@ -334,9 +337,13 @@ impl NodeCraftApp {
             if matches!(choice.step, Step::Picking(_))
                 && let Some(error) = &choice.error
             {
-                egui::Window::new("Model choice unavailable").order(egui::Order::Foreground).collapsible(false).show(ui.ctx(), |ui| {
-                    ui.label(error);
-                });
+                egui::Window::new("Model choice unavailable")
+                    .id(egui::Id::new("nodecraft.model_unavailable"))
+                    .order(egui::Order::Foreground)
+                    .collapsible(false)
+                    .show(ui.ctx(), |ui| {
+                        ui.label(error);
+                    });
             }
         }
         if apply

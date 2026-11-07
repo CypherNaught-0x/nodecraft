@@ -36,6 +36,7 @@ fn actual_card_pointer_preview_apply_is_one_atomic_undo_without_run_consent() {
     assert!(h.state().model_choice.is_some());
     choose(&mut h);
     assert_eq!(h.state().session.document(), &before);
+    crate::app::panel_check::check_window(&h, egui::Id::new("nodecraft.model_review"), "Review model change");
     h.get_by_label("Apply model change").click();
     h.run();
     assert!(h.state().model_choice.is_none());
@@ -91,6 +92,7 @@ fn external_document_or_same_revision_catalog_replacement_keeps_preview_stale() 
         h.run();
         assert!(h.state().model_choice.as_ref().unwrap().stale);
         assert!(h.query_by_label("Apply model change").is_none());
+        crate::app::panel_check::check_window(&h, egui::Id::new("nodecraft.model_stale"), "Model preview changed");
         h.get_by_label("Cancel model change").click();
         h.run();
         assert_eq!(h.state().session.document(), &before);
@@ -225,4 +227,16 @@ fn router949_model_picker_matches_all_direct_candidate_states_and_headless_check
             }
         }
     }
+}
+
+/// A picker-stage failure shows in its own window, on the screen with no crossing controls (#959).
+#[test]
+fn a_picker_failure_shows_in_a_window_that_keeps_its_layout() {
+    let mut h = harness();
+    h.get_by_label("Change model…").click();
+    h.run();
+    h.state_mut().model_choice.as_mut().unwrap().error = Some("The model catalog could not be read. Nothing was changed.".into());
+    h.run();
+    h.get_by_label("The model catalog could not be read. Nothing was changed.");
+    crate::app::panel_check::check_message_window(&h, egui::Id::new("nodecraft.model_unavailable"), "Model choice unavailable");
 }
