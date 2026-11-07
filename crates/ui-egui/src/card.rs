@@ -587,7 +587,13 @@ pub fn show(
                                 };
                                 let preview: String = current.chars().take(t.preview_chars).collect();
                                 ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
-                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                if ui
+                                    .add_enabled(editable, egui::Button::new("Change model…"))
+                                    .labelled_by(label.id)
+                                    .on_hover_text(&preview)
+                                    .on_disabled_hover_text(format!("{preview}\n\nThe model can't be changed here right now"))
+                                    .clicked()
+                                {
                                     intents.push(Intent::Model);
                                 }
                             } else {
@@ -672,7 +678,12 @@ fn export_controls(ui: &mut egui::Ui, folder: Option<&str>, intents: &mut Vec<In
         if ui.button(choose).on_hover_text("Pick the folder this card writes into; it stays on this computer, never in the project").clicked() {
             intents.push(Intent::ChooseExportFolder);
         }
-        if ui.add_enabled(folder.is_some(), egui::Button::new("Export")).on_hover_text("Write the wired results into the chosen folder").clicked() {
+        if ui
+            .add_enabled(folder.is_some(), egui::Button::new("Export"))
+            .on_hover_text("Write the wired results into the chosen folder")
+            .on_disabled_hover_text("Choose a folder first")
+            .clicked()
+        {
             intents.push(Intent::Export);
         }
     });
