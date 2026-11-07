@@ -37,6 +37,9 @@ use serde_json::{Value, json};
 
 use crate::theme::Tokens;
 
+mod endpoints;
+pub use endpoints::EndpointChange;
+
 /// How long a request may wait for the keychain (an unanswered unlock prompt) before the row
 /// says its outcome is unknown and can be used again. A late answer is still applied.
 pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
@@ -146,6 +149,8 @@ pub struct KeysPanel {
     was_open: bool,
     confirm_remove: Option<Account>,
     pub notice: Option<String>,
+    /// The custom endpoint rows (#962), shown when the host gives settings.
+    endpoints: endpoints::Endpoints,
 }
 
 impl Default for KeysPanel {
@@ -164,6 +169,7 @@ impl Default for KeysPanel {
             was_open: false,
             confirm_remove: None,
             notice: None,
+            endpoints: endpoints::Endpoints::default(),
         }
     }
 }
@@ -361,6 +367,32 @@ impl KeysPanel {
         (changes, others)
     }
 
+    /// Shows the custom endpoints `settings` set (#962), with fields to change them. The host
+    /// calls it each frame the panel is open, where it can save them.
+    /// `None` when there are no settings to save them in: the rows aren't offered.
+    pub fn sync_endpoints(&mut self, settings: Option<&nodecraft_engine::settings::ProviderSettings>) {
+        match settings {
+            Some(settings) => self.endpoints.sync(settings),
+            None => self.endpoints.forget(),
+        }
+    }
+
+    /// Addresses the person saved or reset, already checked, for the host to save.
+    pub fn take_endpoint_changes(&mut self) -> Vec<EndpointChange> {
+        self.endpoints.take_changes()
+    }
+
+    /// What the endpoint rows say last went wrong.
+    #[cfg(test)]
+    pub(crate) fn endpoint_notice_text(&self) -> Option<&str> {
+        self.endpoints.notice.as_deref()
+    }
+
+    /// Says why saving an address failed, under the endpoint rows.
+    pub fn endpoint_notice(&mut self, notice: Option<String>) {
+        self.endpoints.notice = notice;
+    }
+
     /// Draws the panel (when open) and returns account-list changes to save.
     pub fn show(&mut self, ctx: &egui::Context, session: &mut Session, settings: &KeySettings, t: &Tokens) -> Vec<AccountChange> {
         let mut changes = Vec::new();
@@ -368,6 +400,7 @@ impl KeysPanel {
             // Closed some other way (the toolbar button): still forget anything typed.
             if self.was_open {
                 self.forget_typed(ctx);
+                self.endpoints.forget();
                 self.confirm_remove = None;
                 self.was_open = false;
             }
@@ -464,10 +497,12 @@ impl KeysPanel {
             if let Some(notice) = &self.notice {
                 ui.label(egui::RichText::new(notice).color(t.danger));
             }
+            self.endpoints.show(ui, t);
         });
         if !open {
             // Closing forgets anything typed: the key lives only in the keychain.
             self.forget_typed(ctx);
+            self.endpoints.forget();
             self.confirm_remove = None;
         }
         self.open = open;

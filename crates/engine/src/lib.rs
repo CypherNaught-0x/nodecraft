@@ -133,7 +133,7 @@ pub mod update_check;
 pub mod update_install;
 pub mod url_import;
 
-pub use session::{DocChanged, PreparedImports, Session};
+pub use session::{DocChanged, PreparedImports, PreparedStorage, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;

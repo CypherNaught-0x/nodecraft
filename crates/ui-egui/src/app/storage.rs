@@ -209,12 +209,14 @@ impl NodeCraftApp {
             session.set_save_runner(Arc::new(ThreadSaves));
             return Ok(Started::Ready(session, canvas, setup.open));
         }
+        // The keep-aside's thread checkpoints this same document once the journal is kept.
+        let snapshot = Snapshot { project: document.clone(), assets: AssetStore::default(), epoch: 0 };
         let mut session = Session::new(document)?;
         session.set_save_runner(Arc::new(ThreadSaves));
         // Nothing may change the sample project meanwhile, from any surface (the control
         // channel, MCP, the agent): the startup open and the question come once it settles.
         session.hold_for_storage(true);
-        let job = super::keep_aside::KeepAside::start(setup.recovery, storage, spawn);
+        let job = super::keep_aside::KeepAside::start(setup.recovery, storage, snapshot, spawn);
         Ok(Started::KeepingAside(Box::new(job), session, canvas, setup.open))
     }
     /// A session over native storage, starting from the sample project, and the canvas to show,

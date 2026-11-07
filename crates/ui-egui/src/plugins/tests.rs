@@ -285,6 +285,9 @@ fn a_grant_gives_exactly_the_ticked_capabilities_and_their_addresses() {
     h.get_by_label("Grant…").click();
     settle(&mut h);
     h.get_by_label("reach the internet, only at the addresses listed (required)");
+    // Where the key goes is said apart from where results come from (#174 review).
+    h.get_by_label("It sends your key to: https://api.acme.example");
+    h.get_by_label("It downloads results from, without the key: https://cdn.acme.example");
     click_grant(&mut h);
     settle(&mut h);
     assert_eq!(granted(&mut h), (vec!["network".to_owned()], origins.clone()), "the unticked optional capability isn't granted");
