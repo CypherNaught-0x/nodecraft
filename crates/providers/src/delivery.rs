@@ -220,6 +220,8 @@ impl SubmitContext {
         proven.then_some(SubmitNotAccepted)
     }
     // Register before even constructing the transport future. Unpolled/dropped children count.
+    // The audited send for an adapter that sends itself; the chat client sends through its link.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn send<'a>(&'a self, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
         send_child(&self.state, http, request)
     }
@@ -243,7 +245,7 @@ impl DeliveryLink {
     pub(crate) fn send<'a>(&'a self, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
         send_child(&self.state, http, request)
     }
-    /// [`SubmitContext::send_streaming`].
+    /// [`SubmitContext::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
     pub(crate) fn send_streaming<'a>(
         &'a self,
         http: &'a dyn Http,
@@ -263,17 +265,7 @@ fn send_child<'a>(state: &Arc<Mutex<Operation>>, http: &'a dyn Http, request: Ht
         child.finish(result)
     })
 }
-impl SubmitContext {
-    /// [`Self::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
-    pub(crate) fn send_streaming<'a>(
-        &'a self,
-        http: &'a dyn Http,
-        request: HttpRequest,
-        on_chunk: &'a mut ChunkSink<'a>,
-    ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
-        send_streaming_child(&self.state, http, request, on_chunk)
-    }
-}
+/// [`SubmitContext::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
 fn send_streaming_child<'a>(
     state: &Arc<Mutex<Operation>>,
     http: &'a dyn Http,

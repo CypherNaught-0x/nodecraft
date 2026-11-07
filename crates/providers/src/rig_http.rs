@@ -62,6 +62,10 @@ struct Inner {
     timeout_ms: u64,
     max_response_bytes: usize,
     fix: Option<BodyFix>,
+    /// Rewrites a whole 2xx JSON reply before the crate reads it.
+    reply_fix: Option<fn(&mut serde_json::Value)>,
+    /// Where the request goes instead of the crate's URL, when the dialect's own path differs.
+    url: Option<String>,
     exchange: Mutex<Exchange>,
     /// A streamed send the crate stopped reading before it ended (it stops at `[DONE]`), with
     /// its body still draining: [`RigHttp::finish`] runs it to its end.
@@ -111,6 +115,8 @@ impl RigHttp {
                 timeout_ms,
                 max_response_bytes,
                 fix: None,
+                reply_fix: None,
+                url: None,
                 exchange: Mutex::new(Exchange::Unsent),
                 unfinished: Mutex::new(None),
             }),
@@ -149,6 +155,17 @@ impl RigHttp {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn forwarding(self, forward: &'static [&'static str]) -> Self {
         self.edit(|inner| inner.forward = forward)
+    }
+
+    /// Rewrites a whole (not streamed) 2xx JSON reply before the crate reads it, for what the
+    /// crate needs a server to say that the dialect's servers may leave out.
+    pub(crate) fn with_reply_fix(self, fix: fn(&mut serde_json::Value)) -> Self {
+        self.edit(|inner| inner.reply_fix = Some(fix))
+    }
+
+    /// Sends the request to `url` rather than where the crate addressed it.
+    pub(crate) fn with_url(self, url: String) -> Self {
+        self.edit(|inner| inner.url = Some(url))
     }
 
     /// Rewrites the JSON body before it is sent.
@@ -211,7 +228,8 @@ impl Inner {
             "DELETE" => HttpMethod::Delete,
             other => return Err(ProviderError::new(ErrorKind::UnsupportedInput, format!("the chat client asked for an HTTP {other} request"))),
         };
-        let mut out = HttpRequest::get(parts.uri.to_string()).timeout_ms(self.timeout_ms).max_response_bytes(self.max_response_bytes);
+        let url = self.url.clone().unwrap_or_else(|| parts.uri.to_string());
+        let mut out = HttpRequest::get(url).timeout_ms(self.timeout_ms).max_response_bytes(self.max_response_bytes);
         out.method = method;
         for (name, value) in &parts.headers {
             if self.forward.contains(&name.as_str()) {
@@ -295,8 +313,16 @@ impl HttpClientExt for RigHttp {
         let request = inner.request(req.map(Into::into));
         async move {
             let request = request.map_err(|e| inner.fail(e))?;
-            let reply = inner.send(request).await.map_err(|e| inner.fail(e))?;
+            let mut reply = inner.send(request).await.map_err(|e| inner.fail(e))?;
             let (status, headers) = inner.head(reply.status, &reply.headers, &reply.body).map_err(|e| inner.fail(e))?;
+            if let Some(fix) = inner.reply_fix.filter(|_| reply.is_success())
+                && let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&reply.body)
+            {
+                fix(&mut json);
+                if let Ok(body) = serde_json::to_vec(&json) {
+                    reply.body = body;
+                }
+            }
             Ok(response(status, headers, reply.body))
         }
     }
