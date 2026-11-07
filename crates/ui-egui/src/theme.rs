@@ -219,6 +219,10 @@ pub struct Tokens {
     pub timeline_track_height: f32,
     pub timeline_ruler_height: f32,
     pub timeline_trim_grip: f32,
+    /// The keyboard focus ring on painted canvas widgets (#1108): its width and its gap outside
+    /// the widget, in screen points at any zoom.
+    pub focus_ring_width: f32,
+    pub focus_ring_gap: f32,
     /// Stroke widths (#1124): a hairline outline (panel and frame edges, guides), a medium line
     /// (a playhead, a traced shape) and a strong one (a chosen thumbnail or clip, a drop marker).
     pub stroke_hairline: f32,
@@ -373,6 +377,8 @@ pub const DARK: Tokens = Tokens {
     toolbar_gap: 10.0,
     viewer_width: 720.0,
     reader_thumb_width: 112.0,
+    focus_ring_width: 2.0,
+    focus_ring_gap: 1.0,
     connected_thumb: 40.0,
     sheet_index_width: 32.0,
     sheet_column_width: 120.0,
@@ -682,6 +688,19 @@ mod tests {
             }
         }
         assert!(found.is_empty(), "literal stroke widths: {found:#?}");
+    }
+
+    #[test]
+    fn the_focus_ring_stands_out_from_canvas_and_card() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for bg in [t.canvas_bg, t.card_fill] {
+                assert!(contrast(t.accent, bg) >= 3.0, "{kind:?} focus ring on {bg:?}: {}", contrast(t.accent, bg));
+            }
+            assert!(t.focus_ring_width >= 2.0, "{kind:?} WCAG 2.4.11 wants a ring at least 2 pt wide");
+            // The ring sits clear of the presence ring, which starts `presence_ring * 2` out.
+            assert!(t.focus_ring_gap + t.focus_ring_width < t.presence_ring * 2.0, "{kind:?} a gap stays before the presence ring");
+        }
     }
 
     #[test]
