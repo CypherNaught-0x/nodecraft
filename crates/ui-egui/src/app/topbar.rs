@@ -128,7 +128,8 @@ impl Control {
             self.entry.label().to_owned()
         };
         response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Button, self.enabled, self.active, label.as_str()));
-        response.on_hover_text(&self.hint)
+        // The hint explains the entry whether or not it can open now (#1113).
+        response.on_hover_text(&self.hint).on_disabled_hover_text(&self.hint)
     }
 }
 

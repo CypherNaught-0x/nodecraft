@@ -32,7 +32,7 @@ impl NodeCraftApp {
             }
             if ui
                 .add_enabled(!targets.is_empty(), egui::Button::new("Model…"))
-                .on_hover_text(format!("Choose the model of {which}; settings the new model also has are kept, and the picker lists any it drops")).on_disabled_hover_text("Select rows to change their model")
+                .on_hover_text(format!("Choose the model of {which}; settings the new model also has are kept, and the picker lists any it drops")).on_disabled_hover_text("Add a row first")
                 .clicked()
             {
                 actions.push(Action::Model(targets.clone()));

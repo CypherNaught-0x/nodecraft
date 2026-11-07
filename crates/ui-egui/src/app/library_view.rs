@@ -319,7 +319,7 @@ impl NodeCraftApp {
                                         "Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."
                                     } else {
                                         "Retrieve and verify this exact version without adding or running it. It stays available for this project session."
-                                    }).on_disabled_hover_text(if added { "Open this canvas from Canvases; duplicate its nodes for another copy" } else { "This window can't download templates; only bundled ones can be added" })
+                                    }).on_disabled_hover_text(if added { "Open this canvas from Canvases; duplicate its nodes for another copy" } else { fetch_reason.as_ref().err().map_or("This window can't download templates; only bundled ones can be added", String::as_str) })
                                     .clicked()
                                 {
                                     ui.ctx().request_repaint();
