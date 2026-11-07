@@ -337,7 +337,7 @@ impl NodeCraftApp {
                     self.selection.only(made);
                 }
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 }

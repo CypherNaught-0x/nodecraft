@@ -407,7 +407,7 @@ impl super::NodeCraftApp {
             // Failures show in the banner; a refusal (busy, nothing ready) becomes the notice.
             Chosen::Command(id) => {
                 if let Err(error) = self.session.dispatch(id, &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
             }
             Chosen::Dismiss(version) => {

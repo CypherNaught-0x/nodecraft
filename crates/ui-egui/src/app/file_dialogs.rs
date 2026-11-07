@@ -306,7 +306,7 @@ impl NodeCraftApp {
             let projects = self.files.projects.clone();
             store.update(|s| s.projects = projects);
             if store.is_read_only() || store.flush().is_err() {
-                self.notice = Some("The project operation succeeded, but recent projects could not be saved in settings.".into());
+                self.notice = self.notices.warning("The project operation succeeded, but recent projects could not be saved in settings.");
             }
         }
     }
@@ -480,7 +480,7 @@ impl NodeCraftApp {
                 // An open another surface started in the background: show its project too.
                 Ok(_) if opened => self.after_file_open(),
                 Ok(_) => {}
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             }
             return;
         }
@@ -796,7 +796,7 @@ impl NodeCraftApp {
                 let projects = self.files.projects.clone();
                 store.update(|s| s.projects = projects);
                 if store.is_read_only() || store.flush().is_err() {
-                    self.notice = Some("Recent projects could not be saved in settings.".into());
+                    self.notice = self.notices.warning("Recent projects could not be saved in settings.");
                 }
             }
         }

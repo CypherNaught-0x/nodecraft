@@ -76,7 +76,7 @@ impl NodeCraftApp {
         if cancel {
             match self.session.dispatch("file.cancel", &json!({})) {
                 Ok(_) => ctx.request_repaint(),
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             }
         }
     }

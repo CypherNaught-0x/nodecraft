@@ -230,7 +230,7 @@ impl NodeCraftApp {
     fn field_dispatch(&mut self, command: &str, params: serde_json::Value) {
         match self.session.dispatch(command, &params) {
             Ok(_) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -274,7 +274,7 @@ impl NodeCraftApp {
                 self.selection.clear();
                 self.fields.selected = Some(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -462,7 +462,7 @@ impl NodeCraftApp {
                         self.notice = None;
                         keep = false;
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                 }
             }
         }

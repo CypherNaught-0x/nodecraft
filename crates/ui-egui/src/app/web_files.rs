@@ -426,7 +426,7 @@ impl NodeCraftApp {
                 self.web_files.unwritten = false;
                 self.after_file_open();
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -445,7 +445,7 @@ impl NodeCraftApp {
                 return;
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         }

@@ -1303,7 +1303,7 @@ impl NodeCraftApp {
         match result {
             Ok(()) => true,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 false
             }
         }

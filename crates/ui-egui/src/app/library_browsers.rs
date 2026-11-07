@@ -1070,19 +1070,19 @@ impl NodeCraftApp {
             // These say what they did in the notice themselves.
             Browse::SaveToLibrary(hashes) => {
                 if let Err(error) = self.save_to_library(hashes) {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
                 return;
             }
             Browse::Unsave(hashes) => {
                 if let Err(error) = self.unsave(hashes) {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
                 return;
             }
             Browse::RepairSaved => {
                 if let Err(error) = self.repair_saved() {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                 }
                 return;
             }
@@ -1105,7 +1105,7 @@ impl NodeCraftApp {
         };
         match result {
             Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 

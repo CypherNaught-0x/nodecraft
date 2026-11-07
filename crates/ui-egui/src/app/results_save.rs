@@ -58,7 +58,7 @@ impl NodeCraftApp {
                     preview: Ok(preview),
                 })
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
     pub(in crate::app) fn results_watch(&self) -> Option<ExportWatch> {
@@ -191,7 +191,7 @@ impl NodeCraftApp {
         if let Some(id) = cancel
             && let Err(error) = self.session.dispatch("export.cancel", &json!({"id":id}))
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         if start && let State::Preview { host, params, .. } = &state {
             if let Some(runner) = &self.exports.runner {
@@ -203,7 +203,7 @@ impl NodeCraftApp {
                         state = State::Working(watch);
                     }
                 }
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             }
         }
         if let State::Working(watch) = &state

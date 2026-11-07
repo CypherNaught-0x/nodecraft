@@ -208,7 +208,7 @@ impl NodeCraftApp {
             Ok(()) => self.notice = None,
             Err(error) => {
                 self.bulk.failed(error.message.clone());
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
         }
     }

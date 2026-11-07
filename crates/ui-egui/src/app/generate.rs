@@ -422,7 +422,7 @@ impl NodeCraftApp {
         if let Some((nodes, kind)) = tick.ready
             && let Err(error) = self.request_runs(nodes, kind)
         {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
     }
 
@@ -585,7 +585,7 @@ impl NodeCraftApp {
         }
         if requote {
             if let Err(error) = self.request_runs(confirm.nodes, confirm.kind) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
             return true;
         }
@@ -823,7 +823,7 @@ impl NodeCraftApp {
                 self.notice = None;
                 self.selection.only(node);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 

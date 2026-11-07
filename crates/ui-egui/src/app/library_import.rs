@@ -400,7 +400,7 @@ impl NodeCraftApp {
             Ok(centre) => centre,
             Err(error) => {
                 self.library.browsers.report = Some(failed_all(read, &error.message));
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 return;
             }
         };

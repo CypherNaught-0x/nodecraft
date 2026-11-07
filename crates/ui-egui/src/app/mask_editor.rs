@@ -171,7 +171,7 @@ impl NodeCraftApp {
                 self.selection.only(mask);
                 self.mask_editor = Some(MaskEditor::new(self.canvas, mask));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notice = self.notices.error(error.message),
         }
     }
 
@@ -182,7 +182,7 @@ impl NodeCraftApp {
                 true
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
                 false
             }
         }

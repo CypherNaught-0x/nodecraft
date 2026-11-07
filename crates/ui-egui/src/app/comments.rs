@@ -192,7 +192,7 @@ impl NodeCraftApp {
         let right = if outputs { t.handle_radius + card::PORT_HIT } else { 0.0 };
         let offset = Position { x: size.x + right + t.comment_marker_gap + t.comment_marker_ring, y: size.y * 0.5 };
         if let Err(error) = self.dispatch_comments_scoped(ctx, "comment.compose", &json!({"node":node,"pos":offset}), owner) {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
     }
     fn begin_draft(&mut self, ctx: &egui::Context, target: Target, anchor: Option<(Option<NodeId>, Position)>) -> Result<(), Error> {
@@ -269,7 +269,7 @@ impl NodeCraftApp {
             match self.comments.allocate_comment(self.session.document()) {
                 Ok(id) => Some(id),
                 Err(error) => {
-                    self.notice = Some(error.message);
+                    self.notice = self.notices.error(error.message);
                     return;
                 }
             }
@@ -435,7 +435,7 @@ impl NodeCraftApp {
             }
         }
         if let Err(error) = result {
-            self.notice = Some(error.message);
+            self.notice = self.notices.error(error.message);
         }
         ctx.request_repaint();
     }
@@ -475,7 +475,7 @@ impl NodeCraftApp {
             let pos =
                 self.view.to_world(self.viewport.min, ctx.pointer_hover_pos().filter(|pos| self.viewport.contains(*pos)).unwrap_or(self.viewport.center()));
             if let Err(error) = self.dispatch_comments(&ctx, "comment.compose", &json!({"pos":{"x":pos.x,"y":pos.y}})) {
-                self.notice = Some(error.message);
+                self.notice = self.notices.error(error.message);
             }
         }
         let available = !self.discussion_context(&ctx, None).blocked;
@@ -705,7 +705,7 @@ impl NodeCraftApp {
                     .dispatch("comment.move", &json!({"canvas":self.canvas,"id":drag.id,"node":drag.node,"pos":drag.pos,"expected_revision":drag.revision}))
                 {
                     Ok(_) => self.comments.placement = Some((drag.id, drag.pos, drag.offset)),
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notice = self.notices.error(error.message),
                 }
             }
         }
@@ -851,7 +851,7 @@ impl NodeCraftApp {
                                         if !root.resolved && ui.button("Reply").clicked() {
                                             match self.comments.allocate_comment(self.session.document()) {
                                                 Ok(id) => action = Some(Action::Edit(Target::NewReply(root.id, id))),
-                                                Err(error) => self.notice = Some(error.message),
+                                                Err(error) => self.notice = self.notices.error(error.message),
                                             }
                                         }
                                         if let Some(id) = self.comments.message {

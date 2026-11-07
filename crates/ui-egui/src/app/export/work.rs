@@ -274,7 +274,7 @@ impl NodeCraftApp {
                     }
                     self.notice = Some("Cancelling export…".into());
                 }
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notice = self.notices.error(error.message),
             }
         }
         self.exports.pointer_owned
