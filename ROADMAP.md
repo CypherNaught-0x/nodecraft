@@ -166,9 +166,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   full-size render on release (#88); video actions and the Timeline run only when asked. Split
   into grid cuts an image into tiles as new Image cards (#86). A card that would compute a result
   the project already holds for the same kind, settings and inputs reuses it: on by default for
-  cards that don't call a model, opt-in per card with `node.cache_set` for those that do, and a
-  run neither quotes nor pays for what it reuses (#91); the app has no button for that switch
-  yet. Custom shader cards run their WGSL on the GPU (#90). The Plugins panel checks a
+  cards that don't call a model, opt-in per card for those that do (the model card's "runs
+  fresh"/"reuses results" switch, or `node.cache_set`, #1059), and a run neither quotes nor
+  pays for what it reuses (#91). Custom shader cards run their WGSL on the GPU (#90). The Plugins panel checks a
   `.ncraft-plugin` package, installs it disabled and, once granted and enabled, a text-action
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
@@ -244,7 +244,7 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
   The browser has no equivalent worker threads and runs rounds in the frame. Built-in image
   actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
-  model cards is a per-card command (`node.cache_set`) with no button yet (#91). Module
+  model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
   video/audio actions work in every host.

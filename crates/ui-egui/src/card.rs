@@ -84,6 +84,8 @@ pub enum Intent {
     Variations(u64),
     /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
     VariationCards(bool),
+    /// Reuse an identical earlier result instead of running again, or run fresh each time (#1059).
+    Cache(bool),
     /// Choose a folder whose files replace the ones this Folder card holds.
     ImportFolder,
     /// Choose the folder an Export to folder card writes into (#746): a person's grant.
