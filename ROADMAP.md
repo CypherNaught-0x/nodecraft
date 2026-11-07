@@ -310,6 +310,9 @@ The near-term order follows the remaining open issues, not an already-finished w
 
 ## Milestone log
 
+- **2026-11-06** — a batch inside a technique's own graph fans its technique node out (#1073),
+  within the same bounds as a batch on the canvas (1,000 items and 16 batches per chain), every
+  item quoted before the run, and a failed item is the only one run again.
 - **2026-11-03** — M10 closed with #381. Desktop and browser Share and Join, role-scoped links,
   presence, bounded asset transfer and deck editing/export are in the app. The real relay
   integration test covers two peers editing one canvas and a late joiner.
