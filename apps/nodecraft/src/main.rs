@@ -132,6 +132,9 @@ fn main() -> ExitCode {
     // that could point somewhere else by the time an update restarts the app.
     nodecraft_ui_egui::remember_update_roots(control, roots.read_roots(), roots.write_roots());
     let join = args.join.then(read_join_link);
+    // Built-in image actions run on the GPU when there is one, the CPU reference otherwise
+    // (#1058); NODECRAFT_IMAGE_GPU=0 keeps them on the CPU.
+    nodecraft_engine::action_exec::image_gpu::enable(true);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id(APP_ID)
