@@ -364,6 +364,8 @@ pub fn show(
         t.card_stroke
     };
     ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+    // Which card Enter acts on, when focus came from the keyboard (#1108).
+    crate::focus::ring_if_focused(&ui, ui.painter(), &response, rect, f32::from(t.card_radius), 1.0 / view.zoom, t);
 
     {
         let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
@@ -401,6 +403,7 @@ pub fn show(
             let label = if editor.hidden_dirty { format!("{label} • UNSAVED") } else { label };
             let r = ui.interact(label_rect, ui.id().with("title"), Sense::click());
             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), format!("Rename {label}")));
+            crate::focus::ring_if_focused(&ui, ui.painter(), &r, label_rect, 0.0, 1.0 / view.zoom, t);
             let mut job = egui::text::LayoutJob::simple_singleline(label, FontId::monospace(px / view.zoom), t.text_muted);
             job.wrap = egui::text::TextWrapping { max_width: label_rect.width(), max_rows: 1, break_anywhere: true, overflow_character: Some('…') };
             let galley = ui.fonts_mut(|fonts| fonts.layout_job(job));
