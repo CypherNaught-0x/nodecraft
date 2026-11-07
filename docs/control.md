@@ -103,7 +103,36 @@ there is none. It is the one live command that edits the document, in one undoab
 
 Classification is shared with MCP; the live host does not widen it. Human-only and unclassified
 commands stay excluded. Agent-visible `run.start` still requires engine quote/consent validation
-and a capable run host; this bridge does not bypass either. Screenshot requests retain their
+and a capable run host; this bridge does not bypass either.
+
+### Paid runs
+
+`command.run` with `run.quote`, `run.changed`, `run.workflow`, `run.estimate` or `run.start`
+routes the cards it names to their providers, as the person's Generate does (#1079). No dialog
+opens for the call. While a provider is being set up, the request waits in the window and is
+answered when the provider is ready. A request waits at most 30 s like any other, and then
+`timeout` means it never ran.
+
+The first `run.start` from the control channel that may spend money opens a question in the
+window: Allow once, Always allow (up to a per-run ceiling), Never, or Not now. The request waits
+for the answer in the same way. If the client gives up first, sending the same `run.start` again
+is safe: nothing started. Allow once and Always allow let it reach the session, which checks the
+quote token and budgets as always. Never and Not now answer `forbidden`. At most 16 run requests
+wait at once; more are answered `busy`. The decision covers every client of this channel,
+including `nodecraft-cli mcp --bridge`, and the person can take it back in the Automation panel.
+A start accepting nothing in every currency and no part of unknown price doesn't ask. See "Paid
+runs from automation" in `docs/mcp.md`.
+
+A typical client quotes, then starts with what the quote said:
+
+```text
+→ {"id": 3, "method": "command.run", "params": {"id": "run.quote", "params": {"canvas": "…", "mode": "selected", "nodes": ["…"]}}}
+← {"id": 3, "result": {"result": {"token": "…", "totals": {"USD": {"micros": 40000, "text": "$0.04"}}, "allowed": true, …}, "revision": 12}}
+→ {"id": 4, "method": "command.run", "params": {"id": "run.start", "params": {"canvas": "…", "mode": "selected", "nodes": ["…"], "accept": {"token": "…", "amounts": {"USD": 40000}}}}}
+```
+
+The reply to request 4 comes once the person has answered, or it is `forbidden` straight away
+after Never. Screenshot requests retain their
 separate asynchronous capture path.
 
 Project file commands run only inside the folders given with `--root` (save and open) and

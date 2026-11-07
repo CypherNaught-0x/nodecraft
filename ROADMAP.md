@@ -212,7 +212,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   desktop app's own MCP server (Automation › Enable MCP server, #116), `nodecraft-cli control`, and `nodecraft --control` (local JSON control channel with
   screenshots), plus `nodecraft-cli serve` for a project's published Techniques over a local
   authenticated HTTP API with optional signed webhooks. Agents open and save projects only inside
-  the folders the person allows with `--root`/`--read-root` (#423). See [`docs/mcp.md`](docs/mcp.md),
+  the folders the person allows with `--root`/`--read-root` (#423), and start paid runs in the app
+  only once the person allows it, once, always up to a ceiling, or never (#1079). See [`docs/mcp.md`](docs/mcp.md),
   [`docs/control.md`](docs/control.md) and [`docs/serve.md`](docs/serve.md).
 - **Headless CLI**: named project/Technique inputs, isolated CSV rows with aggregate quotes and
   spending limits, provider credential checks and ComfyUI workflow import (#97); see
