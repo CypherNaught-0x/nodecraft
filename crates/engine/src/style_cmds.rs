@@ -119,7 +119,7 @@ enum Takes<'a> {
 /// parameter, not a wire, so a Soul ID never reaches a LoRA model's style input and a LoRA never
 /// reaches SOUL 2.
 fn soul_target(target: &Node, family: &str) -> bool {
-    family == crate::soul_ids::FAMILY && is_generation(&target.kind) && model(target) == Some(crate::soul_ids::SOUL_MODEL)
+    family == crate::soul_ids::FAMILY && is_generation(&target.kind) && model(target).is_some_and(crate::soul_ids::takes)
 }
 
 /// What `target` would take a style of `family` as, or why it can't.

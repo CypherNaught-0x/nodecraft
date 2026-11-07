@@ -103,9 +103,11 @@ fn run(lost: bool) {
     let mut request = json!({"canvas":C,"mode":"selected","nodes":[CARD]});
     let quote = session.dispatch("run.quote", &request).unwrap();
     assert_eq!(quote["allowed"], true, "{quote}");
-    assert_ne!(quote["complete"], true, "{quote}");
-    assert!(session.dispatch("run.start", &request).is_err(), "unknown cost requires explicit acceptance");
-    request["accept"] = json!({"token":quote["token"],"amounts":{},"partial":true,"unpriced_jobs":1});
+    // Priced by output megapixels (#1062): the default 1024 x 1024 is one, 0.014 USD.
+    assert_eq!(quote["complete"], true, "{quote}");
+    assert_eq!(quote["totals"]["USD"]["micros"], 14_000, "{quote}");
+    assert!(session.dispatch("run.start", &request).is_err(), "a paid run still needs its price accepted");
+    request["accept"] = json!({"token":quote["token"],"amounts":{"USD":quote["totals"]["USD"]["micros"]},"partial":false,"unpriced_jobs":0});
     session.dispatch("run.start", &request).unwrap();
     let deadline = Instant::now() + Duration::from_secs(20);
     let mut notices = vec![];
@@ -131,7 +133,13 @@ fn run(lost: bool) {
     assert_eq!(requests.len(), if lost { 1 } else { 3 }, "uncertain paid submissions must not retry even with max_attempts=3");
     assert_eq!(requests.iter().filter(|request| request.method == nodecraft_providers::HttpMethod::Post).count(), 1);
     if lost {
-        assert_eq!(budget.log.lock().unwrap().entries().count(), 0, "unknown money is never invented");
+        // The price is known (#1062), so a lost paid reply is recorded as possibly billed at it,
+        // never as nothing.
+        let log = budget.log.lock().unwrap();
+        let entries: Vec<_> = log.entries().collect();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].cost.micros, 14_000);
+        assert_eq!(entries[0].status, nodecraft_exec::cost::Charge::Unresolved);
     }
 }
 #[test]

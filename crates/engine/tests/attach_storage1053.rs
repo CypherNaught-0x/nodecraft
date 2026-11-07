@@ -85,3 +85,36 @@ fn a_session_held_for_storage_refuses_every_change_and_says_why() {
     other.hold_for_storage(false);
     other.dispatch("node.add", &json!({"canvas": C, "node": node})).unwrap();
 }
+
+/// #367: the first checkpoint is written off the UI thread. `prepare_storage` does the disk work
+/// on another thread; `attach_prepared` only installs it, and only over the very document it
+/// was prepared from.
+#[test]
+fn storage_prepared_on_another_thread_is_attached_without_writing_and_only_over_the_same_document() {
+    let dir = tempfile::tempdir().unwrap();
+    let journal = dir.path().join("session.journal");
+    let snapshot = Snapshot { project: project(), assets: AssetStore::default(), epoch: 0 };
+    let storage = NativeStorage::new(journal.clone()).unwrap();
+    let prepared = std::thread::spawn(move || Session::prepare_storage(Box::new(storage), snapshot)).join().unwrap().unwrap();
+    let written = std::fs::read(&journal).unwrap();
+    assert!(!written.is_empty(), "the checkpoint was written on the other thread");
+    let mut session = Session::new(project()).unwrap();
+    session.hold_for_storage(true);
+    session.attach_prepared(prepared).unwrap();
+    assert_eq!(std::fs::read(&journal).unwrap(), written, "attaching wrote nothing");
+    assert!(session.file_status().available);
+    session.dispatch("node.add", &json!({"canvas": C, "node": Node::new(NodeId::from_bytes([3; 16]), "source.text")})).unwrap();
+    let expected = session.document().clone();
+    drop(session);
+    assert_eq!(NativeStorage::new(journal).unwrap().recover().unwrap().snapshot.project, expected, "later edits are journalled after it");
+
+    // A session that changed meanwhile isn't given a checkpoint without its change.
+    let other = dir.path().join("other.journal");
+    let snapshot = Snapshot { project: project(), assets: AssetStore::default(), epoch: 0 };
+    let prepared = Session::prepare_storage(Box::new(NativeStorage::new(other.clone()).unwrap()), snapshot).unwrap();
+    let mut changed = Session::new(project()).unwrap();
+    changed.dispatch("node.add", &json!({"canvas": C, "node": Node::new(NodeId::from_bytes([4; 16]), "source.text")})).unwrap();
+    assert_eq!(changed.attach_prepared(prepared).unwrap_err().kind, ErrorKind::Conflict);
+    assert!(!changed.file_status().available);
+    assert!(NativeStorage::new(other).is_ok(), "the refused storage let its lock go");
+}
