@@ -211,6 +211,16 @@ fn templates954_pointer_update_shows_status_then_clear_removes_downloads() {
     assert_eq!(h.get_all_by_label("Add template").count(), 2);
     h.get_by_label("Clear downloaded").click();
     h.run();
+    assert!(h.query_by_label("Clear 1 downloaded template?").is_some(), "#1111: the first click asks");
+    assert_eq!(nodecraft_engine::templates::catalog::cached(&h.state().session), 1, "nothing is cleared yet");
+    h.get_by_label("Keep").click();
+    h.run();
+    assert!(h.query_by_label("Clear 1 downloaded template?").is_none());
+    assert_eq!(nodecraft_engine::templates::catalog::cached(&h.state().session), 1);
+    h.get_by_label("Clear downloaded").click();
+    h.run();
+    h.get_by_label("Remove").click();
+    h.run();
     h.run();
     h.run();
     assert_eq!(&*asked.borrow(), &["update", "clear"]);

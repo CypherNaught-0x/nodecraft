@@ -330,8 +330,13 @@ impl LocalActions {
         let source = self.raster(inputs.first())?;
         let overlay = if action == "image.overlay" { Some(self.raster(inputs.get(1))?) } else { None };
         let inputs = nodecraft_actions::image::ImageInputs { source: &source, overlay: overlay.as_ref() };
-        let mut executor = CpuExecutor::serial().with_work_check(self.work_check());
-        let result = request.execute(inputs, &mut executor, ImageLimits::default()).map_err(|e| self.control_error(format!("{action} failed: {e}")))?;
+        let result = match self.image_on_gpu(&request, inputs)? {
+            Some(result) => result,
+            None => {
+                let mut executor = CpuExecutor::serial().with_work_check(self.work_check());
+                request.execute(inputs, &mut executor, ImageLimits::default()).map_err(|e| self.control_error(format!("{action} failed: {e}")))?
+            }
+        };
         match result {
             ImageResult::Image(out) => self.stage(&out),
             // Duplicate's copies are the same image: encode once, refer to it as often as asked.
@@ -343,6 +348,29 @@ impl LocalActions {
                 _ => all.iter().map(|out| self.stage(out)).collect::<Result<Vec<_>, _>>().map(Value::List),
             },
         }
+    }
+}
+
+impl LocalActions {
+    /// `request` on the GPU, when the desktop app turned it on and one is there (#1058); `None`
+    /// runs it on the CPU. A result is charged the work it would take on the CPU, so a live round's
+    /// budget counts it the same way; one that falls back is charged by the CPU as it goes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn image_on_gpu(&self, request: &ImageRequest, inputs: nodecraft_actions::image::ImageInputs<'_>) -> Result<Option<ImageResult>, String> {
+        if !image_gpu::enabled() {
+            return Ok(None);
+        }
+        // A request the CPU would refuse is left to it, which says why.
+        let Ok(work) = request.prepare(inputs, ImageLimits::default()).and_then(|prepared| prepared.reference_work()) else { return Ok(None) };
+        self.check_work()?;
+        let Some(result) = image_gpu::execute(request, inputs, ImageLimits::default(), &|| self.check_work().is_err()) else { return Ok(None) };
+        self.charge_work(work)?;
+        Ok(Some(result))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn image_on_gpu(&self, _: &ImageRequest, _: nodecraft_actions::image::ImageInputs<'_>) -> Result<Option<ImageResult>, String> {
+        Ok(None)
     }
 }
 
@@ -383,6 +411,8 @@ mod capture_state;
 pub use capture_state::{CLOSE_WAIT as CAPTURE_CLOSE_WAIT, Shutdown as CaptureShutdown, shutdown as shutdown_captures};
 pub(crate) mod control;
 mod document;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod image_gpu;
 pub(crate) mod layers;
 mod mesh;
 mod mesh_capture;

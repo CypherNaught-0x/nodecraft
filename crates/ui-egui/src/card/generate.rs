@@ -1,5 +1,5 @@
 //! The generation card's composer (#83): the prompt with a submit arrow and the variation
-//! counter. The arrow, Cmd/Ctrl+Enter in the prompt and Enter on the focused card ask the app to
+//! counter. The arrow, Command+Enter in the prompt and Enter on the focused card ask the app to
 //! generate; the app quotes the run and asks before anything is spent.
 use super::*;
 use nodecraft_exec::variations::MAX_VARIATIONS;
@@ -313,7 +313,13 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
             reuse(ui, shown_variations.cache, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if submit(ui, t).on_hover_text("Generate (Enter on the card, or Cmd/Ctrl+Enter in the prompt). Shows the price first.").clicked() {
+                if submit(ui, t)
+                    .on_hover_text(format!(
+                        "Generate (Enter on the card, or {} in the prompt). Shows the price first.",
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
+                    ))
+                    .clicked()
+                {
                     intents.push(Intent::Generate);
                 }
             });

@@ -3,7 +3,7 @@
 Comments are local document data. Use **Comments** to pin a discussion on the canvas or on the
 single selected node, or right-click a node and choose **Comment on this node**. **C** starts a
 canvas pin at the pointer (or canvas center), yielding to text editors, popups and gestures.
-**Add Note** creates a normal `structure.note` node with a schema-generated plain-text body.
+**Add note** creates a normal `structure.note` node with a schema-generated plain-text body.
 Notes have no ports and plan no jobs; they do not send text to a provider.
 
 A discussion has a root message and ordered, flat replies. Open a numbered pin or its list entry

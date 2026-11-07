@@ -138,6 +138,19 @@ means a required context that a branch's workflow never publishes leaves that pu
 forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
 open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
 
+## Image actions on the GPU
+
+The desktop app runs built-in image actions on the GPU and falls back to the CPU reference
+([decision](decisions/2026-11-06-image-actions-on-gpu.md)); `NODECRAFT_IMAGE_GPU=0` keeps it on
+the CPU. Tests never turn the GPU path on, so their results stay exact. The GPU parity tests are
+ignored by default; on Linux without a GPU, a software Vulkan driver (`mesa-vulkan-drivers`,
+lavapipe) runs them:
+
+```sh
+cargo test -p nodecraft-engine --lib image_gpu -- --ignored --nocapture
+cargo test -p nodecraft-gpu -- --ignored
+```
+
 ## Benchmarks
 
 For the bounded release collect/compare matrix, baseline policy, CI artifacts and precise timing

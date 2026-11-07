@@ -4,6 +4,8 @@
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 
+#[cfg(test)]
+mod a11y_check;
 pub mod app;
 pub mod audio;
 pub mod budgets;
@@ -29,6 +31,7 @@ pub(crate) mod result_save;
 pub mod scroll_chain;
 pub mod search;
 pub mod selection;
+pub mod shortcut;
 pub mod tags;
 pub(crate) mod text_preview;
 pub mod theme;
