@@ -228,7 +228,11 @@ fn guard() -> crate::rig_http::events::Guard {
     let mut usage: Option<Value> = None;
     Box::new(move |data| {
         let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
-        if event.get("index").and_then(Value::as_u64).is_some_and(|i| i >= MAX_REPLY_BLOCKS as u64) {
+        // Stricter than the wire, which also reads a whole float or a numeric string as an index:
+        // any index that isn't a plain integer under the limit is refused.
+        if let Some(index) = event.get("index")
+            && !index.as_u64().is_some_and(|i| i < MAX_REPLY_BLOCKS as u64)
+        {
             return Err(malformed("the reply has too many parts"));
         }
         match event.get("type").and_then(Value::as_str) {

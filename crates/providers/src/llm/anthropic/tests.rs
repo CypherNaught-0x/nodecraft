@@ -622,3 +622,24 @@ fn a_stream_without_a_stop_reason_ends_at_message_stop() {
     assert_eq!(pieces, ["done"]);
     assert_eq!((r.text.as_str(), r.stop, r.usage.input_tokens, r.usage.output_tokens), ("done", StopReason::EndTurn, Some(12), Some(7)));
 }
+
+/// The ways an index could reach the wire's reader unchecked: a lone CR between events, a BOM
+/// opening the stream, an index written as a float or a string. Each is refused by the guard.
+#[test]
+fn an_index_cannot_slip_past_the_guard() {
+    let huge = r#"{"type":"content_block_start","index":100000000000,"content_block":{"type":"text","text":""}}"#;
+    let refused = |body: Vec<u8>| {
+        let http = Arc::new(Pieces { body, piece: 5, status: 200, headers: vec![] });
+        let mut r = request();
+        r.temperature = None;
+        let e = block_on(client(http).chat_stream(&r, &mut |_| {})).unwrap_err();
+        assert_eq!((e.kind, e.message.as_str()), (ErrorKind::Malformed, "the reply has too many parts"));
+    };
+    let start = START.1;
+    refused(format!("data: {start}\r\rdata: {{\"type\":\"ping\"}}\r\rdata: {huge}\r\r\n\n").into_bytes());
+    refused(format!("\u{feff}data: {huge}\n\n").into_bytes());
+    for index in ["1e11", "100000000000.0", "\"100000000000\"", "\" 5000 \"", "-1", "null"] {
+        let event = format!(r#"{{"type":"content_block_start","index":{index},"content_block":{{"type":"text","text":""}}}}"#);
+        refused(sse(&[START, ("content_block_start", &event), STOP]));
+    }
+}
