@@ -591,7 +591,16 @@ impl View<'_> {
     fn thumbnail(&self, ui: &mut egui::Ui, value: Option<&Value>, active: bool) -> egui::Response {
         let t = self.t;
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(t.app_thumbnail), Sense::click());
-        let stroke = if active { egui::Stroke::new(t.stroke_strong, t.accent) } else { egui::Stroke::new(t.stroke_hairline, t.panel_stroke) };
+        let stroke = if active {
+            egui::Stroke::new(t.stroke_strong, t.accent)
+        } else {
+            // A hovered or pressed thumbnail answers the pointer (#1112).
+            match crate::theme::State::of(&response) {
+                crate::theme::State::Rest => egui::Stroke::new(t.stroke_hairline, t.panel_stroke),
+                crate::theme::State::Hovered => egui::Stroke::new(t.stroke_hairline, t.card_stroke_hover),
+                crate::theme::State::Pressed => egui::Stroke::new(t.stroke_strong, t.card_stroke_hover),
+            }
+        };
         ui.painter().rect_filled(rect, f32::from(t.panel_radius) / 2.0, t.canvas_bg);
         match value {
             Some(Value::Media(asset)) => match self.thumbnails.get(&asset.hash) {

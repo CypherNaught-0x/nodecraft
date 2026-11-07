@@ -53,6 +53,18 @@ input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size`
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 
+Control states (#1112):
+
+| State | egui widgets | Painted controls (badges, submit arrow, thumbnails, noodles) |
+|---|---|---|
+| Rest | `control_fill`, a 1-point `control_stroke` outline (≥ 3:1 against `panel_fill`); hovered and pressed drop the outline so selectable rows keep a clean edge | their own colour |
+| Hovered | `control_fill_hover` | `theme::State::Hovered.tint`: lifted toward the text colour; thumbnails take `card_stroke_hover`; a noodle is drawn `wire_width_hover` (3) wide and brighter, with a pointing cursor, within its hit band |
+| Pressed | `control_fill_pressed` | lifted further; the submit arrow's accent moves toward the text colour |
+| Open (menu) | `control_fill_hover` | — |
+
+Quiet buttons (the top bar, menus, selectable rows) stay frameless at rest by asking for it
+(`frame_when_inactive(false)`, egui's menu style) rather than being the default.
+
 Labels and names (#1118): menus and buttons use sentence case ("Add note"). An ellipsis marks an
 item that opens a dialog or asks for more before acting ("Export…", "Save project as…"), never a
 submenu ("Export", "Save as", "Save to folder"). A glyph-only control ("…", "‹", "›") goes through

@@ -212,6 +212,15 @@ pub struct Tokens {
     /// App mode (#95): the width of its form and side of a result or media thumbnail.
     pub app_form_width: f32,
     pub app_thumbnail: f32,
+    /// A button at rest, under the pointer and held down (#1112): its fill, and an outline at
+    /// least 3:1 against `panel_fill` so it never reads as a plain label. Quiet buttons (the top
+    /// bar, menus) opt out with `frame_when_inactive(false)`.
+    pub control_fill: Color32,
+    pub control_stroke: Color32,
+    pub control_fill_hover: Color32,
+    pub control_fill_pressed: Color32,
+    /// A noodle under the pointer is drawn this wide, a little brighter, so it reads as clickable.
+    pub wire_width_hover: f32,
     /// The Library's Assets, History and Styles browsers (#96): the side of a listed thumbnail.
     pub library_thumbnail: f32,
     /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
@@ -363,6 +372,11 @@ pub const DARK: Tokens = Tokens {
     port_radius: 5.0,
     port_min_radius: 3.0,
     port_stroke: 2.0,
+    control_fill: Color32::from_rgb(0x1f, 0x1f, 0x22),
+    control_stroke: Color32::from_rgb(0x67, 0x67, 0x6e),
+    control_fill_hover: Color32::from_rgb(0x2c, 0x2c, 0x30),
+    control_fill_pressed: Color32::from_rgb(0x3c, 0x3c, 0x42),
+    wire_width_hover: 3.0,
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
@@ -454,6 +468,10 @@ pub const LIGHT: Tokens = Tokens {
     ],
     prompt_fill: Color32::from_rgb(0xf4, 0xf4, 0xf5),
     mention_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
+    control_fill: Color32::from_rgb(0xf6, 0xf6, 0xf7),
+    control_stroke: Color32::from_rgb(0x8c, 0x8c, 0x94),
+    control_fill_hover: Color32::from_rgb(0xdd, 0xdd, 0xe1),
+    control_fill_pressed: Color32::from_rgb(0xc9, 0xc9, 0xcf),
     ..DARK
 };
 
@@ -500,13 +518,51 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
     v.hyperlink_color = t.accent_text;
     v.warn_fg_color = t.stale;
     v.error_fg_color = t.danger;
-    let hover = t.panel_stroke;
-    craft_ui::theme::WidgetPalette { noninteractive: t.panel_fill, inactive: t.panel_fill, hovered: hover, active: hover, open: hover }.apply_to(
-        &mut v.widgets,
-        CornerRadius::same(8),
-        Stroke::new(1.0, t.text),
-    );
+    craft_ui::theme::WidgetPalette {
+        noninteractive: t.panel_fill,
+        inactive: t.control_fill,
+        hovered: t.control_fill_hover,
+        active: t.control_fill_pressed,
+        open: t.control_fill_hover,
+    }
+    .apply_to(&mut v.widgets, CornerRadius::same(8), Stroke::new(1.0, t.text));
+    // A visible outline at rest, so a button never reads as a label (#1112).
+    // A visible outline at rest, so a button never reads as a label (#1112). Hovered and pressed
+    // keep egui's own (no) outline: their fill already answers, and a selectable row or a
+    // selection keeps a clean edge.
+    v.widgets.inactive.bg_stroke = Stroke::new(1.0, t.control_stroke);
     v
+}
+
+/// How a custom-painted control looks in its current state (#1112): the shell's own widgets get
+/// this from egui; badges, the submit arrow, thumbnails and noodles ask here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Rest,
+    Hovered,
+    Pressed,
+}
+
+impl State {
+    pub fn of(response: &egui::Response) -> Self {
+        if response.is_pointer_button_down_on() {
+            State::Pressed
+        } else if response.hovered() {
+            State::Hovered
+        } else {
+            State::Rest
+        }
+    }
+
+    /// `base` lifted toward `toward` when hovered, further when pressed: a painted fill that
+    /// keeps its meaning (a badge's warning colour) but answers the pointer.
+    pub fn tint(self, base: Color32, toward: Color32) -> Color32 {
+        match self {
+            State::Rest => base,
+            State::Hovered => base.lerp_to_gamma(toward, 0.18),
+            State::Pressed => base.lerp_to_gamma(toward, 0.36),
+        }
+    }
 }
 
 /// Install the theme on a context. Call once at startup and on theme change.
@@ -682,6 +738,25 @@ mod tests {
             }
         }
         assert!(found.is_empty(), "literal stroke widths: {found:#?}");
+    }
+
+    #[test]
+    fn buttons_are_outlined_at_rest_and_each_state_differs() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.control_stroke, t.panel_fill) >= 3.0, "{kind:?} control outline: {}", contrast(t.control_stroke, t.panel_fill));
+            assert!(contrast(t.text, t.control_fill_pressed) >= 7.0, "{kind:?} text on a pressed button");
+            let v = visuals(kind);
+            assert_eq!(v.widgets.inactive.bg_stroke, Stroke::new(1.0, t.control_stroke));
+            let fills = [v.widgets.inactive.weak_bg_fill, v.widgets.hovered.weak_bg_fill, v.widgets.active.weak_bg_fill];
+            assert!(fills[0] != fills[1] && fills[1] != fills[2] && fills[0] != fills[2], "{kind:?} rest, hover and press differ");
+            assert_ne!(v.widgets.inactive.weak_bg_fill, t.panel_fill, "{kind:?} a resting button isn't the panel");
+            assert_eq!(v.widgets.hovered.bg_fill, t.panel_stroke, "{kind:?} the tag contrast test checks the real hover fill");
+            // The pressed submit arrow (card_fill on the tinted accent) stays a readable graphic.
+            assert!(contrast(t.card_fill, t.accent.lerp_to_gamma(t.text, 0.3)) >= 3.0, "{kind:?} pressed submit arrow");
+        }
+        assert_eq!(State::Rest.tint(DARK.stale, DARK.text), DARK.stale);
+        assert_ne!(State::Hovered.tint(DARK.stale, DARK.text), State::Pressed.tint(DARK.stale, DARK.text));
     }
 
     #[test]

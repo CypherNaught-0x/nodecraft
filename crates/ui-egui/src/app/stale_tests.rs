@@ -671,3 +671,30 @@ fn unchecked_badge_native_capture() {
         h.render().unwrap().save(root.join(format!("{theme:?}-unchecked-badge.png"))).unwrap();
     }
 }
+
+/// #1112: a stale badge's fill answers hover and press, keeping its warning colour at rest.
+#[test]
+fn a_stale_badge_changes_colour_on_hover_and_press() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.hover_at(Pos2::new(990.0, 690.0));
+    h.run();
+    let t = *h.state().theme.tokens();
+    let fills = |h: &Harness<'static, NodeCraftApp>, fill: egui::Color32| {
+        h.output().shapes.iter().filter(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Rect(r) if r.fill == fill)).count()
+    };
+    let hover = crate::theme::State::Hovered.tint(t.stale, t.text);
+    let press = crate::theme::State::Pressed.tint(t.stale, t.text);
+    assert_eq!(fills(&h, t.stale), 2, "two badges at rest");
+    let badge = h.get_all_by_label(STALE).next().unwrap().rect();
+    h.hover_at(badge.center());
+    h.run();
+    assert_eq!((fills(&h, t.stale), fills(&h, hover)), (1, 1), "the hovered badge lifts");
+    h.event(egui::Event::PointerButton { pos: badge.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.step();
+    assert_eq!(fills(&h, press), 1, "the held badge lifts further");
+}

@@ -455,7 +455,12 @@ fn submit(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
         });
     }
     let painter = ui.painter();
-    let fill = if response.hovered() { t.accent } else { t.text };
+    // Rest, hover and press each look different (#1112).
+    let fill = match crate::theme::State::of(&response) {
+        crate::theme::State::Rest => t.text,
+        crate::theme::State::Hovered => t.accent,
+        crate::theme::State::Pressed => t.accent.lerp_to_gamma(t.text, 0.3),
+    };
     painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
     let c = rect.center();
     let arm = rect.width() * 0.22;

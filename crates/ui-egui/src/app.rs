@@ -2470,6 +2470,25 @@ impl NodeCraftApp {
                 ui.ctx().tessellation_options(|options| metrics::visibility::Visibility::new(clip, pixels_per_point, options))
             });
             let mut visible_edges = if matches!(visibility, Some(None)) { None } else { Some(0usize) };
+            // The noodle under the pointer, within its hit band, is drawn wider and brighter with
+            // a pointing cursor (#1112), so it reads as something to click.
+            let hovered_edge = (!overlay_blocks
+                && !file_owns_input
+                && !file_menu_owns_input
+                && background.hovered()
+                && !background.dragged()
+                && self.wiring.is_none())
+            .then(|| ui.input(|i| i.pointer.hover_pos()))
+            .flatten()
+            .and_then(|p| {
+                let world = self.view.to_world(viewport.min, p);
+                let reach = NOODLE_HIT / self.view.zoom;
+                curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
+            })
+            .map(|(id, _)| id);
+            if hovered_edge.is_some() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+            }
             for (id, curve, modality) in &curves {
                 // The curve lies inside its control points' hull; skip ones entirely off screen.
                 if Some(*id) == moving || !Rect::from_points(curve).intersects(visible) {
@@ -2488,13 +2507,16 @@ impl NodeCraftApp {
                         egui::Stroke::new(t.wire_width_selected + t.wire_halo, t.card_stroke_selected),
                     ));
                 }
-                let width = if self.selection.contains_edge(*id) { t.wire_width_selected } else { t.wire_width };
-                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(
-                    points,
-                    false,
-                    egui::Color32::TRANSPARENT,
-                    egui::Stroke::new(width, t.wire(*modality)),
-                ));
+                let hovered = hovered_edge == Some(*id);
+                let width = if self.selection.contains_edge(*id) {
+                    t.wire_width_selected
+                } else if hovered {
+                    t.wire_width_hover
+                } else {
+                    t.wire_width
+                };
+                let color = if hovered { theme::State::Hovered.tint(t.wire(*modality), t.card_stroke_selected) } else { t.wire(*modality) };
+                painter.add(egui::epaint::CubicBezierShape::from_points_stroke(points, false, egui::Color32::TRANSPARENT, egui::Stroke::new(width, color)));
             }
             if visibility.is_some() {
                 self.frame_workload = Some(nodecraft_engine::perf::Workload {
