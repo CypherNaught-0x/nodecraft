@@ -48,10 +48,11 @@ pub fn hover_lost_when_disabled(code: &str) -> Vec<usize> {
             let call = call.trim_start();
             let name: String = call.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
             let Some(open) = call.get(name.len()..).filter(|after| after.starts_with('(')) else { break };
+            let opened = at.saturating_add(rest.len() - open.len()).saturating_add(1);
+            // An unclosed call is not a call: count it only once its parenthesis closes.
+            let Some(next) = close(opened) else { break };
             hover |= name == "on_hover_text";
             disabled |= name == "on_disabled_hover_text";
-            let opened = at.saturating_add(rest.len() - open.len()).saturating_add(1);
-            let Some(next) = close(opened) else { break };
             at = next;
         }
         if hover && !disabled {
@@ -99,7 +100,7 @@ mod tests {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).unwrap();
-                let code = text.split("#[cfg(test)]").next().unwrap_or_default();
+                let code = crate::theme::non_test_code(&text);
                 let relative = path.strip_prefix(&root).unwrap().display().to_string().replace('\\', "/");
                 for line in hover_lost_when_disabled(code) {
                     let at = format!("{relative}:{line}");
