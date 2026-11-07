@@ -253,7 +253,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
   change or run, auto mode runs edits and runs within the `[agent]` budget. The endpoint (Anthropic,
   OpenAI, OpenRouter, Ollama, LM Studio) and model are set in `[agent]` in the settings file; there
-  is no settings screen for them yet, and the browser build has no agent.
+  is no settings screen for them yet, and the browser build has no agent yet: the [proposed design](docs/decisions/2026-11-06-browser-agent.md)
+  moves the sidebar into a shared shell crate (#1064).
 - **The browser build is a preview.** `apps/nodecraft-web` runs the canvas in a browser and
   releases ship it as `nodecraft-web-<v>.zip` (#99). Provider keys are kept in the browser's
   storage for the site, and projects open and save through the browser's file pickers or as
