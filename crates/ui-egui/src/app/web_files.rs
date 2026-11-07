@@ -375,25 +375,24 @@ impl NodeCraftApp {
         let name: String = picked.name.chars().filter(|c| !c.is_control()).take(80).collect();
         let t = self.theme.tokens();
         let mut choice = None;
-        egui::Window::new("Unsaved changes")
-            .id(egui::Id::new("nodecraft.web_files.confirm"))
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .frame(crate::theme::panel_frame(t))
-            .show(ctx, |ui| {
-                ui.label(egui::RichText::new(format!("Open {name}? This project's unsaved changes will be lost.")).color(t.text));
-                ui.add_space(t.control_gap);
-                ui.horizontal(|ui| {
-                    if ui.button("Discard and open").clicked() {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        choice = Some(false);
-                    }
-                });
+        // A question: it blocks the canvas until answered (#1116). Escape cancels; focus starts on
+        // Cancel, so Enter never discards work by accident.
+        crate::floating::question(ctx, egui::Id::new("nodecraft.web_files.confirm"), "Unsaved changes", t, |ui| {
+            ui.label(egui::RichText::new(format!("Open {name}? This project's unsaved changes will be lost.")).color(t.text));
+            ui.add_space(t.control_gap);
+            ui.horizontal(|ui| {
+                if ui.button("Discard and open").clicked() {
+                    choice = Some(true);
+                }
+                let cancel = ui.button("Cancel");
+                if ui.ctx().memory(|m| m.focused().is_none()) {
+                    cancel.request_focus();
+                }
+                if cancel.clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                    choice = Some(false);
+                }
             });
+        });
         if let Some(discard) = choice {
             self.web_answer(discard);
             ctx.request_repaint();

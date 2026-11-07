@@ -356,7 +356,8 @@ fn results966_folder_preview_progress_cancel_and_quit_share_the_engine_receipt()
         let dir = tempfile::tempdir().unwrap();
         h.state_mut().exports.answer = Some(dir.path().to_path_buf());
         h.get_by_label("File").click();
-        h.run_steps(2);
+        // The Project files panel is a floating panel now (#1116): it measures unseen, then opens.
+        h.run();
         h.get_by_label("Save workflow results…").click();
         h.run_steps(3);
         assert!(h.query_by_label("Save workflow results").is_some());

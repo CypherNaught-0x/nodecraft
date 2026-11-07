@@ -108,7 +108,7 @@ pub(super) struct FileDialogs {
     picker: Picker,
     pub(super) projects: ProjectSettings,
     observed: Option<String>,
-    menu_open: bool,
+    pub(super) menu_open: bool,
     // Completed-frame number: every pass of the choice/completion frame stays owned.
     owner_frame: Option<u64>,
     storage_problem: Option<(Arc<()>, String, bool)>,
@@ -681,15 +681,13 @@ impl NodeCraftApp {
         let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
         let importing = self.folder_import_busy();
-        egui::Window::new("Project files")
-            .id(egui::Id::new("project_files407"))
+        // A floating panel like the others (#1116); Escape closes it.
+        if self.files.menu_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.files.menu_open = false;
+        }
+        crate::floating::panel(ui.ctx(), "Project files", egui::Id::new("project_files407"), crate::floating::Home::RightTop, t)
             .open(&mut self.files.menu_open)
-            .collapsible(false)
-            .resizable(false)
-            .default_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 7.0))
             .default_width(t.card_width)
-            .max_height(ui.max_rect().height() * 0.8)
-            .vscroll(true)
             .show(ui.ctx(), |ui| {
                 if let Some(message) = &unavailable {
                     ui.label(egui::RichText::new(message).color(t.danger));

@@ -276,12 +276,9 @@ impl Panel {
         let mut request = None;
         // Pinned under the row; floating panels that open over it keep its header in view (#957).
         crate::floating::occupy(ui.ctx(), ui.id().with("bulk_parameters"));
-        let shown = egui::Window::new(place.title)
-            .id(ui.id().with("bulk_parameters"))
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, t.control_row_height * place.rows_down + t.navigation_margin])
+        let offset = egui::vec2(-t.navigation_margin, t.control_row_height * place.rows_down + t.navigation_margin);
+        let shown = crate::floating::pinned(ui.ctx(), place.title, ui.id().with("bulk_parameters"), egui::Align2::RIGHT_TOP, offset, t)
             .default_width(t.card_width)
-            .resizable(false).collapsible(false).movable(false)
-            .frame(egui::Frame::window(ui.style()).fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).corner_radius(t.panel_radius))
             .show(ui.ctx(), |ui| {
                 ui.label(match (ids.len(), place.noun) {
                     (1, noun) => format!("1 selected {noun}"),

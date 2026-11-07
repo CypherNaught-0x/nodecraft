@@ -109,6 +109,8 @@ pub struct ModelPicker {
     workflow_search: Vec<String>,
     /// The highlighted server row, by its index in `rows`; never set with `highlighted`.
     server_highlight: Option<usize>,
+    /// Why the last choice couldn't be used, shown at the top of the picker (#1116).
+    problem: Option<String>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -149,6 +151,12 @@ fn copy(text: &str) -> Result<String, Error> {
 }
 
 impl ModelPicker {
+    /// Shows `problem` (why the last choice couldn't be used) at the top of the picker.
+    pub fn with_problem(&mut self, problem: Option<String>) -> &mut Self {
+        self.problem = problem;
+        self
+    }
+
     /// Evaluate compatibility once, when opening. `additional` supplies the engine's actual
     /// role/mode/port checks after the catalog's coarse modality-count filter succeeds.
     /// A failure stays visible; its public-safe reason must meet the catalog text bound.
@@ -203,6 +211,7 @@ impl ModelPicker {
             server_search: Vec::new(),
             workflow_search: Vec::new(),
             server_highlight: None,
+            problem: None,
         };
         picker.refilter(catalog);
         Ok(picker)
@@ -369,94 +378,93 @@ impl ModelPicker {
         let mut chosen = None;
         let mut server_chosen = None;
         let mut changed_catalog = false;
-        egui::Window::new("Choose a model")
-            .id(egui::Id::new("model_picker157"))
-            .order(egui::Order::Foreground)
-            .open(&mut open)
-            .collapsible(false)
-            .default_width(t.dialog_width)
-            .show(ctx, |ui| {
-                let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
-                if self.focus {
-                    search.request_focus();
-                    self.focus = false;
-                }
-                if self.filtered_query != self.query {
-                    self.refilter(catalog);
-                }
-                if up {
-                    self.move_highlight(false);
-                }
-                if down {
-                    self.move_highlight(true);
-                }
-                ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
-                ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
-                if self.rows.is_empty() {
-                    ui.label("No matching models");
-                }
-                // One choice control and three bounded text lines, also at larger text sizes.
-                let row_height =
-                    t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
-                let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
-                if (up || down)
-                    && let Some(row) = self.highlighted_row()
-                {
-                    scroll = scroll.vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
-                }
-                scroll.show_rows(ui, row_height, self.rows.len(), |ui, range| {
-                    let first = range.start;
-                    for (offset, row) in self.rows.get(range).into_iter().flatten().enumerate() {
-                        let at = first.saturating_add(offset);
-                        let index = match row {
-                            Row::Provider(index) | Row::Model(index) => *index,
-                            _ => {
-                                if let Some(server) = &self.server {
-                                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                                        if let Some(outcome) = server_row(ui, server, *row, self.server_highlight == Some(at), t) {
-                                            server_chosen = Some(outcome);
-                                        }
-                                    });
-                                }
-                                continue;
-                            }
-                        };
-                        let Some(choice) = self.choices.get(index) else { continue };
-                        let Some(model) = catalog.get(&choice.id) else {
-                            changed_catalog = true;
-                            continue;
-                        };
-                        ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
-                            if matches!(row, Row::Provider(_)) {
-                                ui.heading(&model.provider);
-                                return;
-                            }
-                            let response = ui
-                                .add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
-                            ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
-                                )
-                                .truncate(),
-                            )
-                            .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
-                            ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
-                            if let Some(reason) = &choice.unavailable {
-                                response.on_disabled_hover_ui(|ui| {
-                                    ui.label(reason);
-                                    model_details(ui, model);
+        // The picker's window is built in `floating` with the shell's other windows (#1116): Enter
+        // chooses the highlighted model and Escape closes.
+        crate::floating::picker(ctx, "Choose a model", egui::Id::new("model_picker157"), t).open(&mut open).show(ctx, |ui| {
+            if let Some(problem) = &self.problem {
+                ui.add(egui::Label::new(egui::RichText::new(problem).color(t.danger)).wrap());
+            }
+            let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
+            if self.focus {
+                search.request_focus();
+                self.focus = false;
+            }
+            if self.filtered_query != self.query {
+                self.refilter(catalog);
+            }
+            if up {
+                self.move_highlight(false);
+            }
+            if down {
+                self.move_highlight(true);
+            }
+            ui.label(egui::RichText::new("Model rates only. Run quotes and budgets are checked separately.").color(t.text_muted));
+            ui.label(egui::RichText::new(SELECTION_TIER_HELP).color(t.text_muted));
+            if self.rows.is_empty() {
+                ui.label("No matching models");
+            }
+            // One choice control and three bounded text lines, also at larger text sizes.
+            let row_height =
+                t.control_row_height.max(ui.spacing().interact_size.y) + 3.0 * (ui.text_style_height(&egui::TextStyle::Body) + ui.spacing().item_spacing.y);
+            let mut scroll = egui::ScrollArea::vertical().max_height(t.comments_height);
+            if (up || down)
+                && let Some(row) = self.highlighted_row()
+            {
+                scroll = scroll.vertical_scroll_offset(row as f32 * (row_height + ui.spacing().item_spacing.y));
+            }
+            scroll.show_rows(ui, row_height, self.rows.len(), |ui, range| {
+                let first = range.start;
+                for (offset, row) in self.rows.get(range).into_iter().flatten().enumerate() {
+                    let at = first.saturating_add(offset);
+                    let index = match row {
+                        Row::Provider(index) | Row::Model(index) => *index,
+                        _ => {
+                            if let Some(server) = &self.server {
+                                ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                                    if let Some(outcome) = server_row(ui, server, *row, self.server_highlight == Some(at), t) {
+                                        server_chosen = Some(outcome);
+                                    }
                                 });
-                            } else {
-                                if response.clicked() {
-                                    chosen = Some(index);
-                                }
-                                response.on_hover_ui(|ui| model_details(ui, model));
                             }
-                        });
-                    }
-                });
+                            continue;
+                        }
+                    };
+                    let Some(choice) = self.choices.get(index) else { continue };
+                    let Some(model) = catalog.get(&choice.id) else {
+                        changed_catalog = true;
+                        continue;
+                    };
+                    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), row_height), egui::Layout::top_down(egui::Align::Min), |ui| {
+                        if matches!(row, Row::Provider(_)) {
+                            ui.heading(&model.provider);
+                            return;
+                        }
+                        let response =
+                            ui.add_enabled(choice.unavailable.is_none(), egui::Button::selectable(self.highlighted == Some(index), &model.label).truncate());
+                        ui.add(egui::Label::new(&model.description).truncate()).on_hover_text(&model.description);
+                        ui.add(
+                            egui::Label::new(
+                                egui::RichText::new(format!("Selection tier {}/5 · Time hint {} s", model.quality, model.latency_s)).color(t.text_muted),
+                            )
+                            .truncate(),
+                        )
+                        .on_hover_text("The time hint is configured catalog metadata. Actual waiting time depends on the request and provider load.");
+                        ui.add(egui::Label::new(egui::RichText::new(price_label(model)).color(t.text_muted)).truncate());
+                        if let Some(reason) = &choice.unavailable {
+                            response.on_disabled_hover_ui(|ui| {
+                                ui.label(reason);
+                                model_details(ui, model);
+                            });
+                        } else {
+                            if response.clicked() {
+                                chosen = Some(index);
+                            }
+                            response.on_hover_ui(|ui| model_details(ui, model));
+                        }
+                    });
+                }
             });
+        });
         if changed_catalog {
             return Outcome::CatalogChanged;
         }
