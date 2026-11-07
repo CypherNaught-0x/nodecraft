@@ -81,7 +81,7 @@ fn with_batch(session: &Session, canvas: CanvasId, id: NodeId, change: impl FnOn
 
 fn review_of(session: &Session, canvas: CanvasId) -> Option<super::batch_review::Review> {
     let c = session.document().canvases().get(&canvas).unwrap();
-    review(c, session.kinds(), c.nodes().get(&CARD).unwrap())
+    review(session.document().canvases(), c, session.kinds(), c.nodes().get(&CARD).unwrap())
 }
 
 /// Clicks the widget labelled `label` with a real pointer press and release at its centre,
@@ -146,7 +146,7 @@ fn a_zip_or_a_changed_batch_has_no_grid_but_every_item_is_listed() {
     let mut plain = c.nodes().get(&CARD).unwrap().clone();
     plain.history.iter_mut().for_each(|g| g.items.clear());
     assert!(!super::batch_review::reviewable(&plain));
-    assert!(review(c, session.kinds(), &plain).is_none());
+    assert!(review(session.document().canvases(), c, session.kinds(), &plain).is_none());
 }
 
 #[test]

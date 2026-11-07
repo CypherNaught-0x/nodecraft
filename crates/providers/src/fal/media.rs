@@ -304,6 +304,7 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
         | Model::HeygenSpeed
         | Model::HeygenPrecision
         | Model::Pika
+        | Model::PikaFrames
         | Model::Wan3Text
         | Model::Wan3Frames
         | Model::GrokText
@@ -319,8 +320,8 @@ pub(super) fn validate(b: &[u8], r: Record, l: Limits, pixels: &mut u64) -> Resu
             if r.model.heygen() {
                 heygen::output(b, l)?;
             }
-            if r.model == Model::Pika {
-                pika::probe(b, l)?;
+            if r.model.pika() {
+                pika::probe(b, l, r.model)?;
             }
             Ok("video/mp4")
         }

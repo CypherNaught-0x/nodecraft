@@ -13,6 +13,7 @@ pub(super) fn check(quote: &Quote, catalog: &Catalog, large_assets: bool) -> Res
                     ("fal", "topaz/upscale/image/precision") => Some(("Topaz Precision", "image")),
                     ("magnific", "image-upscaler-precision-v2") => Some(("Magnific Precision V2", "image")),
                     ("fal", "fal-ai/pika/v2.5/image-to-video") => Some(("Pika 2.5", "video")),
+                    ("fal", "fal-ai/pika/v2.5/pikaframes") => Some(("Pika 2.5 keyframes", "video")),
                     ("fal", "fal-ai/heygen/avatar4/image-to-video" | "fal-ai/heygen/v3/lipsync/speed" | "fal-ai/heygen/v3/lipsync/precision") => {
                         Some(("HeyGen", "video"))
                     }
@@ -71,6 +72,9 @@ mod tests {
         assert!(check(&quote("fal.ideogram-v3", true, 1), &catalog, false).is_ok(), "an unused Topaz canvas node cannot block another selected step");
         assert!(check(&quote("fal.topaz-precision", true, 0), &catalog, false).is_ok(), "reused/empty work does not spend or produce another asset");
         assert!(check(&quote("fal.pika25-i2v", true, 0), &catalog, false).is_ok());
+        // Pika keyframes (#1061) make large videos too.
+        assert!(check(&quote("fal.pika25-keyframes", true, 1), &catalog, false).unwrap_err().message.contains("desktop project"));
+        assert!(check(&quote("fal.pika25-keyframes", true, 1), &catalog, true).is_ok());
         assert!(check(&Quote::default(), &catalog, false).is_ok());
     }
     #[test]
