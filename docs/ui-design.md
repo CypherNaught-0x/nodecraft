@@ -134,7 +134,7 @@ selected border more visible than the resting one, in both themes.
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses. Every noodle is also an AccessKit node named **Image from A to B · reference** (its media, cards and the input it lands on) and marked when selected, so screen readers can list connections (#1109) |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
+| Double-click empty canvas | the quick-add palette (#1121): with nothing typed it lists Recent (the last five chosen; view state, gone on restart), node kinds by the media they make (Text, Image, Video, Audio, 3D, Document, Other), Actions, then Commands, under `text_muted` headings. Typing ranks every entry together, best first, naming its section on the right. Each row has its modality's `wire_*` dot (`tag_identity_size`), its label, its shortcut right-aligned in monospace `text_muted`, and a one-line summary in `text_muted` from the kind's or command's `summary()`. A command that can't run now is listed greyed after those that can, its `enabled` reason in place of the summary; ↵ or a click on it does nothing. ↑↓ move and keep the highlighted row in view, ↵ chooses, Escape or a click elsewhere closes; scrolling keeps the canvas fixed while this or the Turn into menu is open. It opens at the double-click, or upward from it when there's no room below, inside the window less `navigation_margin`. A kind is created where you double-clicked. See the [decision](decisions/2026-11-08-palette-sections-and-summaries.md) |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
@@ -359,7 +359,9 @@ The quick-add palette also offers enabled navigation commands that need no param
 Fit all nodes, Fit selected nodes, Toggle minimap and Toggle prompt overlays. Its search field lends focus only to these palette
 choices; other editors, popups and active gestures still prevent navigation. Choosing a row
 releases the palette query and uses the same live command bridge, without editing the project or
-its undo history. Commands requiring coordinates, such as Pan to world point, remain absent.
+its undo history. Commands requiring coordinates, such as Pan to world point, remain absent. One
+that can't run now, such as Fit selected nodes with nothing selected, is listed greyed with its
+reason (#1121).
 
 ## Canvas search
 
@@ -779,7 +781,7 @@ and no crossing controls inside their `Dialog` node.
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |
-| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `palette1121_tests` (sections, ranking, unavailable commands, on screen from the bottom-right corner at 1440 × 900 and 640 × 400), `turn_into_tests` |
 
 Since #1116 there are no windows outside `floating.rs`: questions are modals sized to the window,
 tools are floating panels clamped to the panel area.

@@ -13,14 +13,13 @@ impl NodeCraftApp {
                 "canvas.fit_selection" => &selected,
                 _ => &toggle,
             };
-            if self.navigation_enabled_with_context(context.clone(), spec.id, &self.palette_command_params(spec.id)).is_ok() {
-                entries.push(palette::Entry {
-                    target: palette::Target::Command(spec.id),
-                    label: spec.label.to_owned(),
-                    shortcut: spec.shortcut.map(str::to_owned),
-                });
+            match self.navigation_enabled_with_context(context.clone(), spec.id, &self.palette_command_params(spec.id)) {
+                Ok(()) => entries.push(palette::Entry::command(&spec, None)),
+                Err(error) if palette::explains(&error) => entries.push(palette::Entry::command(&spec, Some(&error))),
+                Err(_) => {}
             }
         }
+        palette::sort(&mut entries);
         entries
     }
 

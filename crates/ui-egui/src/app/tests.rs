@@ -1702,7 +1702,8 @@ fn palette_keys_and_wheel_never_reach_the_canvas() {
     h.run();
     // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
     h.state_mut().selection.only(id);
-    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // The popup may open upward from where it was double-clicked (#1121): use its real corner.
+    let corner = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).unwrap().rect().min;
     // A click on the popup's padding takes focus off the query, but the palette stays open...
     click(&mut h, corner + Vec2::splat(3.0));
     assert!(h.state().palette.is_some());
