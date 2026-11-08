@@ -207,7 +207,7 @@ impl NodeCraftApp {
         let mut back = false;
         let mut apply = false;
         if choice.stale {
-            crate::floating::on_screen(egui::Window::new("Model preview changed"), ui.ctx(), t.dialog_width, &t)
+            crate::floating::on_screen(egui::Window::new("Model preview changed"), ui.ctx(), None, &t)
                 .id(egui::Id::new("nodecraft.model_stale"))
                 .order(egui::Order::Foreground)
                 .collapsible(false)
@@ -277,7 +277,7 @@ impl NodeCraftApp {
                     },
                 },
                 Step::Review(preview) => {
-                    crate::floating::on_screen(egui::Window::new("Review model change"), ui.ctx(), t.dialog_width, &t).id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).show(
+                    crate::floating::on_screen(egui::Window::new("Review model change"), ui.ctx(), Some(t.dialog_width), &t).id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).show(
                         ui.ctx(),
                         |ui| {
                             ui.label(format!("Change {} node(s) to {}", preview.targets.len(), preview.model));
@@ -338,7 +338,7 @@ impl NodeCraftApp {
             if matches!(choice.step, Step::Picking(_))
                 && let Some(error) = &choice.error
             {
-                crate::floating::on_screen(egui::Window::new("Model choice unavailable"), ui.ctx(), t.dialog_width, &t)
+                crate::floating::on_screen(egui::Window::new("Model choice unavailable"), ui.ctx(), None, &t)
                     .id(egui::Id::new("nodecraft.model_unavailable"))
                     .order(egui::Order::Foreground)
                     .collapsible(false)

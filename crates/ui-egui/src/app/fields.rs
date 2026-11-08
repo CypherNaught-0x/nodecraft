@@ -440,7 +440,7 @@ impl NodeCraftApp {
         let Some((id, mut title)) = self.fields.rename.take() else { return };
         let mut keep = true;
         let mut save = false;
-        crate::floating::on_screen(egui::Window::new("Rename field"), ctx, self.theme.tokens().dialog_width, self.theme.tokens())
+        crate::floating::on_screen(egui::Window::new("Rename field"), ctx, None, self.theme.tokens())
             .id(egui::Id::new("nodecraft.rename_field"))
             .order(egui::Order::Foreground)
             .collapsible(false)

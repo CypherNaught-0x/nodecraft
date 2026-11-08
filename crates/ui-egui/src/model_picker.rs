@@ -369,7 +369,7 @@ impl ModelPicker {
         let mut chosen = None;
         let mut server_chosen = None;
         let mut changed_catalog = false;
-        crate::floating::on_screen(egui::Window::new("Choose a model"), ctx, t.dialog_width, t)
+        crate::floating::on_screen(egui::Window::new("Choose a model"), ctx, Some(t.dialog_width), t)
             .id(egui::Id::new("model_picker157"))
             .order(egui::Order::Foreground)
             .open(&mut open)

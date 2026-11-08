@@ -681,7 +681,7 @@ impl NodeCraftApp {
         let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
         let importing = self.folder_import_busy();
-        crate::floating::on_screen(egui::Window::new("Project files"), ui.ctx(), t.card_width, t)
+        crate::floating::on_screen(egui::Window::new("Project files"), ui.ctx(), Some(t.card_width), t)
             .id(egui::Id::new("project_files407"))
             .open(&mut self.files.menu_open)
             .collapsible(false)

@@ -11,7 +11,7 @@ Comments, then Search. More sits after the entries the row keeps and lists only 
 order. The choice is a pure function (`topbar::fit`) of the measured widths, so a test can pin it.
 Icon-only entries were not added as an intermediate step: they would need a second measuring pass
 and a second look for every entry, and the priority order already keeps Search and Comments
-visible at 640 points.
+visible at 640 points while the agent sidebar is closed (with it open, they move into More).
 
 The navigation panel takes a third of the canvas width between 240 and 320 points, and the map
 keeps its default shape. Below a 720×480 canvas the map hides itself and its Hide map toggle goes,

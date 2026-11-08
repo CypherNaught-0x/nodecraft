@@ -49,11 +49,10 @@ fn the_row_fits_and_overflows_from_its_right_at_every_size() {
                     assert!(!rect.intersect(*theirs).is_positive(), "{what}: {label} crosses {other}");
                 }
             }
-            // Search and Comments keep their place in the row from a small laptop window up.
+            // Search and Comments keep their place in the row at every size here; this shell has no
+            // agent sidebar, which at 640 points would leave room for neither.
             let shown: Vec<&str> = buttons.iter().map(|(label, _)| *label).collect();
-            if size.x >= 800.0 {
-                assert!(shown.contains(&"Search (Ctrl+F)") && shown.contains(&"Comments"), "{what}: {shown:?}");
-            }
+            assert!(shown.contains(&"Search (Ctrl+F)") && shown.contains(&"Comments"), "{what}: {shown:?}");
             // Entries leave from the right: what the row keeps of the rest is a prefix of the order.
             let kept: Vec<&str> = ENTRIES.iter().take(9).copied().filter(|label| shown.contains(label)).collect();
             assert_eq!(kept, ENTRIES.iter().take(kept.len()).copied().collect::<Vec<_>>(), "{what}");

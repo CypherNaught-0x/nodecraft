@@ -276,7 +276,7 @@ impl Panel {
         let mut request = None;
         // Pinned under the row; floating panels that open over it keep its header in view (#957).
         crate::floating::occupy(ui.ctx(), ui.id().with("bulk_parameters"));
-        let shown = crate::floating::on_screen(egui::Window::new(place.title), ui.ctx(), t.card_width, t)
+        let shown = crate::floating::on_screen(egui::Window::new(place.title), ui.ctx(), Some(t.card_width), t)
             .id(ui.id().with("bulk_parameters"))
             .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, t.control_row_height * place.rows_down + t.navigation_margin])
             .resizable(false).collapsible(false).movable(false)

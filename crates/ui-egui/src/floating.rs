@@ -192,12 +192,17 @@ struct Drag {
 }
 
 /// Keeps a window that isn't a floating panel (a dialog, a picker) on the screen at small window
-/// sizes (#1115): it is no wider than the window less its margins, opens at most `width` wide,
-/// and is held inside the window. Replacing these windows with panels or modals is #1116.
-pub fn on_screen<'open>(window: egui::Window<'open>, ctx: &Context, width: f32, t: &Tokens) -> egui::Window<'open> {
+/// sizes (#1115): it is no wider than the window less its margins and is held inside the window.
+/// `width` is the width it opens at, if it sets one (capped the same way); `None` keeps egui's.
+/// Replacing these windows with panels or modals is #1116.
+pub fn on_screen<'open>(window: egui::Window<'open>, ctx: &Context, width: Option<f32>, t: &Tokens) -> egui::Window<'open> {
     let screen = ctx.content_rect();
     let room = (screen.width() - t.navigation_margin * 2.0).max(t.navigation_margin);
-    window.constrain_to(screen).max_width(room).default_width(width.min(room))
+    let window = window.constrain_to(screen).max_width(room);
+    match width {
+        Some(width) => window.default_width(width.min(room)),
+        None => window,
+    }
 }
 
 /// A floating panel's window. Every panel behaves the same: see the module documentation.

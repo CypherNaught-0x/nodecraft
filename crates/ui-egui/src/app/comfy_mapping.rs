@@ -244,7 +244,7 @@ impl NodeCraftApp {
         }
         let mut open = true;
         let (mut apply, mut reload, mut read, mut cancel) = (false, false, false, false);
-        crate::floating::on_screen(egui::Window::new("Workflow fields"), ctx, t.dialog_width * 1.5, t)
+        crate::floating::on_screen(egui::Window::new("Workflow fields"), ctx, Some(t.dialog_width * 1.5), t)
             .id(egui::Id::new(("comfy_mapping", editor.canvas, editor.node)))
             .open(&mut open)
             .collapsible(false)

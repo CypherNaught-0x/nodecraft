@@ -256,7 +256,10 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
             let app = h.state();
             // At the row's right end, inside its frame (#1115 keeps Comments in a narrow row).
             let right = app.viewport.right() - app.theme.tokens().navigation_margin;
-            assert!(button.right() <= right + 1.0 && button.right() >= right - app.theme.tokens().navigation_gap * 3.0, "{button:?} at {size:?}");
+            assert!(
+                button.right() <= right + 1.0 && button.right() >= right - app.theme.tokens().navigation_gap - app.theme.tokens().handle_stroke - 1.0,
+                "{button:?} at {size:?}"
+            );
             assert!(app.topbar_rect().contains_rect(button));
             if search {
                 assert!(app.search_rect().top() >= app.topbar_rect().bottom() + app.theme.tokens().navigation_gap - 1.0);

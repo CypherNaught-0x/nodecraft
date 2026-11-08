@@ -564,7 +564,7 @@ If the measured row does not fit, entries move into one More menu from the row's
 first the navigation, activity and service entries from the right, then the entry of an open panel
 (kept in the row while others go), then Comments, then Search. More sits after the entries the row
 keeps, before Search and Comments, and lists only what moved, with the same icons, states and
-order. Search and Comments stay in the row down to the desktop's smallest window. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+order. Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, they move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
 entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
 reserved left slot; Format selection reserves the next slot when present, with the Tags panel
 below both controls. Sharing status is
