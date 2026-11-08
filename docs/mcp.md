@@ -83,6 +83,12 @@ app to local agents is the person's call); `automation.mcp_server_status {}` ret
 `{enabled, state, url, error}`, never the token, and agents may read it. Elsewhere (the CLI, the
 browser) both are refused as unsupported.
 
+The window's interface size (#1107) is open to agents too, through MCP bridged to the app:
+`view.ui_scale.increase {}`, `view.ui_scale.decrease {}`, `view.ui_scale.reset {}` and
+`view.ui_scale.set {percent: 80..=200}` each return `{percent, previous}`, change only how large
+the person's panels and dialogs are drawn, and are remembered in the app's settings. A standalone
+session has no window and refuses them as unsupported.
+
 ## Bridge to the running app
 
 ```sh

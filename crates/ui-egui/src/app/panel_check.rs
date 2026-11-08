@@ -22,9 +22,13 @@ fn interactive(role: Role) -> bool {
     )
 }
 
-fn bounds(node: &egui_kittest::Node<'_>) -> Option<Rect> {
+/// The node's rect in points. AccessKit's bounding boxes are in physical pixels (egui scales the
+/// tree's root by `pixels_per_point`), which differ from points at an interface size other than
+/// 100 % (#1107) or on a high-density screen.
+fn bounds(node: &egui_kittest::Node<'_>, pixels_per_point: f32) -> Option<Rect> {
     let b = node.accesskit_node().bounding_box()?;
-    Some(Rect::from_min_max(Pos2::new(b.x0 as f32, b.y0 as f32), Pos2::new(b.x1 as f32, b.y1 as f32)))
+    let ppp = if pixels_per_point.is_finite() && pixels_per_point > 0.0 { pixels_per_point } else { 1.0 };
+    Some(Rect::from_min_max(Pos2::new(b.x0 as f32 / ppp, b.y0 as f32 / ppp), Pos2::new(b.x1 as f32 / ppp, b.y1 as f32 / ppp)))
 }
 
 /// Pairs of the panel's own on-screen controls that cross; a control may share space only with
@@ -55,7 +59,7 @@ pub(super) fn overlaps(h: &Harness<'static, NodeCraftApp>, id: egui::Id, panel: 
         for child in node.children() {
             stack.push((child, below.clone()));
         }
-        let Some(rect) = bounds(&node) else { continue };
+        let Some(rect) = bounds(&node, h.ctx.pixels_per_point()) else { continue };
         if !interactive(role) || node.accesskit_node().is_hidden() || !rect.is_positive() {
             continue;
         }

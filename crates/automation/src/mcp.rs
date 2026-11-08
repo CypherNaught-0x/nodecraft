@@ -175,6 +175,12 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.update_status",
     // Where the desktop app's built-in server listens; never its token (#116).
     "automation.mcp_server_status",
+    // The window's interface size (#1107): view state of this installation, never the document.
+    // They run where a window is (the app, or MCP bridged to it); headless they are unsupported.
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
     "history.select",
     "history.previous",
     "history.next",

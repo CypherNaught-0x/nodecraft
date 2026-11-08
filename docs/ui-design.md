@@ -660,6 +660,34 @@ saved files and says in the notice what it recovered and where the old index was
 entries ticked than one request takes, the bulk buttons are disabled with the reason. In the browser My library lasts until the page is
 closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-global-library.md)).
 
+## Interface size
+
+The interface size (#1107) draws the whole shell larger or smaller, from 80 %
+to 200 % (default 100 %). It is a setting of this installation, not of a project:
+`[appearance] interface_size = 150` in `config.toml` on the desktop, this origin's
+`localStorage` (`nodecraft.interface_size`) in the browser. The shell applies it as egui's zoom
+factor (`Context::set_zoom_factor`), so every token in points (text, spacing, radii, panel widths)
+grows together and nothing needs its own scaled size. A value the file holds that isn't a number
+from 80 to 200 reads as 100 %, is written back as 100 %, and the startup notice says so; the rest
+of `[appearance]` keeps its values.
+
+Commands, which the palette, shortcuts, control channel and MCP share: `view.ui_scale.increase`
+(⌘⌥= or ⌘⌥+, Ctrl+Alt elsewhere) and `view.ui_scale.decrease` (⌘⌥-) step by 10 % to the next
+multiple of ten; `view.ui_scale.reset` (⌘⌥0) returns to 100 %; `view.ui_scale.set {percent}`
+takes any number from 80 to 200, rounded to a whole percent. Each is disabled when it would do
+nothing (already at the end, or at 100 %) and returns `{percent, previous}`. They record no
+document change and no undo step. Without a window (`nodecraft-cli`, a headless session) they are
+unsupported. The shortcuts are taken before the canvas reads its zoom keys, so Ctrl+Alt+= never
+also zooms the canvas, and never while a text field has focus, where Ctrl+Alt is AltGr and types
+a character.
+
+Canvas zoom is unchanged and separate: the zoom badge still reads the canvas zoom, and cards,
+which are drawn in points like everything else, grow with the interface the way a browser's page
+zoom grows a page ([decision](decisions/2026-11-08-interface-size-is-a-zoom-factor.md)). Previews
+are requested at `pixels_per_point`, so they stay sharp. At 200 % a 1280×720 window is 640×360
+points: the top bar overflows into More (#1115), floating panels are clamped to the panel area,
+and questions (#1116) fit, which a test checks at 150 % and 200 %.
+
 ## Overlays and stacking
 
 One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
