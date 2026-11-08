@@ -138,6 +138,7 @@ impl NodeCraftApp {
     /// pending connection then ends without changing anything.
     pub(super) fn key_wiring_keys(&mut self, ctx: &egui::Context, live: bool) {
         self.port_widgets.begin();
+        let was_pending = self.key_wiring.is_some();
         let focused = ctx.memory(|m| m.focused());
         let step = if self.key_wiring.is_some() {
             let stale = self.session.document().canvases().get(&self.canvas).is_none_or(|canvas| {
@@ -201,6 +202,15 @@ impl NodeCraftApp {
                 m.move_focus(egui::FocusDirection::None);
                 if pending && let Some(id) = m.focused() {
                     m.set_focus_lock_filter(id, LOCK);
+                }
+            });
+        }
+        if was_pending && !pending {
+            // However the flow ended, the port left holding focus gets its ordinary keys back:
+            // egui keeps a lock filter until focus moves, which would trap Tab, arrows and Escape.
+            ctx.memory_mut(|m| {
+                if let Some(id) = m.focused() {
+                    m.set_focus_lock_filter(id, egui::EventFilter::default());
                 }
             });
         }
@@ -374,7 +384,8 @@ impl NodeCraftApp {
     /// Every connection as an AccessKit node (#1109), "Image from A to B · reference", over its
     /// noodle and marked when selected, so a screen reader can list and announce them.
     pub(super) fn edge_accessibility(&self, ctx: &egui::Context, canvas: &Canvas, curves: &[(EdgeId, [Pos2; 4], Modality)], origin: Pos2) {
-        let links = card::PortLinks { canvas, kinds: self.session.kinds() };
+        let peers = std::cell::OnceCell::new();
+        let links = card::PortLinks { canvas, kinds: self.session.kinds(), peers: &peers };
         for (id, curve, modality) in curves {
             let Some(edge) = canvas.edges().get(id) else { continue };
             let bounds = self.view.rect_to_screen(origin, Rect::from_points(curve));

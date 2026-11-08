@@ -228,3 +228,57 @@ fn ports_and_connections_have_accessible_names() {
     assert!(h.query_by_role_and_label(Role::Button, "Text input of Second, connected to Alpha").is_some());
     assert!(h.query_by_role_and_label(Role::Button, "Text output of Relay").is_some());
 }
+
+/// After a flow ends without Escape or Enter, the port left with focus answers Tab again.
+fn tab_moves_focus_off(h: &mut Harness<'static, NodeCraftApp>) {
+    let before = focused(h);
+    assert!(before.is_some(), "a port keeps focus");
+    press(h, egui::Key::Tab);
+    assert_ne!(focused(h), before, "Tab is not trapped on the port");
+}
+
+#[test]
+fn panning_with_a_drag_ends_the_flow_and_leaves_tab_working() {
+    let mut h = harness(false);
+    tab_to(&mut h, ALPHA, Side::Output);
+    press(&mut h, egui::Key::Enter);
+    assert_eq!(focused(&h), Some(port(&h, RELAY, Side::Input)));
+    let pan = h.state().view.pan;
+    let start = h.state().viewport.center() + Vec2::new(0.0, 240.0);
+    h.hover_at(start);
+    h.run();
+    h.drag_at(start);
+    h.run();
+    h.hover_at(start + Vec2::new(-60.0, -30.0));
+    h.run();
+    h.drop_at(start + Vec2::new(-60.0, -30.0));
+    h.run();
+    assert_ne!(h.state().view.pan, pan, "the drag panned the canvas");
+    assert!(h.state().key_wiring.is_none());
+    assert!(edges(&h).is_empty());
+    // The drag left focus where it was; the port's keys work again.
+    assert_eq!(focused(&h), Some(port(&h, RELAY, Side::Input)));
+    tab_moves_focus_off(&mut h);
+}
+
+#[test]
+fn undo_removing_the_anchor_ends_the_flow_and_leaves_tab_and_escape_working() {
+    let mut h = harness(false);
+    let added = NodeId::from_bytes([97; 16]);
+    h.state_mut().session.dispatch("node.create", &json!({"canvas": C, "id": added, "kind": "source.text", "pos": {"x": 0, "y": 800}})).unwrap();
+    h.state_mut().view = CanvasView { pan: Vec2::new(100.0, 60.0), zoom: 0.3 };
+    h.run();
+    tab_to(&mut h, added, Side::Output);
+    press(&mut h, egui::Key::Enter);
+    assert_eq!(focused(&h), Some(port(&h, RELAY, Side::Input)));
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(!h.state().session.document().canvases().get(&C).unwrap().nodes().contains_key(&added), "undo removed the anchor");
+    assert!(h.state().key_wiring.is_none());
+    assert_eq!(focused(&h), Some(port(&h, RELAY, Side::Input)));
+    // Escape drops focus as everywhere else, and Tab then moves it again.
+    press(&mut h, egui::Key::Escape);
+    assert_eq!(focused(&h), None, "Escape is not swallowed by a stale lock");
+    tab_to(&mut h, RELAY, Side::Input);
+    tab_moves_focus_off(&mut h);
+}

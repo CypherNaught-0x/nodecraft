@@ -34,7 +34,7 @@ fn default_generation_card_uses_registered_model_schema_and_actual_describe() {
     let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.step();
     assert!(h.query_by_label_contains("Images").is_some());
-    assert!(h.query_all_by_label_contains("Prompt").next().is_some());
+    assert_eq!(super::tests::named_outside_wiring(&h, "Prompt"), 1);
     let description = h.state_mut().session.dispatch("node.describe", &json!({"canvas":C,"id":N})).unwrap();
     assert_eq!(description["contract"]["params"]["namespace"], "generation.image");
     assert_eq!(description["contract"]["owned_groups"][0]["namespace"], "openai-images.flare");
@@ -50,7 +50,7 @@ fn unknown_saved_generation_model_remains_readable_without_substitution() {
     let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.step();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.query_all_by_label_contains("Public image generation").next().is_some());
+    assert_eq!(super::tests::named_outside_wiring(&h, "Public image generation"), 1);
 }
 #[test]
 #[ignore = "manual public-safe before/after capture; GENERATION465_RENDER_PATH and GENERATION465_EXPECT_CONTROLS"]

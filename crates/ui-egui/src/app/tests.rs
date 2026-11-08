@@ -4323,3 +4323,17 @@ fn palette_same_frame_row_choice_and_metadata_key_create_only_chosen_kind() {
 mod clipboard_native273;
 
 mod clipboard_capture273;
+
+/// How many nodes other than port buttons and connections carry `text` in their name. Ports and
+/// noodles repeat their cards' titles (#1109), so a card's own element is the only other match.
+pub(super) fn named_outside_wiring(h: &Harness<'_, NodeCraftApp>, text: &str) -> usize {
+    h.query_all_by_label_contains(text)
+        .filter(|node| {
+            let node = node.accesskit_node();
+            let name = node.label().or_else(|| node.value()).unwrap_or_default();
+            let port = node.role() == Role::Button && (name.contains(" input of ") || name.contains(" output of "));
+            let edge = node.role() == Role::Label && name.contains(" from ") && name.contains(" · ");
+            !port && !edge
+        })
+        .count()
+}

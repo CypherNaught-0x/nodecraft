@@ -11,7 +11,7 @@ pub const SAMPLES: usize = 24;
 /// Smallest horizontal pull of a control point, so short or backward noodles still curve.
 pub const MIN_PULL: f32 = 60.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Side {
     Input,
     Output,

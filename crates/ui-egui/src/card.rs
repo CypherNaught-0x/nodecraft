@@ -245,11 +245,17 @@ pub struct CardView<'a> {
     pub links: Option<PortLinks<'a>>,
 }
 
+/// The titles wired to each port, keyed by node, side and port name, in input order.
+pub type PeerTitles = BTreeMap<(NodeId, Side, String), Vec<String>>;
+
 /// What a card's ports read to name their connections (#1109).
 #[derive(Clone, Copy)]
 pub struct PortLinks<'a> {
     pub canvas: &'a nodecraft_graph::Canvas,
     pub kinds: &'a nodecraft_nodes::Registry,
+    /// Built from the edges once per frame, the first time a port is named: only while
+    /// AccessKit asks for names, so nothing is spent on it otherwise.
+    pub peers: &'a std::cell::OnceCell<PeerTitles>,
 }
 
 impl PortLinks<'_> {
@@ -260,26 +266,18 @@ impl PortLinks<'_> {
 
     /// The titles of the cards wired to `port` of `node` on `side`, in input order for an input.
     pub fn peers(&self, node: NodeId, side: Side, port: &str) -> Vec<String> {
-        let mut edges: Vec<_> = self
-            .canvas
-            .edges()
-            .values()
-            .filter(|edge| match side {
-                Side::Input => edge.to.node == node && edge.to.port == port,
-                Side::Output => edge.from.node == node && edge.from.port == port,
-            })
-            .collect();
-        edges.sort_by_key(|edge| edge.order);
-        edges
-            .into_iter()
-            .filter_map(|edge| {
-                let other = match side {
-                    Side::Input => &edge.from.node,
-                    Side::Output => &edge.to.node,
-                };
-                self.canvas.nodes().get(other).map(|other| self.title(other))
-            })
-            .collect()
+        let map = self.peers.get_or_init(|| {
+            let mut edges: Vec<_> = self.canvas.edges().values().collect();
+            edges.sort_by_key(|edge| edge.order);
+            let mut map = PeerTitles::new();
+            for edge in edges {
+                let (Some(from), Some(to)) = (self.canvas.nodes().get(&edge.from.node), self.canvas.nodes().get(&edge.to.node)) else { continue };
+                map.entry((to.id, Side::Input, edge.to.port.clone())).or_default().push(self.title(from));
+                map.entry((from.id, Side::Output, edge.from.port.clone())).or_default().push(self.title(to));
+            }
+            map
+        });
+        map.get(&(node, side, port.to_owned())).cloned().unwrap_or_default()
     }
 }
 

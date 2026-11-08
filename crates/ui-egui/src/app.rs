@@ -1893,6 +1893,8 @@ impl NodeCraftApp {
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             let connected_wires = card::connected::incoming(canvas);
             let element_names = elements::names(canvas);
+            // Who each port is wired to, named once per frame if a screen reader asks (#1109).
+            let port_peers = std::cell::OnceCell::new();
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
             let mention_blocked = &self.mention_cache.blocked;
@@ -2063,7 +2065,7 @@ impl NodeCraftApp {
                         mesh,
                         outdated,
                         export_folder: export_folders.get(&node.id).cloned(),
-                        links: Some(card::PortLinks { canvas, kinds }),
+                        links: Some(card::PortLinks { canvas, kinds, peers: &port_peers }),
                         variations: card::generate::Variations {
                             cards: canvas.variation_cards(),
                             alike: nodecraft_exec::variations::requested(node) > 1
