@@ -2831,10 +2831,10 @@ impl NodeCraftApp {
                     // A file command runs once its file is picked; choosing it opens the picker.
                     let ran = if matches!(id, "file.open" | "file.save" | "file.save_as") {
                         #[cfg(not(target_arch = "wasm32"))]
-                        self.begin_file(id, ui.ctx());
+                        let started = self.begin_file(id, ui.ctx());
                         #[cfg(target_arch = "wasm32")]
-                        self.web_file(id, ui.ctx());
-                        true
+                        let started = self.web_file(id, ui.ctx());
+                        started
                     } else {
                         self.dispatch_live_palette_command(ui.ctx(), id)
                     };

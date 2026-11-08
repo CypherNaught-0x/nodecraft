@@ -142,8 +142,7 @@ impl NodeCraftApp {
         // The review is read a page at a time in its panel.
         #[cfg(not(target_arch = "wasm32"))]
         if id == "usage.ownership" || id == "usage.unresolved" {
-            self.open_ownership_review();
-            return self.ownership.is_some();
+            return self.open_ownership_review();
         }
         let stamp = (id == "canvas.stale").then(|| StaleSnapshot::capture(self));
         let result = self.session.dispatch(id, &self.palette_command_params(id));
