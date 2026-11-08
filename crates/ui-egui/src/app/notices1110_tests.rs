@@ -63,19 +63,74 @@ fn a_refused_run_survives_undo_delete_paste_and_search() {
     // The run failure isn't shown on any card: losing it to an unrelated success loses money.
     let mut h = harness();
     let id = node(h.state()).id;
+    let canvas = h.state().canvas;
     let refused = "The run didn't start: the budget for today is spent";
-    h.state_mut().notices.push_notice(Notice::new(NoticeKind::Error, refused).keep());
+    h.state_mut().notices.push_notice(Notice::new(NoticeKind::Error, refused).from_run());
     h.run();
     let ctx = h.ctx.clone();
+    let still_there = |h: &egui_kittest::Harness<'static, super::NodeCraftApp>| h.state().notices.iter().any(|notice| notice.text == refused);
+    // A card edit that succeeds (and clears passing notices).
+    h.state_mut().card_edit(id, "node.title", &serde_json::json!({"canvas": canvas, "id": id, "title": "Renamed"})).unwrap();
+    assert!(still_there(&h));
+    // Delete, then undo it.
+    let revision = h.state().session.revision();
     h.state_mut().selection.only(id);
-    h.state_mut().run_palette_command(&ctx, "canvas.delete");
-    h.run();
+    h.state_mut().dispatch_delete();
+    assert!(h.state().session.revision() > revision, "the delete happened");
+    assert!(still_there(&h));
     h.state_mut().run_palette_command(&ctx, "edit.undo");
     h.run();
-    h.state_mut().run_palette_command(&ctx, "canvas.paste");
+    assert!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().contains_key(&id), "the undo happened");
+    assert!(still_there(&h));
+    // A paste of a copied card.
+    h.state_mut().selection.only(id);
+    h.event(egui::Event::Copy);
+    h.step();
+    let text = super::tests::copied(&h).expect("a copy");
     h.run();
+    let count = h.state().session.document().canvases().get(&canvas).unwrap().nodes().len();
+    h.hover_at(egui::pos2(800.0, 600.0));
+    h.event(egui::Event::Paste(text));
+    h.run();
+    assert_eq!(h.state().session.document().canvases().get(&canvas).unwrap().nodes().len(), count + 1, "the paste happened");
+    assert!(still_there(&h));
+    // A search.
     h.state_mut().dispatch_navigation(&ctx, "canvas.search_open", &serde_json::json!({})).ok();
-    h.state_mut().dispatch_search(&ctx, "canvas.search_query", &serde_json::json!({"query": "x"})).ok();
+    h.state_mut().dispatch_search(&ctx, "canvas.search_query", &serde_json::json!({"query": "Renamed"})).ok();
     h.run();
-    assert!(h.state().notices.iter().any(|notice| notice.text == refused), "{:?}", h.state().notice());
+    assert!(still_there(&h), "{:?}", h.state().notice());
+}
+
+#[test]
+fn a_parameter_error_goes_once_the_parameter_is_fixed() {
+    let mut h = harness();
+    let card = node(h.state());
+    let id = card.id;
+    let (name, value) = card.params.iter().next().map(|(name, value)| (name.clone(), serde_json::to_value(value).unwrap())).unwrap();
+    let canvas = h.state().canvas;
+    h.state_mut().notices.error("A run failed: over budget");
+    let bad = serde_json::json!({"canvas": canvas, "id": id, "name": "no_such_parameter", "value": {"type": "text", "value": "x"}});
+    assert!(h.state_mut().card_edit(id, "node.param_set", &bad).is_err());
+    let failed = h.state().notice().unwrap().to_owned();
+    h.run();
+    let good = serde_json::json!({"canvas": canvas, "id": id, "name": name, "value": value});
+    h.state_mut().card_edit(id, "node.param_set", &good).unwrap();
+    h.run();
+    let texts: Vec<String> = h.state().notices.iter().map(|notice| notice.text.clone()).collect();
+    assert!(!texts.contains(&failed), "the fixed parameter's error is gone: {texts:?}");
+    assert_eq!(texts, ["A run failed: over budget"], "an unrelated error stays");
+}
+
+#[test]
+fn a_failed_id_allocation_is_settled_by_the_next_document_change() {
+    let mut h = harness();
+    h.state_mut().notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
+    h.state_mut().notices.error("A run failed: over budget");
+    h.run();
+    assert_eq!(h.state().notices.iter().count(), 2);
+    let id = node(h.state()).id;
+    let canvas = h.state().canvas;
+    h.state_mut().card_edit(id, "node.title", &serde_json::json!({"canvas": canvas, "id": id, "title": "Renamed"})).unwrap();
+    h.run();
+    assert_eq!(h.state().notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["A run failed: over budget"]);
 }

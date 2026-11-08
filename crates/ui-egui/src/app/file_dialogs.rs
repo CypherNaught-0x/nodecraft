@@ -1,5 +1,6 @@
 //! UI-only location acquisition. Every file mutation still goes through Session dispatch.
 use super::*;
+use crate::notices::FILE_SAVE;
 use nodecraft_engine::settings::ProjectSettings;
 use std::{
     future::Future,
@@ -420,8 +421,8 @@ impl NodeCraftApp {
             Ok(result) if result.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {
                 self.complete_file_save(stamp, then_open, path, Ok(()));
             }
-            Ok(_) => self.notices.error("The save did not confirm publication; the current project was kept."),
-            Err(error) => self.notices.error(error),
+            Ok(_) => self.notices.error_for(FILE_SAVE, "The save did not confirm publication; the current project was kept."),
+            Err(error) => self.notices.error_for(FILE_SAVE, error),
         }
     }
     fn complete_file_save(&mut self, stamp: Stamp, then_open: Option<PathBuf>, saved_path: Option<PathBuf>, result: Result<(), String>) {
@@ -430,9 +431,11 @@ impl NodeCraftApp {
             return;
         }
         if let Err(error) = result {
-            self.notices.error(error);
+            self.notices.error_for(FILE_SAVE, error);
             return;
         }
+        // A save that went through takes back the earlier failed one (#1110).
+        self.notices.settle(FILE_SAVE);
         if let Some(path) = saved_path {
             self.remember_project(&path);
         }

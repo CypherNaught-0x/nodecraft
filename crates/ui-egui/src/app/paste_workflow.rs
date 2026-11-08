@@ -12,7 +12,7 @@ impl NodeCraftApp {
             return false;
         }
         let Some(id) = ids::node_id(self.session.document(), ("paste-workflow", self.session.revision(), text.len())) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return true;
         };
         let t = self.theme.tokens();

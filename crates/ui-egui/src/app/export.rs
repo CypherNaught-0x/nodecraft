@@ -174,7 +174,7 @@ impl NodeCraftApp {
                 return;
             }
             Err(_) => {
-                self.notices.error("The save dialog failed; nothing was exported.");
+                self.notices.error_for(crate::notices::EXPORT, "The save dialog failed; nothing was exported.");
                 return;
             }
         };
@@ -221,7 +221,7 @@ impl NodeCraftApp {
             Ok(Poll::Ready(None)) => return,
             Ok(Poll::Ready(Some(path))) => path,
             Err(_) => {
-                self.notices.error("The save dialog failed; nothing was exported.");
+                self.notices.error_for(crate::notices::EXPORT, "The save dialog failed; nothing was exported.");
                 return;
             }
         };
@@ -244,9 +244,10 @@ impl NodeCraftApp {
                 match self.session.dispatch(command, &params) {
                     Ok(result) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
+                        self.notices.settle(crate::notices::EXPORT);
                         self.notices.success(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
                     }
-                    Err(error) => self.notices.report(error),
+                    Err(error) => self.notices.report_for(crate::notices::EXPORT, error),
                 }
             }
             Target::Folder(command, files) => {
@@ -289,7 +290,10 @@ impl NodeCraftApp {
                     }
                 }
                 match failed {
-                    None => self.notices.success(format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts))),
+                    None => {
+                        self.notices.settle(crate::notices::EXPORT);
+                        self.notices.success(format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts)));
+                    }
                     // Some files were written: not a plain failure, but not done either.
                     Some(why) => self.notices.warning(format!("Exported {written} of {total} files; {why}{}{}", empty_boxes(boxes), font_notice(fonts))),
                 }

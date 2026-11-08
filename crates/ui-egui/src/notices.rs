@@ -16,12 +16,26 @@ use crate::{
 use egui::{Color32, Stroke};
 use nodecraft_types::{Error, ErrorKind};
 
-/// How many notices the stack shows at once. A fourth replaces the oldest one that isn't
-/// sticky; with only sticky ones shown, a new passing notice is dropped and a new sticky one is
-/// kept, the older ones counted on a "more" line under the stack.
+/// How many notices the stack shows at once: the newest. A new notice is always shown; to make
+/// room it replaces the oldest passing (non-sticky) notice, never a sticky one, and sticky
+/// notices it covers are counted on a "more" line under the stack.
 pub const MAX_NOTICES: usize = 3;
-/// The most sticky notices kept; beyond this the oldest goes, so the stack stays bounded.
+/// The most sticky notices kept; beyond this the oldest goes (one that isn't about a run first),
+/// so the stack stays bounded.
 pub const MAX_STICKY: usize = 32;
+/// The longest step the timeout clock takes in one frame, and the longest the stack waits for a
+/// repaint while a notice is timing out: a frame after a long gap (an idle or backgrounded
+/// window) counts as at most this, so nothing expires unseen, and an idle window still repaints
+/// often enough that a notice goes after about [`TIMEOUT_SECONDS`].
+pub const MAX_STEP_SECONDS: f64 = 0.5;
+/// The owner of errors about adding to the canvas (an id that couldn't be allocated, no free
+/// space for a paste): any later change to the document proves the canvas takes additions again,
+/// so the shell settles them then.
+pub const CANVAS_ADD: &str = "canvas.add";
+/// The owner of a failed save, settled by the next save that completes.
+pub const FILE_SAVE: &str = "file.save";
+/// The owner of a failed or refused export, settled by the next export that completes.
+pub const EXPORT: &str = "export";
 /// How long an information, success or warning notice stays on screen.
 pub const TIMEOUT_SECONDS: f64 = 6.0;
 /// The longest notice text kept, in UTF-8 bytes; longer text is cut at a character boundary.
@@ -143,6 +157,12 @@ pub struct Notice {
     pub sticky: bool,
     /// Seconds on screen while not paused.
     shown: f64,
+    /// Pushed since the last tick: its first tick never advances it, so it is painted first.
+    fresh: bool,
+    /// What raised it, so that code can take it back once the thing succeeds ([`Notices::settle`]).
+    owner: Option<String>,
+    /// About a run: kept over other sticky notices when the stack is full.
+    run: bool,
 }
 
 impl Notice {
@@ -155,7 +175,21 @@ impl Notice {
             }
             text.truncate(end);
         }
-        Self { id: 0, kind, text, action: None, sticky: kind.sticky(), shown: 0.0 }
+        Self { id: 0, kind, text, action: None, sticky: kind.sticky(), shown: 0.0, fresh: true, owner: None, run: false }
+    }
+
+    /// Raised by `owner` (a short key such as `"wire"` or `"node.param_set <id>"`), which takes it
+    /// back with [`Notices::settle`] when the same thing later succeeds.
+    pub fn owned_by(mut self, owner: impl Into<String>) -> Self {
+        self.owner = Some(owner.into());
+        self
+    }
+
+    /// About a run (it costs money if missed): sticky, and the last sticky notice to be dropped.
+    pub fn from_run(mut self) -> Self {
+        self.sticky = true;
+        self.run = true;
+        self
     }
 
     /// Keep it until dismissed whatever its kind (a run warning that costs money if missed).
@@ -196,14 +230,16 @@ pub struct Notices {
 }
 
 impl Notices {
-    /// Add `notice` on top and return its id, or `None` when it was dropped: a passing notice
-    /// while the stack shows only sticky ones, which are never evicted for it.
-    pub fn push_notice(&mut self, mut notice: Notice) -> Option<u64> {
+    /// Add `notice` on top, where it is always shown, and return its id. Room is made by
+    /// dropping the oldest passing notices only; sticky ones it covers wait below, counted.
+    pub fn push_notice(&mut self, mut notice: Notice) -> u64 {
         // The same message again refreshes the one already shown instead of stacking a copy.
         if let Some(index) = self.queue.iter().position(|old| old.kind == notice.kind && old.text == notice.text) {
             let old = self.queue.remove(index);
             notice.id = old.id;
             notice.sticky |= old.sticky;
+            notice.run |= old.run;
+            notice.owner = notice.owner.or(old.owner);
         } else {
             self.next_id = self.next_id.wrapping_add(1);
             notice.id = self.next_id;
@@ -213,16 +249,18 @@ impl Notices {
                 Some(index) => {
                     self.queue.remove(index);
                 }
-                None if !notice.sticky => return None,
                 None => break,
             }
         }
-        if notice.sticky && self.queue.len() >= MAX_STICKY {
-            self.queue.remove(0);
+        if notice.sticky && self.queue.iter().filter(|old| old.sticky).count() >= MAX_STICKY {
+            let oldest = self.queue.iter().position(|old| old.sticky && !old.run).or_else(|| self.queue.iter().position(|old| old.sticky));
+            if let Some(index) = oldest {
+                self.queue.remove(index);
+            }
         }
         let id = notice.id;
         self.queue.push(notice);
-        Some(id)
+        id
     }
 
     pub fn push(&mut self, kind: NoticeKind, text: impl Into<String>) {
@@ -252,8 +290,23 @@ impl Notices {
 
     /// [`Self::report`], returning the notice's id so the code that raised it can take it back
     /// with [`Self::dismiss`] once the thing it was about has succeeded.
-    pub fn report_id(&mut self, error: Error) -> Option<u64> {
+    pub fn report_id(&mut self, error: Error) -> u64 {
         self.push_notice(Notice::new(NoticeKind::of_error(error.kind), error.message))
+    }
+
+    /// [`Self::report`] on behalf of `owner`, which [`Self::settle`]s it once that succeeds.
+    pub fn report_for(&mut self, owner: impl Into<String>, error: Error) {
+        self.push_notice(Notice::new(NoticeKind::of_error(error.kind), error.message).owned_by(owner));
+    }
+
+    /// [`Self::error`] on behalf of `owner`, which [`Self::settle`]s it once that succeeds.
+    pub fn error_for(&mut self, owner: impl Into<String>, text: impl Into<String>) {
+        self.push_notice(Notice::new(NoticeKind::Error, text).owned_by(owner));
+    }
+
+    /// `owner` has since succeeded: take back the notices it raised, sticky or not.
+    pub fn settle(&mut self, owner: &str) {
+        self.queue.retain(|notice| notice.owner.as_deref() != Some(owner));
     }
 
     /// Show `text` as `kind`, or [`Self::clear`] when there is none: what an action that
@@ -330,7 +383,7 @@ impl Notices {
     /// long until the next one times out, for a repaint.
     fn tick(&mut self, now: f64, running: bool) -> Option<f64> {
         let step = match self.last_time {
-            Some(last) if running && now.is_finite() && last.is_finite() => (now - last).clamp(0.0, TIMEOUT_SECONDS),
+            Some(last) if running && now.is_finite() && last.is_finite() => (now - last).clamp(0.0, MAX_STEP_SECONDS),
             _ => 0.0,
         };
         self.last_time = Some(now);
@@ -339,7 +392,12 @@ impl Notices {
             self.hovered = None;
         }
         let paused = [self.focused, self.hovered];
-        for notice in &mut self.queue {
+        // Only the drawn (newest) notices age; one pushed since the last tick starts next tick.
+        let hidden = self.queue.len().saturating_sub(MAX_NOTICES);
+        for notice in self.queue.iter_mut().skip(hidden) {
+            if std::mem::take(&mut notice.fresh) {
+                continue;
+            }
             if !notice.sticky && !paused.contains(&Some(notice.id)) {
                 notice.shown += step;
             }
@@ -348,7 +406,7 @@ impl Notices {
         self.queue
             .iter()
             .filter(|notice| !notice.sticky && !paused.contains(&Some(notice.id)))
-            .map(|notice| TIMEOUT_SECONDS - notice.shown)
+            .map(|notice| (TIMEOUT_SECONDS - notice.shown).clamp(0.0, MAX_STEP_SECONDS))
             .min_by(f64::total_cmp)
     }
 
@@ -362,7 +420,7 @@ impl Notices {
         let running = self.drawn_last_pass(ui.ctx());
         self.drawn_pass = Some(ui.ctx().cumulative_pass_nr());
         if let Some(next) = self.tick(now, running) {
-            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(next.clamp(0.0, TIMEOUT_SECONDS)));
+            ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(next.clamp(0.0, MAX_STEP_SECONDS)));
         }
         let mut shown = Shown::default();
         let mut dismissed = Vec::new();
@@ -384,7 +442,7 @@ impl Notices {
                 hovered = Some(notice.id);
             }
         }
-        // Older sticky notices wait under the stack, counted, until the shown ones are dismissed.
+        // Older notices wait under the stack, counted, until the shown ones are dismissed.
         let more = self.queue.len().saturating_sub(MAX_NOTICES);
         if more > 0 {
             let line = if more == 1 {

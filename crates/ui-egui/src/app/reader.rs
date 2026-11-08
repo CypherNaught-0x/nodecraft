@@ -312,7 +312,7 @@ impl NodeCraftApp {
             },
             ask => {
                 let Some(id) = ids::node_id(document, ("pdf_reader", node, revision, page)) else {
-                    self.notices.error("Couldn't allocate a node id; try again.");
+                    self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
                     return;
                 };
                 match ask {

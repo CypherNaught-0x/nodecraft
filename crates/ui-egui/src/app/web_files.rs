@@ -306,13 +306,15 @@ impl NodeCraftApp {
                 Poll::Pending => self.web_files.phase = Some(Phase::Writing { future, name, download }),
                 Poll::Ready(Ok(())) => {
                     self.web_files.unwritten = false;
+                    // A save that reached the file takes back an earlier failed one (#1110).
+                    self.notices.settle(crate::notices::FILE_SAVE);
                     if download {
                         self.notices.success(format!("Downloaded {name}. Open it again from your downloads to keep working on that copy."));
                     }
                 }
                 Poll::Ready(Err(error)) => {
                     self.web_files.unwritten = true;
-                    self.notices.error(format!("{name} wasn't saved: {error} The project is still open here; save it again."));
+                    self.notices.error_for(crate::notices::FILE_SAVE, format!("{name} wasn't saved: {error} The project is still open here; save it again."));
                 }
             },
             Some(Phase::Confirm(picked)) => self.web_files.phase = Some(Phase::Confirm(picked)),
@@ -443,11 +445,11 @@ impl NodeCraftApp {
         match result {
             Ok(value) if value.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {}
             Ok(_) => {
-                self.notices.error("The save did not confirm publication; the current project was kept.");
+                self.notices.error_for(crate::notices::FILE_SAVE, "The save did not confirm publication; the current project was kept.");
                 return;
             }
             Err(error) => {
-                self.notices.report(error);
+                self.notices.report_for(crate::notices::FILE_SAVE, error);
                 return;
             }
         }
@@ -456,7 +458,7 @@ impl NodeCraftApp {
         }
         let Some((saved, bytes)) = written.filter(|(saved, _)| saved == location) else {
             self.web_files.unwritten = true;
-            self.notices.error("The project was saved but nothing was handed to the browser to write; save it again.");
+            self.notices.error_for(crate::notices::FILE_SAVE, "The project was saved but nothing was handed to the browser to write; save it again.");
             return;
         };
         self.web_write(&saved, bytes);

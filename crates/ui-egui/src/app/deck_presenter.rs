@@ -141,7 +141,7 @@ impl NodeCraftApp {
             })
             .collect();
         let Some(id) = ids::node_id(document, ("deck", self.session.revision())) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         let params = json!({"canvas": self.canvas, "id": id, "pos": {"x": right + GAP, "y": top}, "title": "Deck", "nodes": nodes, "fields": fields});

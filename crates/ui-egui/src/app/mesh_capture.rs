@@ -39,7 +39,7 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let (Some(id), Some(edge)) = (ids::node_id(document, ("mesh-capture", node, revision)), ids::edge_id(document, ("mesh-capture-edge", node, revision)))
         else {
-            self.notices.error("Couldn't allocate node ids; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let style = match view.style {

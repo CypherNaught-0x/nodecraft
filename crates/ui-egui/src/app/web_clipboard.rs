@@ -139,7 +139,7 @@ impl NodeCraftApp {
             return false;
         }
         let Some(centre) = self.paste_target(ui, t) else {
-            self.notices.error("There is no unobscured canvas space for this paste.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "There is no unobscured canvas space for this paste.");
             return true;
         };
         let target = Target::capture(self, centre, t);

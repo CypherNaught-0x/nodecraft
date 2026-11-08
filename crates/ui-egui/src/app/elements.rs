@@ -63,7 +63,7 @@ impl NodeCraftApp {
         let id = ids::node_id(document, ("element", revision));
         let edges: Option<Vec<_>> = (0..from.len()).map(|n| ids::edge_id(document, ("element-wire", revision, n))).collect();
         let (Some(id), Some(edges)) = (id, edges) else {
-            self.notices.error("Couldn't allocate node ids; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let params = json!({

@@ -166,7 +166,7 @@ impl NodeCraftApp {
         }
         match self.paste_target(ui, t) {
             Some(centre) => self.start_image_paste(ui.ctx(), centre, t),
-            None => self.notices.error("There is no unobscured canvas space for this paste."),
+            None => self.notices.error_for(crate::notices::CANVAS_ADD, "There is no unobscured canvas space for this paste."),
         }
     }
 

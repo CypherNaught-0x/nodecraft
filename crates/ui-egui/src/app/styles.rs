@@ -85,7 +85,7 @@ impl NodeCraftApp {
         let Some(source) = document.canvases().get(&self.canvas).and_then(|canvas| canvas.nodes().get(&style)) else { return };
         let revision = self.session.revision();
         let (Some(id), Some(edge)) = (ids::node_id(document, ("style-card", revision)), ids::edge_id(document, ("style-card-wire", revision))) else {
-            self.notices.error("Couldn't allocate node ids; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let params = json!({"canvas": self.canvas, "style": style, "id": id, "edge": edge, "pos": {"x": source.pos.x + GAP, "y": source.pos.y}});
@@ -102,7 +102,7 @@ impl NodeCraftApp {
     pub(super) fn use_style(&mut self, target: NodeId, style: NodeId) {
         let document = self.session.document();
         let Some(edge) = ids::edge_id(document, ("style-wire", self.session.revision(), target)) else {
-            self.notices.error("Couldn't allocate an edge id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate an edge id; try again.");
             return;
         };
         let params = json!({"canvas": self.canvas, "style": style, "target": target, "edge": edge});

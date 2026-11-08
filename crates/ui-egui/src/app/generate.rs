@@ -410,7 +410,7 @@ impl NodeCraftApp {
         if let Some((kind, notice)) = tick.notice {
             // A run problem costs money if missed: it stays until dismissed, warnings too.
             let notice = crate::notices::Notice::new(kind, notice);
-            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.keep() } else { notice });
+            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.from_run() } else { notice });
         }
         for estimated in tick.estimated {
             self.estimated(estimated);
@@ -819,7 +819,7 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("prompt-assist", id, self.session.revision());
         let (Some(node), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         match self.session.dispatch("node.prompt_assist", &json!({"canvas": self.canvas, "node": id, "id": node, "edge": edge})) {

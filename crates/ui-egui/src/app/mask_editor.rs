@@ -159,7 +159,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edge", node, revision, 0)),
             ids::edge_id(document, ("mask-edge", node, revision, 1)),
         ) else {
-            self.notices.error("Couldn't allocate node ids; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let pos = mask_cmds::beside(source.pos, 1.0);
@@ -317,7 +317,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 0)),
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 1)),
         ) else {
-            self.notices.error("Couldn't allocate node ids; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return false;
         };
         let model = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());

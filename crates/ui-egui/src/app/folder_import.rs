@@ -318,7 +318,7 @@ impl NodeCraftApp {
             Target::New(at) => {
                 let seed = ("folder", self.session.revision(), at.x.to_bits(), at.y.to_bits(), read.files.len());
                 let Some(id) = ids::node_id(self.session.document(), seed) else {
-                    self.notices.error("Couldn't allocate a node id; try again.");
+                    self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
                     return;
                 };
                 FolderTarget::New { canvas: reading.canvas, at, id }

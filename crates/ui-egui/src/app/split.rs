@@ -20,7 +20,7 @@ impl NodeCraftApp {
             match ids::node_id(document, ("split", node, revision, index)).filter(|id| !new_ids.contains(id)) {
                 Some(id) => new_ids.push(id),
                 None => {
-                    self.notices.error("Couldn't allocate node ids; try again.");
+                    self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                     return;
                 }
             }

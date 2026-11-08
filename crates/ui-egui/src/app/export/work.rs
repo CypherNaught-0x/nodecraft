@@ -99,6 +99,14 @@ impl Work {
         }
         self.cancel_requested
     }
+    /// Says how the export ended; one that completed takes back an earlier failed export.
+    fn announce(&self, notices: &mut crate::notices::Notices) {
+        let kind = self.notice_kind();
+        if kind == crate::notices::NoticeKind::Success {
+            notices.settle(crate::notices::EXPORT);
+        }
+        notices.push(kind, self.notice());
+    }
     fn notice_kind(&self) -> crate::notices::NoticeKind {
         use crate::notices::NoticeKind;
         match (&self.failed, self.folder.is_some()) {
@@ -152,7 +160,7 @@ impl NodeCraftApp {
                 return;
             }
             if work.settle(current, status.and_then(|status| status.result)) {
-                self.notices.push(work.notice_kind(), work.notice());
+                work.announce(&mut self.notices);
                 return;
             }
         }
@@ -161,7 +169,7 @@ impl NodeCraftApp {
             work.files.clear();
         }
         let Some(mut item) = work.files.pop_front() else {
-            self.notices.push(work.notice_kind(), work.notice());
+            work.announce(&mut self.notices);
             return;
         };
         let name = if let Some(folder) = &work.folder {
@@ -283,7 +291,7 @@ impl NodeCraftApp {
                     }
                     self.notices.info("Cancelling export…");
                 }
-                Err(error) => self.notices.report(error),
+                Err(error) => self.notices.report_for(crate::notices::EXPORT, error),
             }
         }
         self.exports.pointer_owned

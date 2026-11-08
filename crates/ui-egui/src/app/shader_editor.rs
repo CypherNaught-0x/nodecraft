@@ -371,7 +371,7 @@ impl NodeCraftApp {
             params["error"] = json!(message);
         }
         let Some(card) = ids::node_id(self.session.document(), ("shader-write", node, self.session.revision())) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         params["id"] = json!(card);

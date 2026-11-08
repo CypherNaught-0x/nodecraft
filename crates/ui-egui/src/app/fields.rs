@@ -263,7 +263,7 @@ impl NodeCraftApp {
         };
         let seed = ("field", self.session.revision(), rect.min.x.to_bits(), rect.min.y.to_bits());
         let Some(id) = ids::field_id(self.session.document(), seed) else {
-            self.notices.error("Couldn't allocate a field id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a field id; try again.");
             return;
         };
         let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().collect();

@@ -1791,7 +1791,7 @@ fn a_fit_while_the_palette_is_open_closes_it() {
 }
 
 /// The text the last frames asked the platform to copy, if any.
-fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
+pub(super) fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
     h.output().platform_output.commands.iter().find_map(|command| match command {
         egui::OutputCommand::CopyText(text) => Some(text.clone()),
         _ => None,

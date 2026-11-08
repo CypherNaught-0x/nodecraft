@@ -165,7 +165,7 @@ impl NodeCraftApp {
                 ids::node_id(self.session.document(), ("drop", self.session.revision(), index, pending.position.x.to_bits(), pending.position.y.to_bits()))
                     .filter(|id| !new_ids.contains(id));
             let Some(id) = fresh else {
-                self.notices.error("Couldn't allocate node ids; try again.");
+                self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                 return;
             };
             new_ids.push(id);

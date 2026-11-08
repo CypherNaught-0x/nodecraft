@@ -648,6 +648,8 @@ pub struct NodeCraftApp {
     comfy_mapping: Option<comfy_mapping::Editor>,
     /// The tool panel this frame's Escape closes, taken before the canvas reads keys (#1116).
     tool_escape: Option<ToolEscape>,
+    /// The document revision when the last frame began, to settle `CANVAS_ADD` notices (#1110).
+    notice_revision: u64,
     /// The notice whose button held the focus when Escape was pressed this frame (#1110).
     notice_escape: Option<u64>,
     /// The ComfyUI server's address and its check (#9).
@@ -1346,6 +1348,7 @@ impl NodeCraftApp {
             comfy_nodes: None,
             comfy_mapping: None,
             tool_escape: None,
+            notice_revision: 0,
             notice_escape: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_server: comfy_server::ComfyServerPanel::default(),
@@ -1390,6 +1393,13 @@ impl NodeCraftApp {
     }
     /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        // A document change since last frame means additions work again: an earlier "couldn't
+        // allocate an id" or "no canvas space" error is settled (#1110).
+        let revision = self.session.revision();
+        if revision != self.notice_revision {
+            self.notice_revision = revision;
+            self.notices.settle(crate::notices::CANVAS_ADD);
+        }
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.commit_mesh_views(ui.ctx(), false);
@@ -1767,7 +1777,7 @@ impl NodeCraftApp {
                         clipboard::Parsed::Unreadable(why) => self.notices.error(format!("Can't paste these nodes: {why}.")),
                         clipboard::Parsed::Text => self.paste_plain_text(ui, t, text, centre),
                     },
-                    None => self.notices.error("There is no unobscured canvas space for this paste."),
+                    None => self.notices.error_for(crate::notices::CANVAS_ADD, "There is no unobscured canvas space for this paste."),
                 },
                 None => {}
             }
@@ -2683,8 +2693,11 @@ impl NodeCraftApp {
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
-                Ok(_) => self.notices.clear(),
-                Err(error) => self.notices.report(error),
+                Ok(_) => {
+                    self.notices.clear();
+                    self.notices.settle("wire");
+                }
+                Err(error) => self.notices.report_for("wire", error),
             }
         }
         if let Some((mode, owner)) = layout_mode {
@@ -2770,9 +2783,8 @@ impl NodeCraftApp {
                     continue;
                 }
             };
-            match self.session.dispatch(command, &params) {
-                Ok(_) => {
-                    self.notices.clear();
+            match self.card_edit(id, command, &params) {
+                Ok(()) => {
                     if let Some(target) = editing
                         && let Some(editor) = self.editors.get_mut(&id)
                     {
@@ -2780,7 +2792,6 @@ impl NodeCraftApp {
                     }
                 }
                 Err(error) => {
-                    self.notices.report(error.clone());
                     if let Some(target) = editing
                         && let Some(editor) = self.editors.get_mut(&id)
                     {
@@ -2948,6 +2959,23 @@ impl NodeCraftApp {
             self.web_file(id, ctx);
         } else {
             self.dispatch_live_palette_command(ctx, id);
+        }
+    }
+
+    /// Dispatches card `id`'s own edit (`command`). Its error is owned by the card and command,
+    /// so a later successful edit of the same kind takes it back (#1110).
+    pub(super) fn card_edit(&mut self, id: NodeId, command: &str, params: &serde_json::Value) -> Result<(), Error> {
+        let owner = format!("{command} {id}");
+        match self.session.dispatch(command, params) {
+            Ok(_) => {
+                self.notices.clear();
+                self.notices.settle(&owner);
+                Ok(())
+            }
+            Err(error) => {
+                self.notices.report_for(owner, error.clone());
+                Err(error)
+            }
         }
     }
 
@@ -3197,7 +3225,7 @@ impl NodeCraftApp {
     }
     /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
     /// ids an undo already removed. A deleted field's cards stay.
-    fn dispatch_delete(&mut self) {
+    pub(super) fn dispatch_delete(&mut self) {
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
         let edges: Vec<EdgeId> = self.selection.edges().iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
@@ -3430,7 +3458,7 @@ impl NodeCraftApp {
         let pos = nodecraft_graph::Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
         let seed = (kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
         let Some(id) = ids::node_id(self.session.document(), seed) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         // Keep id allocation stable, but center the actual default card, not the old baseline.
@@ -3490,7 +3518,7 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("turn-into", kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
         let (Some(id), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, port_type)), t) {

@@ -12,24 +12,82 @@ fn the_queue_is_capped_and_keeps_errors_over_older_information() {
 }
 
 #[test]
-fn errors_are_never_evicted_for_passing_notices_and_extra_errors_wait_below() {
+fn a_passing_notice_is_never_dropped_for_errors_and_errors_are_never_evicted_for_it() {
     let mut notices = Notices::default();
     for i in 1..=3 {
         notices.error(format!("E{i}"));
     }
-    // Only errors are shown: a passing notice is dropped rather than evicting one.
-    assert_eq!(notices.push_notice(Notice::new(NoticeKind::Success, "Saved")), None);
-    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["E3", "E2", "E1"]);
-    // A fourth error is kept, under the shown three.
+    // With three errors up, a success still goes on top; the errors stay, one now below.
+    notices.success("Copied the text.");
+    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Copied the text.", "E3", "E2", "E1"]);
+    // Another passing notice replaces the passing one, never an error.
+    notices.info("Reading the clipboard…");
+    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Reading the clipboard…", "E3", "E2", "E1"]);
+    // A fourth error is kept as well.
     notices.error("E4");
-    assert_eq!(notices.iter().count(), 4);
     assert_eq!(notices.latest_text(), Some("E4"));
-    // Bounded all the same.
+    assert!(notices.iter().any(|notice| notice.text == "E1"));
+}
+
+#[test]
+fn sticky_notices_are_bounded_and_run_notices_are_dropped_last() {
+    let mut notices = Notices::default();
+    notices.push_notice(Notice::new(NoticeKind::Error, "A run failed: over budget").from_run());
     for i in 0..100 {
         notices.error(format!("more {i}"));
     }
-    assert_eq!(notices.iter().count(), MAX_STICKY);
+    assert_eq!(notices.iter().filter(|notice| notice.sticky).count(), MAX_STICKY);
     assert_eq!(notices.latest_text(), Some("more 99"));
+    assert!(notices.iter().any(|notice| notice.text == "A run failed: over budget"), "the run notice outlives the others");
+}
+
+#[test]
+fn an_owner_settles_only_its_own_notices() {
+    let mut notices = Notices::default();
+    notices.error_for("wire", "Can't connect a list to a single input");
+    notices.report_for("node.param_set n1", Error::new(ErrorKind::InvalidInput, "steps must be at most 50"));
+    notices.error("A run failed: over budget");
+    notices.settle("wire");
+    notices.settle("node.param_set n1");
+    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["A run failed: over budget"]);
+}
+
+/// Drives the clock as an idle window's event loop would: a frame only when the stack asks for
+/// a repaint, at the delay it asks for. Returns the seconds until the stack is empty.
+fn idle_until_empty(notices: &mut Notices, mut now: f64) -> f64 {
+    let start = now;
+    while let Some(delay) = notices.tick(now, true) {
+        assert!(delay > 0.0 && delay <= MAX_STEP_SECONDS, "{delay}");
+        now += delay;
+        assert!(now - start < 60.0, "never timed out");
+    }
+    notices.tick(now, true);
+    now - start
+}
+
+#[test]
+fn an_idle_window_times_a_notice_out_in_about_six_seconds() {
+    let mut notices = Notices::default();
+    notices.tick(0.0, true);
+    notices.info("Copied");
+    let took = idle_until_empty(&mut notices, 0.0);
+    assert!(notices.is_empty());
+    assert!((TIMEOUT_SECONDS..=TIMEOUT_SECONDS + 1.0).contains(&took), "{took}");
+}
+
+#[test]
+fn a_notice_pushed_after_a_long_gap_is_painted_before_it_ages() {
+    let mut notices = Notices::default();
+    notices.tick(0.0, true);
+    // Ten idle seconds, then a notice and the frame that draws it.
+    notices.info("Saved");
+    notices.tick(10.0, true);
+    assert_eq!(notices.latest_text(), Some("Saved"), "not expired in the pass it was pushed");
+    // A backgrounded window coming back counts its gap as one short step, not the whole gap.
+    notices.tick(40.0, true);
+    assert_eq!(notices.latest_text(), Some("Saved"));
+    let took = idle_until_empty(&mut notices, 40.0);
+    assert!((TIMEOUT_SECONDS - 1.0..=TIMEOUT_SECONDS + 1.0).contains(&took), "{took}");
 }
 
 #[test]
@@ -42,7 +100,7 @@ fn clear_keeps_sticky_notices_and_their_owner_takes_them_back() {
     notices.outcome(Ok::<(), Error>(()));
     notices.set(NoticeKind::Info, None);
     assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Runs can't be kept for a restart", "Bad name"]);
-    notices.dismiss(id.unwrap());
+    notices.dismiss(id);
     assert_eq!(notices.latest_text(), Some("Runs can't be kept for a restart"));
 }
 
@@ -85,7 +143,7 @@ fn the_clock_ignores_non_finite_and_backward_time() {
     // Time while the stack wasn't drawn doesn't count.
     notices.tick(1000.0, false);
     assert_eq!(notices.latest_text(), Some("hello"));
-    notices.tick(1000.0 + TIMEOUT_SECONDS, true);
+    idle_until_empty(&mut notices, 1000.0);
     assert!(notices.is_empty());
 }
 
@@ -170,24 +228,23 @@ mod kittest {
     }
 
     #[test]
-    fn a_notice_times_out_across_long_gaps_between_frames() {
-        // An idle window repaints only when asked: the clock counts the whole gap, so two frames
-        // a few seconds apart are enough (#1110 review).
+    fn a_shown_notice_times_out_after_about_six_seconds_of_frames() {
         let mut notices = Notices::default();
         notices.info("Copied");
-        let mut h = Harness::builder().with_step_dt(4.0).with_size(Vec2::new(520.0, 200.0)).build_ui_state(
+        let mut h = Harness::builder().with_step_dt(0.5).with_size(Vec2::new(520.0, 200.0)).build_ui_state(
             |ui, notices: &mut Notices| {
                 notices.show(ui, ThemeKind::Dark.tokens(), None);
             },
             notices,
         );
-        // With a quarter-second cap per frame this took 24 frames; now the gap counts in full.
         let mut frames = 0;
-        while !h.state().is_empty() && frames < 24 {
+        while !h.state().is_empty() && frames < 40 {
             h.step();
             frames += 1;
         }
-        assert!(h.state().is_empty() && frames <= 3, "{frames} frames");
+        // Six seconds of half-second frames, plus the frame that painted it first.
+        // About six seconds of half-second frames (the harness steps a few frames as it builds).
+        assert!(h.state().is_empty() && (6..=16).contains(&frames), "{frames} frames");
     }
 
     #[test]
@@ -202,9 +259,9 @@ mod kittest {
             },
             (notices, true),
         );
-        h.run();
+        h.run_steps(2);
         h.get_by_label("Dismiss notice").focus();
-        h.run();
+        h.run_steps(2);
         assert!(h.state().0.focused(&h.ctx).is_some());
         h.state_mut().1 = false;
         for _ in 0..20 {
@@ -212,6 +269,19 @@ mod kittest {
         }
         assert!(h.state().0.focused(&h.ctx).is_none(), "a hidden notice can't take Escape");
         assert_eq!(h.state().0.latest_text(), Some("Wait for me"), "its clock stopped while hidden");
+    }
+
+    #[test]
+    fn with_three_errors_up_a_success_shows_on_top_and_the_errors_are_counted_below() {
+        let mut h = stack(&[(NoticeKind::Error, "E1"), (NoticeKind::Error, "E2"), (NoticeKind::Error, "E3")]);
+        h.run();
+        h.state_mut().success("Copied the text.");
+        h.run();
+        h.get_by_label("Copied the text.");
+        assert!(h.query_by_label("E1").is_none());
+        h.get_by_label("1 more notice below; dismiss these to see it.");
+        let top = h.get_by_label("Copied the text.").rect().top();
+        assert!(top < h.get_by_label("E3").rect().top());
     }
 
     #[test]

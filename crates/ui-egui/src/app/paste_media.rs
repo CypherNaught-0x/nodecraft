@@ -66,7 +66,7 @@ impl NodeCraftApp {
         }
         let at = target.position;
         let Some(id) = ids::node_id(self.session.document(), ("clipboard-image", self.session.revision(), at.x.to_bits(), at.y.to_bits())) else {
-            self.notices.error("Couldn't allocate a node id; try again.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         let incoming = [Incoming { name: "Pasted image.png", bytes: png }];

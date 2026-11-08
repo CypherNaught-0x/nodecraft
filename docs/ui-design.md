@@ -740,10 +740,10 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 **Notices** (#1110, [decision](decisions/2026-11-08-typed-notices.md)) are view state in
-`notices.rs`: a stack in the bottom-left corner, newest on top, three shown (`MAX_NOTICES`). A
-fourth replaces the oldest that isn't sticky; with only sticky ones shown, a passing notice is
-dropped and a sticky one is kept below, counted on a "N more notices below" line (at most 32). The
-same text again refreshes the one shown instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
+`notices.rs`: a stack in the bottom-left corner, the newest three shown (`MAX_NOTICES`). A new
+notice always goes on top; room is made by dropping the oldest passing notice, never a sticky
+one, and the ones it covers are counted on a "N more notices below" line (sticky ones bounded at
+32). The same text again refreshes the one shown instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
 shared panel frame, `notice_width` (380) wide or the window less its margins, with a
 `notice_edge` (3) stripe down its left side and an icon in its kind's colour (`text_muted`,
 `accent`, `stale`, `danger`; Tabler info-circle, circle-check, alert-triangle, alert-circle), so
@@ -764,7 +764,9 @@ colour is never the only cue. Its text is `text`.
   warning; provider, budget, key and network failures are errors), and run events in
   `NoticeKind::of_run`. Code reports with `notices.report(error)`, `error`, `warning`, `success`
   or `info`. `clear`, after an action has succeeded, removes only passing notices; a sticky one
-  goes when dismissed, or when the code that raised it takes it back by id or text.
+  goes when dismissed, or when the code that raised it with an owner (`report_for`, `error_for`)
+  settles it: a card's edit, a connection, a save or an export that later succeeds, or any
+  document change for an id allocation or canvas-space error.
 - Views without the corner (a deck being edited or presented, an app form) show the newest as one
   line with `notices::inline_notice`. An error bound to a control (a card's parameter, the model
   picker's choice) is `notices::inline_error`: the error icon, then `danger` text.

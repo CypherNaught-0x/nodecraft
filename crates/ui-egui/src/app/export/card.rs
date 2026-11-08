@@ -47,7 +47,7 @@ impl NodeCraftApp {
     /// The card's *Choose folder…*: a person picks the folder; nothing else can.
     pub(in crate::app) fn choose_card_folder(&mut self, id: NodeId) {
         if let Some(why) = unavailable() {
-            self.notices.error(why);
+            self.notices.error_for(crate::notices::EXPORT, why);
             return;
         }
         self.pick_export(Target::Card(self.canvas, id), "");
@@ -69,12 +69,12 @@ impl NodeCraftApp {
                     grants.hosts.retain(|(canvas, node), _| document.canvases().get(canvas).is_some_and(|c| c.nodes().contains_key(node)));
                 }
                 if grants.hosts.len() >= MAX_GRANTS && !grants.hosts.contains_key(&(canvas, id)) {
-                    self.notices.error("Too many Export to folder cards have a folder chosen; reopen the project to start over.");
+                    self.notices.error_for(crate::notices::EXPORT, "Too many Export to folder cards have a folder chosen; reopen the project to start over.");
                     return;
                 }
                 grants.hosts.insert((canvas, id), host);
             }
-            Err(error) => self.notices.report(error),
+            Err(error) => self.notices.report_for(crate::notices::EXPORT, error),
         }
     }
 
@@ -90,7 +90,7 @@ impl NodeCraftApp {
         let preview = match dispatch_with_host(&mut self.session, &host, "export.node_plan", &plan) {
             Ok(preview) => preview,
             Err(error) => {
-                self.notices.report(error);
+                self.notices.report_for(crate::notices::EXPORT, error);
                 return;
             }
         };
@@ -100,7 +100,9 @@ impl NodeCraftApp {
             Some(count) if replacing => self.exports.confirm = Some((self.session.view_identity(), self.canvas, id, count)),
             Some(_) => self.write_card(id, host),
             // Unknown: never replace without knowing what would be replaced.
-            None if replacing => self.notices.error("Can't check which files would be replaced; choose Keep or Number on the card."),
+            None if replacing => {
+                self.notices.error_for(crate::notices::EXPORT, "Can't check which files would be replaced; choose Keep or Number on the card.")
+            }
             None => self.write_card(id, host),
         }
     }
@@ -108,7 +110,7 @@ impl NodeCraftApp {
     /// Why card `id` can't export right now (in a notice), or its grant.
     fn export_ready(&mut self, id: NodeId) -> Option<ExportHost> {
         if let Some(why) = unavailable() {
-            self.notices.error(why);
+            self.notices.error_for(crate::notices::EXPORT, why);
             return None;
         }
         if self.exports.pending.is_some()
@@ -135,9 +137,9 @@ impl NodeCraftApp {
         match dispatch_with_host(&mut self.session, &host, "export.node_run", &params) {
             Ok(_) => match self.session.export_watch() {
                 Some(watch) => self.exports.card = Some((watch, host.label())),
-                None => self.notices.error("The export didn't start; export again."),
+                None => self.notices.error_for(crate::notices::EXPORT, "The export didn't start; export again."),
             },
-            Err(error) => self.notices.report(error),
+            Err(error) => self.notices.report_for(crate::notices::EXPORT, error),
         }
     }
 
@@ -152,6 +154,7 @@ impl NodeCraftApp {
         };
         let status = watch.status();
         if let Some(result) = status.result {
+            self.notices.settle(crate::notices::EXPORT);
             self.notices.success(summary(&result, &folder));
             return false;
         }
@@ -178,7 +181,7 @@ impl NodeCraftApp {
                 cancel = ui.add_enabled(status.cancellable && current, egui::Button::new("Cancel export")).clicked();
             });
         if cancel && let Err(error) = self.session.dispatch("export.cancel", &json!({"id": status.id})) {
-            self.notices.report(error);
+            self.notices.report_for(crate::notices::EXPORT, error);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         self.exports.card = Some((watch, folder));

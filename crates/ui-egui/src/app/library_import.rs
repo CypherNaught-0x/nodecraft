@@ -421,7 +421,7 @@ impl NodeCraftApp {
         }
         if !allocated {
             self.library.browsers.report = Some(failed_all(read, "couldn't allocate node ids; retry"));
-            self.notices.error("Couldn't allocate node ids; nothing was added. Retry the import.");
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; nothing was added. Retry the import.");
             return;
         }
         let incoming: Vec<Incoming<'_>> =
