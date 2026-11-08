@@ -26,6 +26,7 @@ use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod bedrock;
 pub(crate) mod comfy_profile;
 
 /// Why an adapter can't run, in words a person can act on.
@@ -319,8 +320,9 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
             Arc::new(llm(endpoint, env))
         }
-        // Bedrock's OpenAI-compatible route (#46): a Region code and a Bedrock API key from the
-        // keychain. No AWS credential discovery (environment, profiles, instance metadata).
+        // Bedrock's OpenAI-compatible route (#46): a Region code and, from the keychain, a
+        // Bedrock API key or else AWS access keys signed with SigV4 (#1163). No AWS credential
+        // discovery (environment, profiles, instance metadata).
         "bedrock" => {
             let region = env.settings.bedrock_region.as_deref().map(str::trim).filter(|region| !region.is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {
@@ -331,8 +333,8 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
                 Readiness::NotSetUp(why.into())
             })?;
             nodecraft_providers::llm::validate_bedrock_region(region).map_err(|error| Readiness::NotSetUp(error.message))?;
-            let endpoint = Endpoint::bedrock(region, ApiKey::from(&needs_key(env.keys, "bedrock")?)).map_err(adapter_error)?;
-            Arc::new(llm(endpoint, env))
+            let auth = bedrock::auth(env.keys, nodecraft_providers::aws::system_seconds())?;
+            Arc::new(LlmClient::bedrock_chat(region, auth, env.http.clone()).map_err(adapter_error)?)
         }
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {

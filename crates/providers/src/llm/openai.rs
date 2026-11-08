@@ -357,7 +357,14 @@ fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) 
 }
 
 /// How this dialect reads its errors.
-const RULES: rig_chat::Rules = rig_chat::Rules { status: error, event: event_error, unended: "chat reply without choices" };
+const RULES: rig_chat::Rules = rig_chat::Rules { status: |status, _, body| error(status, body), event: event_error, unended: "chat reply without choices" };
+/// Bedrock's OpenAI-compatible route: AWS answers signature and credential refusals in its own
+/// shape, mapped as Converse maps them (#1163); everything else as OpenAI's.
+const BEDROCK_RULES: rig_chat::Rules = rig_chat::Rules { status: bedrock_error, ..RULES };
+
+pub(super) fn bedrock_error(status: u16, headers: &[(String, String)], body: &[u8]) -> ProviderError {
+    super::converse::credential_error(status, headers, body).unwrap_or_else(|| error(status, body))
+}
 
 fn event_error(err: &Value) -> ProviderError {
     error_from(None, err)
@@ -390,7 +397,8 @@ impl LlmClient {
         let config = OpenAIConfig::with_key(&dialect(&self.endpoint.id), "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
         // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
         let model = Model::new(Chat::new(config, req.model.as_str()), transport.clone()).with_idle_timeout(None);
-        let response = rig_chat::send(model, &transport, request, on_text, &RULES).await?;
+        let rules = if self.endpoint.id == bedrock::BEDROCK { &BEDROCK_RULES } else { &RULES };
+        let response = rig_chat::send(model, &transport, request, on_text, rules).await?;
         let mut reply = reply(&response, reasoning, self.endpoint.id == XAI_ID)?;
         if let Exchange::Answered { headers, .. } = transport.exchange() {
             reply.usage.cost = self.reported_cost(&headers);

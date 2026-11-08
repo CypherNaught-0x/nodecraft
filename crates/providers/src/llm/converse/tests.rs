@@ -15,7 +15,7 @@ fn client(http: Arc<dyn Http>) -> LlmClient {
     LlmClient::new(Endpoint::bedrock_converse("us-west-2", ApiKey::new(KEY)).unwrap(), http)
 }
 
-fn request() -> ChatRequest {
+pub(super) fn request() -> ChatRequest {
     ChatRequest {
         model: "us.anthropic.claude-sonnet-4-6".into(),
         system: Some("be brief".into()),
@@ -36,16 +36,16 @@ fn weather() -> Tool {
 }
 
 /// Sends a streamed reply in pieces of `piece` bytes, recording requests.
-struct Chunked {
+pub(super) struct Chunked {
     status: u16,
     headers: Vec<(String, String)>,
     body: Vec<u8>,
     piece: usize,
-    seen: Mutex<Vec<HttpRequest>>,
+    pub(super) seen: Mutex<Vec<HttpRequest>>,
 }
 
 impl Chunked {
-    fn new(body: Vec<u8>, piece: usize) -> Arc<Self> {
+    pub(super) fn new(body: Vec<u8>, piece: usize) -> Arc<Self> {
         Arc::new(Self { status: 200, headers: vec![], body, piece, seen: Mutex::new(vec![]) })
     }
 }
@@ -75,7 +75,7 @@ fn event(kind: &str, payload: Value) -> Vec<u8> {
     encode(&[(":event-type", kind), (":content-type", "application/json"), (":message-type", "event")], payload.to_string().as_bytes())
 }
 
-fn exception(kind: &str, message: &str) -> Vec<u8> {
+pub(super) fn exception(kind: &str, message: &str) -> Vec<u8> {
     encode(
         &[(":exception-type", kind), (":content-type", "application/json"), (":message-type", "exception")],
         json!({ "message": message }).to_string().as_bytes(),
@@ -84,7 +84,7 @@ fn exception(kind: &str, message: &str) -> Vec<u8> {
 
 /// A streamed reply: reasoning with a signature, text, a tool call whose input arrives in
 /// pieces, then the stop and the counts. Bedrock pads events with a `p` field; it is ignored.
-fn tool_stream() -> Vec<u8> {
+pub(super) fn tool_stream() -> Vec<u8> {
     [
         event("messageStart", json!({"role":"assistant","p":"abc"})),
         event("contentBlockDelta", json!({"contentBlockIndex":0,"delta":{"reasoningContent":{"text":"Think"}}})),
@@ -324,7 +324,8 @@ fn converse_error_statuses_map_to_actionable_kinds() {
         let body = json!({ "message": message }).to_string();
         let e = super::error(status, &typed(name), body.as_bytes());
         assert_eq!(e.kind, kind, "{name}");
-        assert_eq!(e.message, message);
+        // Credential refusals carry NodeCraft's words (#1163); the rest AWS's.
+        assert_eq!(e.message, if name == "UnrecognizedClientException" { UNRECOGNISED } else { message });
         assert_eq!(e.retry_after_ms, Some(3000), "{name}");
         // Through the client: one request, never retried, the key never echoed.
         let http = Chunked { status, headers: typed(name), body: body.clone().into_bytes(), piece: 8, seen: Mutex::new(vec![]) };

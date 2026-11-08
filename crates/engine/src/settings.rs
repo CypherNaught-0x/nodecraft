@@ -133,7 +133,8 @@ pub struct ProviderSettings {
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
     /// Amazon Bedrock AWS Region code (such as `us-east-1`) for its `bedrock-runtime` OpenAI
-    /// route; the Bedrock API key uses account `bedrock`. No AWS credentials are read from the
+    /// route; the Bedrock API key uses account `bedrock`, or else AWS access keys the
+    /// `bedrock:aws-*` accounts, signed with SigV4 (#1163). No AWS credentials are read from the
     /// environment or profiles.
     pub bedrock_region: Option<String>,
     /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog

@@ -11,7 +11,8 @@
 //!
 //! Auth is a Bedrock API key as `Authorization: Bearer`, which AWS documents for Converse
 //! (<https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html>, checked
-//! 2026-11-08). SigV4 is not spoken here.
+//! 2026-11-08), or AWS credentials signed with SigV4 by the transport ([`crate::aws::SigV4Http`],
+//! #1163); this dialect is the same either way.
 //!
 //! Wire shapes, checked 2026-11-08 against the API reference:
 //! <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>,
@@ -280,12 +281,53 @@ pub(super) fn reply(v: &Value) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse::new(parts, stop, usage(v.get("usage"))))
 }
 
+/// What a refused signature means when the clock is off (AWS accepts requests signed within
+/// about 15 minutes of its own time), or a request whose signing credentials ran out.
+pub(crate) const SKEWED: &str = "AWS refused the request's time: set this computer's clock to update automatically (AWS accepts about 15 minutes of difference); if the clock is right, the stored temporary AWS credentials may have expired, so store fresh ones, then try again";
+/// A signature AWS computed differently.
+pub(crate) const BAD_SIGNATURE: &str =
+    "AWS refused the request signature: check that the stored AWS secret access key belongs to the access key ID, and that this computer's clock is right";
+/// Temporary credentials past their expiry.
+pub(crate) const EXPIRED: &str = "AWS says the session credentials have expired: store a fresh session token, access key ID and secret access key in API keys";
+/// A key or token AWS doesn't know.
+pub(crate) const UNRECOGNISED: &str =
+    "AWS didn't recognise the credentials: check the Bedrock API key, or the AWS access key ID (and session token, for temporary credentials) in API keys";
+
+/// An AWS error name without its namespace or URL, lowercased: names come as
+/// `ThrottlingException` (HTTP), `throttlingException` (stream events), or with a namespace or
+/// URL around them.
+fn bare(name: &str) -> String {
+    let name = name.rsplit('#').next().unwrap_or(name);
+    name.split(':').next().unwrap_or(name).trim().to_ascii_lowercase()
+}
+
+/// A signature or credential refusal by its (bare) name, in NodeCraft's own words: AWS's message
+/// can quote the canonical request, session token included (#1163). `None` for other errors.
+fn credential(name: &str, message: &str) -> Option<ProviderError> {
+    let lower = message.to_ascii_lowercase();
+    let says_skew = lower.contains("signature expired") || lower.contains("signature not yet current") || lower.contains("skew");
+    let text = match name {
+        "invalidsignatureexception" | "signaturedoesnotmatch" | "incompletesignature" | "incompletesignatureexception" => {
+            if says_skew {
+                SKEWED
+            } else {
+                BAD_SIGNATURE
+            }
+        }
+        "requesttimetooskewed" | "requesttimetooskewedexception" | "requestexpired" => SKEWED,
+        "expiredtokenexception" | "expiredtoken" => EXPIRED,
+        "unrecognizedclientexception" | "invalidclienttokenid" => UNRECOGNISED,
+        _ => return None,
+    };
+    Some(ProviderError::new(ErrorKind::Auth, text))
+}
+
 /// The error a Converse error name means, with `message` from the server.
 fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
-    // Names come as `ThrottlingException` (HTTP), `throttlingException` (stream events), or with
-    // a namespace or URL around them.
-    let name = name.rsplit('#').next().unwrap_or(name);
-    let name = name.split(':').next().unwrap_or(name).trim().to_ascii_lowercase();
+    let name = bare(name);
+    if let Some(e) = credential(&name, message) {
+        return e;
+    }
     let message = crate::error::excerpt(message.as_bytes());
     let kind = match name.as_str() {
         "throttlingexception" | "toomanyrequestsexception" => ErrorKind::RateLimited,
@@ -296,15 +338,7 @@ fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
                 format!("the AWS account's Bedrock quota for this model is used up; raise it in Service Quotas (the provider said: {message})"),
             );
         }
-        "accessdeniedexception"
-        | "unrecognizedclientexception"
-        | "invalidsignatureexception"
-        | "incompletesignature"
-        | "invalidclienttokenid"
-        | "expiredtokenexception"
-        | "notauthorized"
-        | "missingauthenticationtokenexception"
-        | "unauthorizedexception" => ErrorKind::Auth,
+        "accessdeniedexception" | "notauthorized" | "missingauthenticationtokenexception" | "unauthorizedexception" => ErrorKind::Auth,
         "validationexception" | "validationerror" => {
             // Bedrock names a prompt past the model's context window only in its message.
             let lower = message.to_ascii_lowercase();
@@ -325,16 +359,34 @@ fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
     ProviderError::new(kind, message)
 }
 
-/// An error status's reply: the error's name from `x-amzn-ErrorType` or the body's `__type`,
-/// its message from the body.
-pub(super) fn error(status: u16, headers: &[(String, String)], body: &[u8]) -> ProviderError {
-    let json = serde_json::from_slice::<Value>(body).ok();
-    let message = json.as_ref().and_then(|v| v.get("message").or_else(|| v.get("Message"))).and_then(Value::as_str);
+/// The AWS error name of an error reply (`x-amzn-ErrorType`, else the body's `__type`) and its
+/// message.
+fn aws_name_and_message<'a>(headers: &'a [(String, String)], json: Option<&'a Value>) -> (Option<&'a str>, Option<&'a str>) {
+    let message = json.and_then(|v| v.get("message").or_else(|| v.get("Message"))).and_then(Value::as_str);
     let name = headers
         .iter()
         .find(|(n, _)| n.eq_ignore_ascii_case("x-amzn-errortype"))
         .map(|(_, v)| v.as_str())
-        .or_else(|| json.as_ref().and_then(|v| v.get("__type")).and_then(Value::as_str));
+        .or_else(|| json.and_then(|v| v.get("__type")).and_then(Value::as_str));
+    (name, message)
+}
+
+/// A signature or credential refusal from AWS on any Bedrock route (the OpenAI-compatible one
+/// answers these in AWS's shape, not OpenAI's), in NodeCraft's words; `None` for other replies.
+pub(super) fn credential_error(status: u16, headers: &[(String, String)], body: &[u8]) -> Option<ProviderError> {
+    if !(400..500).contains(&status) {
+        return None;
+    }
+    let json = serde_json::from_slice::<Value>(body).ok();
+    let (name, message) = aws_name_and_message(headers, json.as_ref());
+    credential(&bare(name?), message.unwrap_or_default())
+}
+
+/// An error status's reply: the error's name from `x-amzn-ErrorType` or the body's `__type`,
+/// its message from the body.
+pub(super) fn error(status: u16, headers: &[(String, String)], body: &[u8]) -> ProviderError {
+    let json = serde_json::from_slice::<Value>(body).ok();
+    let (name, message) = aws_name_and_message(headers, json.as_ref());
     let mut e = match (name, message) {
         (Some(name), message) => named(name, message.unwrap_or("request failed"), Some(status)),
         (None, Some(message)) => {
@@ -571,5 +623,7 @@ impl LlmClient {
     }
 }
 
+#[cfg(test)]
+mod sigv4_tests;
 #[cfg(test)]
 mod tests;
