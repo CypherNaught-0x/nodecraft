@@ -33,13 +33,13 @@ impl NodeCraftApp {
             return;
         };
         let Some(port) = mesh_output(source) else {
-            self.notice = Some("This card has no single 3D model to capture.".into());
+            self.notices.warning("This card has no single 3D model to capture.");
             return;
         };
         let revision = self.session.revision();
         let (Some(id), Some(edge)) = (ids::node_id(document, ("mesh-capture", node, revision)), ids::edge_id(document, ("mesh-capture-edge", node, revision)))
         else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error("Couldn't allocate node ids; try again.");
             return;
         };
         let style = match view.style {
@@ -61,10 +61,10 @@ impl NodeCraftApp {
         });
         match self.session.dispatch("mesh.capture", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

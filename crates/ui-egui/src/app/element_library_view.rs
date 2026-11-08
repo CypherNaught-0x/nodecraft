@@ -407,8 +407,8 @@ impl NodeCraftApp {
         }
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.element_import_pick())) {
             Ok(Some(pick)) => self.element_library.importing = Some(pick),
-            Ok(None) => self.notice = Some("Importing an Element works in the desktop app.".into()),
-            Err(_) => self.notice = Some("The file picker failed; nothing was imported.".into()),
+            Ok(None) => self.notices.warning("Importing an Element works in the desktop app."),
+            Err(_) => self.notices.error("The file picker failed; nothing was imported."),
         }
     }
 
@@ -442,7 +442,7 @@ impl NodeCraftApp {
             Ok(Poll::Ready(None)) => return,
             Ok(Poll::Ready(Some(path))) => path,
             Err(_) => {
-                self.notice = Some("The file picker failed; nothing was imported.".into());
+                self.notices.error("The file picker failed; nothing was imported.");
                 return;
             }
         };
@@ -474,8 +474,8 @@ impl NodeCraftApp {
         // What the library holds may have changed, even for a refused request (another window).
         self.element_library.listed = None;
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

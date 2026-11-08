@@ -99,6 +99,15 @@ impl Work {
         }
         self.cancel_requested
     }
+    fn notice_kind(&self) -> crate::notices::NoticeKind {
+        use crate::notices::NoticeKind;
+        match (&self.failed, self.folder.is_some()) {
+            _ if self.cancel_requested => NoticeKind::Info,
+            (None, _) => NoticeKind::Success,
+            (Some(_), true) if self.written > 0 => NoticeKind::Warning,
+            (Some(_), _) => NoticeKind::Error,
+        }
+    }
     fn notice(&self) -> String {
         if self.cancel_requested {
             return if self.folder.is_none() {
@@ -143,7 +152,7 @@ impl NodeCraftApp {
                 return;
             }
             if work.settle(current, status.and_then(|status| status.result)) {
-                self.notice = Some(work.notice());
+                self.notices.push(work.notice_kind(), work.notice());
                 return;
             }
         }
@@ -152,7 +161,7 @@ impl NodeCraftApp {
             work.files.clear();
         }
         let Some(mut item) = work.files.pop_front() else {
-            self.notice = Some(work.notice());
+            self.notices.push(work.notice_kind(), work.notice());
             return;
         };
         let name = if let Some(folder) = &work.folder {
@@ -272,9 +281,9 @@ impl NodeCraftApp {
                     if let Some(work) = &mut self.exports.work {
                         work.cancel();
                     }
-                    self.notice = Some("Cancelling export…".into());
+                    self.notices.info("Cancelling export…");
                 }
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notices.report(error),
             }
         }
         self.exports.pointer_owned

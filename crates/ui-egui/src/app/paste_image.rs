@@ -166,13 +166,13 @@ impl NodeCraftApp {
         }
         match self.paste_target(ui, t) {
             Some(centre) => self.start_image_paste(ui.ctx(), centre, t),
-            None => self.notice = Some("There is no unobscured canvas space for this paste.".into()),
+            None => self.notices.error("There is no unobscured canvas space for this paste."),
         }
     }
 
     fn start_image_paste(&mut self, ctx: &egui::Context, centre: Pos2, t: &Tokens) {
         if self.image_paste.pending.is_some() {
-            self.notice = Some("The copied image is still being read; try again in a moment.".into());
+            self.notices.warning("The copied image is still being read; try again in a moment.");
             return;
         }
         let (tx, rx) = mpsc::sync_channel(1);
@@ -195,12 +195,12 @@ impl NodeCraftApp {
             }),
         );
         if spawned.is_err() {
-            self.notice = Some("The clipboard can't be read right now; nothing was pasted.".into());
+            self.notices.error("The clipboard can't be read right now; nothing was pasted.");
             return;
         }
         let target = Target::capture(self, centre, t);
         self.image_paste.pending = Some(Pending { rx, target });
-        self.notice = Some("Reading the copied image…".into());
+        self.notices.info("Reading the copied image…");
     }
 
     /// Finder/Explorer may provide file names as plain text alongside typed file references.
@@ -212,7 +212,7 @@ impl NodeCraftApp {
             return;
         };
         if self.image_paste.pending.is_some() {
-            self.notice = Some("The clipboard is still being read; try again in a moment.".into());
+            self.notices.warning("The clipboard is still being read; try again in a moment.");
             return;
         }
         let target = Target::capture(self, centre, t);
@@ -241,7 +241,7 @@ impl NodeCraftApp {
             return;
         }
         self.image_paste.pending = Some(Pending { rx, target });
-        self.notice = Some("Reading the clipboard…".into());
+        self.notices.info("Reading the clipboard…");
     }
 
     #[cfg(test)]
@@ -266,16 +266,16 @@ impl NodeCraftApp {
         let payload = match result {
             Ok(Some(payload)) => payload,
             Ok(None) => {
-                self.notice = Some("The clipboard holds no image or text to paste.".into());
+                self.notices.error("The clipboard holds no image or text to paste.");
                 return;
             }
             Err(message) => {
-                self.notice = Some(message);
+                self.notices.error(message);
                 return;
             }
         };
         if !pending.target.current(self) {
-            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            self.notices.warning("The document changed while reading the clipboard; nothing was added. Paste again.");
             return;
         }
         match payload {

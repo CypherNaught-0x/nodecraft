@@ -460,7 +460,7 @@ impl NodeCraftApp {
                     if kept.skipped {
                         // A space refusal says what is short and by how much (sizes, never paths).
                         let why = kept.skipped_why.as_deref().map(|why| format!(" {}", sentence(why))).unwrap_or_default();
-                        self.notice = Some(format!(
+                        self.notices.warning(format!(
                             "Earlier unsaved work wasn't checked.{why} It stays in the recovery folder and is offered the next time NodeCraft starts."
                         ));
                     }
@@ -497,7 +497,8 @@ impl NodeCraftApp {
             if let Some(name) = after.open.as_ref().and_then(|path| path.file_name()) {
                 problem = format!("{problem} {} wasn't opened.", name.to_string_lossy());
             }
-            self.notice = Some(self.remember_storage_problem(problem, false));
+            let problem = self.remember_storage_problem(problem, false);
+            self.notices.error(problem);
         }
         // Only a window that owns project storage (and so its folder's lock) keeps runs.
         if let Some(mut runs) = after.runs {

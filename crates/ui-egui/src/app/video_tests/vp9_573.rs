@@ -102,7 +102,7 @@ fn actual_vp9_profiles_reach_a_playable_card_or_an_explicit_refusal() {
                 started.elapsed() < Duration::from_secs(25),
                 "{pixel_format}: never showed {expected}; sources/posters/players={:?}, notice={:?}",
                 h.state().videos.test_counts(),
-                h.state().notice
+                h.state().notice()
             );
             std::thread::sleep(Duration::from_millis(10));
         }

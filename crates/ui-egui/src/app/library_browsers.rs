@@ -1063,26 +1063,26 @@ impl NodeCraftApp {
                 #[cfg(target_arch = "wasm32")]
                 {
                     drop(address);
-                    self.notice = Some(super::library_saved::NO_URL_IMPORT.into());
+                    self.notices.error(super::library_saved::NO_URL_IMPORT);
                 }
                 return;
             }
             // These say what they did in the notice themselves.
             Browse::SaveToLibrary(hashes) => {
                 if let Err(error) = self.save_to_library(hashes) {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
                 return;
             }
             Browse::Unsave(hashes) => {
                 if let Err(error) = self.unsave(hashes) {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
                 return;
             }
             Browse::RepairSaved => {
                 if let Err(error) = self.repair_saved() {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
                 return;
             }
@@ -1104,8 +1104,8 @@ impl NodeCraftApp {
             }
         };
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

@@ -48,7 +48,7 @@ Stroke widths, a few sizes and egui's small text are tokens too (#1124): `stroke
 clips; `heading_size` (19.5) for the drop hint and `display_size` (24) for an empty deck slide's
 message; `inset` (2) between a thumbnail and its outline and for a swatch's corners; `dim` (0.6) for
 a fill drawn dimmed behind what is being edited; and `badge_text_ratio` (1.2) for the number in an
-input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
+input-order badge. `notice_edge` (3) and `notice_width` (380) size the notice stack (#1110). `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
 `.small()` hints are never below a card label. `theme::panel_frame(t)` is the one framed-group
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
@@ -736,7 +736,35 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
 | Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
 | Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
-| Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
+| Notice | notice stack (#1110) | no | no | its close button, Escape while it holds the focus, or a timeout (not errors) |
+| Update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
+
+**Notices** (#1110, [decision](decisions/2026-11-08-typed-notices.md)) are view state in
+`notices.rs`: a stack in the bottom-left corner, newest on top, at most three (`MAX_NOTICES`). A
+fourth replaces the oldest that isn't an error, and the same text again refreshes the one shown
+instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
+shared panel frame, `notice_width` (380) wide or the window less its margins, with a
+`notice_edge` (3) stripe down its left side and an icon in its kind's colour (`text_muted`,
+`accent`, `stale`, `danger`; Tabler info-circle, circle-check, alert-triangle, alert-circle), so
+colour is never the only cue. Its text is `text`.
+
+- **Errors stay until dismissed**; the others go after 6 s on screen, counted in egui time. The
+  clock stops while the pointer is over a notice or one of its buttons has the keyboard focus, and
+  while the stack isn't drawn.
+- **Dismiss** with the close button (**Dismiss notice**), or **Escape** while that button (or the
+  notice's action button) has the keyboard focus. The notice takes Escape early, with the tools
+  (`take_tool_escape`), and only when no other Escape owner is active; without the focus, Escape
+  goes where it did before (it clears the selection).
+- An optional **action** button runs a command id as the palette would.
+- Each notice's text is an AccessKit **live region**: polite for information and successes,
+  assertive for warnings and errors, described by its kind.
+- Engine errors map to a kind in one place, `NoticeKind::of_error` (a `Busy` refusal is a
+  warning; provider, budget, key and network failures are errors), and run events in
+  `NoticeKind::of_run`. Code reports with `notices.report(error)`, `error`, `warning`, `success`
+  or `info`; `clear` is for an action that has since succeeded.
+- Views without the corner (a deck being edited or presented, an app form) show the newest as one
+  line with `notices::inline_notice`. An error bound to a control (a card's parameter, the model
+  picker's choice) is `notices::inline_error`: the error icon, then `danger` text.
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
 they follow the card, so they are not clamped or cascaded, except that the generation toolbar of a

@@ -251,11 +251,11 @@ impl NodeCraftApp {
     /// Open, save or save as in the browser: `file.open`, `file.save` or `file.save_as`.
     pub(super) fn web_file(&mut self, id: &str, ctx: &egui::Context) {
         if self.web_files.blocking() {
-            self.notice = Some("Wait for the current save or open to finish.".into());
+            self.notices.warning("Wait for the current save or open to finish.");
             return;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
-            self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
+            self.notices.warning("Finish or discard the current field edits before saving or opening a project.");
             return;
         }
         if !self.commit_mesh_views(ctx, true) {
@@ -289,7 +289,7 @@ impl NodeCraftApp {
                 // Nothing here would be lost.
                 Poll::Ready(Ok(Some(picked))) => self.web_open(picked, true),
                 Poll::Ready(Ok(None)) => {}
-                Poll::Ready(Err(error)) => self.notice = Some(error),
+                Poll::Ready(Err(error)) => self.notices.error(error),
             },
             Some(Phase::Naming(mut future)) => match poll(&mut future, ctx) {
                 Poll::Pending => self.web_files.phase = Some(Phase::Naming(future)),
@@ -300,19 +300,19 @@ impl NodeCraftApp {
                     ctx.request_repaint();
                 }
                 Poll::Ready(Ok(None)) => {}
-                Poll::Ready(Err(error)) => self.notice = Some(error),
+                Poll::Ready(Err(error)) => self.notices.error(error),
             },
             Some(Phase::Writing { mut future, name, download }) => match poll(&mut future, ctx) {
                 Poll::Pending => self.web_files.phase = Some(Phase::Writing { future, name, download }),
                 Poll::Ready(Ok(())) => {
                     self.web_files.unwritten = false;
                     if download {
-                        self.notice = Some(format!("Downloaded {name}. Open it again from your downloads to keep working on that copy."));
+                        self.notices.success(format!("Downloaded {name}. Open it again from your downloads to keep working on that copy."));
                     }
                 }
                 Poll::Ready(Err(error)) => {
                     self.web_files.unwritten = true;
-                    self.notice = Some(format!("{name} wasn't saved: {error} The project is still open here; save it again."));
+                    self.notices.error(format!("{name} wasn't saved: {error} The project is still open here; save it again."));
                 }
             },
             Some(Phase::Confirm(picked)) => self.web_files.phase = Some(Phase::Confirm(picked)),
@@ -428,7 +428,7 @@ impl NodeCraftApp {
                 self.web_files.unwritten = false;
                 self.after_file_open();
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -443,11 +443,11 @@ impl NodeCraftApp {
         match result {
             Ok(value) if value.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {}
             Ok(_) => {
-                self.notice = Some("The save did not confirm publication; the current project was kept.".into());
+                self.notices.error("The save did not confirm publication; the current project was kept.");
                 return;
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         }
@@ -456,7 +456,7 @@ impl NodeCraftApp {
         }
         let Some((saved, bytes)) = written.filter(|(saved, _)| saved == location) else {
             self.web_files.unwritten = true;
-            self.notice = Some("The project was saved but nothing was handed to the browser to write; save it again.".into());
+            self.notices.error("The project was saved but nothing was handed to the browser to write; save it again.");
             return;
         };
         self.web_write(&saved, bytes);

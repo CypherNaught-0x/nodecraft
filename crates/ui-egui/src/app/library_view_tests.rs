@@ -53,7 +53,7 @@ fn a_project_version_is_placed_in_the_middle_of_the_view_and_selected() {
     h.get_by_label("Place").click();
     h.run();
     let nodes = placed(&h);
-    assert_eq!(nodes.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(nodes.len(), 1, "{:?}", h.state().notice());
     assert!(h.state().selection.contains(nodes[0].id));
     // Local evaluation may finish during the pointer-driven frame and append a history
     // strip. Placement centers the fresh command payload, before that later graph edit.
@@ -82,7 +82,7 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     open_panel(&mut a);
     a.get_by_label("Add to library").click();
     a.run();
-    assert!(a.query_by_label("In library").is_some(), "{:?}", a.state().notice);
+    assert!(a.query_by_label("In library").is_some(), "{:?}", a.state().notice());
     assert_eq!(store.saved().unwrap().versions().count(), 1);
 
     let mut b = harness_on(&store);
@@ -92,7 +92,7 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     b.get_by_label("Place").click();
     b.run();
     let nodes = placed(&b);
-    assert_eq!(nodes.len(), 1, "{:?}", b.state().notice);
+    assert_eq!(nodes.len(), 1, "{:?}", b.state().notice());
     let copy = nodecraft_nodes::technique::interface(&nodes[0]).unwrap().canvas;
     let info = b.state().session.document().canvases().get(&copy).unwrap().technique_info().unwrap().clone();
     assert_eq!((info.id, info.version), (T, 1));
@@ -120,7 +120,7 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     b.run();
     b.get_by_label("Remove").click();
     b.run();
-    assert!(b.query_by_label_contains("The library is empty").is_some(), "{:?}", b.state().notice);
+    assert!(b.query_by_label_contains("The library is empty").is_some(), "{:?}", b.state().notice());
     assert_eq!(store.saved().unwrap().versions().count(), 0);
     assert_eq!(placed(&b).len(), 1, "the project keeps its copy");
     assert!(b.state().session.document().canvases().contains_key(&copy));
@@ -149,7 +149,7 @@ fn a_library_shader_is_placed_as_a_card_and_removed() {
         .values()
         .filter(|n| n.kind == nodecraft_nodes::shader::ID && n.id != card)
         .collect();
-    assert_eq!(shaders.len(), 1, "{:?}", app.notice);
+    assert_eq!(shaders.len(), 1, "{:?}", app.notice());
     assert_eq!(shaders[0].title, "Glow");
     assert_eq!(nodecraft_nodes::shader::pinned(shaders[0]).map(|pin| pin.version), Some(1));
     assert!(app.selection.contains(shaders[0].id));
@@ -178,7 +178,7 @@ fn a_library_shader_is_placed_as_a_card_and_removed() {
     h.run();
     h.get_by_label("Remove").click();
     h.run();
-    assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice());
 }
 
 #[test]

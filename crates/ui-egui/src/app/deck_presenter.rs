@@ -115,7 +115,7 @@ fn step(ctx: &egui::Context, index: usize, count: usize) -> Option<Step> {
 impl NodeCraftApp {
     pub(super) fn open_presenter(&mut self, node: NodeId) {
         // A notice from the canvas isn't about the deck.
-        self.notice = None;
+        self.notices.clear();
         self.selection.only(node);
         self.presenter = Some(Presenter::new(self.canvas, node));
     }
@@ -127,7 +127,7 @@ impl NodeCraftApp {
         let Some(canvas) = document.canvases().get(&self.canvas) else { return };
         let picked: Vec<_> = self.selection.nodes().iter().filter_map(|id| canvas.nodes().get(id)).filter(|n| n.kind != nodecraft_nodes::deck::ID).collect();
         let (Some(right), Some(top)) = (picked.iter().map(|n| n.pos.x).reduce(f32::max), picked.iter().map(|n| n.pos.y).reduce(f32::min)) else {
-            self.notice = Some("Select cards to present.".into());
+            self.notices.info("Select cards to present.");
             return;
         };
         let nodes: Vec<NodeId> = picked.iter().map(|n| n.id).collect();
@@ -141,7 +141,7 @@ impl NodeCraftApp {
             })
             .collect();
         let Some(id) = ids::node_id(document, ("deck", self.session.revision())) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error("Couldn't allocate a node id; try again.");
             return;
         };
         let params = json!({"canvas": self.canvas, "id": id, "pos": {"x": right + GAP, "y": top}, "title": "Deck", "nodes": nodes, "fields": fields});
@@ -169,7 +169,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| listing(v).ok_or_else(|| "The deck's slides can't be read.".to_owned())) {
                 Ok(listing) => presenter.listing = Some((revision, listing)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -263,7 +263,7 @@ impl NodeCraftApp {
         let [r, g, b, a] = frame.background;
         let background = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
         let shell = egui::Frame::NONE.fill(t.canvas_bg).inner_margin(gap);
-        let notice = self.notice.clone();
+        let notice = self.notices.latest().cloned();
         egui::Modal::new(egui::Id::new("deck_presenter")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             ui.set_min_size((content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0)));
             let response = ui.allocate_rect(slide_rect, Sense::click());
@@ -310,7 +310,7 @@ impl NodeCraftApp {
                             presenter.textures.clear();
                         }
                         if let Some(notice) = &notice {
-                            ui.label(egui::RichText::new(notice).color(t.danger));
+                            crate::notices::inline_notice(ui, &t, notice);
                         }
                     });
                 });

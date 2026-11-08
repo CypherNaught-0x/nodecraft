@@ -248,7 +248,7 @@ impl NodeCraftApp {
             || self.navigation.drag.is_some()
             || ctx.input(|i| i.pointer.primary_down())
     }
-    pub(super) fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) -> Option<String> {
+    pub(super) fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) {
         let id = if save_as {
             "file.save_as"
         } else if save {
@@ -257,28 +257,27 @@ impl NodeCraftApp {
             "file.open"
         };
         self.begin_file(id, ctx);
-        self.notice.take()
     }
     pub(super) fn begin_file(&mut self, id: &str, ctx: &egui::Context) {
         if self.files.pending.is_some() || self.file_busy(ctx) {
             return;
         }
         if let Some(message) = self.file_unavailable_message() {
-            self.notice = Some(message);
+            self.notices.error(message);
             self.files.menu_open = true;
             self.files.own_frame(ctx);
             ctx.request_repaint();
             return;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
-            self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
+            self.notices.warning("Finish or discard the current field edits before saving or opening a project.");
             return;
         }
         if !self.commit_mesh_views(ctx, true) {
             return;
         }
         self.files.own_frame(ctx);
-        self.notice = None;
+        self.notices.clear();
         let status = self.session.file_status();
         if id == "file.save" && status.location.is_some() && !status.read_only {
             self.start_file_save(None, None, Stamp::capture(self));
@@ -293,7 +292,7 @@ impl NodeCraftApp {
         let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.files.picker)(save)));
         match future {
             Ok(Ok(future)) => self.files.pending = Some(Pending { stamp, phase: Phase::Picking { future, purpose } }),
-            _ => self.notice = Some("The native file picker could not be opened. Try again or use an explicit file command.".into()),
+            _ => self.notices.error("The native file picker could not be opened. Try again or use an explicit file command."),
         }
     }
     fn remember_project(&mut self, path: &Path) {
@@ -306,7 +305,7 @@ impl NodeCraftApp {
             let projects = self.files.projects.clone();
             store.update(|s| s.projects = projects);
             if store.is_read_only() || store.flush().is_err() {
-                self.notice = Some("The project operation succeeded, but recent projects could not be saved in settings.".into());
+                self.notices.warning("The project operation succeeded, but recent projects could not be saved in settings.");
             }
         }
     }
@@ -324,7 +323,7 @@ impl NodeCraftApp {
     pub fn begin_startup_open(&mut self) {
         let Some(path) = self.files.startup.take() else { return };
         if self.session.can_undo() || self.session.can_redo() {
-            self.notice = Some(format!(
+            self.notices.warning(format!(
                 "{} wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.",
                 file_name(&path)
             ));
@@ -356,19 +355,17 @@ impl NodeCraftApp {
     fn open_settled(&mut self, path: PathBuf, after: AfterOpen, outcome: Result<(), OpenFailed>, same_session: bool) {
         match (after, outcome) {
             (AfterOpen::File | AfterOpen::Startup, Ok(())) => self.file_opened(path),
-            (AfterOpen::File, Err(failed)) => {
-                self.notice = Some(match failed {
-                    OpenFailed::Cancelled => format!("Opening {} was cancelled; the current project is unchanged.", file_name(&path)),
-                    OpenFailed::Error(message) => message,
-                    OpenFailed::Unconfirmed => "The project did not confirm it opened; the current project was kept.".into(),
-                    OpenFailed::Unfinished => "The project didn't finish opening. Open it again.".into(),
-                });
-            }
+            (AfterOpen::File, Err(failed)) => match failed {
+                OpenFailed::Cancelled => self.notices.info(format!("Opening {} was cancelled; the current project is unchanged.", file_name(&path))),
+                OpenFailed::Error(message) => self.notices.error(message),
+                OpenFailed::Unconfirmed => self.notices.error("The project did not confirm it opened; the current project was kept."),
+                OpenFailed::Unfinished => self.notices.error("The project didn't finish opening. Open it again."),
+            },
             (AfterOpen::Startup, Err(OpenFailed::Cancelled)) => {
-                self.notice = Some(format!("Opening {} was cancelled; the new project is open instead.", file_name(&path)));
+                self.notices.info(format!("Opening {} was cancelled; the new project is open instead.", file_name(&path)));
             }
             (AfterOpen::Startup, Err(failed)) => {
-                self.notice = Some(format!("{} couldn't be opened: {}. The new project is open instead and can be saved.", file_name(&path), failed.clause()));
+                self.notices.error(format!("{} couldn't be opened: {}. The new project is open instead and can be saved.", file_name(&path), failed.clause()));
             }
             (AfterOpen::LastSave(offer), Ok(())) => {
                 self.file_opened(path);
@@ -393,7 +390,7 @@ impl NodeCraftApp {
     }
     fn choose_open(&mut self, path: PathBuf, stamp: Stamp) {
         if let Err(error) = admitted(&path, false) {
-            self.notice = Some(error);
+            self.notices.error(error);
             return;
         }
         if self.session.file_status().dirty {
@@ -423,17 +420,17 @@ impl NodeCraftApp {
             Ok(result) if result.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {
                 self.complete_file_save(stamp, then_open, path, Ok(()));
             }
-            Ok(_) => self.notice = Some("The save did not confirm publication; the current project was kept.".into()),
-            Err(error) => self.notice = Some(error),
+            Ok(_) => self.notices.error("The save did not confirm publication; the current project was kept."),
+            Err(error) => self.notices.error(error),
         }
     }
     fn complete_file_save(&mut self, stamp: Stamp, then_open: Option<PathBuf>, saved_path: Option<PathBuf>, result: Result<(), String>) {
         if !stamp.matches(self) {
-            self.notice = Some("The project changed while saving. Open the project again.".into());
+            self.notices.warning("The project changed while saving. Open the project again.");
             return;
         }
         if let Err(error) = result {
-            self.notice = Some(error);
+            self.notices.error(error);
             return;
         }
         if let Some(path) = saved_path {
@@ -480,7 +477,7 @@ impl NodeCraftApp {
                 // An open another surface started in the background: show its project too.
                 Ok(_) if opened => self.after_file_open(),
                 Ok(_) => {}
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notices.report(error),
             }
             return;
         }
@@ -541,12 +538,12 @@ impl NodeCraftApp {
                     }
                     Ok(Poll::Ready(Ok(path))) => path,
                     Ok(Poll::Ready(Err(error))) => {
-                        self.notice = Some(error);
+                        self.notices.error(error);
                         self.clear_file_input(ctx);
                         return true;
                     }
                     Err(_) => {
-                        self.notice = Some("The native file picker failed; no project was changed.".into());
+                        self.notices.error("The native file picker failed; no project was changed.");
                         self.clear_file_input(ctx);
                         return true;
                     }
@@ -554,7 +551,7 @@ impl NodeCraftApp {
                 progressed = true;
                 if let Some(path) = path {
                     if !pending.stamp.matches(self) {
-                        self.notice = Some("The project changed while the file picker was open. Choose the file again.".into());
+                        self.notices.warning("The project changed while the file picker was open. Choose the file again.");
                     } else if let Phase::Picking { purpose, .. } = pending.phase {
                         match purpose {
                             Purpose::Open => self.choose_open(path, pending.stamp),
@@ -570,7 +567,7 @@ impl NodeCraftApp {
                     self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Saving { then_open, saved_path } });
                     ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 } else {
-                    self.notice = Some("The project changed while saving. Open the project again.".into());
+                    self.notices.warning("The project changed while saving. Open the project again.");
                 }
                 self.file_progress(ctx);
             }
@@ -596,7 +593,7 @@ impl NodeCraftApp {
             }
             Phase::Confirm(path) => {
                 if !pending.stamp.matches(self) {
-                    self.notice = Some("The project changed while the confirmation was open. Open the project again.".into());
+                    self.notices.warning("The project changed while the confirmation was open. Open the project again.");
                 } else {
                     let mut choice = None;
                     egui::Modal::new(egui::Id::new("file_dirty_confirmation")).show(ctx, |ui| {
@@ -763,10 +760,10 @@ impl NodeCraftApp {
                 });
         }
         if focus_owner {
-            self.notice = Some(match self.session.dispatch("file.focus_owner", &json!({})) {
-                Ok(_) => "Asking the window that owns project storage to come forward…".into(),
-                Err(error) => error.message,
-            });
+            match self.session.dispatch("file.focus_owner", &json!({})) {
+                Ok(_) => self.notices.info("Asking the window that owns project storage to come forward…"),
+                Err(error) => self.notices.report(error),
+            }
         }
         let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder || save_results;
         if action.is_some() || recent.is_some() || import_folder || save_results {
@@ -790,7 +787,7 @@ impl NodeCraftApp {
             && !self.file_busy(ui.ctx())
         {
             if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
-                self.notice = Some("Finish or discard the current field edits before opening a project.".into());
+                self.notices.warning("Finish or discard the current field edits before opening a project.");
             } else {
                 self.choose_open(path, Stamp::capture(self));
             }
@@ -805,7 +802,7 @@ impl NodeCraftApp {
                 let projects = self.files.projects.clone();
                 store.update(|s| s.projects = projects);
                 if store.is_read_only() || store.flush().is_err() {
-                    self.notice = Some("Recent projects could not be saved in settings.".into());
+                    self.notices.warning("Recent projects could not be saved in settings.");
                 }
             }
         }

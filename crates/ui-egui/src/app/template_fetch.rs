@@ -331,7 +331,7 @@ impl super::NodeCraftApp {
             return;
         };
         if let Some(notice) = fetcher.tick(&mut self.session, ctx) {
-            self.notice = Some(notice);
+            self.notices.push(crate::notices::NoticeKind::of_report(&notice), notice);
         }
         if fetcher.waiting() || nodecraft_engine::templates::disk::is_loading(&self.session) || nodecraft_engine::templates::disk::is_clearing(&self.session) {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

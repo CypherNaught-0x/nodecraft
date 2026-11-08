@@ -57,16 +57,16 @@ impl NodeCraftApp {
 
     pub(super) fn import_pasted_png(&mut self, target: Target, png: &[u8]) {
         if !target.current(self) {
-            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            self.notices.warning("The document changed while reading the clipboard; nothing was added. Paste again.");
             return;
         }
         if !png.starts_with(b"\x89PNG\r\n\x1a\n") {
-            self.notice = Some("The copied image isn't a PNG; nothing was pasted.".into());
+            self.notices.error("The copied image isn't a PNG; nothing was pasted.");
             return;
         }
         let at = target.position;
         let Some(id) = ids::node_id(self.session.document(), ("clipboard-image", self.session.revision(), at.x.to_bits(), at.y.to_bits())) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error("Couldn't allocate a node id; try again.");
             return;
         };
         let incoming = [Incoming { name: "Pasted image.png", bytes: png }];
@@ -76,13 +76,13 @@ impl NodeCraftApp {
         }) {
             Ok(imported) => {
                 if let Some((_, why)) = imported.skipped.first() {
-                    self.notice = Some(format!("The copied image wasn't added: {why}."));
+                    self.notices.error(format!("The copied image wasn't added: {why}."));
                 } else {
                     self.selection.replace(imported.nodes.iter().copied().collect());
-                    self.notice = None;
+                    self.notices.clear();
                 }
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

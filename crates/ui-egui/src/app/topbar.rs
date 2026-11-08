@@ -442,12 +442,12 @@ impl NodeCraftApp {
                 self.search_focus_pending = true;
                 if let Err(error) = self.dispatch_search(ctx, "canvas.search_open", &json!({})) {
                     self.search_focus_pending = false;
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
             }
             Entry::Comments => {
                 if let Err(error) = self.dispatch_comments(ctx, "canvas.comments_toggle", &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
             }
         }

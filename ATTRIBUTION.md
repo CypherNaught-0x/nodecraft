@@ -36,6 +36,11 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | `assets/icons/tabler/apps.svg` | Tabler outline apps icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/apps.svg) | MIT |
 | `assets/icons/tabler/cloud.svg` | Tabler outline cloud icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/cloud.svg) | MIT |
 | `assets/icons/tabler/plug-connected.svg` | Tabler outline plug-connected icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/plug-connected.svg) | MIT |
+| `assets/icons/tabler/info-circle.svg` | Tabler outline info-circle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/info-circle.svg) | MIT |
+| `assets/icons/tabler/circle-check.svg` | Tabler outline circle-check icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/circle-check.svg) | MIT |
+| `assets/icons/tabler/alert-triangle.svg` | Tabler outline alert-triangle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-triangle.svg) | MIT |
+| `assets/icons/tabler/alert-circle.svg` | Tabler outline alert-circle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-circle.svg) | MIT |
+| `assets/icons/tabler/x.svg` | Tabler outline x icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/x.svg) | MIT |
 
 ## Tabler icon license
 

@@ -47,7 +47,7 @@ impl NodeCraftApp {
     /// The card's *Choose folder…*: a person picks the folder; nothing else can.
     pub(in crate::app) fn choose_card_folder(&mut self, id: NodeId) {
         if let Some(why) = unavailable() {
-            self.notice = Some(why.into());
+            self.notices.error(why);
             return;
         }
         self.pick_export(Target::Card(self.canvas, id), "");
@@ -69,12 +69,12 @@ impl NodeCraftApp {
                     grants.hosts.retain(|(canvas, node), _| document.canvases().get(canvas).is_some_and(|c| c.nodes().contains_key(node)));
                 }
                 if grants.hosts.len() >= MAX_GRANTS && !grants.hosts.contains_key(&(canvas, id)) {
-                    self.notice = Some("Too many Export to folder cards have a folder chosen; reopen the project to start over.".into());
+                    self.notices.error("Too many Export to folder cards have a folder chosen; reopen the project to start over.");
                     return;
                 }
                 grants.hosts.insert((canvas, id), host);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -90,7 +90,7 @@ impl NodeCraftApp {
         let preview = match dispatch_with_host(&mut self.session, &host, "export.node_plan", &plan) {
             Ok(preview) => preview,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         };
@@ -100,7 +100,7 @@ impl NodeCraftApp {
             Some(count) if replacing => self.exports.confirm = Some((self.session.view_identity(), self.canvas, id, count)),
             Some(_) => self.write_card(id, host),
             // Unknown: never replace without knowing what would be replaced.
-            None if replacing => self.notice = Some("Can't check which files would be replaced; choose Keep or Number on the card.".into()),
+            None if replacing => self.notices.error("Can't check which files would be replaced; choose Keep or Number on the card."),
             None => self.write_card(id, host),
         }
     }
@@ -108,7 +108,7 @@ impl NodeCraftApp {
     /// Why card `id` can't export right now (in a notice), or its grant.
     fn export_ready(&mut self, id: NodeId) -> Option<ExportHost> {
         if let Some(why) = unavailable() {
-            self.notice = Some(why.into());
+            self.notices.error(why);
             return None;
         }
         if self.exports.pending.is_some()
@@ -117,11 +117,11 @@ impl NodeCraftApp {
             || self.exports.card.is_some()
             || self.exports.confirm.is_some()
         {
-            self.notice = Some("Another export is in progress; finish or cancel that first.".into());
+            self.notices.warning("Another export is in progress; finish or cancel that first.");
             return None;
         }
         let Some(host) = self.grant(self.canvas, id).cloned() else {
-            self.notice = Some("Choose a folder on the card first.".into());
+            self.notices.info("Choose a folder on the card first.");
             return None;
         };
         Some(host)
@@ -135,9 +135,9 @@ impl NodeCraftApp {
         match dispatch_with_host(&mut self.session, &host, "export.node_run", &params) {
             Ok(_) => match self.session.export_watch() {
                 Some(watch) => self.exports.card = Some((watch, host.label())),
-                None => self.notice = Some("The export didn't start; export again.".into()),
+                None => self.notices.error("The export didn't start; export again."),
             },
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -152,7 +152,7 @@ impl NodeCraftApp {
         };
         let status = watch.status();
         if let Some(result) = status.result {
-            self.notice = Some(summary(&result, &folder));
+            self.notices.success(summary(&result, &folder));
             return false;
         }
         let t = *self.theme.tokens();
@@ -178,7 +178,7 @@ impl NodeCraftApp {
                 cancel = ui.add_enabled(status.cancellable && current, egui::Button::new("Cancel export")).clicked();
             });
         if cancel && let Err(error) = self.session.dispatch("export.cancel", &json!({"id": status.id})) {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(50));
         self.exports.card = Some((watch, folder));
@@ -217,7 +217,7 @@ impl NodeCraftApp {
             self.exports.confirm = None;
             // The project or the grant may have gone while the question was open.
             if !Arc::ptr_eq(&session, &self.session.view_identity()) || canvas != self.canvas {
-                self.notice = Some("The project changed; nothing was exported.".into());
+                self.notices.warning("The project changed; nothing was exported.");
             } else if let Some(host) = self.export_ready(id) {
                 self.write_card(id, host);
             }

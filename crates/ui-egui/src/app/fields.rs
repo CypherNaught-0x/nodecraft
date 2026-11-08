@@ -229,8 +229,8 @@ impl NodeCraftApp {
 
     fn field_dispatch(&mut self, command: &str, params: serde_json::Value) {
         match self.session.dispatch(command, &params) {
-            Ok(_) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(_) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -263,18 +263,18 @@ impl NodeCraftApp {
         };
         let seed = ("field", self.session.revision(), rect.min.x.to_bits(), rect.min.y.to_bits());
         let Some(id) = ids::field_id(self.session.document(), seed) else {
-            self.notice = Some("Couldn't allocate a field id; try again.".into());
+            self.notices.error("Couldn't allocate a field id; try again.");
             return;
         };
         let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().collect();
         let field = json!({"id": id, "title": "Field", "rect": rect_json(rect, t), "color": "blue"});
         match self.session.dispatch("field.create", &json!({"canvas": self.canvas, "field": field, "nodes": nodes})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.clear();
                 self.fields.selected = Some(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -466,14 +466,14 @@ impl NodeCraftApp {
         }
         if save && keep {
             if title.len() > 4096 {
-                self.notice = Some("A field name is at most 4096 bytes.".into());
+                self.notices.error("A field name is at most 4096 bytes.");
             } else {
                 match self.session.dispatch("field.update", &json!({"canvas": self.canvas, "field": id, "title": title})) {
                     Ok(_) => {
-                        self.notice = None;
+                        self.notices.clear();
                         keep = false;
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notices.report(error),
                 }
             }
         }

@@ -100,7 +100,7 @@ fn deck693_pending_font_pick_preserves_edits_to_another_card_and_the_deck() {
     let mut h = headless(crate::theme::ThemeKind::Dark);
     let revision = edit_while_picking(&mut h);
     h.run_steps(3);
-    assert_eq!(chosen_font(h.state()), "Lito", "{:?}", h.state().notice);
+    assert_eq!(chosen_font(h.state()), "Lito", "{:?}", h.state().notice());
     assert_eq!(listing(&mut h)["width"], 700);
     let canvas = h.state().canvas;
     assert_eq!(
@@ -108,7 +108,7 @@ fn deck693_pending_font_pick_preserves_edits_to_another_card_and_the_deck() {
         "Notes updated while loading"
     );
     assert_eq!(h.state().session.revision(), revision + 2);
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
     // Both font operations remain undoable without reverting either intervening edit.
     for _ in 0..2 {
         h.get_by_label("Undo").click();
@@ -140,7 +140,7 @@ fn deck693_pending_font_pick_refuses_a_replacement_document_or_removed_target() 
         assert!(listing(&mut h)["fonts"].as_array().unwrap().is_empty());
         assert_eq!(h.state().session.revision(), revision);
         assert_eq!(h.state().session.assets().len(), assets, "a superseded pick must not import its bytes");
-        assert!(h.state().notice.as_deref().is_some_and(|message| message.contains("choose the font file again")), "{:?}", h.state().notice);
+        assert!(h.state().notice().is_some_and(|message| message.contains("choose the font file again")), "{:?}", h.state().notice());
     }
 }
 
@@ -202,7 +202,7 @@ fn deck693_a_completed_font_pick_imports_then_assigns_as_two_valid_undo_steps() 
     h.run_steps(3);
     assert_eq!(chosen_font(h.state()), "Lito");
     assert_eq!(h.state().session.revision(), revision + 2);
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
     h.get_by_label("Undo").click();
     h.run_steps(3);
     assert_eq!(chosen_font(h.state()), "Original public font");
@@ -253,7 +253,7 @@ fn deck693_pending_import_cannot_overtake_a_real_undo_or_a_closing_editor() {
         } else {
             assert_eq!(listing(&mut h)["width"], 640);
             assert_eq!(chosen_font(h.state()), "Original public font");
-            assert!(h.state().notice.as_deref().is_some_and(|message| message.contains("changed")));
+            assert!(h.state().notice().is_some_and(|message| message.contains("changed")));
         }
     }
 }
@@ -306,7 +306,7 @@ fn deck693_reimport_reloads_a_missing_font_and_redraws_without_a_graph_revision(
     let editor = h.state().deck_editor.as_ref().unwrap().layers().unwrap();
     assert!(editor.font_files.bytes.get(&hash).is_some_and(Option::is_some));
     assert_ne!(editor.textures.get("src-heading").unwrap().key, old_key, "a formerly missing font invalidates the Lato fallback texture");
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -351,7 +351,7 @@ fn deck693_visual() {
         h.get_by_label(&info.name).click();
         h.run_steps(3);
         assert_eq!(chosen_font(h.state()), info.name);
-        assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+        assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
     }
     h.render().unwrap().save(output.join(if baseline { "before.png" } else { "after.png" })).unwrap();
     if !baseline {
@@ -378,9 +378,9 @@ fn deck693_export_controls_report_fallbacks_for_files_and_folders() {
         h.get_by_label(item).click();
         h.run_steps(3);
         assert!(
-            h.state().notice.as_deref().is_some_and(|notice| notice.contains("2 text layers used Lato because their fonts were unavailable.")),
+            h.state().notice().is_some_and(|notice| notice.contains("2 text layers used Lato because their fonts were unavailable.")),
             "{:?}",
-            h.state().notice
+            h.state().notice()
         );
     }
     assert!(dir.path().join("slide.png").exists());

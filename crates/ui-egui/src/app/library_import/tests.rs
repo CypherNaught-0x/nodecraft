@@ -60,7 +60,7 @@ fn picked_files_are_imported_with_a_line_each_and_only_the_failed_ones_are_retri
     h.get_by_label("Import files…").click();
     h.run();
     settle(&mut h);
-    assert_eq!(sources(&h), ["beach.png"], "one card for the two identical files: {:?}", h.state().notice);
+    assert_eq!(sources(&h), ["beach.png"], "one card for the two identical files: {:?}", h.state().notice());
     assert!(h.query_by_label("Import: 1 added · 1 duplicate · 2 failed · 1 couldn't be read").is_some());
     assert!(h.query_by_label("again.png: the same file as beach.png").is_some());
     assert!(h.query_by_label_contains("broken.png: the image can't be read").is_some());
@@ -75,7 +75,7 @@ fn picked_files_are_imported_with_a_line_each_and_only_the_failed_ones_are_retri
     h.get_by_label("Retry failed (3)").click();
     h.run();
     settle(&mut h);
-    assert_eq!(sources(&h), ["beach.png", "broken.png", "gone.png"], "{:?}", h.state().notice);
+    assert_eq!(sources(&h), ["beach.png", "broken.png", "gone.png"], "{:?}", h.state().notice());
     assert!(h.query_by_label("Retry failed (1)").is_some(), "the text file still fails");
     h.get_by_label("Dismiss").click();
     h.run();
@@ -116,7 +116,7 @@ fn reading_shows_per_file_progress_and_cancel_adds_nothing() {
     h.get_by_label("Cancel import").click();
     h.run();
     assert!(!h.state().library.browsers.import.busy());
-    assert_eq!(h.state().notice.as_deref(), Some("Import cancelled; nothing was added."));
+    assert_eq!(h.state().notice(), Some("Import cancelled; nothing was added."));
     drop(release);
     h.run();
     assert_eq!(h.state().session.document(), &before, "nothing was added");
@@ -251,7 +251,7 @@ fn a_file_from_an_address_becomes_a_card_named_after_it_and_keeps_nothing_else_o
     h.get_by_label("Import").click();
     h.run();
     settle(&mut h);
-    assert_eq!(sources(&h), ["sunset glow.png"], "{:?}", h.state().notice);
+    assert_eq!(sources(&h), ["sunset glow.png"], "{:?}", h.state().notice());
     assert!(h.query_by_label("Import: 1 added").is_some());
     let saved = serde_json::to_string(h.state().session.document()).unwrap();
     for leaked in ["s3cr3t", "cdn.example.com", "photos", "https"] {

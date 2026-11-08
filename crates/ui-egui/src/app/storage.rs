@@ -187,7 +187,8 @@ impl NodeCraftApp {
                     _ => (missing_reason.to_owned(), false),
                 };
                 let mut app = Self::with_services(services)?;
-                app.notice = Some(app.remember_storage_problem(reason, owner_busy));
+                let problem = app.remember_storage_problem(reason, owner_busy);
+                app.notices.error(problem);
                 Ok((app, None, false))
             }
         }

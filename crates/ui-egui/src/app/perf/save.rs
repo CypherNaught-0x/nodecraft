@@ -64,7 +64,7 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
         assert!(frames <= 10_000, "the background save never finishes");
     }
     let written = started.elapsed();
-    assert!(h.state().notice.is_none(), "the save went through: {:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "the save went through: {:?}", h.state().notice());
     assert!(!h.state().session.file_status().dirty, "Cmd+S saves to the same file");
     let saved = h.state().session.document().clone();
 
@@ -97,7 +97,7 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
         assert!(frames <= 10_000, "the startup open never finishes");
     }
     let open = started.elapsed();
-    assert!(reopened.state().notice.is_none(), "the saved file reopens: {:?}", reopened.state().notice);
+    assert!(reopened.state().notices.is_empty(), "the saved file reopens: {:?}", reopened.state().notice());
     assert_eq!(reopened.state().session.document(), &saved, "the file holds the whole graph");
     eprintln!(
         "200 nodes, 180 wires: .ncraft {} bytes; save as {save_as:?}, Cmd+S frame {save:?} (written after {written:?}), open {open:?}",

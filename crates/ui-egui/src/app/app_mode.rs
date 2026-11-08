@@ -134,7 +134,7 @@ impl NodeCraftApp {
                     app.form = Some((revision, form));
                 }
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -173,7 +173,7 @@ impl NodeCraftApp {
 
         let mut asks = Vec::new();
         let mut close = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest().cloned();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
@@ -193,7 +193,7 @@ impl NodeCraftApp {
                         asks.push(Ask::Command("edit.undo", json!({}), None));
                     }
                     if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
+                        crate::notices::inline_notice(ui, &t, notice);
                     }
                 });
             });
@@ -234,7 +234,7 @@ impl NodeCraftApp {
             Ask::Fill(port, values, field) => match fill(app, &port, values) {
                 Ok(params) => ("app.input_set", params, field.map(EditTarget::Parameter)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             },
@@ -246,7 +246,7 @@ impl NodeCraftApp {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let _ = (port, slot);
-                    self.notice = Some("Choosing a file works in the desktop app.".into());
+                    self.notices.warning("Choosing a file works in the desktop app.");
                 }
                 return true;
             }
@@ -254,7 +254,7 @@ impl NodeCraftApp {
                 return match self.request_runs(vec![app.node], super::generate::RunKind::Refresh) {
                     Ok(()) => true,
                     Err(error) => {
-                        self.notice = Some(error.message);
+                        self.notices.report(error);
                         false
                     }
                 };
@@ -274,7 +274,7 @@ impl NodeCraftApp {
         };
         match self.session.dispatch(command, &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 if let Some(target) = target {
                     app.editor.accepted(&target);
                 }
@@ -284,7 +284,7 @@ impl NodeCraftApp {
                 if let Some(target) = target {
                     app.editor.failed(target, error.message.clone());
                 }
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -328,7 +328,7 @@ impl NodeCraftApp {
             Ok(asset) => {
                 self.app_ask(app, Ask::Fill(port.to_owned(), placed(filled, many, slot, Value::Media(asset)), None), &t);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

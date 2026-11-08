@@ -217,7 +217,7 @@ impl NodeCraftApp {
     /// Opens the system's folder picker; the chosen folder goes to `target`.
     pub(super) fn pick_folder(&mut self, target: Target) {
         if self.folder_import.busy() {
-            self.notice = Some("A folder is already being imported; wait for it or cancel it.".into());
+            self.notices.warning("A folder is already being imported; wait for it or cancel it.");
             return;
         }
         #[cfg(not(test))]
@@ -235,7 +235,7 @@ impl NodeCraftApp {
     /// Starts reading the folder at `path` for `target` on its own thread.
     pub(super) fn read_folder_for(&mut self, path: PathBuf, target: Target) {
         if self.folder_import.reading.is_some() {
-            self.notice = Some("A folder is already being imported; wait for it or cancel it.".into());
+            self.notices.warning("A folder is already being imported; wait for it or cancel it.");
             return;
         }
         let cancel = Arc::new(AtomicBool::new(false));
@@ -250,10 +250,10 @@ impl NodeCraftApp {
             let _ = send.send(outcome);
         });
         if spawned.is_err() {
-            self.notice = Some("Folder reading is unavailable; restart the app to try again.".into());
+            self.notices.error("Folder reading is unavailable; restart the app to try again.");
             return;
         }
-        self.notice = None;
+        self.notices.clear();
         self.folder_import.reading = Some(Reading { name, project: self.session.document().id(), canvas: self.canvas, target, cancel, read, result });
     }
 
@@ -267,7 +267,7 @@ impl NodeCraftApp {
                 Ok(Poll::Pending) => self.folder_import.picking = Some((future, target)),
                 Ok(Poll::Ready(Some(path))) => self.read_folder_for(path, target),
                 Ok(Poll::Ready(None)) => {}
-                Err(_) => self.notice = Some("The folder picker could not be opened; try again.".into()),
+                Err(_) => self.notices.error("The folder picker could not be opened; try again."),
             }
         }
         let Some(reading) = self.folder_import.reading.take() else { return };
@@ -277,11 +277,11 @@ impl NodeCraftApp {
                 return;
             }
             Ok(Err(message)) => {
-                self.notice = Some(message);
+                self.notices.error(message);
                 return;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.notice = Some("Reading the folder failed unexpectedly; nothing was added.".into());
+                self.notices.error("Reading the folder failed unexpectedly; nothing was added.");
                 return;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -302,7 +302,7 @@ impl NodeCraftApp {
             })
             .inner;
         if cancel {
-            self.notice = Some("Folder import cancelled; nothing was added.".into());
+            self.notices.info("Folder import cancelled; nothing was added.");
         } else {
             self.folder_import.reading = Some(reading);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -311,14 +311,14 @@ impl NodeCraftApp {
 
     fn import_read_folder(&mut self, reading: &Reading, read: ReadFolder) {
         if reading.project != self.session.document().id() || reading.canvas != self.canvas {
-            self.notice = Some("The project or canvas changed while the folder was read; nothing was added. Import it again.".into());
+            self.notices.warning("The project or canvas changed while the folder was read; nothing was added. Import it again.");
             return;
         }
         let target = match reading.target {
             Target::New(at) => {
                 let seed = ("folder", self.session.revision(), at.x.to_bits(), at.y.to_bits(), read.files.len());
                 let Some(id) = ids::node_id(self.session.document(), seed) else {
-                    self.notice = Some("Couldn't allocate a node id; try again.".into());
+                    self.notices.error("Couldn't allocate a node id; try again.");
                     return;
                 };
                 FolderTarget::New { canvas: reading.canvas, at, id }
@@ -333,9 +333,12 @@ impl NodeCraftApp {
                 skipped.extend(imported.skipped);
                 let left_out = nodecraft_engine::import::Imported { nodes: Vec::new(), skipped }.notice();
                 let added = format!("Added {} files from {}.", imported.files, read.name);
-                self.notice = Some(left_out.map_or(added.clone(), |left_out| format!("{added} {left_out}")));
+                match left_out {
+                    None => self.notices.success(added),
+                    Some(left_out) => self.notices.warning(format!("{added} {left_out}")),
+                }
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -356,7 +359,7 @@ impl NodeCraftApp {
         self.read_folder_for(first.clone(), target);
         if others > 0 && self.folder_import.reading.is_some() {
             let name = clean(&first.file_name().map(|name| name.to_string_lossy().into_owned()).unwrap_or_default());
-            self.notice = Some(format!("Importing {name}; drop other folders and files separately ({others} left out)."));
+            self.notices.warning(format!("Importing {name}; drop other folders and files separately ({others} left out)."));
         }
         true
     }

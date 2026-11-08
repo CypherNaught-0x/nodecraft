@@ -426,7 +426,7 @@ impl NodeCraftApp {
             }
             self.live.errors.insert((self.canvas, *node), (*hash, reason.chars().take(1024).collect()));
             if self.live.failed.insert(*node, *hash) != Some(*hash) {
-                self.notice = Some(reason.clone());
+                self.notices.error(reason.clone());
             }
         }
     }

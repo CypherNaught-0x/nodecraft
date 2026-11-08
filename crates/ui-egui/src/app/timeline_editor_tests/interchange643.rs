@@ -62,7 +62,7 @@ fn timeline_uses_a_real_background_receipt_and_cancel_button_in_both_themes() {
         assert!(!h.state().session.export_status().unwrap().cancellable);
         held.0.lock().unwrap().take().unwrap().run();
         super::super::export_tests::finish(&mut h);
-        assert_eq!(h.state().notice.as_deref(), Some("Export cancelled; no file was written."));
+        assert_eq!(h.state().notice(), Some("Export cancelled; no file was written."));
         assert_eq!(std::fs::read(&path).unwrap(), b"keep original");
         assert_eq!(h.state().session.revision(), revision);
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);

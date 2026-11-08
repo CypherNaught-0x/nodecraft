@@ -67,7 +67,7 @@ fn a_browser_drop_waits_for_every_read_then_imports_as_one_undo_step() {
     assert!(h.state().web_drop.is_none());
     let existing = before.canvases().get(&h.state().canvas).unwrap().nodes().clone();
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
-    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice());
     assert!(added.iter().any(|n| n.kind == "source.image") && added.iter().any(|n| n.kind == "source.text"));
     for (index, kind) in ["source.text", "source.image"].into_iter().enumerate() {
         let node = added.iter().find(|node| node.kind == kind).unwrap();
@@ -76,7 +76,7 @@ fn a_browser_drop_waits_for_every_read_then_imports_as_one_undo_step() {
     }
 
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before, "one undo removes the whole drop");
@@ -96,9 +96,9 @@ fn a_completed_read_survives_a_browser_drop_frame_after_the_deadline() {
     h.input_mut().time = Some(deadline + READ_SECONDS);
     h.step();
     assert!(h.ctx.input(|i| i.time) > deadline);
-    assert_eq!(nodes(&h).len(), old + 2, "completed bytes must survive the delayed frame: {:?}", h.state().notice);
+    assert_eq!(nodes(&h).len(), old + 2, "completed bytes must survive the delayed frame: {:?}", h.state().notice());
     assert!(h.state().web_drop.is_none());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before, "the completed batch still imports as one undo step");
@@ -119,11 +119,11 @@ fn skipped_failed_and_grown_files_are_named_and_the_rest_still_land() {
     );
     h.run();
     assert_eq!(nodes(&h).len(), count + 1);
-    assert_eq!(h.state().notice.as_deref(), Some("huge.mov wasn't added: files over 16 MiB can't be added (and 2 more files weren't)."));
+    assert_eq!(h.state().notice(), Some("huge.mov wasn't added: files over 16 MiB can't be added (and 2 more files weren't)."));
     // Only skips: nothing is imported, and the notice says why.
     pending(&mut h, vec![], vec![("folder", "the file can't be read")]);
     h.run();
-    assert_eq!(h.state().notice.as_deref(), Some("folder wasn't added: the file can't be read."));
+    assert_eq!(h.state().notice(), Some("folder wasn't added: the file can't be read."));
     assert_eq!(nodes(&h).len(), count + 1);
 }
 
@@ -138,7 +138,7 @@ fn an_edit_while_files_are_read_wins() {
     reads.borrow_mut()[0].1 = Some(Ok(b"late".to_vec()));
     h.run();
     assert_eq!(nodes(&h).len(), count);
-    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading files; nothing was added. Drop them again."));
+    assert_eq!(h.state().notice(), Some("The document changed while reading files; nothing was added. Drop them again."));
     assert!(h.state().web_drop.is_none());
 }
 
@@ -150,14 +150,14 @@ fn a_stuck_browser_read_expires_and_a_late_result_cannot_import() {
     h.state_mut().web_drop.as_mut().unwrap().deadline = -1.0;
     h.step();
     assert!(!h.state().drop_pending());
-    assert_eq!(h.state().notice.as_deref(), Some("The browser didn't finish reading files; nothing was added. Drop them again."));
+    assert_eq!(h.state().notice(), Some("The browser didn't finish reading files; nothing was added. Drop them again."));
     reads.borrow_mut()[0].1 = Some(Ok(b"too late".to_vec()));
     h.run();
     assert_eq!(h.state().session.document(), &before);
     pending(&mut h, vec![("fresh.txt", Some(Ok(b"fresh read".to_vec())))], vec![]);
     h.run();
     assert_eq!(nodes(&h).len(), before.canvases().get(&h.state().canvas).unwrap().nodes().len() + 1);
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn escape_cancels_a_pending_browser_read_without_clearing_selection_or_accepting
     h.run();
     assert!(!h.state().drop_pending());
     assert!(h.state().selection.nodes().contains(&first), "the pending read owns this Escape");
-    assert_eq!(h.state().notice.as_deref(), Some("File reading was cancelled; nothing was added."));
+    assert_eq!(h.state().notice(), Some("File reading was cancelled; nothing was added."));
     reads.borrow_mut()[0].1 = Some(Ok(b"too late".to_vec()));
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -186,7 +186,7 @@ fn a_document_replacement_cancels_even_a_browser_read_that_never_settles() {
     h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas":canvas,"node":node})).unwrap();
     h.step();
     assert!(h.state().web_drop.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading files; nothing was added. Drop them again."));
+    assert_eq!(h.state().notice(), Some("The document changed while reading files; nothing was added. Drop them again."));
 }
 
 #[test]

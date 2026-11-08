@@ -149,7 +149,7 @@ impl NodeCraftApp {
             return;
         };
         let Some(port) = image_output(source) else {
-            self.notice = Some("This card has no single image to paint over.".into());
+            self.notices.warning("This card has no single image to paint over.");
             return;
         };
         let revision = self.session.revision();
@@ -159,7 +159,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edge", node, revision, 0)),
             ids::edge_id(document, ("mask-edge", node, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error("Couldn't allocate node ids; try again.");
             return;
         };
         let pos = mask_cmds::beside(source.pos, 1.0);
@@ -167,22 +167,22 @@ impl NodeCraftApp {
             json!({"canvas": self.canvas, "from": Endpoint { node, port: port.into() }, "expand": expand, "mask": mask, "edges": [first, second], "pos": pos});
         match self.session.dispatch("mask.create", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(mask);
                 self.mask_editor = Some(MaskEditor::new(self.canvas, mask));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
     fn mask_dispatch(&mut self, command: &str, params: &serde_json::Value) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 true
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -317,7 +317,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 0)),
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error("Couldn't allocate node ids; try again.");
             return false;
         };
         let model = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());

@@ -120,7 +120,7 @@ fn run_every_row(h: &mut Harness<'static, NodeCraftApp>) {
             let ctx = h.ctx.clone();
             h.state_mut().tick_runs(&ctx);
             h.step();
-            assert!(Instant::now() < deadline, "the runs never ended: {:?}", h.state().notice);
+            assert!(Instant::now() < deadline, "the runs never ended: {:?}", h.state().notice());
         }
     };
     until(h, &|app| app.run_confirm.is_some());
