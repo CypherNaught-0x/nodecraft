@@ -25,11 +25,13 @@ Follows [the rig-core decision](2026-11-06-llm-layer-rig.md) and
   GPT OSS cards use, since switching them needs each card re-checked against Converse. No catalog
   card uses Converse yet; prices stay `by_usage` (Region-dependent), and money is settled from the
   catalog only: Converse reports tokens, never a charge.
-- **Mapping.** Stop reasons `end_turn`/`stop_sequence` end the turn, `max_tokens` and `tool_use`
-  as named, `guardrail_intervened`/`content_filtered` are `BlockedContent`, the two `malformed_*`
+- **Mapping.** Stop reasons `end_turn`/`stop_sequence` end the turn, `max_tokens` and
+  `model_context_window_exceeded` are `MaxTokens` (the reply is cut off), `tool_use` as named, `guardrail_intervened`/`content_filtered` are `BlockedContent`, the two `malformed_*`
   are `Malformed`, anything else is `Other`. Errors by name (`x-amzn-ErrorType`, `__type`, or the
-  stream's `:exception-type`): throttling and quota are `RateLimited` (with `Retry-After` when
-  sent), access and signature errors `Auth`, validation `UnsupportedInput` (context-window
+  stream's `:exception-type`): throttling is `RateLimited` (with `Retry-After` when sent), a
+  used-up service quota `Budget` (not transient; the message says to raise the quota), access and signature errors `Auth`, validation `UnsupportedInput` (context-window
   messages as the context-limit error), model-not-ready and service-unavailable `Busy`, model
   timeout `Timeout`, not found `NotFound`, internal/model errors `Server`. Reasoning blocks come
-  back as `Part::Opaque` and go back unchanged in later turns.
+  back as `Part::Opaque` and go back unchanged in later turns. A tool result's `status` goes only
+  to models AWS documents it for (Amazon Nova, Anthropic Claude: ids containing `amazon.nova` or
+  `anthropic.`); other models get a failed result's text prefixed with `Error: `.

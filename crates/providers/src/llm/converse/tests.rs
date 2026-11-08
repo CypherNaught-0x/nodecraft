@@ -228,6 +228,37 @@ fn a_reply_goes_back_in_the_next_turn_as_it_came() {
 }
 
 #[test]
+fn a_failed_tool_result_has_a_status_only_where_aws_documents_one() {
+    let turn = |model: &str| {
+        let mut req = request();
+        req.model = model.into();
+        req.tools = vec![weather()];
+        req.messages.push(Message { role: Role::Assistant, parts: vec![Part::ToolUse { id: "t1".into(), name: "weather".into(), input: json!({}) }] });
+        req.messages.push(Message {
+            role: Role::User,
+            parts: vec![
+                Part::ToolResult { id: "t1".into(), content: "no such city".into(), is_error: true },
+                Part::ToolResult { id: "t2".into(), content: "sunny".into(), is_error: false },
+            ],
+        });
+        req.messages[1].parts.push(Part::ToolUse { id: "t2".into(), name: "weather".into(), input: json!({}) });
+        body(&req)["messages"][2]["content"].clone()
+    };
+    for model in
+        ["us.anthropic.claude-sonnet-4-6", "amazon.nova-pro-v1:0", "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-haiku-20240307-v1:0"]
+    {
+        let content = turn(model);
+        assert_eq!(content[0]["toolResult"], json!({"toolUseId":"t1","content":[{"text":"no such city"}],"status":"error"}), "{model}");
+        assert_eq!(content[1]["toolResult"], json!({"toolUseId":"t2","content":[{"text":"sunny"}]}), "{model}");
+    }
+    for model in ["meta.llama3-1-70b-instruct-v1:0", "mistral.mistral-large-2407-v1:0", "openai.gpt-oss-120b-1:0"] {
+        let content = turn(model);
+        assert_eq!(content[0]["toolResult"], json!({"toolUseId":"t1","content":[{"text":"Error: no such city"}]}), "{model}");
+        assert_eq!(content[1]["toolResult"], json!({"toolUseId":"t2","content":[{"text":"sunny"}]}), "{model}");
+    }
+}
+
+#[test]
 fn streamed_tool_input_that_isnt_an_object_stays_text() {
     let stream = [
         event("contentBlockStart", json!({"contentBlockIndex":0,"start":{"toolUse":{"toolUseId":"t1","name":"weather"}}})),
@@ -250,7 +281,8 @@ fn converse_stop_reasons_are_mapped() {
         ("stop_sequence", Ok(StopReason::EndTurn)),
         ("max_tokens", Ok(StopReason::MaxTokens)),
         ("tool_use", Ok(StopReason::ToolUse)),
-        ("model_context_window_exceeded", Ok(StopReason::Other("model_context_window_exceeded".into()))),
+        ("model_context_window_exceeded", Ok(StopReason::MaxTokens)),
+        ("something_new", Ok(StopReason::Other("something_new".into()))),
         ("guardrail_intervened", Err(ErrorKind::BlockedContent)),
         ("content_filtered", Err(ErrorKind::BlockedContent)),
         ("malformed_model_output", Err(ErrorKind::Malformed)),
@@ -278,7 +310,6 @@ fn converse_error_statuses_map_to_actionable_kinds() {
     };
     for (status, name, message, kind) in [
         (429, "ThrottlingException", "Too many requests, please wait before trying again.", ErrorKind::RateLimited),
-        (429, "ServiceQuotaExceededException", "quota", ErrorKind::RateLimited),
         (429, "ModelNotReadyException", "not ready", ErrorKind::Busy),
         (403, "AccessDeniedException", "You don't have access to the model with the specified model ID.", ErrorKind::Auth),
         (403, "UnrecognizedClientException", "The security token included in the request is invalid.", ErrorKind::Auth),
@@ -307,6 +338,14 @@ fn converse_error_statuses_map_to_actionable_kinds() {
         }
         assert_eq!(http.seen.lock().unwrap().len(), 2, "one request per call: a possibly paid request is never resent");
     }
+    // A used-up quota isn't a burst: not transient, and says what to do.
+    let e = super::error(400, &typed("ServiceQuotaExceededException"), br#"{"message":"quota"}"#);
+    assert_eq!(e.kind, ErrorKind::Budget);
+    assert!(!e.is_transient());
+    assert!(e.message.contains("raise it in Service Quotas") && e.message.contains("quota"), "{}", e.message);
+    let stream = exception("serviceQuotaExceededException", "quota");
+    let e = block_on(client(Chunked::new(stream, 9)).chat_stream(&request(), &mut |_| {})).unwrap_err();
+    assert_eq!(e.kind, ErrorKind::Budget);
     // The name in the body's `__type`, a namespace in front.
     let e = super::error(400, &[], br#"{"__type":"com.amazon.coral.validate#ValidationException","message":"Input is too long for requested model."}"#);
     assert!(e.is_context_limit(), "{e:?}");

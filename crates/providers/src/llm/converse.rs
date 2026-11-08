@@ -119,6 +119,13 @@ fn image_format(mime: &str) -> &'static str {
     }
 }
 
+/// Whether `model` (an id, inference profile or ARN) takes a tool result's `status`: AWS
+/// documents it for Amazon Nova and Anthropic Claude 3 and 4 only (`ToolResultBlock`).
+fn takes_tool_status(model: &str) -> bool {
+    let model = model.to_ascii_lowercase();
+    model.contains("anthropic.") || model.contains("amazon.nova")
+}
+
 /// The request body.
 pub(super) fn body(req: &ChatRequest) -> Value {
     let mut messages = Vec::new();
@@ -130,10 +137,12 @@ pub(super) fn body(req: &ChatRequest) -> Value {
                 // Tool results first, then the user's parts in their order.
                 for p in &m.parts {
                     if let Part::ToolResult { id, content: text, is_error } = p {
+                        // `status` is documented for Amazon Nova and Anthropic Claude only; other
+                        // models are told of a failure in the result's text.
+                        let status = takes_tool_status(&req.model);
+                        let text = if *is_error && !status { format!("Error: {text}") } else { text.clone() };
                         let mut result = json!({ "toolUseId": id, "content": [{ "text": text }] });
-                        // `status` is documented for some models only, so it goes only when the
-                        // result is an error.
-                        if *is_error {
+                        if *is_error && status {
                             result["status"] = json!("error");
                         }
                         content.push(json!({ "toolResult": result }));
@@ -217,7 +226,8 @@ pub(super) fn body(req: &ChatRequest) -> Value {
 fn stop(reason: Option<&str>) -> Result<StopReason, ProviderError> {
     Ok(match reason {
         Some("end_turn") | Some("stop_sequence") => StopReason::EndTurn,
-        Some("max_tokens") => StopReason::MaxTokens,
+        // Both cut the reply off.
+        Some("max_tokens") | Some("model_context_window_exceeded") => StopReason::MaxTokens,
         Some("tool_use") => StopReason::ToolUse,
         Some("guardrail_intervened") => return Err(ProviderError::new(ErrorKind::BlockedContent, "a Bedrock guardrail blocked this request")),
         Some("content_filtered") => return Err(ProviderError::new(ErrorKind::BlockedContent, "Bedrock's content filter blocked this reply")),
@@ -278,7 +288,14 @@ fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
     let name = name.split(':').next().unwrap_or(name).trim().to_ascii_lowercase();
     let message = crate::error::excerpt(message.as_bytes());
     let kind = match name.as_str() {
-        "throttlingexception" | "servicequotaexceededexception" | "toomanyrequestsexception" => ErrorKind::RateLimited,
+        "throttlingexception" | "toomanyrequestsexception" => ErrorKind::RateLimited,
+        // A quota, not a burst: waiting won't help, so it is not transient.
+        "servicequotaexceededexception" => {
+            return ProviderError::new(
+                ErrorKind::Budget,
+                format!("the AWS account's Bedrock quota for this model is used up; raise it in Service Quotas (the provider said: {message})"),
+            );
+        }
         "accessdeniedexception"
         | "unrecognizedclientexception"
         | "invalidsignatureexception"
