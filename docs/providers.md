@@ -24,7 +24,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
-| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | text → text, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. No SigV4, AWS SDK, Converse API or AWS credential discovery (#489). See below. |
+| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | OpenAI route: text → text, streaming. Converse: text, images (≤ 3.75 MB each) and PDFs (≤ 4.5 MB each) + text → text, tools, reasoning kept across turns, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. Native Converse (`Endpoint::bedrock_converse`, #1150) for whole and streamed chat, with no card yet; its live smoke test has not been run. No SigV4, AWS SDK or AWS credential discovery. See below. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **DeepSeek** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `deepseek` | text → text, tools, streaming | rig's DeepSeek dialect (#1122): a reply's `reasoning_content` is kept and sent back with later turns, as its thinking models want when a request carries tools. Catalog `assets/catalog/deepseek.toml`: `deepseek-flash` and `deepseek-v4-pro`, quoted at the **peak** output rate on `max_tokens` (off-peak hours cost half; input billed on top). |
 | **Mistral** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `mistral` | text → text, tools, streaming | rig's Mistral dialect (#1122), its own content chunks. Catalog `assets/catalog/mistral.toml`: `mistral-large-4` and `mistral-small-2603`, text only for now, quoted at the output rate on `max_tokens` (prices from each model's docs page; mistral.ai/pricing draws its table in the browser). |
@@ -241,10 +241,24 @@ The Region must be a code such as `us-east-1` or `us-gov-west-1`; anything else,
 refuses before a request. Partitions not on `amazonaws.com` (China, European Sovereign Cloud,
 isolated US Regions) are not supported. The key comes
 only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, AWS profiles, access
-keys or instance metadata, and does not sign requests with SigV4. The native Converse API,
-SigV4 and other Bedrock models are deferred to the provider-layer decision in
-[#489](https://github.com/CypherNaught-0x/nodecraft/issues/489). The browser has no Bedrock
+keys or instance metadata, and does not sign requests with SigV4. The browser has no Bedrock
 settings panel.
+
+**Native Converse (#1150).** `Endpoint::bedrock_converse(region, key)` speaks Bedrock's own
+[Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html) and
+[ConverseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html)
+API (`POST /model/{modelId}/converse` and `/converse-stream`) with the same key, Region rules and
+keychain account, as `Dialect::Converse`. AWS documents Bedrock API keys as
+`Authorization: Bearer` for Converse
+([API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html), checked
+2026-11-08). It carries the system prompt, text, images (PNG/JPEG/GIF/WebP, at most 3.75 MB each),
+PDFs (at most 4.5 MB each, with text beside them), tool calls and results, and the model's
+reasoning blocks back unchanged. Streamed replies are AWS event-stream frames, read by a bounded
+parser that checks both CRC32 checksums and caps each frame at 1 MiB. It is not through
+`rig-core` (which has no Bedrock provider) and needs no AWS SDK, so it builds for the browser too.
+The catalog's two GPT OSS cards keep the OpenAI-compatible route; no card uses Converse yet, and
+SigV4 is still not spoken. See
+[the decision](decisions/2026-11-08-bedrock-native-converse.md).
 
 AWS's pricing page lists these models' rates per service tier for one Region only, so the cards
 use `ByUsage`: the picker says
@@ -260,6 +274,14 @@ addition:
 ```sh
 NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
   cargo test -p nodecraft-providers --test live_llm live_bedrock46
+```
+
+The Converse smoke test (streamed, whole, and one tool call; pick the model or inference profile
+with `NODECRAFT_LIVE_BEDROCK_CONVERSE_MODEL`) was not run either:
+
+```sh
+NODECRAFT_LIVE_BEDROCK_CONVERSE=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
+  cargo test -p nodecraft-providers --test live_llm live_bedrock_converse1150
 ```
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
