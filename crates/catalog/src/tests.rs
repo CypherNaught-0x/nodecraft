@@ -135,6 +135,31 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             let mut short = ParamValues::new();
             short.insert("max_tokens".into(), Value::Unsigned(Unsigned(1000)));
             assert_eq!(model.quote(&short).unwrap(), Some(Money::new(Currency::USD, per_thousand)), "{}", model.id);
+        } else if ["deepseek", "mistral", "groq", "xai"].contains(&model.provider.as_str()) {
+            // Chat models (#1122): the output price per 1000 tokens, counted on max_tokens. From the
+            // vendors' own pages, read 2026-11-08 (each catalog file cites its page): DeepSeek's
+            // peak rate, xAI's long-context rate, so each quote stays an upper bound.
+            let Pricing::PerUnit { unit: Unit::ThousandTokens, price, count: Some(count), default_count: None } = &model.pricing else {
+                panic!("{}: {:?}", model.id, model.pricing)
+            };
+            assert_eq!(count, "max_tokens", "{}", model.id);
+            let per_thousand = match model.id.as_str() {
+                "deepseek.flash" => 1_200,
+                "deepseek.v4-pro" => 3_960,
+                "mistral.large-4" => 2_100,
+                "mistral.small-4" => 600,
+                "groq.gpt-oss-120b" => 600,
+                "groq.gpt-oss-20b" => 300,
+                "xai.grok-4.7" => 12_000,
+                "xai.grok-4.3" => 5_000,
+                other => panic!("{other}: no verified price in this test"),
+            };
+            assert_eq!(price.0, Money::new(Currency::USD, per_thousand), "{}", model.id);
+            for thousands in [1, 2] {
+                let mut capped = ParamValues::new();
+                capped.insert("max_tokens".into(), Value::Unsigned(Unsigned(thousands * 1000)));
+                assert_eq!(model.quote(&capped).unwrap(), Some(Money::new(Currency::USD, per_thousand * thousands)), "{}", model.id);
+            }
         } else if model.provider == "elevenlabs" {
             // ElevenLabs pricing page, checked 2026-10-21.
             match model.id.as_str() {
@@ -338,6 +363,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("bfl.flux-kontext-max", false),
             ("bfl.flux-kontext-pro", false),
             ("deepgram.nova-3", false),
+            ("deepseek.v4-pro", false),
+            ("deepseek.flash", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
             ("elevenlabs.music", false),
@@ -394,6 +421,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("google-veo.veo-3.1", false),
             ("google-veo.veo-3.1-fast", false),
             ("google-veo.veo-3.1-lite", false),
+            ("groq.gpt-oss-120b", false),
+            ("groq.gpt-oss-20b", false),
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
@@ -411,6 +440,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("meshy.retexture", false),
             ("meshy.retexture-image", false),
             ("meshy.text-to-3d", false),
+            ("mistral.large-4", false),
+            ("mistral.small-4", false),
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
@@ -428,7 +459,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("test.video", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
-            ("tripo.text-to-3d", false)
+            ("tripo.text-to-3d", false),
+            ("xai.grok-4.7", false),
+            ("xai.grok-4.3", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.

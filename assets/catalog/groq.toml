@@ -1,0 +1,97 @@
+# GroqCloud Chat Completions (`providers::llm`, rig's Groq dialect), #1122.
+# Models, limits and prices: https://console.groq.com/docs/models (read 2026-11-08; groq.com/pricing
+# redirected to the home page that day). Base URL: https://api.groq.com/openai/v1.
+# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
+# the reply. Input tokens are billed on top and are NOT in the quote.
+
+# openai/gpt-oss-120b: 0.15 USD / 1M input, 0.60 USD / 1M output; context 131,072; max completion
+# 65,536.
+[[model]]
+id = "groq.gpt-oss-120b"
+provider = "groq"
+provider_model = "openai/gpt-oss-120b"
+label = "GPT OSS 120B (GroqCloud)"
+description = "Open-weight text reasoning with gpt-oss-120b on Groq's fast inference. Token pricing."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 4
+quality = 4
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0006 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.00015 USD", output = "0.0006 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 131072, max_output_tokens = 65536 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "groq.gpt-oss-120b"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "8192" }
+
+# openai/gpt-oss-20b: 0.075 USD / 1M input, 0.30 USD / 1M output; context 131,072; max completion
+# 65,536.
+[[model]]
+id = "groq.gpt-oss-20b"
+provider = "groq"
+provider_model = "openai/gpt-oss-20b"
+label = "GPT OSS 20B (GroqCloud)"
+description = "Smaller open-weight text reasoning with gpt-oss-20b on Groq's fast inference. Token pricing."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 3
+quality = 3
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0003 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.000075 USD", output = "0.0003 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 131072, max_output_tokens = 65536 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "groq.gpt-oss-20b"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "8192" }
