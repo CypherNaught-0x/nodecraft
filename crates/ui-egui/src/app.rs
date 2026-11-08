@@ -2810,27 +2810,36 @@ impl NodeCraftApp {
             match open.show(ui.ctx(), &entries, t) {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
-                palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
+                // Recent remembers a choice only once it has run (#1121).
+                palette::Outcome::Chosen(palette::Target::Kind(kind)) => {
+                    let revision = self.session.revision();
+                    self.create_node(&kind, open.world);
+                    if self.session.revision() != revision {
+                        palette::remember(ui.ctx(), &palette::Target::Kind(kind));
+                    }
+                }
                 palette::Outcome::Chosen(palette::Target::Command("perf.report")) => match self.session.dispatch("perf.report", &json!({})) {
                     // The report is for reading elsewhere: put it on the clipboard.
                     Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
                         self.notice = Some("Performance report copied to the clipboard.".into());
+                        palette::remember(ui.ctx(), &palette::Target::Command("perf.report"));
                     }
                     Err(error) => self.notice = Some(error.message),
                 },
                 palette::Outcome::Chosen(palette::Target::Command(id)) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                    // A file command runs once its file is picked; choosing it opens the picker.
+                    let ran = if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        #[cfg(not(target_arch = "wasm32"))]
                         self.begin_file(id, ui.ctx());
-                    } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        #[cfg(target_arch = "wasm32")]
                         self.web_file(id, ui.ctx());
+                        true
                     } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
+                        self.dispatch_live_palette_command(ui.ctx(), id)
+                    };
+                    if ran {
+                        palette::remember(ui.ctx(), &palette::Target::Command(id));
                     }
                 }
             }
@@ -3504,7 +3513,11 @@ impl NodeCraftApp {
                 }
                 continue;
             }
-            match self.session.enabled(spec.id, &self.palette_command_params(spec.id)) {
+            let params = self.palette_command_params(spec.id);
+            if !palette::takes(spec, &params) {
+                continue;
+            }
+            match self.session.enabled(spec.id, &params) {
                 Ok(()) => entries.push(palette::Entry::command(spec, None)),
                 Err(error) if palette::explains(&error) => entries.push(palette::Entry::command(spec, Some(&error))),
                 Err(_) => {}

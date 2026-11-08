@@ -174,6 +174,19 @@ pub fn explains(error: &Error) -> bool {
     matches!(error.kind, ErrorKind::Conflict | ErrorKind::Busy | ErrorKind::Forbidden | ErrorKind::Budget | ErrorKind::Authentication)
 }
 
+/// Whether the palette can run `spec` with `params`: every parameter its schema requires is in
+/// them (none, or the active canvas). Only these are listed, greyed or not: a command that needs
+/// more is never offered, even when `enabled` refuses it first for a reason that looks like "not
+/// now" (a view-only share, a recovery that needs saving).
+pub fn takes(spec: &nodecraft_engine::commands::CommandSpec, params: &serde_json::Value) -> bool {
+    let schema = (spec.input_schema)();
+    match schema.get("required") {
+        None | Some(serde_json::Value::Null) => true,
+        Some(serde_json::Value::Array(required)) => required.iter().all(|key| key.as_str().is_some_and(|key| params.get(key).is_some())),
+        Some(_) => false,
+    }
+}
+
 /// Puts entries in their listing order: by section (actions by the media they work on), the
 /// commands that can run before those that can't, then by label.
 pub fn sort(entries: &mut [Entry]) {
@@ -352,7 +365,8 @@ pub fn recent(ctx: &egui::Context) -> Vec<Target> {
     ctx.data(|data| data.get_temp::<Vec<Target>>(recent_id())).unwrap_or_default()
 }
 
-/// Remembers `target` as the most recent choice, keeping at most [`RECENT`].
+/// Remembers `target` as the most recent choice, keeping at most [`RECENT`]. The app calls it
+/// once the chosen entry has run.
 pub fn remember(ctx: &egui::Context, target: &Target) {
     ctx.data_mut(|data| {
         let list = data.get_temp_mut_or_default::<Vec<Target>>(recent_id());
@@ -560,7 +574,6 @@ impl Palette {
             }
         }
         if let Some(target) = chosen {
-            remember(ctx, &target);
             return Outcome::Chosen(target);
         }
         // ↵ chooses from the query as it is after this frame's typing (a paste and ↵ can arrive
@@ -571,7 +584,6 @@ impl Palette {
             if let Some(entry) = fresh.get(row).and_then(|index| entries.get(*index))
                 && entry.available()
             {
-                remember(ctx, &entry.target);
                 return Outcome::Chosen(entry.target.clone());
             }
         }

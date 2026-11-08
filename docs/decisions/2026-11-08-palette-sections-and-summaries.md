@@ -25,9 +25,12 @@ their description; Enter or a click does nothing. Only errors that say why a com
 *now* qualify (`Conflict`, `Busy`, `Forbidden`, `Budget`, `Authentication`): "Nothing to undo",
 "Performance capture isn't running". `InvalidInput` and `NotFound` mean the command needs
 parameters the palette can't give, and `Unsupported` means this host can't run it at all (the CLI
-or browser for a desktop-only command); those stay out, as before.
+or browser for a desktop-only command); those stay out, as before. Only commands whose schema requires
+nothing beyond the parameters the palette supplies (none, or the active canvas) are listed at
+all: many edits check the role or the recovery state before their parameters, so in a view-only
+share or a recovery that needs saving "Add node" would otherwise show as greyed.
 
-**Recent is view state.** The last five chosen entries live in egui's temporary memory for the
+**Recent is view state.** The last five entries chosen and run (a refused choice isn't kept) live in egui's temporary memory for the
 window: never in the document, not in settings, and gone on restart. Persisting it would need a
 settings key and a migration for little gain; reopen that if people ask for it.
 

@@ -166,3 +166,73 @@ fn the_palette_opened_at_the_bottom_right_corner_is_fully_on_screen() {
         assert!(!first.is_empty(), "{size:?}: rows are on screen");
     }
 }
+
+/// Every command the palette lists, greyed or not, takes no parameters beyond the active canvas,
+/// and the ones that edit a node or a noodle (which need ids) never appear.
+pub(super) fn lists_no_command_needing_parameters(app: &NodeCraftApp) {
+    let entries = app.palette_entries();
+    for entry in &entries {
+        let palette::Target::Command(id) = entry.target else { continue };
+        let spec = app.session.registry().get(id).unwrap();
+        let schema = (spec.input_schema)();
+        let required: Vec<&str> = schema.get("required").and_then(|r| r.as_array()).map(|r| r.iter().filter_map(|v| v.as_str()).collect()).unwrap_or_default();
+        assert!(required.iter().all(|key| *key == "canvas"), "{id} needs {required:?} but is listed ({:?})", entry.unavailable);
+    }
+    for id in ["node.add", "node.remove", "node.move", "edge.connect", "edge.disconnect", "canvas.delete"] {
+        assert!(!entries.iter().any(|entry| entry.target == palette::Target::Command(id)), "{id} is listed");
+    }
+}
+
+#[test]
+fn a_view_only_share_lists_no_command_that_needs_parameters() {
+    let mut h = sized(Vec2::new(1000.0, 700.0));
+    h.state_mut().session.set_access(nodecraft_engine::access::Access::new(nodecraft_sync::Role::View, None).unwrap());
+    h.run();
+    lists_no_command_needing_parameters(h.state());
+    // What it can't do now is still explained: the edits a viewer can't make are greyed.
+    let entries = h.state().palette_entries();
+    assert!(entries.iter().any(|entry| !entry.available()), "something is greyed for a viewer");
+}
+
+/// #1121 review: a command whose `enabled` checks the role before its parameters would otherwise
+/// pass as "can't run now".
+#[test]
+fn the_parameter_rule_reads_the_schema_and_the_supplied_params() {
+    let h = sized(Vec2::new(1000.0, 700.0));
+    let registry = h.state().session.registry();
+    let spec = |id: &str| *registry.get(id).unwrap();
+    assert!(!palette::takes(&spec("node.add"), &json!({})));
+    assert!(!palette::takes(&spec("canvas.delete"), &json!({})));
+    assert!(palette::takes(&spec("canvas.stale"), &json!({"canvas": h.state().canvas})));
+    assert!(!palette::takes(&spec("canvas.stale"), &json!({})));
+    assert!(palette::takes(&spec("edit.undo"), &json!({})));
+}
+
+/// Shortcuts sit against the row's right edge in the sectioned list too, not only when ranked.
+#[test]
+fn sectioned_rows_right_align_their_shortcuts() {
+    let mut h = sized(Vec2::new(1440.0, 900.0));
+    open_at(&mut h, Pos2::new(200.0, 700.0));
+    let menu = menu_rect(&h);
+    let entries = h.state().palette_entries();
+    let mut checked = 0;
+    for entry in entries.iter().filter(|entry| entry.shortcut.is_some()) {
+        let name = palette::row_name(&h.ctx, entry);
+        let Some(row) = h.query_by_label(&name).map(|node| node.rect()).filter(|row| menu.contains_rect(*row)) else { continue };
+        let key = crate::shortcut::format_shortcut(&h.ctx, entry.shortcut.as_deref().unwrap());
+        let painted = |text: &str| {
+            h.output().shapes.iter().find_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text && row.contains(shape.visual_bounding_rect().center()) => {
+                    Some(shape.visual_bounding_rect())
+                }
+                _ => None,
+            })
+        };
+        let label = painted(&entry.label).expect("the label is painted in its row");
+        let chip = painted(&key).expect("the shortcut is painted in its row");
+        assert!(chip.left() > label.right() + 20.0, "{name}: a gap separates the shortcut from the label: {label:?} {chip:?}");
+        assert!(row.right() - chip.right() < 16.0, "{name}: the shortcut sits against the row's right edge: {row:?} {chip:?}");
+        checked += 1;
+    }
+    assert!(checked >= 3, "several on-screen rows have shortcuts, checked {checked}");
+}
