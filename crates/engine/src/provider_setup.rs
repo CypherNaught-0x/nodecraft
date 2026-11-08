@@ -60,6 +60,10 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "deepseek" => Some("deepseek"),
+        "mistral" => Some("mistral"),
+        "groq" => Some("groq"),
+        "xai" => Some("xai"),
         "deepgram" => Some("deepgram"),
         "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
@@ -299,6 +303,10 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(chat("openai", Endpoint::openai, env)?),
         "anthropic" => Arc::new(chat("anthropic", Endpoint::anthropic, env)?),
+        "deepseek" => Arc::new(chat("deepseek", Endpoint::deepseek, env)?),
+        "mistral" => Arc::new(chat("mistral", Endpoint::mistral, env)?),
+        "groq" => Arc::new(chat("groq", Endpoint::groq, env)?),
+        "xai" => Arc::new(chat("xai", Endpoint::xai, env)?),
         "azure-openai" => {
             let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {

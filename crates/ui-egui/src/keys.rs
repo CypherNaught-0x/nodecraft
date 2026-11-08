@@ -62,6 +62,10 @@ const PRESETS: &[&str] = &[
     "azure-openai",
     "bedrock",
     "anthropic",
+    "deepseek",
+    "mistral",
+    "groq",
+    "xai",
     "openrouter",
     "litellm",
     "fal",
@@ -464,12 +468,17 @@ impl KeysPanel {
             });
             ui.separator();
             ui.label(egui::RichText::new("Add or replace a key").color(t.text));
-            ui.horizontal_wrapped(|ui| {
-                for preset in PRESETS {
-                    if ui.selectable_label(self.account == *preset, *preset).clicked() {
-                        self.account = (*preset).to_owned();
+            // The quick picks wrap at a fixed width, not the panel's, so widening the panel never
+            // reflows them into fewer rows and shortens it under the pointer.
+            ui.scope(|ui| {
+                ui.set_max_width(ui.available_width().min(t.card_width * 1.25));
+                ui.horizontal_wrapped(|ui| {
+                    for preset in PRESETS {
+                        if ui.selectable_label(self.account == *preset, *preset).clicked() {
+                            self.account = (*preset).to_owned();
+                        }
                     }
-                }
+                });
             });
             if self.account == "runway" {
                 ui.hyperlink_to("Powered by Runway", "https://runwayml.com");

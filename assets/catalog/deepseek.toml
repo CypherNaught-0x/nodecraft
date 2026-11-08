@@ -1,0 +1,103 @@
+# DeepSeek Chat Completions (`providers::llm`, rig's DeepSeek dialect: earlier turns' reasoning
+# goes back as `reasoning_content`, as its thinking models want when a request carries tools), #1122.
+# Models, limits and prices: https://api-docs.deepseek.com/quick_start/pricing (read 2026-11-08).
+# Base URL (OpenAI format): https://api.deepseek.com, per https://api-docs.deepseek.com/ (read 2026-11-08).
+# Prices are per 1M tokens and change by time of day: peak hours (01:00-04:00 and 06:00-10:00 UTC,
+# Monday to Friday) cost twice the off-peak rate. A charge can't know when DeepSeek bills it, so
+# the quote and the usage rates are the peak ones: an upper bound.
+# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
+# the reply. Input tokens are billed on top and are NOT in the quote.
+# Both models think by default (thinking mode); sampling settings are ignored in that mode, so no
+# temperature is offered.
+
+# deepseek-flash (served by DeepSeek-V4.1-Flash-1017): peak 0.30 USD / 1M input (cache miss),
+# 1.20 USD / 1M output; context 1M; max output 384K.
+[[model]]
+id = "deepseek.flash"
+provider = "deepseek"
+provider_model = "deepseek-flash"
+label = "DeepSeek Flash"
+description = "Fast text reasoning with DeepSeek V4.1 Flash. Token pricing at the peak rate (off-peak hours cost half)."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 8
+quality = 3
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0012 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0003 USD", output = "0.0012 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000, max_output_tokens = 384000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "384000" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "deepseek.flash"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "384000" }
+default = { type = "unsigned", value = "8192" }
+
+# deepseek-v4-pro (DeepSeek-V4-Pro-0813): peak 1.32 USD / 1M input (cache miss), 3.96 USD / 1M
+# output; context 1M; max output 384K.
+[[model]]
+id = "deepseek.v4-pro"
+provider = "deepseek"
+provider_model = "deepseek-v4-pro"
+label = "DeepSeek V4 Pro"
+description = "Stronger text reasoning with DeepSeek V4 Pro. Token pricing at the peak rate (off-peak hours cost half)."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 20
+quality = 4
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.00396 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.00132 USD", output = "0.00396 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000, max_output_tokens = 384000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "384000" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "deepseek.v4-pro"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "384000" }
+default = { type = "unsigned", value = "8192" }

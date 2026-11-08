@@ -26,6 +26,8 @@ mod rig_chat;
 mod stream_tests;
 #[cfg(test)]
 mod turns_tests;
+#[cfg(test)]
+mod vendors_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
@@ -155,6 +157,26 @@ impl Endpoint {
     /// Any other OpenAI-compatible server (vLLM, a gateway).
     pub fn openai_compatible(id: &str, base_url: &str, key: Option<ApiKey>) -> Self {
         Self { id: id.into(), dialect: Dialect::OpenAi, base_url: base_url.trim_end_matches('/').into(), key }
+    }
+
+    /// DeepSeek's OpenAI-format API, in its own dialect (#1122).
+    pub fn deepseek(key: ApiKey) -> Self {
+        Self { id: openai::DEEPSEEK_ID.into(), dialect: Dialect::OpenAi, base_url: "https://api.deepseek.com".into(), key: Some(key) }
+    }
+
+    /// Mistral's API, in its own dialect (#1122).
+    pub fn mistral(key: ApiKey) -> Self {
+        Self { id: openai::MISTRAL_ID.into(), dialect: Dialect::OpenAi, base_url: "https://api.mistral.ai/v1".into(), key: Some(key) }
+    }
+
+    /// GroqCloud's OpenAI-compatible API, in its own dialect (#1122).
+    pub fn groq(key: ApiKey) -> Self {
+        Self { id: openai::GROQ_ID.into(), dialect: Dialect::OpenAi, base_url: "https://api.groq.com/openai/v1".into(), key: Some(key) }
+    }
+
+    /// xAI's Chat Completions API (Grok), in its own dialect (#1122).
+    pub fn xai(key: ApiKey) -> Self {
+        Self { id: openai::XAI_ID.into(), dialect: Dialect::OpenAi, base_url: "https://api.x.ai/v1".into(), key: Some(key) }
     }
 
     pub fn anthropic(key: ApiKey) -> Self {

@@ -1,0 +1,100 @@
+# Mistral Chat Completions (`providers::llm`, rig's Mistral dialect: its own content chunks), #1122.
+# https://mistral.ai/pricing (read 2026-11-08) lists API prices only in a table the page draws in
+# the browser; each model's own docs page states them, read 2026-11-08:
+# https://docs.mistral.ai/models/mistral-large-4-0 and https://docs.mistral.ai/models/mistral-small-4-0-26-03
+# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
+# the reply. Input tokens are billed on top and are NOT in the quote.
+# Neither page states a maximum output length; 32,768 is NodeCraft's cap on the request. Text
+# only for now: images and PDFs go as Mistral's own chunks, not yet checked against its API.
+
+# mistral-large-4: 0.70 USD / 1M input, 2.10 USD / 1M output; context 1M.
+[[model]]
+id = "mistral.large-4"
+provider = "mistral"
+provider_model = "mistral-large-4"
+label = "Mistral Large 4"
+description = "Mistral's general-purpose flagship for text. Token pricing."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 15
+quality = 4
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0021 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0007 USD", output = "0.0021 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "mistral.large-4"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "8192" }
+
+# mistral-small-2603 (Mistral Small 4): the page lists 0.15 USD and 0.60 USD per 1M tokens without
+# saying which is input and which output; the higher is taken for the quote and both rates, so
+# neither is under the bill. Context 256k.
+[[model]]
+id = "mistral.small-4"
+provider = "mistral"
+provider_model = "mistral-small-2603"
+label = "Mistral Small 4"
+description = "Efficient text, reasoning and coding in one model. Token pricing."
+# Rough latency hint for a short reply, not measured locally.
+latency_s = 8
+quality = 3
+pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0006 USD", count = "max_tokens" }
+# Charged at these per-1000-token rates once the reply reports its usage.
+usage = { input = "0.0006 USD", output = "0.0006 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 256000 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "8192" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "mistral.small-4"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+control = { type = "unsigned", min = "1", max = "32768" }
+default = { type = "unsigned", value = "8192" }
