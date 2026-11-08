@@ -374,16 +374,11 @@ impl NodeCraftApp {
         let Some(Phase::Confirm(picked)) = &self.web_files.phase else { return false };
         let name: String = picked.name.chars().filter(|c| !c.is_control()).take(80).collect();
         let t = *self.theme.tokens();
-        // A question (#1116): Enter discards and opens, Escape keeps this project, and neither
-        // reaches the canvas.
-        let keys = crate::floating::answer_keys(ctx);
-        let mut choice = if keys.escape {
-            Some(false)
-        } else if keys.enter {
-            Some(true)
-        } else {
-            None
-        };
+        // A question (#1116); neither key reaches the canvas.
+        // Escape keeps this project. Enter answers nothing: the only other action loses work, so
+        // it takes a click, as on the desktop.
+        let keys = crate::floating::answer_keys(ctx, egui::Id::new("nodecraft.web_files.confirm"), None, crate::floating::Keys::EscapeOnly);
+        let mut choice = keys.escape.then_some(false);
         let modal = crate::floating::question(ctx, egui::Id::new("nodecraft.web_files.confirm"), "Unsaved changes", &t).show(ctx, |ui| {
             ui.set_max_width(crate::floating::question_width(ctx, &t));
             ui.heading("Unsaved changes");

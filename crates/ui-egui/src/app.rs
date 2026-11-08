@@ -2928,10 +2928,39 @@ impl NodeCraftApp {
     }
 
     /// Which open tool panel this frame's Escape closes: the frontmost of Workflow fields and
-    /// Batch items, when nothing else owns the key (a question, a menu or popup, or a text field,
-    /// which Escape leaves first). The key is consumed, so the canvas doesn't also act on it.
+    /// Batch items, when nothing else owns the key. Every other Escape owner comes first: a
+    /// question, a popup, the quick-add palette or Turn into, a text field (Escape leaves it
+    /// first), the keyboard connect flow, Search, Discussions, the Tag filter, any drag or
+    /// gesture (card, box, wire, reorder, field, comment pin, minimap, a slider) and a browser
+    /// file read. The key is consumed, so the canvas doesn't also act on it.
     fn take_tool_escape(&self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
-        if blocked || self.text_focused || egui::Popup::is_any_open(ctx) {
+        #[cfg(any(test, target_arch = "wasm32"))]
+        let reading = self.web_drop.is_some();
+        #[cfg(not(any(test, target_arch = "wasm32")))]
+        let reading = false;
+        let owned = blocked
+            || self.text_focused
+            || canvas::text_input_focused(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || ctx.dragged_id().is_some()
+            || self.palette.is_some()
+            || self.turn_into.is_some()
+            || self.key_wiring.is_some()
+            || self.search.open
+            || self.comments.open
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || self.tag_filter.open
+            || self.drag.is_some()
+            || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.fields.drag.is_some()
+            || self.navigation.pointer_owned
+            || self.navigation.drag.is_some()
+            || self.drop_pointer_owned()
+            || reading;
+        if owned {
             return None;
         }
         let open = [

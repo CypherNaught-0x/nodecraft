@@ -212,3 +212,71 @@ fn dialogs1116_batch_items_is_a_panel_on_screen_and_escape_closes_only_it() {
     assert!(h.state().batch_review.is_none());
     assert!(h.state().selection.nodes().contains(&CARD), "Escape closed the review without reaching the canvas");
 }
+
+/// #1116: while Batch items is open, Escape still belongs to every other owner first: it closes
+/// an open quick-add palette, Turn into, Search or Discussions, or cancels a box select, and the
+/// review stays open. Only a further Escape closes the review.
+#[test]
+fn dialogs1116_escape_goes_to_other_owners_before_the_review() {
+    for owner in ["palette", "turn into", "search", "discussions", "box select"] {
+        let mut h = super::tests::harness();
+        h.run();
+        let node = *h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().keys().next().unwrap();
+        h.state_mut().batch_review = Some(super::batch_review::BatchReview::new(node));
+        h.run();
+        match owner {
+            "palette" => h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(150.0, 600.0))),
+            "turn into" => {
+                let menu = TurnInto::new(
+                    h.state().session.kinds(),
+                    Endpoint { node, port: "text".into() },
+                    nodecraft_types::PortType { modality: nodecraft_types::Modality::Text, many: false },
+                    Pos2::ZERO,
+                    Pos2::new(40.0, 80.0),
+                );
+                h.state_mut().turn_into = Some(menu);
+            }
+            "search" => h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F),
+            "discussions" => h.state_mut().comments.open = true,
+            _ => {
+                // Shift-drag on empty canvas, held while Escape is pressed.
+                let from = Pos2::new(150.0, 600.0);
+                h.hover_at(from);
+                h.run();
+                h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
+                h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
+                h.run();
+                h.hover_at(from + Vec2::new(60.0, 40.0));
+                h.run();
+            }
+        }
+        h.run();
+        let open = |h: &Harness<'static, NodeCraftApp>| match owner {
+            "palette" => h.state().palette.is_some(),
+            "turn into" => h.state().turn_into.is_some(),
+            "search" => h.state().search.open,
+            "discussions" => h.state().comments.open,
+            _ => h.state().marquee.as_ref().is_some_and(|m| !m.cancelled),
+        };
+        assert!(open(&h), "{owner} is open");
+        // Search's field has the focus; leave it first, as a person would.
+        if owner == "search" {
+            h.key_press(egui::Key::Escape);
+            h.run();
+        }
+        if open(&h) {
+            h.key_press(egui::Key::Escape);
+            h.run();
+        }
+        assert!(!open(&h), "Escape went to the {owner}");
+        assert!(h.state().batch_review.is_some(), "the review stays open while the {owner} takes Escape");
+        if owner == "box select" {
+            let at = Pos2::new(210.0, 640.0);
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+            h.run();
+        }
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().batch_review.is_none(), "a further Escape closes the review ({owner})");
+    }
+}

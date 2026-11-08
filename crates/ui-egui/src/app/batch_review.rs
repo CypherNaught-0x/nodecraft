@@ -6,9 +6,9 @@ use super::*;
 use nodecraft_graph::{Generation, ItemTag, Missing};
 use nodecraft_types::ItemId;
 
-/// Longest label shown for one item's value.
 /// The Batch items panel's id.
 pub(super) const BATCH_REVIEW_ID: &str = "nodecraft.batch_review";
+/// Longest label shown for one item's value.
 const MAX_LABEL_CHARS: usize = 40;
 /// Longest text shown for the item being reviewed; the rest is on the card.
 const MAX_TEXT_CHARS: usize = 4000;

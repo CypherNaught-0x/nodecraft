@@ -670,3 +670,26 @@ fn dialogs1116_rename_is_a_question_escape_cancels_enter_saves() {
     assert!(h.state().fields.rename.is_none());
     assert_eq!(canvas(&h).fields().get(&id).unwrap().title, "Hero shots");
 }
+
+/// #1116: Tab from the name to Cancel, then Enter cancels the rename instead of saving it.
+#[test]
+fn dialogs1116_enter_on_a_tabbed_to_cancel_cancels_the_rename() {
+    let mut h = harness();
+    h.run();
+    h.hover_at(Pos2::new(40.0, 180.0));
+    h.key_press(egui::Key::F);
+    h.run();
+    let id = only_field(&h);
+    let title = canvas(&h).fields().get(&id).unwrap().title.clone();
+    h.state_mut().fields.rename = Some((id, "Hero shots".into()));
+    h.run();
+    for _ in 0..2 {
+        h.key_press(egui::Key::Tab);
+        h.run();
+    }
+    assert!(h.get_by_label("Cancel rename").accesskit_node().is_focused(), "Tab reaches Cancel");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().fields.rename.is_none());
+    assert_eq!(canvas(&h).fields().get(&id).unwrap().title, title, "Enter on Cancel keeps the name");
+}

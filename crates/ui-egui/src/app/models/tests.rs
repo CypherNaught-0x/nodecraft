@@ -326,3 +326,46 @@ fn dialogs1116_preview_changed_is_a_question_enter_refreshes_escape_cancels() {
         }
     }
 }
+
+/// #1116: Enter held to choose a model in the picker doesn't also apply it; key repeats never
+/// answer the review. After a release, a fresh Enter applies.
+#[test]
+fn dialogs1116_a_held_enter_from_the_picker_does_not_apply_the_review() {
+    let key = |pressed: bool, repeat: bool| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat, modifiers: egui::Modifiers::NONE };
+    let mut h = small();
+    let before = h.state().session.document().clone();
+    open_small(&mut h);
+    h.event(egui::Event::Text(DESTINATION.into()));
+    h.run();
+    h.event(key(true, false));
+    h.run();
+    assert!(matches!(h.state().model_choice.as_ref().unwrap().step, Step::Review(_)));
+    for _ in 0..3 {
+        h.event(key(true, true));
+        h.run();
+    }
+    assert!(matches!(h.state().model_choice.as_ref().unwrap().step, Step::Review(_)), "a held Enter answers nothing");
+    assert_eq!(h.state().session.document(), &before);
+    h.event(key(false, false));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert_ne!(h.state().session.document(), &before, "a fresh Enter applies");
+}
+
+/// #1116: with the review's Cancel focused, Enter presses Cancel rather than applying.
+#[test]
+fn dialogs1116_enter_on_a_focused_cancel_cancels() {
+    let mut h = small();
+    let before = h.state().session.document().clone();
+    open_small(&mut h);
+    choose(&mut h);
+    h.run();
+    h.get_by_label("Cancel model change").focus();
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert_eq!(h.state().session.document(), &before, "Enter on Cancel cancels");
+}

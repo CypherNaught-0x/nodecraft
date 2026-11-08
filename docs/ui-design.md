@@ -707,12 +707,19 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   (`theme::panel_frame`), no wider or taller than the window less its margins. **Enter** takes its
   primary action and **Escape** cancels; it reads both with `floating::answer_keys` before it is
   drawn, consuming them, and is drawn before any canvas handler, so neither key also reaches the
-  canvas. Clicking the dimmed backdrop cancels too. Screen readers see it as a `Dialog` named by
-  its title.
+  canvas. Only a fresh press counts: key repeats never answer, and Enter answers only after it has
+  been released since the question opened (an Enter held in the step before can't also answer
+  it). With one of its buttons focused (Tab), Enter presses that button, so a focused Cancel
+  cancels. A question whose only action loses work answers Enter with nothing (browser Unsaved
+  changes: **Discard and open** takes a click). Clicking the dimmed backdrop cancels too. Screen
+  readers see it as a `Dialog` named by its title.
 - A **tool** the person works alongside is a floating panel (`floating::panel`); the fixed Shared
   parameters panel is `floating::pinned`. Escape closes the frontmost of Workflow fields and Batch
-  items, taken before the canvas reads it, unless a question, a popup or a text field owns it
-  (Escape first leaves a text field). Choose a model and Project files close on Escape too.
+  items, taken before the canvas reads it, but only when no other Escape owner is active: a
+  question, a popup, quick-add or Turn into, a text field (Escape leaves it first), the keyboard
+  connect flow, Search, Discussions, the Tag filter, any drag or gesture, or a browser file read
+  each take Escape first and the tool stays open. Choose a model and Project files close on
+  Escape too.
 - Nothing uses a raw `egui::Window`: `floating.rs` is the only place that builds one (inside
   `panel` and `pinned`), and `floating::tests::no_raw_windows_outside_floating` fails on a new one
   elsewhere in non-test code.
@@ -726,7 +733,9 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
-| Model preview changed, Review model change, Rename field, Unsaved changes (browser), and the other questions (recovery, run quote, export, …) | question (modal), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
+| Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
+| Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
+| Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
 | Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
@@ -766,7 +775,7 @@ and no crossing controls inside their `Dialog` node.
 | Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
 | Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
 | Review model change, Model preview changed | the model picker, after a choice | question | `models::tests` (with the question check; at 640 × 400, Enter applies or refreshes, Escape cancels) |
-| Unsaved changes (browser) | File, Open… over unsaved changes | question | `web_files::tests` (on screen at 640 × 400, Enter opens, Escape keeps the project) |
+| Unsaved changes (browser) | File, Open… over unsaved changes | question | `web_files::tests` (on screen at 640 × 400, Escape keeps the project, Enter does nothing) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |

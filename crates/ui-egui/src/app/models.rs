@@ -208,7 +208,7 @@ impl NodeCraftApp {
         let mut apply = false;
         if choice.stale {
             // A question (#1116): Enter refreshes, Escape cancels, and neither reaches the canvas.
-            let keys = crate::floating::answer_keys(ui.ctx());
+            let keys = crate::floating::answer_keys(ui.ctx(), egui::Id::new("nodecraft.model_stale"), None, crate::floating::Keys::EnterAndEscape);
             refresh |= keys.enter;
             close |= keys.escape;
             let modal = crate::floating::question(ui.ctx(), egui::Id::new("nodecraft.model_stale"), "Model preview changed", &t).show(ui.ctx(), |ui| {
@@ -281,7 +281,7 @@ impl NodeCraftApp {
                 },
                 Step::Review(preview) => {
                     // A question (#1116): Enter applies (unless edits are unsaved), Escape cancels.
-                    let keys = crate::floating::answer_keys(ui.ctx());
+                    let keys = crate::floating::answer_keys(ui.ctx(), egui::Id::new("nodecraft.model_review"), None, crate::floating::Keys::EnterAndEscape);
                     apply |= keys.enter && !dirty;
                     close |= keys.escape;
                     let width = crate::floating::question_width(ui.ctx(), &t);

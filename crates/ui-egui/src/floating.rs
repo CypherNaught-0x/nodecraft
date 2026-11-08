@@ -254,17 +254,68 @@ pub fn question_height(ctx: &Context, t: &Tokens) -> f32 {
     room.max(t.navigation_margin)
 }
 
-/// A question's keys this frame, consumed so nothing else acts on them: Enter (the primary
-/// action) and Escape (cancel), each without modifiers.
+/// A question's keys this frame, consumed so nothing else acts on them: a fresh press of Enter
+/// (the primary action) and of Escape (cancel), each without modifiers.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Answer {
     pub enter: bool,
     pub escape: bool,
 }
 
-/// Takes this frame's Enter and Escape for an open question; see [`question`].
-pub fn answer_keys(ctx: &Context) -> Answer {
-    ctx.input_mut(|i| Answer { enter: i.consume_key(egui::Modifiers::NONE, egui::Key::Enter), escape: i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) })
+/// Which keys a question answers, for [`answer_keys`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keys {
+    /// Enter takes the primary action and Escape cancels.
+    EnterAndEscape,
+    /// Escape cancels; Enter is left alone (a question whose only action loses work).
+    EscapeOnly,
+}
+
+/// Whether Enter may answer a question yet, and the pass it was last asked in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EnterArmed {
+    pass: u64,
+    armed: bool,
+}
+
+/// Takes this frame's Enter and Escape for the open question `id`; see [`question`]. Call it
+/// before showing the question, every pass it is shown.
+///
+/// Only a fresh press counts: a key repeat never answers, and Enter answers only once it has been
+/// up since the question opened, so the Enter held to choose something in the step before
+/// can't also answer this. While one of the question's own controls other than `field` (its text
+/// field, if it has one) has the keyboard focus, Enter is left to that control: a focused Cancel
+/// cancels. Repeats of a key the question takes are consumed too, so none reaches the canvas.
+pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answer {
+    let pass = ctx.cumulative_pass_nr();
+    let state_id = id.with("nodecraft.question.enter");
+    let held = ctx.input(|i| i.key_down(egui::Key::Enter));
+    let last = ctx.data(|data| data.get_temp::<EnterArmed>(state_id)).filter(|last| last.pass.saturating_add(1) >= pass);
+    // Asked in the previous pass and armed then: a press now answers.
+    let ready = last.is_some_and(|last| last.armed);
+    ctx.data_mut(|data| data.insert_temp(state_id, EnterArmed { pass, armed: last.is_some() && (ready || !held) }));
+    let layer = egui::LayerId::new(egui::Order::Foreground, id);
+    let own_control = ctx
+        .memory(|m| m.focused())
+        .filter(|focused| Some(*focused) != field)
+        .and_then(|focused| ctx.read_response(focused))
+        .is_some_and(|response| response.layer_id == layer);
+    let take_enter = keys == Keys::EnterAndEscape && !own_control;
+    ctx.input_mut(|i| {
+        let mut answer = Answer::default();
+        i.events.retain(|event| match event {
+            egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat, modifiers, .. } if modifiers.is_none() => {
+                answer.escape |= !repeat;
+                false
+            }
+            egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat, modifiers, .. } if take_enter && modifiers.is_none() => {
+                answer.enter |= !repeat && ready;
+                false
+            }
+            _ => true,
+        });
+        answer
+    })
 }
 
 /// A fixed tool pinned to the panel area's right edge, `down` points below its top (the Shared
@@ -412,6 +463,57 @@ fn header(rect: Rect, step: f32) -> Rect {
 mod tests {
     use super::*;
 
+    /// The 1-based lines of `text` that build or name an `egui::Window`, outside its
+    /// `#[cfg(test)]` modules (skipped by brace depth, so code after them is still read):
+    /// `Window::new` called or passed (`.map(egui::Window::new)`), any `egui::Window` path, and
+    /// `Window` brought in by a `use egui…` (an alias included).
+    fn raw_window_lines(text: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut test_attr = false;
+        let mut skip_depth: Option<i64> = None;
+        let mut in_use = false;
+        for (n, line) in text.lines().enumerate() {
+            let trimmed = line.trim();
+            if let Some(depth) = &mut skip_depth {
+                *depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+                if *depth <= 0 {
+                    skip_depth = None;
+                }
+                continue;
+            }
+            if trimmed == "#[cfg(test)]" {
+                test_attr = true;
+                continue;
+            }
+            if test_attr && trimmed.contains("mod ") && trimmed.ends_with('{') {
+                test_attr = false;
+                skip_depth = Some(1);
+                continue;
+            }
+            if !trimmed.is_empty() {
+                test_attr = false;
+            }
+            let code = trimmed.split("//").next().unwrap_or_default();
+            if code.starts_with("use egui") || code.starts_with("pub use egui") || code.starts_with("pub(crate) use egui") {
+                in_use = true;
+            }
+            let word = code.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == "Window");
+            if code.contains("Window::new") || code.contains("egui::Window") || (in_use && word) {
+                found.push(n + 1);
+            }
+            if in_use && code.contains(';') {
+                in_use = false;
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_raw_window_scan_finds_every_spelling_and_skips_only_test_modules() {
+        let text = "use egui::{Area, Window as Win};\nfn a() { let _ = names.map(egui::Window::new); }\nfn b() -> web_sys::Window { todo }\n#[cfg(test)]\nmod tests {\n    fn t() { egui::Window::new(\"x\"); }\n}\nfn c() { Win::new(\"y\"); egui::Window::new(\"z\"); }\nuse egui::{\n    Pos2,\n    Window,\n};\n";
+        assert_eq!(raw_window_lines(text), vec![1, 2, 8, 11]);
+    }
+
     /// #1116: a question is a `question` (a modal) and a tool a `panel` (or `pinned`); nothing
     /// outside this module builds a raw `egui::Window`, which would skip the panel area's
     /// clamping, cascade and stacking. Test code may still build fixtures.
@@ -437,11 +539,7 @@ mod tests {
                     continue;
                 }
                 let text = std::fs::read_to_string(&path).unwrap();
-                for (n, line) in crate::theme::non_test_code(&text).lines().enumerate() {
-                    if line.contains("Window::new(") {
-                        found.push(format!("{}:{}", path.display(), n + 1));
-                    }
-                }
+                found.extend(raw_window_lines(&text).into_iter().map(|n| format!("{}:{n}", path.display())));
             }
         }
         assert!(found.is_empty(), "use floating::question or floating::panel, not egui::Window: {found:#?}");

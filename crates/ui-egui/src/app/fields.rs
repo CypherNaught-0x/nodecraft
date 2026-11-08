@@ -442,14 +442,15 @@ impl NodeCraftApp {
     pub(super) fn rename_window(&mut self, ctx: &egui::Context) -> bool {
         let Some((id, mut title)) = self.fields.rename.take() else { return false };
         let t = *self.theme.tokens();
-        let keys = crate::floating::answer_keys(ctx);
+        let field = egui::Id::new("nodecraft.rename_field.title");
+        let keys = crate::floating::answer_keys(ctx, egui::Id::new("nodecraft.rename_field"), Some(field), crate::floating::Keys::EnterAndEscape);
         let mut keep = !keys.escape;
         let mut save = keys.enter;
         let modal = crate::floating::question(ctx, egui::Id::new("nodecraft.rename_field"), "Rename field", &t).show(ctx, |ui| {
             ui.set_max_width(crate::floating::question_width(ctx, &t));
             ui.heading("Rename field");
             let label = ui.label("Field name");
-            let edit = ui.add(egui::TextEdit::singleline(&mut title).char_limit(4096)).labelled_by(label.id);
+            let edit = ui.add(egui::TextEdit::singleline(&mut title).id(field).char_limit(4096)).labelled_by(label.id);
             if !edit.has_focus() && !edit.lost_focus() && ctx.memory(|m| m.focused().is_none()) {
                 edit.request_focus();
             }

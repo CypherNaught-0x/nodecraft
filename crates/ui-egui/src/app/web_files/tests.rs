@@ -288,8 +288,8 @@ fn a_save_made_by_another_caller_still_reaches_the_file() {
     assert!(!app.web_files.unsaved.get());
 }
 
-/// Runs one pass at 640 × 400 with `keys` pressed, and says whether Escape or Enter was still
-/// there for anything drawn after the question.
+/// Runs one pass at 640 × 400 with `keys` pressed, and says whether Escape was still there for
+/// anything drawn after the question.
 fn small_frame(app: &mut NodeCraftApp, ctx: &egui::Context, keys: &[egui::Key]) -> bool {
     let events =
         keys.iter().map(|key| egui::Event::Key { key: *key, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE }).collect();
@@ -297,43 +297,39 @@ fn small_frame(app: &mut NodeCraftApp, ctx: &egui::Context, keys: &[egui::Key]) 
     let mut left = false;
     let mut output = ctx.run_ui(input, |ui| {
         app.web_files_frame(ui.ctx());
-        left = ui.input(|i| i.key_pressed(egui::Key::Escape) || i.key_pressed(egui::Key::Enter));
+        left = ui.input(|i| i.key_pressed(egui::Key::Escape));
     });
     output.textures_delta.clear();
     left
 }
 
 /// #1116: Unsaved changes is a question (a modal) on the screen at 640 × 400: Escape keeps the
-/// project and Enter discards and opens, and neither key is left for the canvas.
+/// project and isn't left for the canvas; Enter answers nothing, since its only other action
+/// loses work (as on the desktop).
 #[test]
-fn dialogs1116_unsaved_changes_is_a_question_escape_keeps_enter_opens() {
+fn dialogs1116_unsaved_changes_is_a_question_escape_keeps_enter_does_nothing() {
     let ctx = egui::Context::default();
     ctx.enable_accesskit();
     let (mut source, script) = app();
     let (_, _, bytes) = save_as(&mut source, &script, &ctx, "forest.ncraft", None);
-    let saved = source.session.document().clone();
 
     let (mut app, script) = app();
     add_text(&mut app, 50);
     let edited = app.session.document().clone();
     let picked = || Picked { name: "forest.ncraft".into(), bytes: bytes.clone(), target: None };
-    for key in [egui::Key::Escape, egui::Key::Enter] {
-        script.borrow_mut().opens.push_back(Ok(Some(picked())));
-        frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
-        assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))));
-        for _ in 0..3 {
-            assert!(!small_frame(&mut app, &ctx, &[]));
-        }
-        let id = egui::Id::new("nodecraft.web_files.confirm");
-        let rect = egui::AreaState::load(&ctx, id).map(|state| state.rect()).unwrap();
-        let screen = ctx.content_rect();
-        assert!(rect.is_positive() && screen.contains_rect(rect), "{rect:?} is on the screen {screen:?}");
-        assert!(!small_frame(&mut app, &ctx, &[key]), "{key:?} is the question's");
-        assert!(!app.web_files.busy());
-        if key == egui::Key::Escape {
-            assert_eq!(app.session.document(), &edited, "Escape keeps the edits");
-        } else {
-            assert_eq!(app.session.document(), &saved, "Enter discards and opens the picked project");
-        }
+    script.borrow_mut().opens.push_back(Ok(Some(picked())));
+    frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
+    assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))));
+    for _ in 0..3 {
+        small_frame(&mut app, &ctx, &[]);
     }
+    let rect = egui::AreaState::load(&ctx, egui::Id::new("nodecraft.web_files.confirm")).map(|state| state.rect()).unwrap();
+    let screen = ctx.content_rect();
+    assert!(rect.is_positive() && screen.contains_rect(rect), "{rect:?} is on the screen {screen:?}");
+    small_frame(&mut app, &ctx, &[egui::Key::Enter]);
+    assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))), "Enter discards nothing");
+    assert_eq!(app.session.document(), &edited);
+    assert!(!small_frame(&mut app, &ctx, &[egui::Key::Escape]), "Escape is the question's");
+    assert!(!app.web_files.busy());
+    assert_eq!(app.session.document(), &edited, "Escape keeps the edits");
 }
