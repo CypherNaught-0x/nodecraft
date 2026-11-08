@@ -84,7 +84,7 @@ fn typing_at_lists_text_cards_and_enter_inserts_the_mention() {
         h.run();
     }
     assert!(h.query_by_label("Reads @Story").is_some(), "the hint names what the prompt reads");
-    assert!(h.query_by_label_contains("Retell @Story briefly").is_some(), "the preview shows the title, not the id");
+    assert!(h.query_all_by_label_contains("Retell @Story briefly").next().is_some(), "the preview shows the title, not the id");
 }
 
 #[test]

@@ -30,7 +30,7 @@ fn action_cards_show_their_generated_controls() {
     // Inspect the next rendered frame; this test does not wait for asynchronous live results.
     h.step();
     for label in ["Blur", "Color grade", "Split text"] {
-        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
     }
     assert!(h.query_by_role_and_label(egui::accesskit::Role::Slider, "Brightness").is_some(), "a slider from the schema");
     assert!(h.query_by_role_and_label(egui::accesskit::Role::TextInput, "Brightness").is_some(), "its exact value entry");
@@ -81,7 +81,7 @@ fn video_action_cards_show_their_generated_controls() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.step();
     for label in ["Trim video", "Change speed", "Stitch videos", "Replace sound", "Between videos"] {
-        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
     }
     for label in ["Start (s)", "Speed (×)", "New sound's volume"] {
         assert!(h.query_by_role_and_label(egui::accesskit::Role::Slider, label).is_some(), "{label}");
@@ -116,7 +116,7 @@ fn frame_action_cards_show_their_generated_controls() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.step();
     for label in ["Extract frames", "Contact sheet", "Long exposure", "Reverse video", "Pan and zoom", "How many", "Columns", "Frames blended"] {
-        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
     }
     assert!(h.query_by_role_and_label(egui::accesskit::Role::Slider, "Zoom at the end (×)").is_some());
     // The single frame's time shows only once one frame is chosen.
@@ -149,7 +149,7 @@ fn look_action_cards_show_their_generated_controls() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.step();
     for label in ["Grade video", "Video effect", "Key out a colour", "Watermark video", "Duplicate video", "Copies"] {
-        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
     }
     for label in ["Saturation", "Similarity"] {
         assert!(h.query_by_role_and_label(egui::accesskit::Role::Slider, label).is_some(), "{label}");
@@ -181,7 +181,7 @@ fn split_and_extract_cards_show_their_generated_controls() {
     h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
     h.step();
     for label in ["Split video", "Extract sound", "Parts"] {
-        assert!(h.query_by_label_contains(label).is_some(), "{label}");
+        assert!(h.query_all_by_label_contains(label).next().is_some(), "{label}");
     }
     // The part length and the scene settings show only once the split asks for them.
     assert!(h.query_by_label_contains("Part length").is_none());

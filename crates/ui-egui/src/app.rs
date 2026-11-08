@@ -376,6 +376,9 @@ mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
 mod key_endpoints;
+mod key_wiring;
+#[cfg(test)]
+mod key_wiring_tests;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -445,6 +448,7 @@ mod web_clipboard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
 mod wire_body;
+mod wire_rules;
 #[cfg(test)]
 mod wiring951_tests;
 pub(crate) use export::card_unavailable as card_export_unavailable;
@@ -517,6 +521,10 @@ pub struct NodeCraftApp {
     painted: BTreeMap<NodeId, Rect>,
     input_ports: input_ports::Cache,
     wiring: Option<Wiring>,
+    /// A connection started from the keyboard (#1109), separate from a pointer drag.
+    key_wiring: Option<key_wiring::KeyWiring>,
+    /// Port handles drawn this frame, and last frame's, which the keyboard reads first.
+    port_widgets: key_wiring::PortWidgets,
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
@@ -1247,6 +1255,8 @@ impl NodeCraftApp {
             painted: BTreeMap::new(),
             input_ports: input_ports::Cache::default(),
             wiring: None,
+            key_wiring: None,
+            port_widgets: Default::default(),
             reordering: None,
             palette: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1560,6 +1570,27 @@ impl NodeCraftApp {
         if self.files.owns_input() {
             self.clear_file_input(ui.ctx());
         }
+        // The keyboard connect flow (#1109) reads a focused port's keys before any other canvas
+        // handler, so its Enter, Tab, arrows and Escape act once and reach nothing else.
+        let key_wiring_live = !model_blocks
+            && !file_owns_input
+            && !file_menu_owns_input
+            && !recovery_owns_input
+            && !bulk_blocks
+            && !comments_blocks
+            && !search_blocks
+            && !tag_blocks
+            && !drop_blocks
+            && !self.drop_pointer_owned()
+            && !canvas::text_input_focused(ui.ctx())
+            && !egui::Popup::is_any_open(ui.ctx())
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && !self.keys.open
+            && !self.browser_providers.as_ref().is_some_and(|providers| providers.open);
+        self.key_wiring_keys(ui.ctx(), key_wiring_live);
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !model_blocks
@@ -2032,6 +2063,7 @@ impl NodeCraftApp {
                         mesh,
                         outdated,
                         export_folder: export_folders.get(&node.id).cloned(),
+                        links: Some(card::PortLinks { canvas, kinds }),
                         variations: card::generate::Variations {
                             cards: canvas.variation_cards(),
                             alike: nodecraft_exec::variations::requested(node) > 1
@@ -2345,6 +2377,7 @@ impl NodeCraftApp {
                         pan += r.drag_delta() * self.view.zoom;
                     }
                     for (side, port, r) in &result.ports {
+                        self.port_widgets.push(r.id, *side, Endpoint { node: node.id, port: port.clone() });
                         if overlay_blocks {
                             continue;
                         }
@@ -2354,46 +2387,13 @@ impl NodeCraftApp {
                         if !r.drag_started_by(egui::PointerButton::Primary) {
                             continue;
                         }
-                        let mut proposed = match side {
-                            Side::Output => node.outputs.iter().find(|p| p.name == *port).map(|p| Wiring {
-                                anchor: Endpoint { node: node.id, port: port.clone() },
-                                side: Side::Output,
-                                port_type: p.port_type,
-                                moving: None,
-                            }),
-                            // Grabbing a connected input picks up its last noodle to reroute it.
-                            Side::Input => {
-                                let to = Endpoint { node: node.id, port: port.clone() };
-                                match noodle::into_port(canvas, &to).last() {
-                                    Some(edge) => canvas.nodes().get(&edge.from.node).and_then(|source| {
-                                        source.outputs.iter().find(|p| p.name == edge.from.port).map(|source| Wiring {
-                                            anchor: edge.from.clone(),
-                                            side: Side::Output,
-                                            port_type: source.port_type,
-                                            moving: Some(edge.id),
-                                        })
-                                    }),
-                                    None => self.input_ports.get(node).iter().find(|p| p.name == *port).map(|input| Wiring {
-                                        anchor: to,
-                                        side: Side::Input,
-                                        port_type: input.port_type,
-                                        moving: None,
-                                    }),
-                                }
-                            }
-                        };
-                        if let Some(wiring) = &mut proposed
-                            && wiring.side == Side::Output
-                        {
-                            match nodecraft_engine::turn_into_cmds::output_type(canvas, self.session.kinds(), &wiring.anchor) {
-                                Ok(port_type) => wiring.port_type = port_type,
-                                Err(error) => {
-                                    self.notice = Some(error.message);
-                                    proposed = None;
-                                }
+                        match wire_rules::begin(canvas, self.session.kinds(), &self.input_ports, node, *side, port) {
+                            Ok(proposed) => self.wiring = proposed,
+                            Err(message) => {
+                                self.notice = Some(message);
+                                self.wiring = None;
                             }
                         }
-                        self.wiring = proposed;
                     }
                     // A Choice popup can close while producing its parameter intent over the
                     // overlay. Preserve its ownership from frame start, without admitting moves.
@@ -2459,7 +2459,8 @@ impl NodeCraftApp {
             {
                 self.wiring = None;
             }
-            let moving = self.wiring.as_ref().and_then(|w| w.moving);
+            let moving = self.wiring.as_ref().and_then(|w| w.moving).or_else(|| self.key_wiring_moving());
+            self.edge_accessibility(ui.ctx(), canvas, &curves, viewport.min);
             // Widened by the halo so noodles just outside the edge still paint their stroke.
             let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
             // Diagnostic-only: do not read options or flatten again while capture is off.
@@ -2514,6 +2515,7 @@ impl NodeCraftApp {
             } else {
                 self.reordering = None;
             }
+            self.key_wiring_paint(ui, canvas, t);
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
@@ -3474,31 +3476,8 @@ impl NodeCraftApp {
         else {
             return (None, None, None);
         };
-        // Nodes that already feed the source: connecting into any of them would close a loop.
-        let feeding = selection::upstream(canvas, &[wiring.anchor.node].into_iter().collect());
-        // Inputs this output already feeds (other than the noodle being moved), built once so
-        // each candidate input is a set lookup rather than a scan of every edge.
-        let fed: std::collections::BTreeSet<(NodeId, &str)> =
-            canvas.edges().values().filter(|e| e.from == wiring.anchor && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
-        let accepts = |node: &Node, input: &nodecraft_graph::Port| -> Result<(), String> {
-            if node.id == wiring.anchor.node {
-                Err("A node can't connect to itself.".into())
-            } else if !noodle::compatible(wiring.port_type, input.port_type) {
-                Err(if wiring.port_type.modality == input.port_type.modality {
-                    "A list output needs a list input.".into()
-                } else {
-                    let mut from = noodle::modality_phrase(wiring.port_type.modality).chars();
-                    let from: String = from.next().map(|c| c.to_uppercase().chain(from).collect()).unwrap_or_default();
-                    format!("{from} output can't connect to {} input.", noodle::modality_phrase(input.port_type.modality))
-                })
-            } else if feeding.contains(&node.id) {
-                Err("That connection would create a loop.".into())
-            } else if fed.contains(&(node.id, input.name.as_str())) {
-                Err("These ports are already connected.".into())
-            } else {
-                Ok(())
-            }
-        };
+        let rules = wire_rules::IntoInputs::new(canvas, wiring);
+        let accepts = |node: &Node, input: &nodecraft_graph::Port| rules.accepts(node, input);
         let world = self.view.to_world(origin, pointer);
         let reach = card::PORT_HIT / self.view.zoom + t.port_radius;
         let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
@@ -3559,30 +3538,9 @@ impl NodeCraftApp {
         if let Err(message) = accepts(node, input) {
             return (None, Some(message), None);
         }
-        let to = Endpoint { node: node.id, port: input.name.clone() };
-        let occupants: Vec<_> = noodle::into_port(canvas, &to).into_iter().filter(|e| Some(e.id) != wiring.moving).collect();
-        if wiring.moving.is_some_and(|id| canvas.edges().get(&id).is_some_and(|e| e.to == to)) {
-            return (None, None, None);
-        }
-        let mut replace: Vec<EdgeId> = wiring.moving.into_iter().collect();
-        let order = if input.port_type.many {
-            match noodle::next_order(canvas, &to, wiring.moving) {
-                Some(order) => order,
-                None => return (None, Some("This input can't take more connections.".into()), None),
-            }
-        } else {
-            // A single input swaps its current noodle for the new one, in the same undo step.
-            replace.extend(occupants.first().map(|e| e.id));
-            0
-        };
-        let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.anchor, &to, self.session.revision())) else {
-            return (None, Some("Couldn't allocate a connection id; try again.".into()), None);
-        };
-        let edge = json!({"id": id, "from": wiring.anchor, "to": to, "order": order});
-        if replace.is_empty() {
-            (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None, None)
-        } else {
-            (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None, None)
+        match self.connect_into(canvas, wiring, node, input) {
+            Ok(command) => (command, None, None),
+            Err(message) => (None, Some(message), None),
         }
     }
 }

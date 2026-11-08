@@ -324,7 +324,7 @@ fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card()
     let card = nodes(&h).into_iter().find(|n| n.kind == nodecraft_nodes::comfy_workflow::ID).expect("the workflow's card");
     assert_eq!(card.title, "fox");
     h.run();
-    h.get_by_label_contains("fox");
+    assert!(h.query_all_by_label_contains("fox").next().is_some());
 }
 
 #[test]

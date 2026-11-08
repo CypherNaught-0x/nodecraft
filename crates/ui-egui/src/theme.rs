@@ -182,6 +182,9 @@ pub struct Tokens {
     /// The ring around inputs that accept the noodle being dragged: gap outside the port, width.
     pub drop_ring_gap: f32,
     pub drop_ring_width: f32,
+    /// The `accent` ring around a port with keyboard focus, which is also where a keyboard
+    /// connection would land (#1109), in screen points.
+    pub port_focus_width: f32,
     /// The prompt composer on a generation card (#83): its fill, and the submit arrow's size.
     pub prompt_fill: Color32,
     pub submit_size: f32,
@@ -366,6 +369,7 @@ pub const DARK: Tokens = Tokens {
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
+    port_focus_width: 2.5,
     prompt_fill: Color32::from_rgb(0x1a, 0x1a, 0x1d),
     submit_size: 28.0,
     mention_fill: Color32::from_rgb(0x23, 0x36, 0x2d),
