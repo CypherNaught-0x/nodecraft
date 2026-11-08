@@ -1354,6 +1354,6 @@ fn project_files_keeps_its_layout_at_both_sizes() {
             Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
         settle(&mut h);
         h.run();
-        crate::app::panel_check::check_window(&h, egui::Id::new("project_files407"), &format!("Project files at {size:?}"));
+        crate::app::panel_check::check_open_panels(&h, &format!("Project files at {size:?}"));
     }
 }

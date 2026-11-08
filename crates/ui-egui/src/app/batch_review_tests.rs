@@ -161,7 +161,7 @@ fn review_items_steps_through_each_item_and_the_grid_picks_one() {
     click(&mut h, "Review items…");
     assert!(h.query_by_label("Item 1 of 4").is_some());
     assert!(h.query_by_label("Subjects: a fox").is_some() && h.query_by_label("Times: at dawn").is_some());
-    crate::app::panel_check::check_window(&h, egui::Id::new("nodecraft.batch_review"), "Batch items");
+    crate::app::panel_check::check_open_panels(&h, "Batch items");
     // Built once, then reused frame after frame.
     let built = h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap();
 
@@ -193,4 +193,22 @@ fn review_items_steps_through_each_item_and_the_grid_picks_one() {
         .unwrap();
     h.run();
     assert!(!std::sync::Arc::ptr_eq(&built, &h.state().batch_review.as_ref().and_then(|r| r.cached()).unwrap()), "rebuilt");
+}
+
+/// #1116: Batch items is a tool, a floating review panel kept in the panel area at 640 × 400;
+/// Escape closes it and doesn't also clear the canvas selection.
+#[test]
+fn dialogs1116_batch_items_is_a_panel_on_screen_and_escape_closes_only_it() {
+    let (session, canvas) = project(&CROSS, Some(3));
+    let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+    app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
+    app.selection.only(CARD);
+    let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(160).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run_steps(6);
+    assert!(h.query_by_label("Item 1 of 4").is_some());
+    crate::app::panel_check::check_open_panels(&h, "Batch items at 640 × 400");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().batch_review.is_none());
+    assert!(h.state().selection.nodes().contains(&CARD), "Escape closed the review without reaching the canvas");
 }

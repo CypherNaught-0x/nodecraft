@@ -668,7 +668,7 @@ impl NodeCraftApp {
         if was_open {
             self.files.own_frame(ui.ctx());
         }
-        if was_open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+        if was_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.files.menu_open = false;
         }
         let mut action = None;
@@ -681,77 +681,87 @@ impl NodeCraftApp {
         let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
         let importing = self.folder_import_busy();
-        crate::floating::on_screen(egui::Window::new("Project files"), ui.ctx(), Some(t.card_width), t)
-            .id(egui::Id::new("project_files407"))
-            .open(&mut self.files.menu_open)
-            .collapsible(false)
-            .resizable(false)
-            .default_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 7.0))
-            .max_height(ui.max_rect().height() * 0.8)
-            .vscroll(true)
-            .show(ui.ctx(), |ui| {
-                if let Some(message) = &unavailable {
-                    ui.label(egui::RichText::new(message).color(t.danger));
-                    if owner_busy {
-                        focus_owner = ui
-                            .add_enabled(self.session.enabled("file.focus_owner", &json!({})).is_ok(), egui::Button::new("Focus the other window"))
-                            .on_disabled_hover_text("Switch to the other NodeCraft window with your window switcher. Its File menu can open or save projects.")
-                            .clicked();
+        // A menu-like tool: a floating panel opening under the File button (#1116), clamped
+        // into the panel area like every panel. #1123 makes it a menu. Built only while open: a
+        // panel built is a panel shown.
+        if self.files.menu_open {
+            let below = ui
+                .ctx()
+                .memory(|m| m.area_rect(egui::Id::new("file_menu407")))
+                .map_or(ui.max_rect().top() + t.card_padding * 7.0, |button| button.bottom() + t.navigation_gap);
+            // Short enough to open below the button rather than be clamped up over it.
+            let room = crate::floating::bounds(ui.ctx(), t).area.bottom() - below - t.navigation_margin;
+            crate::floating::panel(ui.ctx(), "Project files", egui::Id::new("project_files407"), crate::floating::Home::LeftBelow(below), t)
+                .open(&mut self.files.menu_open)
+                .default_width(t.card_width)
+                .max_height(room.max(t.panel_cascade * 2.0))
+                .vscroll(true)
+                .show(ui.ctx(), |ui| {
+                    if let Some(message) = &unavailable {
+                        ui.label(egui::RichText::new(message).color(t.danger));
+                        if owner_busy {
+                            focus_owner = ui
+                                .add_enabled(self.session.enabled("file.focus_owner", &json!({})).is_ok(), egui::Button::new("Focus the other window"))
+                                .on_disabled_hover_text(
+                                    "Switch to the other NodeCraft window with your window switcher. Its File menu can open or save projects.",
+                                )
+                                .clicked();
+                        }
+                        ui.separator();
+                    }
+                    for (id, label, icon) in [
+                        ("file.open", "Open project…", crate::icons::Icon::Open),
+                        ("file.save", "Save project", crate::icons::Icon::Save),
+                        ("file.save_as", "Save project as…", crate::icons::Icon::Save),
+                    ] {
+                        if ui.add(icon.button(ui, label, t)).clicked() {
+                            action = Some(id);
+                        }
                     }
                     ui.separator();
-                }
-                for (id, label, icon) in [
-                    ("file.open", "Open project…", crate::icons::Icon::Open),
-                    ("file.save", "Save project", crate::icons::Icon::Save),
-                    ("file.save_as", "Save project as…", crate::icons::Icon::Save),
-                ] {
-                    if ui.add(icon.button(ui, label, t)).clicked() {
-                        action = Some(id);
+                    save_results = ui
+                        .add_enabled(cfg!(all(unix, not(target_arch = "wasm32"))), crate::icons::Icon::Save.button(ui, "Save workflow results…", t))
+                        .on_hover_text("Save all history for selected nodes, or all nodes when none are selected")
+                        .on_disabled_hover_text(
+                            "Secure folder saving is currently available on macOS and Linux; use an individual result’s Save as on this platform",
+                        )
+                        .clicked();
+                    import_folder = ui
+                        .add_enabled(!importing, crate::icons::Icon::Open.button(ui, "Import folder…", t))
+                        .on_hover_text("Add a folder's files as one Folder card")
+                        .on_disabled_hover_text("A folder is being imported")
+                        .clicked();
+                    ui.separator();
+                    ui.label("Recent projects");
+                    let paths = self.files.projects.recent();
+                    if paths.is_empty() {
+                        ui.label("No recent projects");
                     }
-                }
-                ui.separator();
-                save_results = ui
-                    .add_enabled(cfg!(all(unix, not(target_arch = "wasm32"))), crate::icons::Icon::Save.button(ui, "Save workflow results…", t))
-                    .on_hover_text("Save all history for selected nodes, or all nodes when none are selected")
-                    .on_disabled_hover_text(
-                        "Secure folder saving is currently available on macOS and Linux; use an individual result’s Save as on this platform",
-                    )
-                    .clicked();
-                import_folder = ui
-                    .add_enabled(!importing, crate::icons::Icon::Open.button(ui, "Import folder…", t))
-                    .on_hover_text("Add a folder's files as one Folder card")
-                    .on_disabled_hover_text("A folder is being imported")
-                    .clicked();
-                ui.separator();
-                ui.label("Recent projects");
-                let paths = self.files.projects.recent();
-                if paths.is_empty() {
-                    ui.label("No recent projects");
-                }
-                for path in paths {
-                    ui.horizontal(|ui| {
-                        let label = Path::new(&path)
-                            .file_name()
-                            .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
-                            .unwrap_or_default();
-                        if ui.button(label).clicked() {
-                            recent = Some(PathBuf::from(&path));
-                        }
-                        if ui.small_button("Remove").clicked() {
-                            remove = Some(path.clone());
-                        }
-                    });
-                }
-                let none = self.files.projects.recent().is_empty();
-                if ui
-                    .add_enabled(!none, egui::Button::new("Clear recent projects"))
-                    .on_hover_text("Forget every project in this list; the files stay where they are")
-                    .on_disabled_hover_text("There are no recent projects to clear")
-                    .clicked()
-                {
-                    clear = true;
-                }
-            });
+                    for path in paths {
+                        ui.horizontal(|ui| {
+                            let label = Path::new(&path)
+                                .file_name()
+                                .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
+                                .unwrap_or_default();
+                            if ui.button(label).clicked() {
+                                recent = Some(PathBuf::from(&path));
+                            }
+                            if ui.small_button("Remove").clicked() {
+                                remove = Some(path.clone());
+                            }
+                        });
+                    }
+                    let none = self.files.projects.recent().is_empty();
+                    if ui
+                        .add_enabled(!none, egui::Button::new("Clear recent projects"))
+                        .on_hover_text("Forget every project in this list; the files stay where they are")
+                        .on_disabled_hover_text("There are no recent projects to clear")
+                        .clicked()
+                    {
+                        clear = true;
+                    }
+                });
+        }
         if focus_owner {
             self.notice = Some(match self.session.dispatch("file.focus_owner", &json!({})) {
                 Ok(_) => "Asking the window that owns project storage to come forward…".into(),

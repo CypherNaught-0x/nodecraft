@@ -7,6 +7,11 @@
 //! pulls it back in), drawn in [`PANEL_ORDER`] under menus, popups and notices, and brought to
 //! the front when it opens or is pressed. Where panels sit, how big they are and which is in front
 //! is view state held in egui's memory; none of it is a document change.
+//!
+//! The rule for dialogs (#1116): a *question* the person answers before continuing is a
+//! [`question`] (an `egui::Modal`: Enter takes the primary action, Escape cancels); a *tool* the
+//! person works alongside is a [`panel`], or [`pinned`] for the fixed Shared parameters panel.
+//! This module is the only place that builds an `egui::Window`.
 use egui::{Align2, Context, Id, Pos2, Rect, Vec2};
 
 use crate::theme::Tokens;
@@ -16,12 +21,16 @@ use crate::theme::Tokens;
 pub const PANEL_ORDER: egui::Order = egui::Order::Middle;
 
 /// Where a panel first opens, relative to the shell's [`Bounds::home`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Home {
     /// Its top-right corner at `home`: the panels the application row opens.
     RightTop,
     /// Its top edge centred in the panel area at `home`'s height: viewers and reviews.
     CenterTop,
+    /// Its top-left corner `navigation_margin` in from the panel area's left edge, no higher
+    /// than this: the panel the File button at the window's top left opens (Project files), just
+    /// below the button.
+    LeftBelow(f32),
 }
 
 /// Where floating panels may sit this frame, published by the shell once per frame.
@@ -132,6 +141,20 @@ impl<'open> Panel<'open> {
         self
     }
 
+    /// The tallest the panel may be, so it can open below the control that opened it.
+    pub fn max_height(mut self, height: f32) -> Self {
+        if height.is_finite() && height > 0.0 {
+            self.window = self.window.max_height(height);
+        }
+        self
+    }
+
+    /// Scrolls the body when it is taller than the room the panel has.
+    pub fn vscroll(mut self, vscroll: bool) -> Self {
+        self.window = self.window.vscroll(vscroll);
+        self
+    }
+
     pub fn show<R>(self, ctx: &Context, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<Option<R>>> {
         let id = self.id;
         self.window.show(ctx, |ui| {
@@ -191,18 +214,80 @@ struct Drag {
     to: Pos2,
 }
 
-/// Keeps a window that isn't a floating panel (a dialog, a picker) on the screen at small window
-/// sizes (#1115): it is no wider than the window less its margins and is held inside the window.
-/// `width` is the width it opens at, if it sets one (capped the same way); `None` keeps egui's.
-/// Replacing these windows with panels or modals is #1116.
-pub fn on_screen<'open>(window: egui::Window<'open>, ctx: &Context, width: Option<f32>, t: &Tokens) -> egui::Window<'open> {
+/// A *question* (#1116): something the person answers before continuing, such as a confirmation
+/// or a rename. It is an `egui::Modal` centred over a dimmed window, in the shared panel frame
+/// and no wider than the window less its margins. Its caller reads [`answer_keys`] before
+/// showing it, so Enter takes the primary action and Escape cancels, and neither reaches the
+/// canvas. A *tool* the person works alongside is a [`panel`]; nothing in the shell builds a raw
+/// `egui::Window` outside this module (`no_raw_windows_outside_floating` checks).
+///
+/// `title` names it for screen readers: its area is an AccessKit `Dialog` labelled `title`, with
+/// the question's controls inside it (callers still show `title` as a heading).
+pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
+    // The area's own node (`<id>.with("move")` in egui 0.36), made before its content so the
+    // content is placed inside it rather than at the root of the tree.
+    // Its bounds are where it was last drawn: it stays centred, so they only lag on its first pass.
+    let last = egui::AreaState::load(ctx, id).map(|state| state.rect()).filter(|rect| rect.is_finite());
+    ctx.accesskit_node_builder(id.with("move"), |node| {
+        node.set_role(egui::accesskit::Role::Dialog);
+        node.set_label(title);
+        node.set_modal();
+        if let Some(rect) = last {
+            node.set_bounds(egui::accesskit::Rect { x0: rect.min.x.into(), y0: rect.min.y.into(), x1: rect.max.x.into(), y1: rect.max.y.into() });
+        }
+    });
+    let screen = ctx.content_rect();
+    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
+    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
+    egui::Modal::new(id).area(area).frame(crate::theme::panel_frame(t))
+}
+
+/// The widest a [`question`]'s content may be: `dialog_width`, or less in a narrow window.
+pub fn question_width(ctx: &Context, t: &Tokens) -> f32 {
+    let room = ctx.content_rect().width() - t.navigation_margin * 2.0 - t.card_padding * 2.0;
+    t.dialog_width.min(room).max(t.navigation_margin)
+}
+
+/// The tallest a [`question`]'s content may be, so its buttons stay on the screen.
+pub fn question_height(ctx: &Context, t: &Tokens) -> f32 {
+    let room = ctx.content_rect().height() - t.navigation_margin * 2.0 - t.card_padding * 2.0;
+    room.max(t.navigation_margin)
+}
+
+/// A question's keys this frame, consumed so nothing else acts on them: Enter (the primary
+/// action) and Escape (cancel), each without modifiers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    pub enter: bool,
+    pub escape: bool,
+}
+
+/// Takes this frame's Enter and Escape for an open question; see [`question`].
+pub fn answer_keys(ctx: &Context) -> Answer {
+    ctx.input_mut(|i| Answer { enter: i.consume_key(egui::Modifiers::NONE, egui::Key::Enter), escape: i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) })
+}
+
+/// A fixed tool pinned to the panel area's right edge, `down` points below its top (the Shared
+/// parameters and Row settings panels): it neither moves nor resizes, draws in [`PANEL_ORDER`],
+/// is no wider than the window less its margins, and panels opening over it step below its
+/// header ([`occupy`]). It is dismissed by changing the selection, not by a close button.
+pub fn pinned<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, down: f32, t: &Tokens) -> egui::Window<'open> {
+    occupy(ctx, id);
     let screen = ctx.content_rect();
     let room = (screen.width() - t.navigation_margin * 2.0).max(t.navigation_margin);
-    let window = window.constrain_to(screen).max_width(room);
-    match width {
-        Some(width) => window.default_width(width.min(room)),
-        None => window,
-    }
+    let frame =
+        egui::Frame::window(&ctx.global_style()).fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).corner_radius(t.panel_radius);
+    egui::Window::new(title)
+        .id(id)
+        .order(PANEL_ORDER)
+        .constrain_to(screen)
+        .max_width(room)
+        .default_width(t.card_width.min(room))
+        .anchor(Align2::RIGHT_TOP, [-t.navigation_margin, down])
+        .resizable(false)
+        .collapsible(false)
+        .movable(false)
+        .frame(frame)
 }
 
 /// A floating panel's window. Every panel behaves the same: see the module documentation.
@@ -257,10 +342,10 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
             let from = remembered.and_then(|state| state.pivot_pos).filter(|pos| pos.is_finite());
             ctx.data_mut(|data| data.insert_temp(placing_id(id), Placing(from)));
             let estimate = Vec2::new(t.search_width, t.panel_cascade);
-            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate))), id };
+            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate, t.navigation_margin))), id };
         }
         (true, _, Some(_)) => remembered.map(|state| state.rect().min),
-        (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size))),
+        (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size, t.navigation_margin))),
         (false, _, _) => None,
     };
     let pos = match (start, size) {
@@ -280,10 +365,11 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
 }
 
 /// A panel's top-left corner at its home, for a panel of `size`.
-fn home_corner(home: Home, bounds: &Bounds, size: Vec2) -> Pos2 {
+fn home_corner(home: Home, bounds: &Bounds, size: Vec2, margin: f32) -> Pos2 {
     match home {
         Home::RightTop => Pos2::new(bounds.home.x - size.x, bounds.home.y),
         Home::CenterTop => Pos2::new(bounds.area.center().x - size.x / 2.0, bounds.home.y),
+        Home::LeftBelow(top) => Pos2::new(bounds.area.left() + margin, if top.is_finite() { top.max(bounds.home.y) } else { bounds.home.y }),
     }
 }
 
@@ -325,6 +411,57 @@ fn header(rect: Rect, step: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #1116: a question is a `question` (a modal) and a tool a `panel` (or `pinned`); nothing
+    /// outside this module builds a raw `egui::Window`, which would skip the panel area's
+    /// clamping, cascade and stacking. Test code may still build fixtures.
+    #[test]
+    fn no_raw_windows_outside_floating() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if !name.ends_with(".rs")
+                    || name == "floating.rs"
+                    || name == "tests.rs"
+                    || name.ends_with("_tests.rs")
+                    || path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                for (n, line) in crate::theme::non_test_code(&text).lines().enumerate() {
+                    if line.contains("Window::new(") {
+                        found.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "use floating::question or floating::panel, not egui::Window: {found:#?}");
+    }
+
+    #[test]
+    fn a_question_fits_a_small_window() {
+        let ctx = Context::default();
+        let t = crate::theme::DARK;
+        let mut sizes = Vec::new();
+        for size in [Vec2::new(640.0, 400.0), Vec2::new(300.0, 200.0), Vec2::new(1600.0, 900.0)] {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| sizes.push((question_width(ui.ctx(), &t), question_height(ui.ctx(), &t))));
+            output.textures_delta.clear();
+            let (width, height) = sizes.last().copied().unwrap();
+            assert!(width <= t.dialog_width && width <= size.x, "{size:?}: {width}");
+            assert!(height <= size.y && height > 0.0, "{size:?}: {height}");
+        }
+        assert_eq!(sizes.last().map(|s| s.0), Some(t.dialog_width), "a large window keeps the full width");
+    }
 
     #[test]
     fn a_panel_opening_over_another_steps_below_its_header() {

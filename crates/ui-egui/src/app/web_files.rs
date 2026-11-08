@@ -373,27 +373,34 @@ impl NodeCraftApp {
     fn web_confirm(&mut self, ctx: &egui::Context) -> bool {
         let Some(Phase::Confirm(picked)) = &self.web_files.phase else { return false };
         let name: String = picked.name.chars().filter(|c| !c.is_control()).take(80).collect();
-        let t = self.theme.tokens();
-        let mut choice = None;
-        crate::floating::on_screen(egui::Window::new("Unsaved changes"), ctx, None, t)
-            .id(egui::Id::new("nodecraft.web_files.confirm"))
-            .order(egui::Order::Foreground)
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
-            .frame(crate::theme::panel_frame(t))
-            .show(ctx, |ui| {
-                ui.label(egui::RichText::new(format!("Open {name}? This project's unsaved changes will be lost.")).color(t.text));
-                ui.add_space(t.control_gap);
-                ui.horizontal(|ui| {
-                    if ui.button("Discard and open").clicked() {
-                        choice = Some(true);
-                    }
-                    if ui.button("Cancel").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-                        choice = Some(false);
-                    }
-                });
+        let t = *self.theme.tokens();
+        // A question (#1116): Enter discards and opens, Escape keeps this project, and neither
+        // reaches the canvas.
+        let keys = crate::floating::answer_keys(ctx);
+        let mut choice = if keys.escape {
+            Some(false)
+        } else if keys.enter {
+            Some(true)
+        } else {
+            None
+        };
+        let modal = crate::floating::question(ctx, egui::Id::new("nodecraft.web_files.confirm"), "Unsaved changes", &t).show(ctx, |ui| {
+            ui.set_max_width(crate::floating::question_width(ctx, &t));
+            ui.heading("Unsaved changes");
+            ui.label(egui::RichText::new(format!("Open {name}? This project's unsaved changes will be lost.")).color(t.text));
+            ui.add_space(t.control_gap);
+            ui.horizontal(|ui| {
+                if ui.button("Discard and open").clicked() {
+                    choice = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    choice = Some(false);
+                }
             });
+        });
+        if choice.is_none() && modal.backdrop_response.clicked() {
+            choice = Some(false);
+        }
         if let Some(discard) = choice {
             self.web_answer(discard);
             ctx.request_repaint();

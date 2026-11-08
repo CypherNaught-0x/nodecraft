@@ -207,15 +207,18 @@ impl NodeCraftApp {
         let mut back = false;
         let mut apply = false;
         if choice.stale {
-            crate::floating::on_screen(egui::Window::new("Model preview changed"), ui.ctx(), None, &t)
-                .id(egui::Id::new("nodecraft.model_stale"))
-                .order(egui::Order::Foreground)
-                .collapsible(false)
-                .show(ui.ctx(), |ui| {
-                    ui.label("The document, selection or model catalog changed. Nothing was applied. Refresh and review the new proposal.");
-                    if let Some(error) = &choice.error {
-                        ui.label(error);
-                    }
+            // A question (#1116): Enter refreshes, Escape cancels, and neither reaches the canvas.
+            let keys = crate::floating::answer_keys(ui.ctx());
+            refresh |= keys.enter;
+            close |= keys.escape;
+            let modal = crate::floating::question(ui.ctx(), egui::Id::new("nodecraft.model_stale"), "Model preview changed", &t).show(ui.ctx(), |ui| {
+                ui.set_max_width(crate::floating::question_width(ui.ctx(), &t));
+                ui.heading("Model preview changed");
+                ui.label("The document, selection or model catalog changed. Nothing was applied. Refresh and review the new proposal.");
+                if let Some(error) = &choice.error {
+                    ui.label(error);
+                }
+                ui.horizontal_wrapped(|ui| {
                     if ui.button("Refresh models").clicked() {
                         refresh = true;
                     }
@@ -223,12 +226,12 @@ impl NodeCraftApp {
                         close = true;
                     }
                 });
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                close = true;
-            }
+            });
+            close |= modal.backdrop_response.clicked();
         } else {
             match &mut choice.step {
-                Step::Picking(picker) => match picker.show(ui.ctx(), choice.snapshot.run_catalog().catalog(), &t) {
+                // A picker-stage failure shows at the top of the picker, where the choice was made.
+                Step::Picking(picker) => match picker.show_with(ui.ctx(), choice.snapshot.run_catalog().catalog(), choice.error.as_deref(), &t) {
                     Outcome::Open => {}
                     Outcome::Closed => close = true,
                     Outcome::CatalogChanged => choice.stale = true,
@@ -277,74 +280,66 @@ impl NodeCraftApp {
                     },
                 },
                 Step::Review(preview) => {
-                    crate::floating::on_screen(egui::Window::new("Review model change"), ui.ctx(), Some(t.dialog_width), &t).id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).show(
-                        ui.ctx(),
-                        |ui| {
-                            ui.label(format!("Change {} node(s) to {}", preview.targets.len(), preview.model));
-                            if let Some((_, name)) = &choice.server_model {
-                                ui.label(format!("Checkpoint from the ComfyUI server: {name}"));
+                    // A question (#1116): Enter applies (unless edits are unsaved), Escape cancels.
+                    let keys = crate::floating::answer_keys(ui.ctx());
+                    apply |= keys.enter && !dirty;
+                    close |= keys.escape;
+                    let width = crate::floating::question_width(ui.ctx(), &t);
+                    let height = crate::floating::question_height(ui.ctx(), &t);
+                    let modal = crate::floating::question(ui.ctx(), egui::Id::new("nodecraft.model_review"), "Review model change", &t).show(ui.ctx(), |ui| {
+                        ui.set_max_width(width);
+                        ui.set_max_height(height);
+                        ui.heading("Review model change");
+                        ui.label(format!("Change {} node(s) to {}", preview.targets.len(), preview.model));
+                        if let Some((_, name)) = &choice.server_model {
+                            ui.label(format!("Checkpoint from the ComfyUI server: {name}"));
+                        }
+                        ui.label("This changes model settings only. Starting a paid run still requires its own quote and consent.");
+                        if dirty {
+                            ui.label(
+                                "Unsaved parameter edits are preserved. Cancel this picker, then finish or cancel those edits before applying a model change.",
+                            );
+                        }
+                        if let Some(error) = &choice.error {
+                            ui.label(error);
+                        }
+                        // Reserve the action row inside the dialog's room on the screen; a fixed
+                        // report maximum could otherwise push Apply off the window.
+                        let footer = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+                        let report_height = (height - ui.min_rect().height() - footer - ui.spacing().item_spacing.y).max(0.0).min(t.comments_height);
+                        egui::ScrollArea::vertical().max_height(report_height).show(ui, |ui| {
+                            for target in &preview.targets {
+                                ui.label(format!(
+                                    "{}: {} to {}",
+                                    target.id,
+                                    target.previous_model.as_deref().unwrap_or("Unavailable saved model"),
+                                    preview.model
+                                ));
+                                for dropped in &target.dropped {
+                                    ui.label(format!("Drop {}: {}", dropped.param, reason_label(&dropped.reason)));
+                                }
+                                for name in &target.reset {
+                                    ui.label(format!("Reset {name}: hidden or disabled under the destination's rules"));
+                                }
+                                for name in &target.defaults {
+                                    ui.label(format!("Use destination default: {name}"));
+                                }
                             }
-                            ui.label("This changes model settings only. Starting a paid run still requires its own quote and consent.");
-                            if dirty {
-                                ui.label(
-                                    "Unsaved parameter edits are preserved. Cancel this picker, then finish or cancel those edits before applying a model change.",
-                                );
+                        });
+                        ui.horizontal_wrapped(|ui| {
+                            if ui.button("Back to models").clicked() {
+                                back = true;
                             }
-                            if let Some(error) = &choice.error {
-                                ui.label(error);
+                            if ui.button("Cancel model change").clicked() {
+                                close = true;
                             }
-                            // Reserve the action row inside the window's actual resized content
-                            // bounds; a fixed report maximum can otherwise push Apply below its clip.
-                            let footer = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
-                            let report_height = (ui.available_height() - footer).max(0.0).min(t.comments_height);
-                            egui::ScrollArea::vertical().max_height(report_height).show(ui, |ui| {
-                                for target in &preview.targets {
-                                    ui.label(format!(
-                                        "{}: {} to {}",
-                                        target.id,
-                                        target.previous_model.as_deref().unwrap_or("Unavailable saved model"),
-                                        preview.model
-                                    ));
-                                    for dropped in &target.dropped {
-                                        ui.label(format!("Drop {}: {}", dropped.param, reason_label(&dropped.reason)));
-                                    }
-                                    for name in &target.reset {
-                                        ui.label(format!("Reset {name}: hidden or disabled under the destination's rules"));
-                                    }
-                                    for name in &target.defaults {
-                                        ui.label(format!("Use destination default: {name}"));
-                                    }
-                                }
-                            });
-                            ui.horizontal(|ui| {
-                                if ui.button("Back to models").clicked() {
-                                    back = true;
-                                }
-                                if ui.button("Cancel model change").clicked() {
-                                    close = true;
-                                }
-                                if ui.add_enabled(!dirty, egui::Button::new("Apply model change")).clicked() {
-                                    apply = true;
-                                }
-                            });
-                        },
-                    );
-                    if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-                        close = true;
-                    }
-                }
-            }
-            // Picker-stage failures remain visible without rebuilding catalog data every frame.
-            if matches!(choice.step, Step::Picking(_))
-                && let Some(error) = &choice.error
-            {
-                crate::floating::on_screen(egui::Window::new("Model choice unavailable"), ui.ctx(), None, &t)
-                    .id(egui::Id::new("nodecraft.model_unavailable"))
-                    .order(egui::Order::Foreground)
-                    .collapsible(false)
-                    .show(ui.ctx(), |ui| {
-                        ui.label(error);
+                            if ui.add_enabled(!dirty, egui::Button::new("Apply model change")).clicked() {
+                                apply = true;
+                            }
+                        });
                     });
+                    close |= modal.backdrop_response.clicked();
+                }
             }
         }
         if apply
