@@ -436,8 +436,6 @@ impl NodeCraftApp {
         self.show_notices(ui, viewport, t);
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
         self.keys_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);

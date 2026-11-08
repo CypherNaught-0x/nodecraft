@@ -1489,10 +1489,9 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
-        let file_menu_owns_input = false;
-        #[cfg(not(target_arch = "wasm32"))]
+        let file_menu_owns_input = self.web_file_menu(ui, t);
         if file_menu_owns_input {
-            self.clear_file_input(ui.ctx());
+            topbar::clear_menu_input(ui.ctx());
         }
         if !self.centred {
             let home = self.home();
@@ -2867,10 +2866,6 @@ impl NodeCraftApp {
         self.bulk.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.file_button(ui, t);
-        #[cfg(target_arch = "wasm32")]
-        self.web_file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
         self.keys_panel(ui.ctx(), t);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);

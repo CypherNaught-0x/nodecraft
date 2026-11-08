@@ -434,7 +434,7 @@ discard uncommitted card-field drafts before file actions.
 
 When project storage cannot start, the startup notice and File actions retain the same reason.
 A second desktop window that cannot acquire the shared recovery journal opens in memory only;
-its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+its File menu offers **Focus the other window**. This asks the owner to come forward so its File
 menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
 use the system window switcher. Older owners without the focus endpoint must also be switched to
 manually. An unreadable startup project instead leaves a new project with working storage and an

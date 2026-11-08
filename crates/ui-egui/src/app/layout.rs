@@ -209,7 +209,7 @@ impl NodeCraftApp {
         let area = egui::Area::new(egui::Id::new("selection_format_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
-            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin + self.closed_tag_width() + t.navigation_gap, self.topbar_rect().top() + t.navigation_gap))
+            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin, self.topbar_rect().top() + t.navigation_gap))
             .show(&ctx, |ui| {
                 let button =
                     ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(self.layout_toolbar_width(), t.navigation_toolbar_height)));

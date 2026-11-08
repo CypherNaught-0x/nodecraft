@@ -553,21 +553,41 @@ threshold. Cache admission limits and rationale are in the
 
 ## Application menu
 
-The application row (#956) uses one icon-and-label control style for Sheets, Techniques,
-Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments. Navigation,
-activity and settings/services are separated by dividers, with Search and Comments on the right.
+The application row (#956) uses one icon-and-label control style for File, Tag filter, Sheets,
+Techniques, Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments.
+File and Tag filter lead the row (#1123); navigation, activity and settings/services follow,
+separated by dividers, with Search and Comments on the right.
 Browser server settings add Providers, and a selected Technique adds Open as app. Every entry
 uses the same token-based height, padding, hover, active and disabled styling. Queue counts
 appear beside its label and remain in its accessible name; unavailable services stay disabled.
 
 If the measured row does not fit, entries move into one More menu from the row's right (#1115):
 first the navigation, activity and service entries from the right, then the entry of an open panel
-(kept in the row while others go), then Comments, then Search. More sits after the entries the row
+(kept in the row while others go), then Tag filter, then Comments, then Search, and File last of
+all (#1123): it is the only way to open and save (`Entry::rank`, pinned by
+`small_windows1115_tests::fit1123_*`). More sits after the entries the row
 keeps, before Search and Comments, and lists only what moved, with the same icons, states and
-order. Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, they move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
-entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
-reserved left slot; Format selection reserves the next slot when present, with the Tags panel
-below both controls. Sharing status is
+order. File, Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, Search and Comments move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+entries. More yields to active text editors and canvas gestures; pressing a disabled entry while a
+text editor has the focus leaves the focus there. Format selection keeps a slot at the row's left
+while several cards are selected.
+
+**File** opens the File menu below it (below More once File has moved there): Open…, Open
+recent ▸ (the recent projects, each with Remove, then Clear recent projects), Save, Save as…,
+then Save workflow results… and Import folder…. Shortcuts show on the right as this platform
+spells them, and in each entry's accessible name ("Open… (Ctrl+O)"). The entries run the same
+flows as the shortcuts and the palette (`file.open`, `file.save`, `file.save_as`, the results save,
+the folder import, opening a recent project). An entry that can't run now stays listed, disabled,
+and says why on hover; without project storage the reason also heads the menu, with Focus the
+other window when another window owns storage. The menu is `file_menu_width` wide, it and its
+Open recent list scroll in a short window, and it closes on Escape, when an entry is chosen, or on
+a click outside, which never reaches the canvas (a click on another top-bar entry or a panel's
+control still acts, as before). The browser's File menu offers Open…, Save and Save as…, with
+the same rules: while it is open the canvas gets no keys or clicks.
+
+**Tag filter** opens the tag panel below the row, and closes it again. While a filter is active the
+entry shows the match count beside its label and in its accessible name ("Tag filter (3
+matches)"). Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md) and the
 [small-window decision](decisions/2026-11-08-small-window-layout.md).
@@ -705,9 +725,9 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 1. **Canvas** (`Background`): the board, cards and wires.
 2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
    in front. Opening one never reorders the others.
-3. **Pinned chrome** (`Foreground`): the application row, Tag filter, Format selection, Search,
+3. **Pinned chrome** (`Foreground`): the application row, the Tags panel, Format selection, Search,
    Discussions, the minimap and comment pins.
-4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
+4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More and File menus, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
 5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,
    pending drop, folder import, library import and background export progress. They are above panels and
@@ -717,6 +737,10 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 **Floating panels** are built by `floating::panel` and behave the same everywhere:
 
+- **Header** (#1123): one style for every panel, drawn by `floating::panel` rather than egui's
+  title bar (which centres the title): the title on the left at `body_size` in the `text` colour,
+  the close button on the right, a `panel_stroke` divider below. egui's default fonts have no
+  semibold face, so size, colour and the divider set the title apart.
 - **Move** by dragging the header (title bar). Dragging inside the body never moves a panel.
 - **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
   panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
@@ -752,8 +776,8 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   items, taken before the canvas reads it, but only when no other Escape owner is active: a
   question, a popup, quick-add or Turn into, a text field (Escape leaves it first), the keyboard
   connect flow, Search, Discussions, the Tag filter, any drag or gesture, or a browser file read
-  each take Escape first and the tool stays open. Choose a model and Project files close on
-  Escape too.
+  each take Escape first and the tool stays open. Choose a model closes on Escape too, and the
+  File menu (#1123) takes Escape at the top of the frame, before any of these.
 - Nothing uses a raw `egui::Window`: `floating.rs` is the only place that builds one (inside
   `panel` and `pinned`), and `floating::tests::no_raw_windows_outside_floating` fails on a new one
   elsewhere in non-test code.
@@ -762,11 +786,10 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
 | Custom shader, Image viewer, PDF reader, Charges to review, Batch items, Workflow fields, Choose a model | floating panel (viewer/review/tool) | header | right/bottom edges, corner | close button or Escape |
-| Project files (File menu) | floating panel, opening below the File button (#1123 makes it a menu) | header | right/bottom edges, corner | close button, File or Escape |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
-| More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
+| More menu, File menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
 | Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
 | Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
 | Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
@@ -804,7 +827,8 @@ and no crossing controls inside their `Dialog` node.
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
 | Batch items | a fanned card's menu, Review items… | floating panel | `batch_review_tests` (with the layout check; at 640 × 400 with Escape) |
 | Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | floating panel | `comfy_mapping::tests` (with the layout check; at 640 × 400 with Escape) |
-| Project files | the File button (top left) | floating panel | `file_dialogs::tests` (with the layout check, at 1000 × 700 and 1600 × 900), `small_windows1115_tests` (640 × 400, below the File button, Escape) |
+| File menu | top bar, File (first entry) | menu | `file_dialogs::tests` (`panel_check::check_menu` at 1000 × 700 and 1600 × 900; Open recent, Remove, Clear; disabled with reasons), `small_windows1115_tests` (640 × 400: below File, Open recent lists entries, Escape), `ui_scale_tests` (150 % and 200 %, with Open recent) |
+| Tags panel | top bar, Tag filter | pinned chrome | `small_windows1115_tests` (opens below the row, closes, the count badge) |
 | Choose a model | a card's Change model… | floating panel | `models::comfy970_tests` (with the layout check, while searching), `models::tests` (640 × 400, Escape; a failed choice shows at its top) |
 | Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
 | Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
@@ -817,7 +841,7 @@ and no crossing controls inside their `Dialog` node.
 
 Since #1116 there are no windows outside `floating.rs`: questions are modals sized to the window,
 tools are floating panels clamped to the panel area.
-`small_windows1115_tests` opens Techniques, Budgets, API keys and Project files at 640 × 400,
+`small_windows1115_tests` opens Techniques, Budgets, API keys and the File menu at 640 × 400,
 800 × 520 and 1440 × 900 with the layout checks.
 
 **Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
@@ -888,6 +912,8 @@ them and one attribution row per file. See the [choice and comparison](decisions
 | `More` | `dots.svg` | application menu overflow |
 | `Apps` | `apps.svg` | Open as app |
 | `Cloud` | `cloud.svg` | browser Providers |
+| `File` | `file.svg` | the top bar's File entry |
+| `Tag` | `tag.svg` | the top bar's Tag filter entry |
 
 Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
 keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which

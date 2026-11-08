@@ -162,13 +162,30 @@ pub(super) struct WebFiles {
     unwritten: bool,
     /// Whether leaving the page would lose work, for the page's unload guard.
     pub(super) unsaved: Rc<Cell<bool>>,
+    /// Whether the File menu is open (#1123), and whether it was as this frame began.
+    #[cfg(target_arch = "wasm32")]
+    pub(super) menu_open: bool,
+    #[cfg(target_arch = "wasm32")]
+    pub(super) menu_was_open: bool,
 }
 
 impl WebFiles {
     /// The files over `port`, and the storage to build the session on.
     pub(super) fn new(port: Box<dyn Port>) -> (Self, HostStorage) {
         let staged = Rc::new(RefCell::new(Staged::default()));
-        let files = Self { port, staged: Rc::clone(&staged), phase: None, targets: BTreeMap::new(), picks: 0, unwritten: false, unsaved: Rc::default() };
+        let files = Self {
+            port,
+            staged: Rc::clone(&staged),
+            phase: None,
+            targets: BTreeMap::new(),
+            picks: 0,
+            unwritten: false,
+            unsaved: Rc::default(),
+            #[cfg(target_arch = "wasm32")]
+            menu_open: false,
+            #[cfg(target_arch = "wasm32")]
+            menu_was_open: false,
+        };
         (files, HostStorage(staged, None))
     }
 
@@ -190,7 +207,7 @@ impl WebFiles {
 
     /// Busy with something other than waiting for a pick to open, which any other file action
     /// replaces: a file field may never say it was cancelled.
-    fn blocking(&self) -> bool {
+    pub(super) fn blocking(&self) -> bool {
         !matches!(self.phase, None | Some(Phase::Opening(_)))
     }
 
@@ -339,34 +356,40 @@ impl NodeCraftApp {
         edited || self.web_recovered_unsaved() || self.web_files.unwritten || matches!(self.web_files.phase, Some(Phase::Writing { .. }))
     }
 
-    /// The browser's File menu: open, save and save as.
+    /// The browser's File menu (#1123): open, save and save as, below the top bar's File entry.
+    /// Drawn at the top of the frame, as on the desktop, with the same open-state and input rules
+    /// (`topbar::begin_file_menu`). Returns whether the menu owns this frame's input; the caller
+    /// then clears it (`topbar::clear_menu_input`), so no key or click reaches the canvas.
     #[cfg(target_arch = "wasm32")]
-    pub(super) fn web_file_button(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) {
+    pub(super) fn web_file_menu(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) -> bool {
+        if self.web_files.blocking() || self.model_choice.is_some() || self.model_frame_owned {
+            self.web_files.menu_was_open = false;
+            self.web_files.menu_open = false;
+            return false;
+        }
+        let was_open = super::topbar::begin_file_menu(ui.ctx(), &mut self.web_files.menu_open, &mut self.web_files.menu_was_open);
+        let shortcut = |id: &str| self.session.registry().specs().find(|spec| spec.id == id).and_then(|spec| spec.shortcut);
+        let entries = [
+            ("file.open", "Open…", shortcut("file.open"), crate::icons::Icon::Open),
+            ("file.save", "Save", shortcut("file.save"), crate::icons::Icon::Save),
+            ("file.save_as", "Save as…", shortcut("file.save_as"), crate::icons::Icon::Save),
+        ];
+        let anchor = self.topbar.file.unwrap_or_else(|| self.topbar_rect());
         let mut chosen = None;
-        egui::Area::new(egui::Id::new("nodecraft.web_files.menu"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(ui.max_rect().min + egui::Vec2::new(t.card_padding, t.card_padding * 4.0))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding * 0.5).show(ui, |ui| {
-                    ui.add_enabled_ui(!self.web_files.blocking() && self.model_choice.is_none() && !self.model_frame_owned, |ui| {
-                        ui.menu_button("File", |ui| {
-                            for (id, label, icon) in [
-                                ("file.open", "Open project…", crate::icons::Icon::Open),
-                                ("file.save", "Save project", crate::icons::Icon::Save),
-                                ("file.save_as", "Save project as…", crate::icons::Icon::Save),
-                            ] {
-                                if ui.add(icon.button(ui, label, t)).clicked() {
-                                    chosen = Some(id);
-                                    ui.close();
-                                }
-                            }
-                        });
-                    });
-                });
-            });
+        let mut open = self.web_files.menu_open;
+        super::topbar::file_popup(ui.ctx(), anchor, &mut open, t, |ui| {
+            for (id, label, key, icon) in entries {
+                if super::topbar::menu_item(ui, icon, label, key, None, t).clicked() {
+                    chosen = Some(id);
+                }
+            }
+        });
+        self.web_files.menu_open = open && chosen.is_none();
+        let owns = was_open || self.web_files.menu_open || chosen.is_some();
         if let Some(id) = chosen {
             self.web_file(id, ui.ctx());
         }
+        owns
     }
 
     /// Asks before a picked project replaces one with unsaved changes.
