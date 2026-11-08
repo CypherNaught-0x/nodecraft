@@ -357,7 +357,8 @@ fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) 
 }
 
 /// How this dialect reads its errors.
-const RULES: rig_chat::Rules = rig_chat::Rules { status: |status, _, body| error(status, body), event: event_error, unended: "chat reply without choices" };
+const RULES: rig_chat::Rules =
+    rig_chat::Rules { status: |status, _, body| error(status, body), event: event_error, unended: "chat reply without choices", crate_error: None };
 /// Bedrock's OpenAI-compatible route: AWS answers signature and credential refusals in its own
 /// shape, mapped as Converse maps them (#1163); everything else as OpenAI's.
 const BEDROCK_RULES: rig_chat::Rules = rig_chat::Rules { status: bedrock_error, ..RULES };

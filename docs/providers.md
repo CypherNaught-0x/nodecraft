@@ -17,6 +17,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Veo on Google Cloud** | `google-veo` | a service-account key file, kept compact in the `google-cloud` account; a signed JWT is exchanged for an hour's OAuth token (`Authorization: Bearer`) | Veo 3.1, Fast and Lite: text → video with sound. Veo 3.1 and Fast also: first/last frame, and up to three subject references | Runs in the account's own project in `us-central1`. Quoted per second by resolution before the run. Never replayed after an ambiguous submit; no remote cancellation. See below. |
 | **Google TTS** | `google-tts` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | text → speech (MP3): Chirp 3 HD, Neural2, WaveNet, Standard and Studio voices with speaking rate, pitch and SSML; Gemini 2.5 Pro, Flash, Flash-Lite and 3.1 Flash voices with a style prompt and two-speaker dialogue | One synchronous request per line. Classic voices are priced per character, and the cost is counted from the characters sent once the run is done; Gemini voices are billed by tokens Google doesn't report, so no price before the run. Never replayed; nothing to cancel. See below. |
 | **Gemini images on Google Cloud** | `google-gemini-images` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | Gemini 3.1 Flash Image, 3 Pro Image, Nano Banana 2.1, 3.1 Flash-Lite Image and 2.5 Flash Image: text → image and up to 14 reference images (3 on 2.5) → image, with aspect ratio and 1K/2K/4K size | One synchronous `generateContent` request on the global endpoint. Quoted per image by size before the run; charged by the tokens the reply measured. Never replayed; nothing to cancel. See below. |
+| **Gemini chat on Google Cloud** | `google-gemini-llm` | the same `google-cloud` service-account key as Veo (`Authorization: Bearer`, billed to the account's project) | Gemini 3.8 Flash card: text → text. The client also takes images (PNG/JPEG/WebP) and PDFs, tools, thought signatures kept across turns, streaming | `LlmClient::google_vertex` on the global endpoint, through rig's Gemini wire at Vertex AI's URL (#1151). Usage pricing, no price before the run. Never replayed. Express-mode API keys in the library only. See below. |
 | **Replicate** | `replicate` | supplied bearer token | pinned SDXL generation, img2img, mask inpaint; pinned scalar text | Versioned resumable predictions, bounded credential-free delivery downloads; unknown usage price. See below. |
 | **Ollama** | `llm` | none (local, `http://127.0.0.1:11434`) | text, vision models, streaming | OpenAI-compatible `/v1`; models listed from `/v1/models`. Pull a model first. |
 | **LM Studio** | `llm` | none (local, `http://127.0.0.1:1234`) | text, vision models, streaming | OpenAI-compatible server. |
@@ -94,6 +95,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `google-veo` | `google-cloud` (paste the whole service-account key file; it is stored compactly) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `google-tts` | `google-cloud` (the same key as `google-veo`) | the Cloud Text-to-Speech API enabled in the account's project; Gemini voices also need the Vertex AI User role |
 | `google-gemini-images` | `google-cloud` (the same key as `google-veo`) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
+| `google-gemini-llm` | `google-cloud` (the same key as `google-veo`) | the Vertex AI API enabled, and the Vertex AI User role on the account's project |
 | `comfy-cloud` | `comfy-cloud` | — |
 | `comfyui` | `comfyui:<host>:<port>`, or `comfyui:<host>` when the address names no port (optional bearer token) | `[[providers.comfyui]]` entries with `name`, `url` (such as `"http://127.0.0.1:8188"`) and optional `max_jobs` (1–16; unset, 4), and `[providers] comfyui_default` naming one (or the desktop toolbar's ComfyUI panel), and the per-install `install_salt`; an older `comfyui_url` is read as one server |
 
@@ -599,6 +601,41 @@ Contract checked 2026-10-23: [pricing](https://cloud.google.com/text-to-speech/p
 [`text:synthesize`](https://cloud.google.com/text-to-speech/docs/reference/rest/v1/text/synthesize),
 [Gemini-TTS](https://docs.cloud.google.com/text-to-speech/docs/gemini-tts),
 [Chirp 3: HD voices](https://cloud.google.com/text-to-speech/docs/chirp3-hd).
+
+## Gemini chat on Google Cloud (`google-gemini-llm`)
+
+`LlmClient::google_vertex(secret, location, http, clock)` speaks Gemini's `generateContent` and
+`streamGenerateContent?alt=sse` on Vertex AI (#1151), signed in with the `google-cloud` service
+account and the same tokens as Veo (see below), billed to the account's project. The catalog card
+`google-gemini-llm.3.8-flash` runs on the `global` location; the client also takes a region such as
+`us-central1`. Requests are built and read by `rig-core`'s Gemini wire at Vertex AI's own URL,
+with the access token as a secret header on NodeCraft's transport (never through the crate), and
+brought to Vertex AI's `v1` shape: no call ids (results go back in call order), results under
+`output`, and each call's thought signature sent back as it came.
+
+- **Replies:** text, tool calls, and thoughts or other parts kept for the next turn as Gemini sent
+  them. `MAX_TOKENS` is a length stop; the safety, recitation, blocklist, SPII and Model Armor
+  filters and a blocked prompt are `BlockedContent`.
+- **Usage:** `promptTokenCount` (plus tool-use prompt tokens) in, `candidatesTokenCount` plus
+  `thoughtsTokenCount` out: thinking is billed as output. Priced by usage: Google's pricing page
+  (read 2026-11-08) lists an introductory $0.75 / $3.75 per million input / output tokens through
+  2026-12-31, then $1.50 / $7.50, so a run asks for unknown-price acceptance.
+- **Errors:** a 401 drops the held token; `PERMISSION_DENIED` names the Vertex AI API and role
+  (`BILLING_DISABLED` is a budget error); `RESOURCE_EXHAUSTED` is a rate limit unless it names a
+  daily quota; token-limit refusals are the context-limit error.
+- **Express mode:** `LlmClient::google_vertex_express(key, http)` sends an express-mode API key as
+  `x-goog-api-key` to the global publisher path. No card or keychain account uses it yet.
+
+Offline contract tests (`llm::vertex::tests`) cover the URL, token handling, request shape, whole
+and streamed replies, tool calls and signatures, finish reasons, errors and hostile streams. The
+opt-in smoke test costs tokens and was not run for this addition:
+
+```sh
+NODECRAFT_LIVE_GOOGLE_VERTEX=1 GOOGLE_VERTEX_KEY_FILE=/path/to/key.json \
+  cargo test -p nodecraft-providers --test live_llm live_google_vertex1151
+```
+
+See [the decision](decisions/2026-11-08-vertex-gemini-chat.md).
 
 ## Veo on Google Cloud (`google-veo` feature)
 

@@ -1,0 +1,53 @@
+# Gemini text on Google Cloud's Vertex AI (#1151), signed in with the `google-cloud` service
+# account (the same key as Veo, Cloud TTS and Gemini images), on the global endpoint, billed to the
+# account's project. Spoken by `LlmClient::google_vertex` (the Gemini wire at Vertex AI's URL).
+# Model page checked 2026-11-08:
+# https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-8-flash
+# - model id `gemini-3.8-flash`, served at `global`; context 1,048,576 tokens, output 65,536;
+#   function calling and thinking (LOW, MEDIUM by default, HIGH).
+# Prices, read 2026-11-08 from https://cloud.google.com/vertex-ai/generative-ai/pricing (Standard,
+# global endpoint, per 1M tokens): introductory $0.75 input / $3.75 text output ("response and
+# reasoning") through 2026-12-31, then $1.50 / $7.50 from 2027-01-01; non-global endpoints cost 10%
+# more. Google charges only replies with a 200. The price changes on a date the catalog can't
+# express, and thinking (billed as output) has no bound before the run, so this is ByUsage: a run
+# needs explicit acceptance of an unknown price, and the tokens Vertex AI reports are recorded.
+[[model]]
+id = "google-gemini-llm.3.8-flash"
+provider = "google-gemini-llm"
+provider_model = "gemini-3.8-flash"
+label = "Gemini 3.8 Flash (Google Cloud)"
+description = "Fast text reasoning with Gemini Flash on Vertex AI, billed to your Google Cloud project. Usage pricing."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1048576, max_output_tokens = 65536 }
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "4096" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "google-gemini-llm.3.8-flash"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Thinking uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "65536" }
+default = { type = "unsigned", value = "4096" }

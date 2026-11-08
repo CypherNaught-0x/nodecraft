@@ -424,6 +424,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.wan3-i2v", false),
             ("gemini-llm.3.8-flash", false),
             ("gemini-video.omni-flash", false),
+            ("google-gemini-llm.3.8-flash", false),
             ("google-tts.gemini-2.5-pro", false),
             ("google-tts.chirp3-hd", false),
             ("google-tts.gemini-2.5-flash", false),

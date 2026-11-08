@@ -79,7 +79,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedance" => Some("seedream"),
         "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
-        "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
+        "google-veo" | "google-tts" | "google-gemini-images" | "google-gemini-llm" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
@@ -253,6 +253,14 @@ fn google_gemini_images(env: &HostEnv<'_>) -> Result<nodecraft_providers::google
         .map_err(adapter_error)
 }
 
+/// Gemini chat on Vertex AI (#1151), signed in as the same Google Cloud service account, on the
+/// global endpoint.
+fn google_gemini_llm(env: &HostEnv<'_>) -> Result<LlmClient, Readiness> {
+    let secret = needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?;
+    LlmClient::google_vertex(&secret, nodecraft_providers::llm::VERTEX_GLOBAL, env.http.clone(), nodecraft_providers::google_cloud::system_clock())
+        .map_err(adapter_error)
+}
+
 fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
@@ -383,6 +391,7 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "google-veo" => Arc::new(google_veo(env)?),
         "google-tts" => Arc::new(google_tts(env)?),
         "google-gemini-images" => Arc::new(google_gemini_images(env)?),
+        "google-gemini-llm" => Arc::new(google_gemini_llm(env)?),
         "fal" => Arc::new(nodecraft_providers::fal::Fal::new(needs_key(env.keys, "fal")?, env.http.clone())),
         "magnific" => {
             if cfg!(target_arch = "wasm32") {

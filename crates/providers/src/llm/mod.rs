@@ -4,11 +4,13 @@
 //! - [`Dialect::OpenAi`]: Chat Completions, spoken by OpenAI, Ollama, LM Studio, vLLM, OpenRouter
 //!   and LiteLLM (which also reports per-request spend);
 //! - [`Dialect::Anthropic`]: the Anthropic Messages API;
-//! - [`Dialect::Converse`]: Amazon Bedrock's native Converse API (#1150).
+//! - [`Dialect::Converse`]: Amazon Bedrock's native Converse API (#1150);
+//! - [`Dialect::Vertex`]: Gemini's `generateContent` on Google Cloud's Vertex AI (#1151).
 //!
-//! The first two are spoken through `rig-core`'s wires over our own transport (#1122): `rig_chat`
-//! sends, `openai` and `anthropic` turn requests, replies and errors to and from the crate's
-//! terms. The crate has no Bedrock provider, so `converse` speaks Converse over [`Http`] itself.
+//! The first two and Vertex are spoken through `rig-core`'s wires over our own transport (#1122):
+//! `rig_chat` sends, `openai`, `anthropic` and `vertex` turn requests, replies and errors to and
+//! from the crate's terms (Vertex through the crate's Gemini wire at our own URL, with our own
+//! token). The crate has no Bedrock provider, so `converse` speaks Converse over [`Http`] itself.
 //!
 //! [`LlmClient`] sends a [`ChatRequest`] (a conversation of text, images, tool calls and tool
 //! results, plus the tools the model may call) and returns a [`ChatResponse`], either whole or
@@ -31,6 +33,8 @@ mod stream_tests;
 mod turns_tests;
 #[cfg(test)]
 mod vendors_tests;
+#[cfg(feature = "google-cloud")]
+mod vertex;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
@@ -38,6 +42,8 @@ pub use bedrock::{
     BEDROCK, BEDROCK_AWS_ACCESS_KEY_ID, BEDROCK_AWS_EXPIRATION, BEDROCK_AWS_SECRET_ACCESS_KEY, BEDROCK_AWS_SESSION_TOKEN, BedrockAuth, validate_bedrock_region,
 };
 pub use converse::{CONVERSE_MAX_DOCUMENT_BYTES, CONVERSE_MAX_IMAGE_BYTES};
+#[cfg(feature = "google-cloud")]
+pub use vertex::{GOOGLE_GEMINI_LLM, VERTEX_GLOBAL, validate_vertex_location};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -111,6 +117,10 @@ pub enum Dialect {
     Anthropic,
     /// Amazon Bedrock's Converse API (`bedrock-runtime`), with a Bedrock API key or SigV4.
     Converse,
+    /// Gemini's `generateContent` on Google Cloud's Vertex AI, with a service account's access
+    /// token or an express-mode API key (#1151). Built only by [`LlmClient::google_vertex`] and
+    /// [`LlmClient::google_vertex_express`] (feature `google-cloud`).
+    Vertex,
 }
 
 /// Where to send chat requests.
@@ -377,7 +387,7 @@ impl ChatRequest {
         }
         check_tool_pairs(&self.messages)?;
         check_tools(&self.tools)?;
-        if dialect == Dialect::Anthropic && self.messages.last().is_some_and(|m| m.role == Role::Assistant) {
+        if matches!(dialect, Dialect::Anthropic | Dialect::Vertex) && self.messages.last().is_some_and(|m| m.role == Role::Assistant) {
             return bad("the conversation must end with a user message".into());
         }
         if let Some(t) = self.temperature {
@@ -403,6 +413,10 @@ impl ChatRequest {
         }
         if let Some((mime, _)) = images.iter().find(|(m, _)| !IMAGE_TYPES.contains(&m.as_str())) {
             return bad(format!("{mime} images can't be sent to chat models; use PNG, JPEG, GIF or WebP"));
+        }
+        // Gemini reads PNG, JPEG and WebP (and HEIC/HEIF, which NodeCraft doesn't send), not GIF.
+        if dialect == Dialect::Vertex && images.iter().any(|(m, _)| m.as_str() == "image/gif") {
+            return bad("Gemini on Vertex AI doesn't read GIF images; use PNG, JPEG or WebP".into());
         }
         if dialect == Dialect::Anthropic
             && let Some((_, n)) = images.iter().find(|(_, n)| *n > ANTHROPIC_MAX_IMAGE_BYTES)
@@ -533,6 +547,9 @@ pub struct LlmClient {
     http: Arc<dyn Http>,
     /// The endpoint's base URL was set by the person (#960), not the provider's own API.
     custom: bool,
+    /// A Google Cloud service account's access tokens, for Vertex AI (#1151).
+    #[cfg(feature = "google-cloud")]
+    google: Option<Arc<crate::google_cloud::Tokens>>,
 }
 
 impl std::fmt::Debug for LlmClient {
@@ -543,7 +560,13 @@ impl std::fmt::Debug for LlmClient {
 
 impl LlmClient {
     pub fn new(endpoint: Endpoint, http: Arc<dyn Http>) -> Self {
-        Self { endpoint, http, custom: false }
+        Self {
+            endpoint,
+            http,
+            custom: false,
+            #[cfg(feature = "google-cloud")]
+            google: None,
+        }
     }
 
     /// `endpoint` (with its id, dialect and key) served from `base` instead of its own API (#960),
@@ -552,7 +575,7 @@ impl LlmClient {
     /// again, and a spend header it sends is not trusted.
     pub fn with_base_url(mut endpoint: Endpoint, base: &crate::base_url::BaseUrl, http: Arc<dyn Http>) -> Self {
         endpoint.base_url = base.as_str().to_owned();
-        Self { endpoint, http, custom: true }
+        Self { custom: true, ..Self::new(endpoint, http) }
     }
 
     /// The spend a reply's headers report. Never read from a custom base URL: any server can
@@ -583,7 +606,7 @@ impl LlmClient {
     fn limits(&self, req: &ChatRequest, stream: bool) -> (usize, u64) {
         let sent_limit = match self.endpoint.dialect {
             Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
-            Dialect::OpenAi | Dialect::Converse => req.max_tokens,
+            Dialect::OpenAi | Dialect::Converse | Dialect::Vertex => req.max_tokens,
         };
         if stream {
             let cap = match sent_limit {
@@ -600,6 +623,7 @@ impl LlmClient {
         match (self.endpoint.dialect, &self.endpoint.key) {
             (Dialect::OpenAi | Dialect::Converse, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
             (Dialect::Anthropic, Some(key)) => http = http.secret_header("x-api-key", key.expose()),
+            (Dialect::Vertex, Some(key)) => http = http.secret_header("x-goog-api-key", key.expose()),
             (_, None) => {}
         }
         if self.endpoint.dialect == Dialect::Anthropic {
@@ -646,6 +670,13 @@ impl LlmClient {
             Dialect::OpenAi => self.openai_chat(req, on_text, context).await,
             Dialect::Anthropic => self.anthropic_chat(req, on_text, context).await,
             Dialect::Converse => self.converse_chat(req, on_text, context).await,
+            #[cfg(feature = "google-cloud")]
+            Dialect::Vertex => self.vertex_chat(req, on_text, context).await,
+            #[cfg(not(feature = "google-cloud"))]
+            Dialect::Vertex => {
+                let _ = (on_text, context);
+                Err(ProviderError::new(ErrorKind::UnsupportedInput, "this build has no Vertex AI chat (feature google-cloud)"))
+            }
         }
     }
 
@@ -654,6 +685,10 @@ impl LlmClient {
         if self.endpoint.dialect == Dialect::Converse {
             // Bedrock lists models on its control-plane host, not on `bedrock-runtime`.
             return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Bedrock's runtime has no model list; pick a model from the catalog"));
+        }
+        if self.endpoint.dialect == Dialect::Vertex {
+            // Vertex AI lists publisher models on another API (Model Garden), with other rights.
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Vertex AI chat has no model list here; pick a model from the catalog"));
         }
         let mut ids = Vec::new();
         let mut after: Option<String> = None;
@@ -704,6 +739,10 @@ impl LlmClient {
             Dialect::OpenAi => openai::error(response.status, &response.body),
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
             Dialect::Converse => converse::error(response.status, &response.headers, &response.body),
+            #[cfg(feature = "google-cloud")]
+            Dialect::Vertex => vertex::error(response.status, &response.body),
+            #[cfg(not(feature = "google-cloud"))]
+            Dialect::Vertex => ProviderError::from_status(response.status, &response.body),
         };
         e.retry_after_ms = retry_after(response.header("retry-after"));
         Err(e)

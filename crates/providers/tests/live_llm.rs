@@ -3,7 +3,8 @@
 //! (likewise `NODECRAFT_LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=…`, `NODECRAFT_LIVE_OLLAMA=1`,
 //! `NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=…` (and `_BEDROCK_CONVERSE` for
 //! the native Converse API with the same variables), and `NODECRAFT_LIVE_DEEPSEEK`,
-//! `_MISTRAL`, `_GROQ`, `_XAI` with `<PROVIDER>_API_KEY`).
+//! `_MISTRAL`, `_GROQ`, `_XAI` with `<PROVIDER>_API_KEY`; `NODECRAFT_LIVE_GOOGLE_VERTEX=1
+//! GOOGLE_VERTEX_KEY_FILE=…` for Gemini on Vertex AI).
 
 #![cfg(all(feature = "http", feature = "llm", not(target_arch = "wasm32")))]
 
@@ -230,4 +231,48 @@ async fn live_groq() {
 #[tokio::test(flavor = "current_thread")]
 async fn live_xai() {
     live_vendor("XAI", Endpoint::xai, "grok-4.3").await;
+}
+
+/// `NODECRAFT_LIVE_GOOGLE_VERTEX=1 GOOGLE_VERTEX_KEY_FILE=/path/to/key.json`: one short paid
+/// chat with Gemini on Vertex AI (#1151), streamed and then whole, then one tool call, signed in
+/// as that service account (billed to its project). `NODECRAFT_LIVE_GOOGLE_VERTEX_MODEL` picks
+/// the model, `GOOGLE_VERTEX_LOCATION` the location (`global` unless set). The key file is read
+/// only from this test's own variable and never printed.
+#[cfg(feature = "google-cloud")]
+#[tokio::test(flavor = "current_thread")]
+async fn live_google_vertex1151() {
+    if !enabled("GOOGLE_VERTEX") {
+        return;
+    }
+    let path = std::env::var("GOOGLE_VERTEX_KEY_FILE").unwrap();
+    let secret = nodecraft_providers::google_cloud::compact(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let location = std::env::var("GOOGLE_VERTEX_LOCATION").unwrap_or_else(|_| "global".into());
+    let model = std::env::var("NODECRAFT_LIVE_GOOGLE_VERTEX_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into());
+    let http = Arc::new(ReqwestHttp::new().unwrap());
+    let client = LlmClient::google_vertex(&secret, &location, http, nodecraft_providers::google_cloud::system_clock()).unwrap();
+    let request = ChatRequest { max_tokens: Some(512), ..ask(&model) };
+    let mut pieces = String::new();
+    let streamed = client.chat_stream(&request, &mut |p| pieces.push_str(p)).await.unwrap();
+    assert!(!streamed.text.trim().is_empty(), "{streamed:?}");
+    assert_eq!(pieces, streamed.text);
+    let whole = client.chat(&request).await.unwrap();
+    assert!(!whole.text.trim().is_empty(), "{whole:?}");
+    let tool = nodecraft_providers::llm::Tool {
+        name: "get_weather".into(),
+        description: "The current weather in a city".into(),
+        input_schema: serde_json::json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}),
+        strict: false,
+    };
+    let mut request =
+        ChatRequest { messages: vec![Message::user("Use the get_weather tool for Oslo.")], tools: vec![tool], max_tokens: Some(1024), ..ask(&model) };
+    let called = client.chat_stream(&request, &mut |_| {}).await.unwrap();
+    let call = called.tool_calls().find(|c| c.name == "get_weather").map(|c| c.id.to_owned()).unwrap();
+    // The next turn carries the call's thought signature back, which Gemini 3 checks.
+    request.messages.push(called.message.clone());
+    request.messages.push(nodecraft_providers::llm::Message {
+        role: nodecraft_providers::llm::Role::User,
+        parts: vec![nodecraft_providers::llm::Part::ToolResult { id: call, content: "8°C and clear".into(), is_error: false }],
+    });
+    let answered = client.chat(&request).await.unwrap();
+    assert!(!answered.text.trim().is_empty(), "{answered:?}");
 }

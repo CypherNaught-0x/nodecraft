@@ -116,6 +116,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `google-gemini-images.3.1-flash` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation) | 2026-10-27 |
 | `google-gemini-images.3.1-flash-lite` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation) | 2026-10-27 |
 | `google-gemini-images.nano-banana-2.1` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/capabilities/image-generation) | 2026-10-27 |
+| `google-gemini-llm.3.8-flash` | [Documentation](https://docs.cloud.google.com/vertex-ai/generative-ai/docs/models/gemini/3-8-flash) | 2026-11-08 |
 | `google-tts.chirp3-hd` | [Documentation](https://docs.cloud.google.com/text-to-speech/docs/list-voices-and-types) | 2026-10-27 |
 | `google-tts.gemini-2.5-flash` | [Documentation](https://docs.cloud.google.com/text-to-speech/docs/gemini-tts) | 2026-10-27 |
 | `google-tts.gemini-2.5-flash-lite` | [Documentation](https://docs.cloud.google.com/text-to-speech/docs/gemini-tts) | 2026-10-27 |

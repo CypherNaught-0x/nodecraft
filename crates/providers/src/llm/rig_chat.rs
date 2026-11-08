@@ -23,7 +23,13 @@ pub(super) struct Rules {
     pub event: fn(&Value) -> ProviderError,
     /// What a whole reply that doesn't end the turn is called.
     pub unended: &'static str,
+    /// The dialect's own reading of an error the crate raised from a 2xx reply, before the
+    /// shared one: Gemini's blocked prompt, which the crate words in its own terms.
+    pub crate_error: Option<CrateRule>,
 }
+
+/// Reads one of the crate's errors, or leaves it to the shared reading.
+type CrateRule = fn(&rig_core::ProviderError) -> Option<ProviderError>;
 
 /// The crate's error in NodeCraft's terms, from what the transport saw first: its own failure as
 /// it raised it, an error status by the dialect's rules, then the crate's reading of the reply.
@@ -36,6 +42,11 @@ pub(super) fn failure(error: &rig_core::ProviderError, exchange: Exchange, strea
             return e;
         }
         _ => {}
+    }
+    if let Some(read) = rules.crate_error
+        && let Some(e) = read(error)
+    {
+        return e;
     }
     let malformed = |what: String| ProviderError::new(ErrorKind::Malformed, what);
     // An error event inside a 200 reply.

@@ -24,17 +24,17 @@ const Q: [&str; 3] = [
     "9e1dbdcb5d2c004bb56917fb5ded3ebc9891f86b0e161aa9040f7ac42e93e208a7f9a0e2e3c4ca9c787436b9e770954d",
     "87eaf78ddf780eae481eaa5a22c7b6a0cf8b7bf4eda17f32680190a435da22ed",
 ];
-pub(super) const EMAIL: &str = "fixture@nodecraft-test.iam.gserviceaccount.com";
-pub(super) const PROJECT: &str = "nodecraft-test";
+pub(crate) const EMAIL: &str = "fixture@nodecraft-test.iam.gserviceaccount.com";
+pub(crate) const PROJECT: &str = "nodecraft-test";
 const KEY_ID: &str = "0123456789abcdef0123456789abcdef01234567";
-pub(super) const NOW: u64 = 1_790_000_000;
+pub(crate) const NOW: u64 = 1_790_000_000;
 
 fn fixture_key() -> RsaPrivateKey {
     let prime = |chunks: [&str; 3]| BigUint::parse_bytes(chunks.concat().as_bytes(), 16).unwrap();
     RsaPrivateKey::from_p_q(prime(P), prime(Q), BigUint::from(65_537u32)).unwrap()
 }
 /// A key file as Google Cloud's console downloads it.
-pub(super) fn key_file() -> Value {
+pub(crate) fn key_file() -> Value {
     json!({
         "type": "service_account",
         "project_id": PROJECT,
@@ -48,24 +48,24 @@ pub(super) fn key_file() -> Value {
     })
 }
 /// The keychain value for the fixture account.
-pub(super) fn stored() -> Secret {
+pub(crate) fn stored() -> Secret {
     compact(&serde_json::to_string_pretty(&key_file()).unwrap()).unwrap()
 }
-pub(super) fn fixed_clock(now: u64) -> Clock {
+pub(crate) fn fixed_clock(now: u64) -> Clock {
     Arc::new(move || Some(now))
 }
 
 /// The fixture transport: replies in order, and which of the two send paths each request took.
 #[derive(Default)]
-pub(super) struct Transport {
+pub(crate) struct Transport {
     requests: Mutex<Vec<(bool, HttpRequest)>>,
     replies: Mutex<VecDeque<Result<HttpResponse, ProviderError>>>,
 }
 impl Transport {
-    pub(super) fn new(replies: Vec<Result<HttpResponse, ProviderError>>) -> Arc<Self> {
+    pub(crate) fn new(replies: Vec<Result<HttpResponse, ProviderError>>) -> Arc<Self> {
         Arc::new(Self { requests: Mutex::new(vec![]), replies: Mutex::new(replies.into()) })
     }
-    pub(super) fn requests(&self) -> Vec<(bool, HttpRequest)> {
+    pub(crate) fn requests(&self) -> Vec<(bool, HttpRequest)> {
         self.requests.lock().unwrap().clone()
     }
     fn reply(&self, redirects: bool, r: HttpRequest) -> BoxFuture<'_, Result<HttpResponse, ProviderError>> {
@@ -82,10 +82,10 @@ impl Http for Transport {
         self.reply(false, r)
     }
 }
-pub(super) fn ok(v: Value) -> Result<HttpResponse, ProviderError> {
+pub(crate) fn ok(v: Value) -> Result<HttpResponse, ProviderError> {
     Ok(HttpResponse { status: 200, headers: vec![], body: serde_json::to_vec(&v).unwrap() })
 }
-pub(super) fn granted(token: &str) -> Result<HttpResponse, ProviderError> {
+pub(crate) fn granted(token: &str) -> Result<HttpResponse, ProviderError> {
     ok(json!({"access_token": token, "expires_in": 3599, "token_type": "Bearer"}))
 }
 
