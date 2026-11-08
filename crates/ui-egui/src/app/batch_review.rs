@@ -6,6 +6,8 @@ use super::*;
 use nodecraft_graph::{Generation, ItemTag, Missing};
 use nodecraft_types::ItemId;
 
+/// The Batch items panel's id.
+pub(super) const BATCH_REVIEW_ID: &str = "nodecraft.batch_review";
 /// Longest label shown for one item's value.
 const MAX_LABEL_CHARS: usize = 40;
 /// Longest text shown for the item being reviewed; the rest is on the card.
@@ -253,6 +255,10 @@ impl NodeCraftApp {
     /// The batch items review window, while open.
     pub(super) fn batch_review_window(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(mut open_review) = self.batch_review.take() else { return };
+        // Escape closes it; the shell takes the key before the canvas reads it (`tool_escape`).
+        if std::mem::take(&mut self.tool_escape) == Some(super::ToolEscape::Batch) {
+            return;
+        }
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         let Some(node) = canvas.nodes().get(&open_review.node) else { return };
         let title = crate::card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor()));
@@ -287,13 +293,11 @@ impl NodeCraftApp {
         let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, open_review.node));
         let mut open = true;
         let mut pick = None;
-        let frame = crate::theme::panel_frame(t);
-        crate::floating::on_screen(egui::Window::new("Batch items"), ctx, Some(t.batch_review_width), t)
-            .id(egui::Id::new("nodecraft.batch_review"))
+        // A tool the person works in beside the canvas: a floating review panel (#1116).
+        crate::floating::panel(ctx, "Batch items", egui::Id::new(BATCH_REVIEW_ID), crate::floating::Home::CenterTop, t)
             .open(&mut open)
-            .constrain_to(self.viewport)
-            .collapsible(false)
-            .frame(frame)
+            .default_width(t.batch_review_width)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(&title).strong());
                 if running {

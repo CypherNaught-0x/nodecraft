@@ -645,6 +645,8 @@ pub struct NodeCraftApp {
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
     /// View-only draft of an existing workflow card's field selection (#947).
     comfy_mapping: Option<comfy_mapping::Editor>,
+    /// The tool panel this frame's Escape closes, taken before the canvas reads keys (#1116).
+    tool_escape: Option<ToolEscape>,
     /// The ComfyUI server's address and its check (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_server: comfy_server::ComfyServerPanel,
@@ -1332,6 +1334,7 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
             comfy_mapping: None,
+            tool_escape: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_server: comfy_server::ComfyServerPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1482,6 +1485,8 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        // Questions own the keyboard before any canvas handler reads it (#1116).
+        model_blocks |= self.rename_window(ui.ctx());
         model_blocks |= self.text_previews.overlay(ui.ctx(), t);
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
@@ -1497,6 +1502,9 @@ impl NodeCraftApp {
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
             return;
         }
+        // Tool panels drawn later in the frame close on Escape; the key is taken here, before
+        // any canvas handler reads it (#1116).
+        self.tool_escape = self.take_tool_escape(ui.ctx(), model_blocks || file_owns_input || file_menu_owns_input);
         let bulk_enabled = !model_blocks
             && !file_owns_input
             && !file_menu_owns_input
@@ -2919,6 +2927,58 @@ impl NodeCraftApp {
         })
     }
 
+    /// Which open tool panel this frame's Escape closes: the frontmost of Workflow fields and
+    /// Batch items, when nothing else owns the key. Every other Escape owner comes first: a
+    /// question, a popup, the quick-add palette or Turn into, a text field (Escape leaves it
+    /// first), the keyboard connect flow, Search (unless something blocks it), Discussions, the
+    /// Tag filter while it has the focus, any drag or gesture (card, box, wire, reorder, field,
+    /// comment pin, minimap, a slider) and a browser file read. The key is consumed, so the
+    /// canvas doesn't also act on it.
+    fn take_tool_escape(&mut self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
+        #[cfg(any(test, target_arch = "wasm32"))]
+        let reading = self.web_drop.is_some();
+        #[cfg(not(any(test, target_arch = "wasm32")))]
+        let reading = false;
+        // Search and the Tag filter take Escape only when they can: open Search not blocked by
+        // something else, a Tag filter holding the keyboard focus.
+        let search = self.search.open && !self.search_context(ctx).blocked;
+        let owned = blocked
+            || self.text_focused
+            || canvas::text_input_focused(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || ctx.dragged_id().is_some()
+            || self.palette.is_some()
+            || self.turn_into.is_some()
+            || self.key_wiring.is_some()
+            || search
+            || self.comments.open
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || self.tag_owns_focus(ctx)
+            || self.drag.is_some()
+            || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.fields.drag.is_some()
+            || self.navigation.pointer_owned
+            || self.navigation.drag.is_some()
+            || self.drop_pointer_owned()
+            || reading;
+        if owned {
+            return None;
+        }
+        let open = [
+            self.comfy_mapping.as_ref().map(|editor| (ToolEscape::Mapping, editor.panel_id())),
+            self.batch_review.as_ref().map(|_| (ToolEscape::Batch, egui::Id::new(batch_review::BATCH_REVIEW_ID))),
+        ];
+        let front = ctx.memory(|m| {
+            let order: Vec<egui::LayerId> = m.layer_ids().collect();
+            open.into_iter().flatten().max_by_key(|(_, id)| order.iter().position(|layer| *layer == crate::floating::layer(*id)))
+        });
+        let (tool, _) = front?;
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)).then_some(tool)
+    }
+
     /// What every plan §2.1 canvas letter yields to, so that quick-add (#267) and the prompt
     /// overlays' `H` (#321) cannot drift apart. Each term is a reader of state only: nothing here
     /// consumes an event, so a refused letter stays unconsumed for whoever does own it.
@@ -3642,6 +3702,13 @@ impl NodeCraftApp {
         }
         self.live.stop(deadline);
     }
+}
+
+/// A tool panel Escape can close (#1116).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolEscape {
+    Mapping,
+    Batch,
 }
 
 impl eframe::App for NodeCraftApp {

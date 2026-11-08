@@ -700,16 +700,42 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   `panel_cascade` (44) until every open panel's title and close button stay visible.
 - Position, size and stacking are view state in egui memory, never document changes or undo steps.
 
+**Dialogs: questions and tools** (#1116, [decision](decisions/2026-11-08-dialogs-question-or-tool.md)):
+
+- A **question** the person must answer before continuing (a confirmation, a rename) is a modal
+  built by `floating::question`: centred over a dimmed window, in the shared panel frame
+  (`theme::panel_frame`), no wider or taller than the window less its margins. **Enter** takes its
+  primary action and **Escape** cancels; it reads both with `floating::answer_keys` before it is
+  drawn, consuming them, and is drawn before any canvas handler, so neither key also reaches the
+  canvas. Only a fresh press counts: key repeats never answer, and Enter answers only after it has
+  been released since the question opened (an Enter held in the step before can't also answer
+  it). With one of its buttons focused (Tab), Enter presses that button, so a focused Cancel
+  cancels. A question whose only action loses work answers Enter with nothing (browser Unsaved
+  changes: **Discard and open** takes a click). Clicking the dimmed backdrop cancels too. Screen
+  readers see it as a `Dialog` named by its title.
+- A **tool** the person works alongside is a floating panel (`floating::panel`); the fixed Shared
+  parameters panel is `floating::pinned`. Escape closes the frontmost of Workflow fields and Batch
+  items, taken before the canvas reads it, but only when no other Escape owner is active: a
+  question, a popup, quick-add or Turn into, a text field (Escape leaves it first), the keyboard
+  connect flow, Search, Discussions, the Tag filter, any drag or gesture, or a browser file read
+  each take Escape first and the tool stays open. Choose a model and Project files close on
+  Escape too.
+- Nothing uses a raw `egui::Window`: `floating.rs` is the only place that builds one (inside
+  `panel` and `pinned`), and `floating::tests::no_raw_windows_outside_floating` fails on a new one
+  elsewhere in non-test code.
+
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
-| Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
-| Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
+| Custom shader, Image viewer, PDF reader, Charges to review, Batch items, Workflow fields, Choose a model | floating panel (viewer/review/tool) | header | right/bottom edges, corner | close button or Escape |
+| Project files (File menu) | floating panel, opening below the File button (#1123 makes it a menu) | header | right/bottom edges, corner | close button, File or Escape |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
-| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
+| Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
+| Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
+| Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
 | Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
@@ -728,9 +754,8 @@ on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) cr
 control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
 tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
 again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
-Windows that aren't floating panels get `panel_check::check_window`: open, on the screen, and no
-crossing controls. A window that only shows a message gets `check_message_window`, which
-accepts a window with no controls.
+Questions (`floating::question`, #1116) get `panel_check::check_question`: open, on the screen,
+and no crossing controls inside their `Dialog` node.
 
 | Surface | Opens from | Kind | Covered by |
 |---|---|---|---|
@@ -743,20 +768,21 @@ accepts a window with no controls.
 | Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
 | PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
-| Batch items | a fanned card's menu, Review items… | window | `batch_review_tests` (with the window check) |
-| Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | window | `comfy_mapping::tests` (with the window check) |
-| Project files | the File button (top left) | window | `file_dialogs::tests` (with the window check, at 1000 × 700 and 1600 × 900) |
-| Choose a model | a card's Change model… | window | `models::comfy970_tests` (with the window check, while searching) |
-| Rename field | a field's menu, Rename field… | window | `fields_tests` (with the window check) |
-| Review model change, Model preview changed | the model picker, after a choice | window | `models::tests` (with the window check) |
-| Model choice unavailable | the model picker, when it can't offer a choice | window, message only | `models::tests` (with the message-window check) |
+| Batch items | a fanned card's menu, Review items… | floating panel | `batch_review_tests` (with the layout check; at 640 × 400 with Escape) |
+| Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | floating panel | `comfy_mapping::tests` (with the layout check; at 640 × 400 with Escape) |
+| Project files | the File button (top left) | floating panel | `file_dialogs::tests` (with the layout check, at 1000 × 700 and 1600 × 900), `small_windows1115_tests` (640 × 400, below the File button, Escape) |
+| Choose a model | a card's Change model… | floating panel | `models::comfy970_tests` (with the layout check, while searching), `models::tests` (640 × 400, Escape; a failed choice shows at its top) |
+| Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
+| Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
+| Review model change, Model preview changed | the model picker, after a choice | question | `models::tests` (with the question check; at 640 × 400, Enter applies or refreshes, Escape cancels) |
+| Unsaved changes (browser) | File, Open… over unsaved changes | question | `web_files::tests` (on screen at 640 × 400, Escape keeps the project, Enter does nothing) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |
 | Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
 
-Windows that aren't floating panels are kept on the screen with `floating::on_screen` (#1115): no
-wider than the window less its margins, and held inside it. Replacing them is #1116.
+Since #1116 there are no windows outside `floating.rs`: questions are modals sized to the window,
+tools are floating panels clamped to the panel area.
 `small_windows1115_tests` opens Techniques, Budgets, API keys and Project files at 640 × 400,
 800 × 520 and 1440 × 900 with the layout checks.
 
@@ -771,8 +797,9 @@ definition, export, results save, file progress, unsaved-changes confirmation), 
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
 Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
 states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
-Escape is left for its own change: several canvas and dialog handlers read Escape without
-consuming it, so a panel close needs them fixed first.
+The dialogs migrated in #1116 consume their Escape (each test checks the canvas selection
+survives it); the remaining top-bar panels still close only by their button, since several canvas
+handlers read Escape without consuming it.
 
 ## Saving results
 

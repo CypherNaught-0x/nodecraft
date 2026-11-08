@@ -2,7 +2,7 @@
 //! the application row fits the window and only moves entries into More from its right, Search
 //! and Comments stay in the row, the navigation panel leaves the canvas mostly clear, and the
 //! panels and windows opened from the shell stay on the screen.
-use super::panel_check::{check_open_panels, check_window};
+use super::panel_check::check_open_panels;
 use super::topbar_tests::reveal;
 use super::*;
 use egui::accesskit::Role;
@@ -183,6 +183,48 @@ fn panels_and_windows_stay_on_screen_at_every_size() {
         }
         h.get_by_label("File").click();
         h.run_steps(4);
-        check_window(&h, egui::Id::new("project_files407"), &format!("Project files at {size:?}"));
+        check_open_panels(&h, &format!("Project files at {size:?}"));
     }
+}
+
+/// #1116: Project files is a floating panel opening under the File button, in the panel area at
+/// 640 × 400; Escape closes it and doesn't also clear the canvas selection.
+#[test]
+fn dialogs1116_project_files_is_a_panel_and_escape_closes_only_it() {
+    let mut h = harness(SIZES[0], crate::theme::ThemeKind::Dark);
+    let node = *h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().keys().next().unwrap();
+    h.state_mut().selection.only(node);
+    h.get_by_label("File").click();
+    h.run_steps(4);
+    check_open_panels(&h, "Project files at 640 × 400");
+    let panel = h.get_by_role_and_label(Role::Window, "Project files").rect();
+    let file = h.get_by_role_and_label(Role::Button, "File").rect();
+    assert!(panel.top() >= file.bottom() - 1.0, "it opens below the File button: {panel:?} {file:?}");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_role_and_label(Role::Window, "Project files").is_none());
+    assert!(h.state().selection.nodes().contains(&node), "Escape closed the panel without reaching the canvas");
+}
+
+/// #1116: the Shared parameters panel stays pinned on the screen at 640 × 400; it closes when
+/// Escape clears the selection it edits.
+#[test]
+fn dialogs1116_shared_parameters_stay_on_screen_and_go_with_the_selection() {
+    let mut h = harness(SIZES[0], crate::theme::ThemeKind::Dark);
+    let canvas = h.state().canvas;
+    let mut nodes = std::collections::BTreeSet::new();
+    for n in [201, 202] {
+        let node = nodecraft_graph::Node::new(NodeId::from_bytes([n; 16]), "source.text");
+        h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": node})).unwrap();
+        nodes.insert(node.id);
+    }
+    h.state_mut().selection.replace(nodes);
+    h.run_steps(4);
+    let panel = h.get_by_role_and_label(Role::Window, "Shared parameters").rect();
+    let screen = h.ctx.content_rect();
+    assert!(screen.contains_rect(panel), "{panel:?} leaves the window {screen:?}");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().selection.nodes().is_empty());
+    assert!(h.query_by_role_and_label(Role::Window, "Shared parameters").is_none());
 }

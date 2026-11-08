@@ -3525,11 +3525,11 @@ fn bulk71_unavailable_models_use_shared_repair_picker_and_one_exact_undo() {
     assert!(!apply_node.accesskit_node().is_disabled(), "{apply_node:?}");
     let apply_rect = apply_node.rect();
     assert!(h.ctx.content_rect().contains_rect(apply_rect), "Apply {apply_rect:?} outside {:?}", h.ctx.content_rect());
-    let window_rect = h.get_by_role_and_label(Role::Window, "Review model change").rect();
+    let window_rect = h.get_by_role_and_label(Role::Dialog, "Review model change").rect();
     assert!(window_rect.contains_rect(apply_rect), "Apply {apply_rect:?} outside review {window_rect:?}");
     let apply = apply_rect.center();
     bulk71_model_click(&mut h, apply);
-    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Window, "Review model change"));
+    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Dialog, "Review model change"));
     for id in ids {
         assert_eq!(
             h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("model"),
@@ -3612,7 +3612,7 @@ fn bulk71_real_catalog_media() {
         assert!(h.query_by_label_contains("Drop quality").is_some());
         let apply = h.get_by_label("Apply model change");
         assert!(!apply.accesskit_node().is_disabled());
-        assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Review model change").rect().contains_rect(apply.rect()));
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change").rect().contains_rect(apply.rect()));
         h.render().unwrap().save(out.join("review.png")).unwrap();
     }
     assert_eq!(h.state().session.document(), &project);
