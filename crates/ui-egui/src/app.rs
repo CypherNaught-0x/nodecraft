@@ -2824,27 +2824,36 @@ impl NodeCraftApp {
             match open.show(ui.ctx(), &entries, t) {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
-                palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
+                // Recent remembers a choice only once it has run (#1121).
+                palette::Outcome::Chosen(palette::Target::Kind(kind)) => {
+                    let revision = self.session.revision();
+                    self.create_node(&kind, open.world);
+                    if self.session.revision() != revision {
+                        palette::remember(ui.ctx(), &palette::Target::Kind(kind));
+                    }
+                }
                 palette::Outcome::Chosen(palette::Target::Command("perf.report")) => match self.session.dispatch("perf.report", &json!({})) {
                     // The report is for reading elsewhere: put it on the clipboard.
                     Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
                         self.notice = Some("Performance report copied to the clipboard.".into());
+                        palette::remember(ui.ctx(), &palette::Target::Command("perf.report"));
                     }
                     Err(error) => self.notice = Some(error.message),
                 },
                 palette::Outcome::Chosen(palette::Target::Command(id)) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
-                        self.begin_file(id, ui.ctx());
+                    // A file command runs once its file is picked; choosing it opens the picker.
+                    let ran = if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let started = self.begin_file(id, ui.ctx());
+                        #[cfg(target_arch = "wasm32")]
+                        let started = self.web_file(id, ui.ctx());
+                        started
                     } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
-                        self.web_file(id, ui.ctx());
-                    } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
+                        self.dispatch_live_palette_command(ui.ctx(), id)
+                    };
+                    if ran {
+                        palette::remember(ui.ctx(), &palette::Target::Command(id));
                     }
                 }
             }
@@ -3497,33 +3506,35 @@ impl NodeCraftApp {
         }
     }
 
-    /// What the palette offers: every node kind, then every command that runs without
-    /// parameters right now, plus the active canvas staleness query.
+    /// What the palette offers, in listing order (#1121): every node kind, every command that
+    /// runs without parameters (or with the active canvas), and those that can't run now with
+    /// the reason their `enabled` gives.
     fn palette_entries(&self) -> Vec<palette::Entry> {
-        let mut kinds: Vec<palette::Entry> = self
-            .session
-            .kinds()
-            .descriptors()
-            .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
-            .collect();
-        kinds.sort_by(|a, b| a.label.cmp(&b.label));
-        let commands = self
-            .session
-            .registry()
-            .specs()
-            .filter(|spec| {
-                // Live view commands are admitted separately with fresh shell context.
-                if Self::is_navigation_command(spec.id) {
-                    return false;
+        let mut entries: Vec<palette::Entry> = self.session.kinds().descriptors().map(palette::Entry::kind).collect();
+        for spec in self.session.registry().specs() {
+            // Live view commands are admitted separately with fresh shell context.
+            if Self::is_navigation_command(spec.id) {
+                continue;
+            }
+            // They pick their file when chosen.
+            if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
+                if self.session.file_status().available {
+                    entries.push(palette::Entry::command(spec, None));
                 }
-                // They pick their file when chosen.
-                if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
-                    return self.session.file_status().available;
-                }
-                self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()
-            })
-            .map(|spec| palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) });
-        kinds.into_iter().chain(commands).collect()
+                continue;
+            }
+            let params = self.palette_command_params(spec.id);
+            if !palette::takes(spec, &params) {
+                continue;
+            }
+            match self.session.enabled(spec.id, &params) {
+                Ok(()) => entries.push(palette::Entry::command(spec, None)),
+                Err(error) if palette::explains(&error) => entries.push(palette::Entry::command(spec, Some(&error))),
+                Err(_) => {}
+            }
+        }
+        palette::sort(&mut entries);
+        entries
     }
 
     /// Paint the noodle being dragged and, once the pointer is released, choose the command it
@@ -3924,6 +3935,8 @@ mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;
+#[cfg(test)]
+mod palette1121_tests;
 #[cfg(test)]
 mod palette_scroll_tests;
 #[cfg(test)]

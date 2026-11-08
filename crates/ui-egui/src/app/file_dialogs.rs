@@ -270,41 +270,50 @@ impl NodeCraftApp {
         self.begin_file(id, ctx);
         self.notice.take()
     }
-    pub(super) fn begin_file(&mut self, id: &str, ctx: &egui::Context) {
+    /// Starts an open, save or save as; whether it started (a save, or a picker opened). A busy
+    /// file operation, unavailable storage or uncommitted edits refuse it.
+    pub(super) fn begin_file(&mut self, id: &str, ctx: &egui::Context) -> bool {
         if self.files.pending.is_some() || self.file_busy(ctx) {
-            return;
+            return false;
         }
         if let Some(message) = self.file_unavailable_message() {
             self.notice = Some(message);
             self.files.menu_open = true;
             self.files.own_frame(ctx);
             ctx.request_repaint();
-            return;
+            return false;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
-            return;
+            return false;
         }
         if !self.commit_mesh_views(ctx, true) {
-            return;
+            return false;
         }
         self.files.own_frame(ctx);
         self.notice = None;
         let status = self.session.file_status();
         if id == "file.save" && status.location.is_some() && !status.read_only {
             self.start_file_save(None, None, Stamp::capture(self));
-            return;
+            return true;
         }
         let purpose = if id == "file.open" { Purpose::Open } else { Purpose::Save { then_open: None } };
-        self.start_picker(Stamp::capture(self), purpose);
+        let started = self.start_picker(Stamp::capture(self), purpose);
         ctx.request_repaint();
+        started
     }
-    fn start_picker(&mut self, stamp: Stamp, purpose: Purpose) {
+    fn start_picker(&mut self, stamp: Stamp, purpose: Purpose) -> bool {
         let save = matches!(purpose, Purpose::Save { .. });
         let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.files.picker)(save)));
         match future {
-            Ok(Ok(future)) => self.files.pending = Some(Pending { stamp, phase: Phase::Picking { future, purpose } }),
-            _ => self.notice = Some("The native file picker could not be opened. Try again or use an explicit file command.".into()),
+            Ok(Ok(future)) => {
+                self.files.pending = Some(Pending { stamp, phase: Phase::Picking { future, purpose } });
+                true
+            }
+            _ => {
+                self.notice = Some("The native file picker could not be opened. Try again or use an explicit file command.".into());
+                false
+            }
         }
     }
     fn remember_project(&mut self, path: &Path) {

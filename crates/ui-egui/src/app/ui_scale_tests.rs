@@ -165,14 +165,18 @@ fn the_palette_offers_the_size_commands_that_would_do_something() {
         h.state()
             .palette_entries()
             .into_iter()
-            .filter(|entry| matches!(entry.target, palette::Target::Command(id) if id.starts_with("view.ui_scale.")))
+            // Only the entries the palette would run: since #1121 it also lists the ones that
+            // can't run now, greyed with their reason.
+            .filter(|entry| entry.available() && matches!(entry.target, palette::Target::Command(id) if id.starts_with("view.ui_scale.")))
             .map(|entry| entry.label)
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
             .collect()
     };
-    assert_eq!(offered(&h), ["Smaller interface", "Larger interface"]);
+    assert_eq!(offered(&h), ["Larger interface", "Smaller interface"]);
     h.state_mut().session.dispatch("view.ui_scale.set", &json!({"percent": 200})).unwrap();
     h.run();
-    assert_eq!(offered(&h), ["Smaller interface", "Reset interface size"]);
+    assert_eq!(offered(&h), ["Reset interface size", "Smaller interface"]);
 }
 
 #[test]

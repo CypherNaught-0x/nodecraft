@@ -23,6 +23,7 @@ mod comfy_partner_quotes;
 pub mod comfy_server_cmds;
 pub mod comfy_workflow_cmds;
 mod command_schemas;
+pub mod command_summary;
 pub mod commands;
 pub mod comment_cmds;
 pub mod copy_cmds;

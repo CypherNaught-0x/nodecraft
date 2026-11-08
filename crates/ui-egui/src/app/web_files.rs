@@ -265,18 +265,19 @@ impl NodeCraftApp {
         Ok(app)
     }
 
-    /// Open, save or save as in the browser: `file.open`, `file.save` or `file.save_as`.
-    pub(super) fn web_file(&mut self, id: &str, ctx: &egui::Context) {
+    /// Open, save or save as in the browser: `file.open`, `file.save` or `file.save_as`. Whether
+    /// it started: a running save or open, or uncommitted edits, refuse it.
+    pub(super) fn web_file(&mut self, id: &str, ctx: &egui::Context) -> bool {
         if self.web_files.blocking() {
             self.notice = Some("Wait for the current save or open to finish.".into());
-            return;
+            return false;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
             self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
-            return;
+            return false;
         }
         if !self.commit_mesh_views(ctx, true) {
-            return;
+            return false;
         }
         let status = self.session.file_status();
         let current = status.location.as_ref().and_then(|location| key(location).ok()).map(str::to_owned);
@@ -291,9 +292,10 @@ impl NodeCraftApp {
                 let suggested = current.as_deref().map_or("Untitled.ncraft", file_name).to_owned();
                 self.web_files.phase = Some(Phase::Naming(self.web_files.port.save_as(&suggested)));
             }
-            _ => return,
+            _ => return false,
         }
         self.web_files_frame(ctx);
+        true
     }
 
     /// Moves a pick or write along, and shows the unsaved-changes question. True while that

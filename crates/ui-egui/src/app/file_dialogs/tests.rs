@@ -1401,3 +1401,28 @@ fn file1123_menu_entries_run_the_file_flows() {
         assert!(!h.state().files.menu_open, "{label} closed the menu");
     }
 }
+
+/// #1121: the palette's Recent keeps Open project only once its picker opened.
+#[test]
+fn a_refused_open_from_the_palette_is_not_remembered_as_recent() {
+    let dir = Scratch::new("palette-recent-open");
+    let mut app = dir.app("journal");
+    app.files.picker = Box::new(|_| Err("Fixture native picker refused".into()));
+    let mut h = harness(app);
+    settle(&mut h);
+    let choose_open = |h: &mut Harness<'static, NodeCraftApp>| {
+        h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(200.0, 200.0)));
+        h.run();
+        h.event(egui::Event::Text("Open project".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        settle(h);
+        assert!(h.state().palette.is_none());
+    };
+    choose_open(&mut h);
+    assert!(h.state().notice.is_some(), "the refusal is explained");
+    assert!(crate::palette::recent(&h.ctx).is_empty(), "a refused Open isn't recent");
+    stub(h.state_mut(), vec![None]);
+    choose_open(&mut h);
+    assert_eq!(crate::palette::recent(&h.ctx), [crate::palette::Target::Command("file.open")]);
+}
