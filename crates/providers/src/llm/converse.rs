@@ -11,7 +11,8 @@
 //!
 //! Auth is a Bedrock API key as `Authorization: Bearer`, which AWS documents for Converse
 //! (<https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html>, checked
-//! 2026-11-08). SigV4 is not spoken here.
+//! 2026-11-08), or AWS credentials signed with SigV4 by the transport ([`crate::aws::SigV4Http`],
+//! #1163); this dialect is the same either way.
 //!
 //! Wire shapes, checked 2026-11-08 against the API reference:
 //! <https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html>,
@@ -280,6 +281,19 @@ pub(super) fn reply(v: &Value) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse::new(parts, stop, usage(v.get("usage"))))
 }
 
+/// What a refused signature means when the clock is off: AWS accepts requests signed within
+/// about 15 minutes of its own time.
+pub(crate) const SKEWED: &str =
+    "AWS refused the request's time: set this computer's clock to update automatically (AWS accepts about 15 minutes of difference), then try again";
+/// A signature AWS computed differently.
+pub(crate) const BAD_SIGNATURE: &str =
+    "AWS refused the request signature: check that the stored AWS secret access key belongs to the access key ID, and that this computer's clock is right";
+/// Temporary credentials past their expiry.
+pub(crate) const EXPIRED: &str = "AWS says the session credentials have expired: store a fresh session token, access key ID and secret access key in API keys";
+/// A key or token AWS doesn't know.
+pub(crate) const UNRECOGNISED: &str =
+    "AWS didn't recognise the credentials: check the Bedrock API key, or the AWS access key ID (and session token, for temporary credentials) in API keys";
+
 /// The error a Converse error name means, with `message` from the server.
 fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
     // Names come as `ThrottlingException` (HTTP), `throttlingException` (stream events), or with
@@ -296,15 +310,21 @@ fn named(name: &str, message: &str, status: Option<u16>) -> ProviderError {
                 format!("the AWS account's Bedrock quota for this model is used up; raise it in Service Quotas (the provider said: {message})"),
             );
         }
-        "accessdeniedexception"
-        | "unrecognizedclientexception"
-        | "invalidsignatureexception"
+        // Signature and credential refusals in NodeCraft's own words: AWS's message can quote
+        // the canonical request, session token included (#1163).
+        "invalidsignatureexception"
+        | "signaturedoesnotmatch"
         | "incompletesignature"
-        | "invalidclienttokenid"
-        | "expiredtokenexception"
-        | "notauthorized"
-        | "missingauthenticationtokenexception"
-        | "unauthorizedexception" => ErrorKind::Auth,
+        | "incompletesignatureexception"
+        | "requesttimetooskewed"
+        | "requesttimetooskewedexception" => {
+            let lower = message.to_ascii_lowercase();
+            let skewed = name.starts_with("requesttimetooskewed") || lower.contains("signature expired") || lower.contains("skew");
+            return ProviderError::new(ErrorKind::Auth, if skewed { SKEWED } else { BAD_SIGNATURE });
+        }
+        "expiredtokenexception" | "expiredtoken" | "requestexpired" => return ProviderError::new(ErrorKind::Auth, EXPIRED),
+        "unrecognizedclientexception" | "invalidclienttokenid" => return ProviderError::new(ErrorKind::Auth, UNRECOGNISED),
+        "accessdeniedexception" | "notauthorized" | "missingauthenticationtokenexception" | "unauthorizedexception" => ErrorKind::Auth,
         "validationexception" | "validationerror" => {
             // Bedrock names a prompt past the model's context window only in its message.
             let lower = message.to_ascii_lowercase();
@@ -571,5 +591,7 @@ impl LlmClient {
     }
 }
 
+#[cfg(test)]
+mod sigv4_tests;
 #[cfg(test)]
 mod tests;

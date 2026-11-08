@@ -38,6 +38,7 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | `assets/icons/tabler/plug-connected.svg` | Tabler outline plug-connected icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/plug-connected.svg) | MIT |
 | `assets/icons/tabler/file.svg` | Tabler outline file icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/file.svg) | MIT |
 | `assets/icons/tabler/tag.svg` | Tabler outline tag icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/tag.svg) | MIT |
+| `crates/providers/src/aws/fixtures/sigv4/` | AWS SigV4 test-suite cases (22 of `tests/aws-signing-test-suite/v4`, unmodified: `context.json`, `request.txt` and the expected canonical request, string to sign and signature; AWS's public example credentials only) | Amazon.com, Inc. or its affiliates | [awslabs/aws-c-auth@bdb7cef](https://github.com/awslabs/aws-c-auth/tree/bdb7cef99d8bd1ad3c189b1400140a7787e47105/tests/aws-signing-test-suite/v4) | Apache-2.0 |
 
 ## Tabler icon license
 

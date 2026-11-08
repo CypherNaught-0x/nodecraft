@@ -24,7 +24,7 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
-| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | OpenAI route: text → text, streaming. Converse: text, images (≤ 3.75 MB each) and PDFs (≤ 4.5 MB each) + text → text, tools, reasoning kept across turns, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. Native Converse (`Endpoint::bedrock_converse`, #1150) for whole and streamed chat, with no card yet; its live smoke test has not been run. No SigV4, AWS SDK or AWS credential discovery. See below. |
+| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock`; or AWS access keys signed with SigV4 (`bedrock:aws-*` accounts, #1163) | OpenAI route: text → text, streaming. Converse: text, images (≤ 3.75 MB each) and PDFs (≤ 4.5 MB each) + text → text, tools, reasoning kept across turns, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. Native Converse (`Endpoint::bedrock_converse`, #1150) for whole and streamed chat, with no card yet; its live smoke test has not been run. SigV4 from stored AWS access keys on both routes (#1163); no AWS SDK or AWS credential discovery. See below. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
 | **DeepSeek** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `deepseek` | text → text, tools, streaming | rig's DeepSeek dialect (#1122): a reply's `reasoning_content` is kept and sent back with later turns, as its thinking models want when a request carries tools. Catalog `assets/catalog/deepseek.toml`: `deepseek-flash` and `deepseek-v4-pro`, quoted at the **peak** output rate on `max_tokens` (off-peak hours cost half; input billed on top). |
 | **Mistral** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `mistral` | text → text, tools, streaming | rig's Mistral dialect (#1122), its own content chunks. Catalog `assets/catalog/mistral.toml`: `mistral-large-4` and `mistral-small-2603`, text only for now, quoted at the output rate on `max_tokens` (prices from each model's docs page; mistral.ai/pricing draws its table in the browser). |
@@ -81,7 +81,7 @@ to do, and a node routed to it is refused before planning, so no request is sent
 | `groq` (chat) | `groq` | — |
 | `xai` (chat) | `xai` | — |
 | `azure-openai` (chat) | `azure-openai` | `[providers] azure_openai_url` with an HTTPS Azure resource root or its `/openai/v1` base |
-| `bedrock` (chat) | `bedrock` (a Bedrock API key) | `[providers] bedrock_region` with an AWS Region code such as `us-east-1`, and access to the model in that Region |
+| `bedrock` (chat) | `bedrock` (a Bedrock API key), or `bedrock:aws-access-key-id` + `bedrock:aws-secret-access-key` (+ optional `bedrock:aws-session-token`, `bedrock:aws-expiration`) for SigV4 | `[providers] bedrock_region` with an AWS Region code such as `us-east-1`, and access to the model in that Region |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -240,9 +240,32 @@ bedrock_region = "us-east-1"
 The Region must be a code such as `us-east-1` or `us-gov-west-1`; anything else, including a URL,
 refuses before a request. Partitions not on `amazonaws.com` (China, European Sovereign Cloud,
 isolated US Regions) are not supported. The key comes
-only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, AWS profiles, access
-keys or instance metadata, and does not sign requests with SigV4. The browser has no Bedrock
-settings panel.
+only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`,
+AWS profiles, SSO caches or instance metadata. The browser has no Bedrock settings panel.
+
+**AWS access keys and SigV4 (#1163).** Instead of a Bedrock API key, store standard AWS
+credentials in the API keys panel (each is a quick pick) or with `keys.set`:
+
+| Account | What |
+|---|---|
+| `bedrock:aws-access-key-id` | The access key ID (`AKIA…`, or `ASIA…` for temporary credentials) |
+| `bedrock:aws-secret-access-key` | Its secret access key |
+| `bedrock:aws-session-token` | Temporary credentials only: the session token |
+| `bedrock:aws-expiration` | Temporary credentials only: their expiry, RFC 3339 (`2026-11-08T20:00:00Z`, the `Expiration` that `aws sts get-session-token` or `aws configure export-credentials` print) |
+
+When the `bedrock` account holds an API key it is used and the AWS accounts are not read. Without
+one, an access key ID and secret sign every request with AWS Signature Version 4 (service
+`bedrock`), on the OpenAI-compatible route (which AWS documents with SigV4 too) and on Converse,
+whole and streamed. The signature covers `host`, `x-amz-date`, `x-amz-content-sha256` (the
+body's SHA-256), `x-amz-security-token` and `content-type`, and goes only to
+`bedrock-runtime.{region}.amazonaws.com` over HTTPS. Stored credentials past their expiry (30
+seconds early) are refused before anything is sent. A refused signature, a clock more than about
+15 minutes off (`RequestTimeTooSkewed`, "Signature expired") and an expired token are
+Authentication errors that say what to fix, in NodeCraft's words: AWS's own message can quote the
+signed request. A keychain entry holds at most 1024 characters, so a longer session token can't
+be stored yet. `keys.test` can't check these accounts (no free request does). The signer is pure
+Rust (`nodecraft_providers::aws`) and builds for the browser; it passes AWS's published SigV4
+test suite. See [the decision](decisions/2026-11-08-bedrock-sigv4-aws-credentials.md).
 
 **Native Converse (#1150).** `Endpoint::bedrock_converse(region, key)` speaks Bedrock's own
 [Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html) and
@@ -256,8 +279,9 @@ PDFs (at most 4.5 MB each, with text beside them), tool calls and results, and t
 reasoning blocks back unchanged. Streamed replies are AWS event-stream frames, read by a bounded
 parser that checks both CRC32 checksums and caps each frame at 1 MiB. It is not through
 `rig-core` (which has no Bedrock provider) and needs no AWS SDK, so it builds for the browser too.
-The catalog's two GPT OSS cards keep the OpenAI-compatible route; no card uses Converse yet, and
-SigV4 is still not spoken. See
+The catalog's two GPT OSS cards keep the OpenAI-compatible route; no card uses Converse yet.
+`LlmClient::bedrock_converse(region, auth, http)` (and `bedrock_chat` for the OpenAI route) take
+either a `BedrockAuth::ApiKey` or `BedrockAuth::Aws` credentials. See
 [the decision](decisions/2026-11-08-bedrock-native-converse.md).
 
 AWS's pricing page lists these models' rates per service tier for one Region only, so the cards
@@ -282,6 +306,14 @@ with `NODECRAFT_LIVE_BEDROCK_CONVERSE_MODEL`) was not run either:
 ```sh
 NODECRAFT_LIVE_BEDROCK_CONVERSE=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
   cargo test -p nodecraft-providers --test live_llm live_bedrock_converse1150
+```
+
+The SigV4 smoke test (Converse streamed and whole, then the OpenAI-compatible route, signed with
+AWS access keys; `BEDROCK_AWS_SESSION_TOKEN` is optional) was not run either:
+
+```sh
+NODECRAFT_LIVE_BEDROCK_SIGV4=1 BEDROCK_AWS_ACCESS_KEY_ID=… BEDROCK_AWS_SECRET_ACCESS_KEY=… \
+  BEDROCK_REGION=us-east-1 cargo test -p nodecraft-providers --test live_llm live_bedrock_sigv4_1163
 ```
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build

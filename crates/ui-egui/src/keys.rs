@@ -61,6 +61,12 @@ const PRESETS: &[&str] = &[
     "openai",
     "azure-openai",
     "bedrock",
+    // Standard AWS credentials for Bedrock, signed with SigV4 when no Bedrock API key is stored
+    // (#1163); the last two only for temporary credentials.
+    "bedrock:aws-access-key-id",
+    "bedrock:aws-secret-access-key",
+    "bedrock:aws-session-token",
+    "bedrock:aws-expiration",
     "anthropic",
     "deepseek",
     "mistral",
@@ -483,6 +489,9 @@ impl KeysPanel {
             if self.account == "runway" {
                 ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
             }
+            if let Some(hint) = account_hint(&self.account) {
+                ui.label(egui::RichText::new(hint).color(t.text_muted));
+            }
             egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
                 let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
                 ui.add(egui::TextEdit::singleline(&mut self.account).hint_text("e.g. openai").desired_width(t.card_width)).labelled_by(label.id);
@@ -561,6 +570,20 @@ impl KeysPanel {
 }
 
 /// What a row says when the keychain hasn't answered `op` in time.
+/// What to store under an account whose key isn't simply an API key.
+fn account_hint(account: &str) -> Option<&'static str> {
+    Some(match account {
+        "bedrock" => "A Bedrock API key. To use AWS access keys instead, store them under the bedrock:aws-… accounts; the API key wins when both are stored.",
+        "bedrock:aws-access-key-id" => {
+            "The AWS access key ID (AKIA… or, for temporary credentials, ASIA…). Bedrock signs with it when no bedrock API key is stored."
+        }
+        "bedrock:aws-secret-access-key" => "The secret access key that belongs to bedrock:aws-access-key-id.",
+        "bedrock:aws-session-token" => "Temporary credentials only: the session token. Also store its expiry as bedrock:aws-expiration.",
+        "bedrock:aws-expiration" => "Temporary credentials only: when they expire, as an RFC 3339 time such as 2026-11-08T20:00:00Z.",
+        _ => return None,
+    })
+}
+
 fn unknown_outcome(op: Op) -> &'static str {
     match op {
         Op::Set => "No answer from the keychain yet (is an unlock prompt open?). The key may still be saved; this updates when it answers, or Check later.",

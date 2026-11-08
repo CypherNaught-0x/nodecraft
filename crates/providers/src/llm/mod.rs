@@ -34,7 +34,9 @@ mod vendors_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
-pub use bedrock::{BEDROCK, validate_bedrock_region};
+pub use bedrock::{
+    BEDROCK, BEDROCK_AWS_ACCESS_KEY_ID, BEDROCK_AWS_EXPIRATION, BEDROCK_AWS_SECRET_ACCESS_KEY, BEDROCK_AWS_SESSION_TOKEN, BedrockAuth, validate_bedrock_region,
+};
 pub use converse::{CONVERSE_MAX_DOCUMENT_BYTES, CONVERSE_MAX_IMAGE_BYTES};
 
 use std::collections::HashSet;
@@ -107,7 +109,7 @@ impl std::fmt::Debug for ApiKey {
 pub enum Dialect {
     OpenAi,
     Anthropic,
-    /// Amazon Bedrock's Converse API (`bedrock-runtime`), with a Bedrock API key.
+    /// Amazon Bedrock's Converse API (`bedrock-runtime`), with a Bedrock API key or SigV4.
     Converse,
 }
 

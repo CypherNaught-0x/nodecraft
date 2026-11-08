@@ -165,6 +165,35 @@ async fn live_bedrock_converse1150() {
     assert!(called.tool_calls().any(|c| c.name == "get_weather"), "{called:?}");
 }
 
+/// `NODECRAFT_LIVE_BEDROCK_SIGV4=1 BEDROCK_AWS_ACCESS_KEY_ID=… BEDROCK_AWS_SECRET_ACCESS_KEY=…
+/// BEDROCK_REGION=us-east-1` (and `BEDROCK_AWS_SESSION_TOKEN=…` for temporary credentials): one
+/// short paid Converse chat signed with SigV4 (#1163), streamed and then whole, then one on the
+/// OpenAI-compatible route. The credentials are read only from this test's own variables.
+#[tokio::test(flavor = "current_thread")]
+async fn live_bedrock_sigv4_1163() {
+    if !enabled("BEDROCK_SIGV4") {
+        return;
+    }
+    let var = |name: &str| std::env::var(name).unwrap();
+    let token = std::env::var("BEDROCK_AWS_SESSION_TOKEN").ok();
+    let credentials =
+        nodecraft_providers::aws::AwsCredentials::new(&var("BEDROCK_AWS_ACCESS_KEY_ID"), &var("BEDROCK_AWS_SECRET_ACCESS_KEY"), token.as_deref()).unwrap();
+    let auth = nodecraft_providers::llm::BedrockAuth::Aws(credentials);
+    let region = std::env::var("BEDROCK_REGION").unwrap_or_else(|_| "us-east-1".into());
+    let model = std::env::var("NODECRAFT_LIVE_BEDROCK_CONVERSE_MODEL").unwrap_or_else(|_| "us.anthropic.claude-haiku-4-5-20251001-v1:0".into());
+    let http = Arc::new(ReqwestHttp::new().unwrap());
+    let client = LlmClient::bedrock_converse(&region, auth.clone(), http.clone()).unwrap();
+    let request = ChatRequest { max_tokens: Some(256), ..ask(&model) };
+    let streamed = client.chat_stream(&request, &mut |_| {}).await.unwrap();
+    assert!(!streamed.text.trim().is_empty(), "{streamed:?}");
+    let whole = client.chat(&request).await.unwrap();
+    assert!(!whole.text.trim().is_empty(), "{whole:?}");
+    let model = std::env::var("NODECRAFT_LIVE_BEDROCK_MODEL").unwrap_or_else(|_| "openai.gpt-oss-20b-1:0".into());
+    let client = LlmClient::bedrock_chat(&region, auth, http).unwrap();
+    let openai = client.chat(&ChatRequest { max_tokens: Some(1024), ..ask(&model) }).await.unwrap();
+    assert!(!openai.text.trim().is_empty(), "{openai:?}");
+}
+
 /// `NODECRAFT_LIVE_DEEPSEEK=1 DEEPSEEK_API_KEY=…`, `NODECRAFT_LIVE_MISTRAL=1 MISTRAL_API_KEY=…`,
 /// `NODECRAFT_LIVE_GROQ=1 GROQ_API_KEY=…`, `NODECRAFT_LIVE_XAI=1 XAI_API_KEY=…` (#1122): one short
 /// paid chat each, streamed and then whole, on a catalog model (or `NODECRAFT_LIVE_<P>_MODEL`).
