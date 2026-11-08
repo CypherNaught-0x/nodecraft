@@ -42,15 +42,17 @@ fn shortcut_key(shortcut: &str) -> Option<(egui::Modifiers, egui::Key)> {
     key.map(|key| (modifiers, key))
 }
 
-/// Takes a press of `shortcut` from this frame's input. The key matches by its logical or its
-/// physical key, so ⌥ changing the character on macOS (⌥= is ≠) still counts; Shift may be held,
-/// since some layouts need it for `=` or `+`.
+/// Takes a press of `shortcut` from this frame's input. The key matches by its logical key, which
+/// egui-winit already falls back to the physical one for (so macOS ⌥=, typing ≠, arrives as `=`).
+/// Only the digit also matches physically, as `consume_shortcut_with_policy` does: a physical match
+/// for `=` or `-` would misfire on AltGr layouts (Swedish AltGr++ types `\` on the physical `-`).
+/// Shift may be held, since some layouts need it for `=` or `+`.
 fn consume(input: &mut egui::InputState, shortcut: &str) -> bool {
     let Some((wanted, key)) = shortcut_key(shortcut) else { return false };
     let mut consumed = false;
     input.events.retain(|event| {
         let matched = matches!(event, egui::Event::Key { key: logical, physical_key, pressed: true, modifiers, .. }
-            if modifiers.matches_logically(wanted) && (*logical == key || *physical_key == Some(key)));
+            if modifiers.matches_logically(wanted) && (*logical == key || (key == egui::Key::Num0 && *physical_key == Some(key))));
         consumed |= matched;
         !matched
     });
@@ -65,7 +67,8 @@ impl NodeCraftApp {
 
     /// One frame: the shortcuts, then the size applied and, when it changed, saved.
     pub(super) fn ui_scale_frame(&mut self, ctx: &egui::Context) {
-        if !canvas::text_input_focused(ctx) {
+        let key_pressed = ctx.input(|input| input.events.iter().any(|event| matches!(event, egui::Event::Key { pressed: true, .. })));
+        if key_pressed && !canvas::text_input_focused(ctx) {
             let shortcuts: Vec<(&'static str, &'static str)> = COMMANDS
                 .iter()
                 .filter_map(|id| self.session.registry().get(id).ok())
@@ -85,12 +88,17 @@ impl NodeCraftApp {
             return;
         }
         ctx.set_zoom_factor(size.zoom_factor());
-        self.ui_scale_applied = Some(size);
-        self.save_interface_size(size);
+        let clean = self.save_interface_size(size);
+        // Once the clean value is saved, a damaged one is repaired: reset has nothing left to do.
+        if clean != size {
+            self.ui_scale.set(clean);
+        }
+        self.ui_scale_applied = Some(clean);
     }
 
     /// Keeps `size` with the app settings, as a clean value: a damaged one is written as 100 %.
-    fn save_interface_size(&mut self, size: InterfaceSize) {
+    /// Returns the clean value.
+    fn save_interface_size(&mut self, size: InterfaceSize) -> InterfaceSize {
         let clean = InterfaceSize::from_percent(f64::from(size.percent())).unwrap_or_default();
         #[cfg(not(target_arch = "wasm32"))]
         if let Some(store) = &mut self.store
@@ -114,7 +122,7 @@ impl NodeCraftApp {
                 }
             }
         }
-        let _ = clean;
+        clean
     }
 
     /// Takes the size from settings, saying so when the file's value couldn't be used.

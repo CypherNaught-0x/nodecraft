@@ -86,8 +86,8 @@ browser) both are refused as unsupported.
 The window's interface size (#1107) is open to agents too, through MCP bridged to the app:
 `view.ui_scale.increase {}`, `view.ui_scale.decrease {}`, `view.ui_scale.reset {}` and
 `view.ui_scale.set {percent: 80..=200}` each return `{percent, previous}`, change only how large
-the person's panels and dialogs are drawn, and are remembered in the app's settings. A standalone
-session has no window and refuses them as unsupported.
+the person's panels and dialogs are drawn, and are remembered in the app's settings. They are
+live-only (`mcp::LIVE_ONLY`): a standalone session lists them as not ready and refuses them.
 
 ## Bridge to the running app
 
@@ -360,7 +360,7 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
 `canvas.minimap_toggle`, `canvas.prompt_overlays_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
-Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
+Format selection (`canvas.auto_format`) and the interface size (`view.ui_scale.*`, #1107). `canvas.fit_selection` also accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
 field headers for hidden cards, without changing the person's selection. Without it, the command
 frames the selection. Format selection takes an optional `nodes` list, so an agent can arrange

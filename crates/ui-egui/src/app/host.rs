@@ -1,7 +1,7 @@
 //! One live host for every command that acts on the window's view rather than only the document
-//! (#360): navigation, search, the tag filter, the discussions panel and Format selection. The
-//! control channel and the MCP bridge route these ids here, so an agent reaches the same scoped
-//! capabilities a button does, refreshed for the one call.
+//! (#360): navigation, search, the tag filter, the discussions panel, Format selection and the
+//! interface size (#1107). The control channel and the MCP bridge route these ids here, so an
+//! agent reaches the same scoped capabilities a button does, refreshed for the one call.
 use super::*;
 use serde_json::Value as Json;
 
@@ -9,7 +9,12 @@ impl NodeCraftApp {
     /// Whether `id` needs this live host. Routing metadata only: automation still applies its
     /// own classification, and the engine its own enabled checks.
     pub fn is_host_command(id: &str) -> bool {
-        Self::is_navigation_command(id) || Self::is_search_command(id) || tags::is_command(id) || comments::view_command(id) || id == LAYOUT
+        Self::is_navigation_command(id)
+            || Self::is_search_command(id)
+            || tags::is_command(id)
+            || comments::view_command(id)
+            || id == LAYOUT
+            || is_ui_scale_command(id)
     }
     /// Whether host command `id` changes the document (Format selection lays cards out) rather
     /// than only the view, so a surface that must not block refuses it while a save writes.
@@ -28,6 +33,9 @@ impl NodeCraftApp {
             self.comments_enabled(ctx, id, params)
         } else if id == LAYOUT {
             self.layout_enabled(ctx, params)
+        } else if is_ui_scale_command(id) {
+            // The interface size's capability lives with the session for the window's lifetime.
+            self.session.enabled(id, params)
         } else {
             Err(Error::new(ErrorKind::InvalidInput, "not a live view command"))
         }
@@ -44,6 +52,8 @@ impl NodeCraftApp {
             self.dispatch_comments(ctx, id, params)
         } else if id == LAYOUT {
             self.dispatch_layout(ctx, params)
+        } else if is_ui_scale_command(id) {
+            self.session.dispatch(id, params)
         } else {
             Err(Error::new(ErrorKind::InvalidInput, "not a live view command"))
         }
@@ -61,3 +71,8 @@ impl NodeCraftApp {
 }
 
 const LAYOUT: &str = "canvas.auto_format";
+
+/// The interface size commands (#1107), whose shared size the window applies on its next frame.
+fn is_ui_scale_command(id: &str) -> bool {
+    matches!(id, "view.ui_scale.increase" | "view.ui_scale.decrease" | "view.ui_scale.reset" | "view.ui_scale.set")
+}

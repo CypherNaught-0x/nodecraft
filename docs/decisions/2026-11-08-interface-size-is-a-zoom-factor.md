@@ -16,3 +16,9 @@ includes the factor, so they stay sharp.
 The setting belongs to the installation (`[appearance] interface_size`, or the browser origin's
 storage), never to a project, and the `view.ui_scale.*` commands record no undo step. A value that
 isn't a number from 80 to 200 reads as 100 % with a notice rather than resetting `[appearance]`.
+
+The shortcuts are Ctrl+Alt+= / - / 0 (⌥⌘ on macOS). They match the logical key, with only `0`
+matching its physical key as well, so AltGr characters typed on the `-` and `=` keys of other
+layouts don't change the size. On macOS, ⌥⌘= and ⌥⌘- are also Accessibility Zoom's shortcuts when
+that feature and its shortcuts are on; the system then takes them, and the palette still offers
+the commands.

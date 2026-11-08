@@ -674,12 +674,18 @@ of `[appearance]` keeps its values.
 Commands, which the palette, shortcuts, control channel and MCP share: `view.ui_scale.increase`
 (⌘⌥= or ⌘⌥+, Ctrl+Alt elsewhere) and `view.ui_scale.decrease` (⌘⌥-) step by 10 % to the next
 multiple of ten; `view.ui_scale.reset` (⌘⌥0) returns to 100 %; `view.ui_scale.set {percent}`
-takes any number from 80 to 200, rounded to a whole percent. Each is disabled when it would do
-nothing (already at the end, or at 100 %) and returns `{percent, previous}`. They record no
-document change and no undo step. Without a window (`nodecraft-cli`, a headless session) they are
-unsupported. The shortcuts are taken before the canvas reads its zoom keys, so Ctrl+Alt+= never
-also zooms the canvas, and never while a text field has focus, where Ctrl+Alt is AltGr and types
-a character.
+takes any number from 80 to 200, rounded to a whole percent, and refuses anything else. Increase,
+decrease and reset are disabled when they would do nothing (at 200 %, at 80 %, at 100 %); a
+damaged value counts as 100 % once the shell has saved the clean value on its first frame. Each
+returns `{percent, previous}`. They record no document change and no undo step. They are
+live-only: the control channel routes them to the window, and without one (`nodecraft-cli`, a
+headless session) they are unsupported. The shortcuts match the key's logical character; only `0`
+also matches its physical key, as the other digit shortcuts do, so an AltGr character on the `-`
+or `=` key (Ctrl+Alt is AltGr on many layouts) never changes the size. They are taken before the
+canvas reads its zoom keys, so Ctrl+Alt+= never also zooms the canvas, and never while a text
+field has focus, where AltGr types a character. On macOS, ⌥⌘= and ⌥⌘- are also the system's
+Accessibility Zoom shortcuts when that feature and its keyboard shortcuts are turned on; macOS
+then takes them first, and the palette entries still work.
 
 Canvas zoom is unchanged and separate: the zoom badge still reads the canvas zoom, and cards,
 which are drawn in points like everything else, grow with the interface the way a browser's page

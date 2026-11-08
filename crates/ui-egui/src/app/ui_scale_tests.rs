@@ -119,6 +119,26 @@ fn the_shortcuts_size_the_interface_and_leave_canvas_zoom_alone() {
     assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
 }
 
+/// AltGr is Ctrl+Alt: on a Swedish layout AltGr with the physical `-` key types `\`, which must
+/// not run Smaller interface. Only the digit matches by its physical key.
+#[test]
+fn an_altgr_character_on_the_minus_key_does_nothing() {
+    let mut h = harness_with(app());
+    let zoom = h.state().view.zoom;
+    let modifiers = egui::Modifiers::COMMAND | egui::Modifiers::ALT;
+    h.event(egui::Event::Key { key: egui::Key::Backslash, physical_key: Some(egui::Key::Minus), pressed: true, repeat: false, modifiers });
+    h.event(egui::Event::Key { key: egui::Key::Backslash, physical_key: Some(egui::Key::Minus), pressed: false, repeat: false, modifiers });
+    h.run();
+    assert_eq!(h.state().interface_size().percent(), 100);
+    assert_eq!(h.state().view.zoom, zoom);
+    // The digit row's 0 still resets from its physical key, whatever character the layout gives it.
+    h.state_mut().session.dispatch("view.ui_scale.set", &json!({"percent": 150})).unwrap();
+    h.run();
+    h.event(egui::Event::Key { key: egui::Key::CloseCurlyBracket, physical_key: Some(egui::Key::Num0), pressed: true, repeat: false, modifiers });
+    h.run();
+    assert_eq!(h.state().interface_size().percent(), 100);
+}
+
 #[test]
 fn a_text_field_keeps_ctrl_alt_keys() {
     let mut h = harness_with(app());
@@ -163,6 +183,8 @@ fn the_size_persists_across_restarts_and_a_damaged_value_falls_back_with_a_notic
     let mut h = harness_with(app);
     assert_eq!(h.ctx.zoom_factor(), 1.0);
     assert!(!h.state().store.as_ref().unwrap().get().appearance.interface_size.damaged(), "the damaged value is replaced");
+    assert!(!h.state().interface_size().damaged(), "and the window's size is clean once saved");
+    assert!(h.state_mut().session.enabled("view.ui_scale.reset", &json!({})).is_err(), "reset has nothing left to do");
     h.state_mut().session.dispatch("view.ui_scale.set", &json!({"percent": 175})).unwrap();
     h.run();
     h.state_mut().store.as_mut().unwrap().flush().unwrap();

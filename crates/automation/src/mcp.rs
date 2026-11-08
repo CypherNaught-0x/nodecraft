@@ -65,6 +65,11 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.tag_filter_set",
     "canvas.tag_filter_next",
     "canvas.tag_filter_previous",
+    // The window's interface size (#1107): session-local view state, remembered per installation.
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
 ];
 const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
@@ -175,8 +180,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.update_status",
     // Where the desktop app's built-in server listens; never its token (#116).
     "automation.mcp_server_status",
-    // The window's interface size (#1107): view state of this installation, never the document.
-    // They run where a window is (the app, or MCP bridged to it); headless they are unsupported.
+    // The window's interface size (#1107): view state of this installation, never the document
+    // (LIVE_ONLY: they run only where a window is).
     "view.ui_scale.increase",
     "view.ui_scale.decrease",
     "view.ui_scale.reset",

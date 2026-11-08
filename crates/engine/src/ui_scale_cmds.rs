@@ -41,14 +41,17 @@ impl UiScale {
 
 /// Gives `session` the frontend's interface size: the commands read `scale` and set it.
 pub fn install(session: &mut Session, scale: UiScale) -> Result<(), Error> {
-    session.swap_resource(Some(scale.clone()));
+    let shared = scale.clone();
     session.register_host_service(SERVICE, move |request: &Value| {
         let percent = request.get("percent").and_then(Value::as_f64).ok_or_else(|| Error::new(ErrorKind::InvalidInput, "malformed interface size request"))?;
         let size = InterfaceSize::from_percent(percent).ok_or_else(out_of_range)?;
-        let previous = scale.get();
-        scale.set(size);
+        let previous = shared.get();
+        shared.set(size);
         Ok(json!({"percent": size.percent(), "previous": previous.percent()}))
-    })
+    })?;
+    // Only once the service is there, so a failed install leaves no resource behind.
+    session.swap_resource(Some(scale));
+    Ok(())
 }
 
 fn out_of_range() -> Error {
