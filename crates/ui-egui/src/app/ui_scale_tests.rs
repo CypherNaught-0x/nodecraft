@@ -1,7 +1,7 @@
 //! #1107: the interface size grows the shell's chrome, its shortcuts leave canvas zoom alone, and
 //! the setting survives a restart and a damaged value.
 use super::*;
-use crate::app::panel_check::{check_open_panels, check_question};
+use crate::app::panel_check::{check_menu, check_question};
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::Queryable};
 use nodecraft_types::ParamValues;
@@ -38,7 +38,7 @@ fn set_size(h: &mut Harness<'static, NodeCraftApp>, percent: u16) {
 }
 
 #[test]
-fn at_150_and_200_percent_the_palette_file_panel_and_a_question_fit_the_window() {
+fn at_150_and_200_percent_the_palette_file_menu_and_a_question_fit_the_window() {
     for percent in [150, 200] {
         let mut h = harness_with(app());
         set_size(&mut h, percent);
@@ -58,12 +58,18 @@ fn at_150_and_200_percent_the_palette_file_panel_and_a_question_fit_the_window()
         h.run();
         assert!(h.state().palette.is_none());
 
-        // Project files, a floating panel under the File button.
+        // The File menu (#1123), opening below the top bar's File entry, and its Open recent
+        // submenu, both on the screen.
         h.get_by_role_and_label(Role::Button, "File").click();
         h.run_steps(4);
-        check_open_panels(&h, &format!("Project files at {percent} %"));
+        check_menu(&h, topbar::file_popup_id(), &format!("File menu at {percent} %"));
+        h.get_by_label("Open recent").click();
+        h.run_steps(4);
+        let clear = h.get_by_label("Clear recent projects").rect();
+        assert!(screen.expand(1.0).contains_rect(clear), "{percent} %: Open recent's {clear:?} leaves {screen:?}");
         h.key_press(egui::Key::Escape);
         h.run();
+        assert!(h.query_by_label("Open recent").is_none(), "{percent} %: Escape closed the menu");
 
         // A question: Review model change.
         // The card's top at the top of the canvas, at canvas zoom 100 %: its model control shows.

@@ -2,17 +2,24 @@
 //! the application row fits the window and only moves entries into More from its right, Search
 //! and Comments stay in the row, the navigation panel leaves the canvas mostly clear, and the
 //! panels and windows opened from the shell stay on the screen.
-use super::panel_check::check_open_panels;
+use super::panel_check::{check_menu, check_open_panels};
 use super::topbar_tests::reveal;
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 /// The desktop app's smallest window, a small laptop window and its default window.
 const SIZES: [Vec2; 3] = [Vec2::new(640.0, 400.0), Vec2::new(800.0, 520.0), Vec2::new(1440.0, 900.0)];
 
-/// The row's entries in the headless shell, in row order.
-const ENTRIES: [&str; 11] = ["Sheets", "Techniques", "Elements", "Queue", "Share", "Budgets", "API keys", "ComfyUI", "Plugins", "Search (Ctrl+F)", "Comments"];
+/// The row's entries in the headless shell, in row order: File and Tag filter lead it (#1123).
+const ENTRIES: [&str; 13] =
+    ["File", "Tag filter", "Sheets", "Techniques", "Elements", "Queue", "Share", "Budgets", "API keys", "ComfyUI", "Plugins", "Search (Ctrl+F)", "Comments"];
+
+/// The entries between Tag filter and Search, which leave the row first, from its right.
+const BODY: std::ops::Range<usize> = 2..11;
 
 fn harness(size: Vec2, kind: crate::theme::ThemeKind) -> Harness<'static, NodeCraftApp> {
     let mut app = NodeCraftApp::headless().unwrap();
@@ -49,14 +56,19 @@ fn the_row_fits_and_overflows_from_its_right_at_every_size() {
                     assert!(!rect.intersect(*theirs).is_positive(), "{what}: {label} crosses {other}");
                 }
             }
-            // Search and Comments keep their place in the row at every size here; this shell has no
-            // agent sidebar, which at 640 points would leave room for neither.
+            // File, Search and Comments keep their place in the row at every size here; this shell
+            // has no agent sidebar, which at 640 points would leave room for neither Search nor
+            // Comments. File is the last entry to leave (#1123).
             let shown: Vec<&str> = buttons.iter().map(|(label, _)| *label).collect();
-            assert!(shown.contains(&"Search (Ctrl+F)") && shown.contains(&"Comments"), "{what}: {shown:?}");
-            // Entries leave from the right: what the row keeps of the rest is a prefix of the order.
-            let kept: Vec<&str> = ENTRIES.iter().take(9).copied().filter(|label| shown.contains(label)).collect();
-            assert_eq!(kept, ENTRIES.iter().take(kept.len()).copied().collect::<Vec<_>>(), "{what}");
-            assert_eq!(shown.contains(&"More"), kept.len() < 9, "{what}: More appears only when something has no room");
+            assert!(shown.contains(&"File") && shown.contains(&"Search (Ctrl+F)") && shown.contains(&"Comments"), "{what}: {shown:?}");
+            // Entries leave from the right: what the row keeps of the body is a prefix of its order,
+            // and Tag filter goes only once the body has.
+            let body = ENTRIES.get(BODY).unwrap();
+            let kept: Vec<&str> = body.iter().copied().filter(|label| shown.contains(label)).collect();
+            assert_eq!(kept, body.iter().take(kept.len()).copied().collect::<Vec<_>>(), "{what}");
+            assert!(shown.contains(&"Tag filter") || kept.is_empty(), "{what}: Tag filter left before the body {shown:?}");
+            let all = shown.contains(&"Tag filter") && kept.len() == body.len();
+            assert_eq!(shown.contains(&"More"), !all, "{what}: More appears only when something has no room");
         }
     }
 }
@@ -151,14 +163,15 @@ fn fit_drops_entries_from_the_right_keeping_open_panels_then_search() {
     use topbar::fit;
     let widths = [100.0; 6];
     let groups = [0, 0, 1, 1, 3, 3];
-    let none = [false; 6];
+    // Ranks as `Entry::rank` gives them: the body 0, an open panel's entry 1, Search and Comments 3.
+    let none = [0, 0, 0, 0, 3, 3];
     // Everything fits: nothing moves.
     assert_eq!(fit(&widths, &groups, &none, 50.0, 10_000.0, 6.0), vec![true; 6]);
     // A little short: the rightmost non-tail entry goes first.
     let shown = fit(&widths, &groups, &none, 50.0, 610.0, 6.0);
     assert_eq!(shown, vec![true, true, true, false, true, true]);
     // An open panel's entry stays while others go.
-    let pinned = [false, false, false, true, false, false];
+    let pinned = [0, 0, 0, 1, 3, 3];
     assert_eq!(fit(&widths, &groups, &pinned, 50.0, 500.0, 6.0), vec![true, false, false, true, true, true]);
     // With room for only More and one entry, Search stays and Comments goes.
     assert_eq!(fit(&widths, &groups, &pinned, 50.0, 170.0, 6.0), vec![false, false, false, false, true, false]);
@@ -166,6 +179,24 @@ fn fit_drops_entries_from_the_right_keeping_open_panels_then_search() {
     assert_eq!(fit(&widths, &groups, &none, 50.0, 10.0, 6.0), vec![false; 6]);
     // Hostile widths never panic.
     let _ = fit(&[f32::NAN, f32::INFINITY], &[0], &[], 50.0, f32::NAN, 6.0);
+}
+
+/// #1123: File and Tag filter lead the row. Tag filter leaves after the body and open panels but
+/// before Comments and Search; File leaves last of all.
+#[test]
+fn fit1123_file_stays_longest_and_tag_filter_goes_before_search() {
+    use topbar::{Entry, fit};
+    let entries = [Entry::File, Entry::Tags, Entry::Sheets, Entry::Budgets, Entry::Search, Entry::Comments];
+    let ranks: Vec<u8> = entries.iter().map(|entry| entry.rank(*entry == Entry::Budgets)).collect();
+    assert_eq!(ranks, vec![4, 2, 0, 1, 3, 3]);
+    let widths = [100.0; 6];
+    let groups = [4, 4, 0, 1, 3, 3];
+    // Room for More and four entries: Sheets then Budgets (an open panel) go.
+    assert_eq!(fit(&widths, &groups, &ranks, 50.0, 520.0, 6.0), vec![true, true, false, false, true, true]);
+    // Room for More and three: Tag filter goes next.
+    assert_eq!(fit(&widths, &groups, &ranks, 50.0, 420.0, 6.0), vec![true, false, false, false, true, true]);
+    // Room for More and one: only File stays.
+    assert_eq!(fit(&widths, &groups, &ranks, 50.0, 170.0, 6.0), vec![true, false, false, false, false, false]);
 }
 
 #[test]
@@ -183,27 +214,84 @@ fn panels_and_windows_stay_on_screen_at_every_size() {
         }
         h.get_by_label("File").click();
         h.run_steps(4);
-        check_open_panels(&h, &format!("Project files at {size:?}"));
+        check_menu(&h, topbar::file_popup_id(), &format!("File menu at {size:?}"));
+        h.key_press(egui::Key::Escape);
+        h.run();
     }
 }
 
-/// #1116: Project files is a floating panel opening under the File button, in the panel area at
-/// 640 × 400; Escape closes it and doesn't also clear the canvas selection.
+/// #1123: File, the top bar's first entry, opens the File menu below it at 640 × 400; Open recent
+/// lists the recent projects; Escape closes the menu and doesn't also clear the canvas selection.
 #[test]
-fn dialogs1116_project_files_is_a_panel_and_escape_closes_only_it() {
-    let mut h = harness(SIZES[0], crate::theme::ThemeKind::Dark);
+fn file1123_menu_opens_below_file_lists_recent_and_escape_closes_only_it() {
+    let mut app = NodeCraftApp::headless().unwrap();
+    // Absolute on every platform; the files needn't exist to be listed.
+    for name in ["Public forest.ncraft", "Public river.ncraft"] {
+        app.files.projects.remember(std::env::temp_dir().join(name).to_str().unwrap());
+    }
+    let mut h = Harness::builder().with_size(SIZES[0]).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            crate::theme::apply(ui.ctx(), crate::theme::ThemeKind::Dark);
+            app.show(ui);
+        },
+        app,
+    );
+    h.run();
     let node = *h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().keys().next().unwrap();
     h.state_mut().selection.only(node);
-    h.get_by_label("File").click();
-    h.run_steps(4);
-    check_open_panels(&h, "Project files at 640 × 400");
-    let panel = h.get_by_role_and_label(Role::Window, "Project files").rect();
     let file = h.get_by_role_and_label(Role::Button, "File").rect();
-    assert!(panel.top() >= file.bottom() - 1.0, "it opens below the File button: {panel:?} {file:?}");
+    let bar = h.state().topbar_rect();
+    assert!(bar.contains_rect(file) && file.left() - bar.left() < 20.0, "File leads the row: {file:?} {bar:?}");
+    h.get_by_role_and_label(Role::Button, "File").click();
+    h.run_steps(4);
+    assert!(h.state().files.menu_open());
+    check_menu(&h, topbar::file_popup_id(), "File menu at 640 × 400");
+    let open = h.get_by_label("Open… (Ctrl+O)").rect();
+    assert!(open.top() >= file.bottom() - 1.0, "it opens below File: {open:?} {file:?}");
+    for label in ["Save (Ctrl+S)", "Save as… (Ctrl+Shift+S)", "Save workflow results…", "Import folder…"] {
+        h.get_by_label(label);
+    }
+    h.get_by_label("Open recent").click();
+    h.run_steps(4);
+    let screen = h.ctx.content_rect();
+    for label in ["Public river.ncraft", "Public forest.ncraft", "Clear recent projects"] {
+        let rect = h.get_by_label(label).rect();
+        assert!(screen.contains_rect(rect), "{label} {rect:?} leaves the window");
+    }
+    assert!(!h.get_by_label("Clear recent projects").accesskit_node().is_disabled());
     h.key_press(egui::Key::Escape);
     h.run();
-    assert!(h.query_by_role_and_label(Role::Window, "Project files").is_none());
-    assert!(h.state().selection.nodes().contains(&node), "Escape closed the panel without reaching the canvas");
+    assert!(!h.state().files.menu_open());
+    assert!(h.query_by_label("Open… (Ctrl+O)").is_none() && h.query_by_label("Public river.ncraft").is_none());
+    assert!(h.state().selection.nodes().contains(&node), "Escape closed the menu without reaching the canvas");
+}
+
+/// #1123: the Tag filter entry opens the existing tag panel below the row, and while a filter is
+/// active it carries the match count, in its badge and its accessible name.
+#[test]
+fn tags1123_the_tag_filter_entry_opens_the_panel_and_counts_matches() {
+    let mut h = harness(SIZES[2], crate::theme::ThemeKind::Dark);
+    let entry = h.get_by_role_and_label(Role::Button, "Tag filter").rect();
+    assert!(h.state().topbar_rect().contains_rect(entry));
+    h.get_by_role_and_label(Role::Button, "Tag filter").click();
+    h.run();
+    assert!(h.state().tag_filter.open);
+    assert!(h.state().tag_rect().top() >= h.state().topbar_rect().bottom(), "the panel opens below the row");
+    h.get_by_label("Tag filter · highlight matches");
+    // The entry closes it again.
+    h.get_by_role_and_label(Role::Button, "Tag filter").click();
+    h.run();
+    assert!(!h.state().tag_filter.open);
+    // An active filter: every untagged card matches.
+    let ctx = h.ctx.clone();
+    h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[],"untagged":true})).unwrap();
+    h.run();
+    assert!(h.state().tag_filter.active());
+    let matches = h.state().tag_filter.results.len();
+    assert!(matches > 0);
+    let name = format!("Tag filter ({matches} matches)");
+    let badged = h.get_by_role_and_label(Role::Button, &name).rect();
+    assert!(badged.width() > entry.width(), "the badge widens the entry");
 }
 
 /// #1116: the Shared parameters panel stays pinned on the screen at 640 × 400; it closes when
@@ -227,4 +315,23 @@ fn dialogs1116_shared_parameters_stay_on_screen_and_go_with_the_selection() {
     h.run();
     assert!(h.state().selection.nodes().is_empty());
     assert!(h.query_by_role_and_label(Role::Window, "Shared parameters").is_none());
+}
+
+/// #1123: in a window too narrow even for File, File is in More, and its menu opens below More,
+/// on the screen.
+#[test]
+fn file1123_from_more_opens_below_more() {
+    let mut h = harness(Vec2::new(150.0, 400.0), crate::theme::ThemeKind::Dark);
+    assert!(h.query_by_role_and_label(Role::Button, "File").is_none(), "File has moved into More");
+    let more = h.get_by_role_and_label(Role::Button, "More").rect();
+    h.get_by_role_and_label(Role::Button, "More").click();
+    h.run();
+    h.get_by_role_and_label(Role::Button, "File").click();
+    h.run_steps(4);
+    assert!(h.state().files.menu_open());
+    check_menu(&h, topbar::file_popup_id(), "File menu from More at 150 × 400");
+    assert!(h.get_by_label("Open… (Ctrl+O)").rect().top() >= more.bottom(), "it opens below More");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().files.menu_open());
 }

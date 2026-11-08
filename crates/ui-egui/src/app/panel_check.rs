@@ -109,3 +109,16 @@ pub(super) fn check_question(h: &Harness<'static, NodeCraftApp>, id: egui::Id, w
     let crossing = overlaps(h, id, rect);
     assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
 }
+
+/// A menu (the File menu, #1123): it is open, lies on the screen, and none of its own on-screen
+/// controls cross another. `id` is its popup's id; `what` names the case in a failure. Call it on
+/// a settled harness.
+pub(super) fn check_menu(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    let Some(state) = egui::AreaState::load(&h.ctx, id) else { panic!("{what}: the menu {id:?} isn't open") };
+    let rect = state.rect();
+    let screen = h.ctx.content_rect();
+    assert!(rect.is_finite() && rect.is_positive(), "{what}: {rect:?} has no size");
+    assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
+    let crossing = overlaps(h, id, rect);
+    assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
+}

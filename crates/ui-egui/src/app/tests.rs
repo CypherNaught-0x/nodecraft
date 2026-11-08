@@ -394,7 +394,8 @@ fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
         spec("enabled", ParamControl::Toggle, Value::Bool(false)),
     ]);
     enter_text(&mut h, "count", "9");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // Empty canvas below the top bar (#1123 put File at the row's left end).
+    click(&mut h, Pos2::new(50.0, 300.0));
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
