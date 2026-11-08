@@ -1,8 +1,10 @@
 # GroqCloud Chat Completions (`providers::llm`, rig's Groq dialect), #1122.
 # Models, limits and prices: https://console.groq.com/docs/models (read 2026-11-08; groq.com/pricing
 # redirected to the home page that day). Base URL: https://api.groq.com/openai/v1.
-# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
-# the reply. Input tokens are billed on top and are NOT in the quote.
+# No up-front quote: reasoning is billed as reply tokens, and these docs don't say that `max_tokens`
+# caps reasoning as well as the answer, so a quote on it might not be an upper bound. Runs are
+# admitted as of unknown price (as Bedrock and Azure OpenAI are) and settle at the per-token rates
+# below once the reply reports its usage, reasoning included.
 
 # openai/gpt-oss-120b: 0.15 USD / 1M input, 0.60 USD / 1M output; context 131,072; max completion
 # 65,536.
@@ -11,11 +13,11 @@ id = "groq.gpt-oss-120b"
 provider = "groq"
 provider_model = "openai/gpt-oss-120b"
 label = "GPT OSS 120B (GroqCloud)"
-description = "Open-weight text reasoning with gpt-oss-120b on Groq's fast inference. Token pricing."
+description = "Open-weight text reasoning with gpt-oss-120b on Groq's fast inference. Usage pricing: no up-front quote."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 4
 quality = 4
-pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0006 USD", count = "max_tokens" }
+pricing = { type = "by_usage", currency = "USD" }
 # Charged at these per-1000-token rates once the reply reports its usage.
 usage = { input = "0.00015 USD", output = "0.0006 USD" }
 
@@ -28,7 +30,7 @@ reads = { context_tokens = 131072, max_output_tokens = 65536 }
 [[model.params.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "65536" }
 default = { type = "unsigned", value = "8192" }
 
@@ -46,7 +48,7 @@ affects = { cost = true }
 [[model.parameter_contract.schema.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "65536" }
 default = { type = "unsigned", value = "8192" }
 
@@ -57,11 +59,11 @@ id = "groq.gpt-oss-20b"
 provider = "groq"
 provider_model = "openai/gpt-oss-20b"
 label = "GPT OSS 20B (GroqCloud)"
-description = "Smaller open-weight text reasoning with gpt-oss-20b on Groq's fast inference. Token pricing."
+description = "Smaller open-weight text reasoning with gpt-oss-20b on Groq's fast inference. Usage pricing: no up-front quote."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 3
 quality = 3
-pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0003 USD", count = "max_tokens" }
+pricing = { type = "by_usage", currency = "USD" }
 # Charged at these per-1000-token rates once the reply reports its usage.
 usage = { input = "0.000075 USD", output = "0.0003 USD" }
 
@@ -74,7 +76,7 @@ reads = { context_tokens = 131072, max_output_tokens = 65536 }
 [[model.params.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "65536" }
 default = { type = "unsigned", value = "8192" }
 
@@ -92,6 +94,6 @@ affects = { cost = true }
 [[model.parameter_contract.schema.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "65536" }
 default = { type = "unsigned", value = "8192" }

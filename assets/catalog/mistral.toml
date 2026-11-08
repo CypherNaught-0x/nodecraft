@@ -53,8 +53,8 @@ control = { type = "unsigned", min = "1", max = "32768" }
 default = { type = "unsigned", value = "8192" }
 
 # mistral-small-2603 (Mistral Small 4): the page lists 0.15 USD and 0.60 USD per 1M tokens without
-# saying which is input and which output; the higher is taken for both the quote and the output
-# rate, so neither is under the bill. Context 256k.
+# saying which is input and which output; the higher is taken for the quote and both rates, so
+# neither is under the bill. Context 256k.
 [[model]]
 id = "mistral.small-4"
 provider = "mistral"
@@ -66,7 +66,7 @@ latency_s = 8
 quality = 3
 pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.0006 USD", count = "max_tokens" }
 # Charged at these per-1000-token rates once the reply reports its usage.
-usage = { input = "0.00015 USD", output = "0.0006 USD" }
+usage = { input = "0.0006 USD", output = "0.0006 USD" }
 
 [[model.modes]]
 id = "text-to-text"

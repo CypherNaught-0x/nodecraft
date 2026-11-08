@@ -3,10 +3,13 @@
 # https://docs.x.ai/developers/models (read 2026-11-08). Chat Completions is xAI's legacy endpoint,
 # still served: https://docs.x.ai/developers/model-capabilities/legacy/chat-completions (read 2026-11-08).
 # Requests go to the global endpoint (https://api.x.ai/v1), not the US regional one (1.1x).
-# Once a prompt reaches 200k tokens the whole request bills at the long-context rates; the quote
-# uses the long-context output rate so it stays an upper bound.
-# The quote is the output-token price per 1000 tokens counted on `max_tokens`: an upper bound on
-# the reply. Input tokens are billed on top and are NOT in the quote.
+# Once a prompt reaches 200k tokens the whole request bills at the long-context rates.
+# xAI counts reasoning apart from `completion_tokens` (its total includes it); settlement counts it:
+# https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions.md (read 2026-11-08).
+# No up-front quote: reasoning is billed as reply tokens, and these docs don't say that `max_tokens`
+# caps reasoning as well as the answer, so a quote on it might not be an upper bound. Runs are
+# admitted as of unknown price (as Bedrock and Azure OpenAI are) and settle at the per-token rates
+# below once the reply reports its usage, reasoning included.
 # Neither page states a maximum output length; 32,768 is NodeCraft's cap on the request.
 
 # grok-4.7: 2.00 USD / 1M input, 6.00 USD / 1M output; at 200k prompt tokens or more 4.00 / 12.00;
@@ -16,11 +19,11 @@ id = "xai.grok-4.7"
 provider = "xai"
 provider_model = "grok-4.7"
 label = "Grok 4.7"
-description = "xAI's flagship for code and everything else: tool calling, configurable reasoning. Token pricing."
+description = "xAI's flagship for code and everything else: tool calling, configurable reasoning. Usage pricing: no up-front quote."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 15
 quality = 4
-pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.012 USD", count = "max_tokens" }
+pricing = { type = "by_usage", currency = "USD" }
 # Charged at these per-1000-token rates once the reply reports its usage.
 usage = { input = "0.002 USD", output = "0.006 USD", long = { above = 199999, input = "0.004 USD", output = "0.012 USD" } }
 
@@ -33,7 +36,7 @@ reads = { context_tokens = 500000 }
 [[model.params.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "32768" }
 default = { type = "unsigned", value = "8192" }
 
@@ -51,7 +54,7 @@ affects = { cost = true }
 [[model.parameter_contract.schema.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "32768" }
 default = { type = "unsigned", value = "8192" }
 
@@ -62,11 +65,11 @@ id = "xai.grok-4.3"
 provider = "xai"
 provider_model = "grok-4.3"
 label = "Grok 4.3"
-description = "Lower-cost Grok text model with a 1M context. Token pricing."
+description = "Lower-cost Grok text model with a 1M context. Usage pricing: no up-front quote."
 # Rough latency hint for a short reply, not measured locally.
 latency_s = 10
 quality = 3
-pricing = { type = "per_unit", unit = "thousand_tokens", price = "0.005 USD", count = "max_tokens" }
+pricing = { type = "by_usage", currency = "USD" }
 # Charged at these per-1000-token rates once the reply reports its usage.
 usage = { input = "0.00125 USD", output = "0.0025 USD", long = { above = 199999, input = "0.0025 USD", output = "0.005 USD" } }
 
@@ -79,7 +82,7 @@ reads = { context_tokens = 1000000 }
 [[model.params.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "32768" }
 default = { type = "unsigned", value = "8192" }
 
@@ -97,6 +100,6 @@ affects = { cost = true }
 [[model.parameter_contract.schema.params]]
 name = "max_tokens"
 label = "Max output tokens"
-description = "Upper limit on the reply, reasoning tokens included. The reply stops when it is reached."
+description = "Requested completion limit. Reasoning may count against it, or come on top."
 control = { type = "unsigned", min = "1", max = "32768" }
 default = { type = "unsigned", value = "8192" }

@@ -279,8 +279,27 @@ fn guard() -> crate::rig_http::events::Guard {
 }
 
 /// The crate's reply as ours: its text, then its tool calls in order.
-/// `reasoning`: the reply's reasoning is kept (see [`keeps_reasoning`]).
-fn reply(response: &CompletionResponse, reasoning: bool) -> Result<ChatResponse, ProviderError> {
+/// The reply tokens to settle, reasoning included: the largest of what the wire counted, the
+/// reply's `completion_tokens` and its `total_tokens` less `prompt_tokens`. OpenAI counts
+/// reasoning inside `completion_tokens` (and total is prompt plus completion), so nothing is
+/// counted twice; xAI counts it apart (`reasoning_apart`): its total includes it, and without a
+/// total its `completion_tokens_details.reasoning_tokens` is added. A count a server leaves out
+/// stays unknown; no input makes this overflow.
+fn output_tokens(usage: Option<&Value>, counted: Option<u64>, reasoning_apart: bool) -> Option<u64> {
+    let count = |pointer: &str| usage.and_then(|u| u.pointer(pointer)).and_then(Value::as_u64);
+    let completion = count("/completion_tokens");
+    let total = count("/total_tokens");
+    let beyond_prompt = total.and_then(|total| total.checked_sub(count("/prompt_tokens").unwrap_or(0)));
+    let with_reasoning = match (reasoning_apart, total, completion, count("/completion_tokens_details/reasoning_tokens")) {
+        (true, None, Some(completion), Some(reasoning)) => Some(completion.saturating_add(reasoning)),
+        _ => None,
+    };
+    [counted, completion, beyond_prompt, with_reasoning].into_iter().flatten().max()
+}
+
+/// `reasoning`: the reply's reasoning is kept (see [`keeps_reasoning`]). `reasoning_apart`: the
+/// endpoint counts reasoning tokens apart from `completion_tokens` (see [`output_tokens`]).
+fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) -> Result<ChatResponse, ProviderError> {
     // The wire leaves out a call that never names its tool; here such a reply is malformed, as
     // the agent can't answer the call. The reply's provider document still has it.
     let calls = response.raw.pointer("/choices/0/message/tool_calls").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -332,8 +351,8 @@ fn reply(response: &CompletionResponse, reasoning: bool) -> Result<ChatResponse,
         };
         parts.push(Part::ToolUse { id, name: name.to_owned(), input });
     }
-    let usage =
-        Usage { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens, cost: None, billable_units: None, execution_ms: None };
+    let output_tokens = output_tokens(response.raw.get("usage"), response.usage.output_tokens, reasoning_apart);
+    let usage = Usage { input_tokens: response.usage.input_tokens, output_tokens, cost: None, billable_units: None, execution_ms: None };
     Ok(ChatResponse::new(parts, stop, usage))
 }
 
@@ -372,7 +391,7 @@ impl LlmClient {
         // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
         let model = Model::new(Chat::new(config, req.model.as_str()), transport.clone()).with_idle_timeout(None);
         let response = rig_chat::send(model, &transport, request, on_text, &RULES).await?;
-        let mut reply = reply(&response, reasoning)?;
+        let mut reply = reply(&response, reasoning, self.endpoint.id == XAI_ID)?;
         if let Exchange::Answered { headers, .. } = transport.exchange() {
             reply.usage.cost = self.reported_cost(&headers);
         }

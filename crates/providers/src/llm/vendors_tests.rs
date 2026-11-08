@@ -220,3 +220,37 @@ fn mistral_content_shapes() {
     assert_eq!(body["messages"][1]["content"][0], json!({"type": "text", "text": "ping"}));
     assert_eq!(body["messages"][1]["content"][1], json!({"type": "image_url", "image_url": {"url": "data:image/png;base64,UE5H"}}));
 }
+
+/// xAI counts reasoning apart from `completion_tokens`, and bills it: the settled reply tokens
+/// include it (its own example: prompt 26, completion 168, reasoning 304, total 498 →
+/// 472, https://docs.x.ai/developers/advanced-api-usage/deferred-chat-completions.md).
+#[test]
+fn reasoning_tokens_are_settled_with_the_reply() {
+    let usage = r#"{"prompt_tokens":26,"completion_tokens":168,"total_tokens":498,"completion_tokens_details":{"reasoning_tokens":304}}"#;
+    let whole = format!(r#"{{"choices":[{{"message":{{"content":"pong"}},"finish_reason":"stop"}}],"usage":{usage}}}"#);
+    let r = block_on(LlmClient::new(Endpoint::xai(ApiKey::new("k")), Canned::new(200, &whole)).chat(&ask("grok-4.3"))).unwrap();
+    assert_eq!((r.usage.input_tokens, r.usage.output_tokens), (Some(26), Some(472)));
+    let body = format!(
+        "data: {{\"choices\":[{{\"delta\":{{\"content\":\"pong\"}},\"finish_reason\":\"stop\"}}]}}\n\ndata: {{\"choices\":[],\"usage\":{usage}}}\n\ndata: [DONE]\n\n"
+    );
+    let http = Arc::new(Sse { body: body.into_bytes(), seen: Mutex::default() });
+    let r = block_on(LlmClient::new(Endpoint::xai(ApiKey::new("k")), http).chat_stream(&ask("grok-4.3"), &mut |_| {})).unwrap();
+    assert_eq!(r.usage.output_tokens, Some(472), "streamed too");
+    // Without a total, xAI's reasoning is added to the completion.
+    let apart = r#"{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":26,"completion_tokens":168,"completion_tokens_details":{"reasoning_tokens":304}}}"#;
+    let r = block_on(LlmClient::new(Endpoint::xai(ApiKey::new("k")), Canned::new(200, apart)).chat(&ask("grok-4.3"))).unwrap();
+    assert_eq!(r.usage.output_tokens, Some(472));
+    // OpenAI counts reasoning inside completion_tokens: nothing is counted twice, on any endpoint.
+    let inside = r#"{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":26,"completion_tokens":472,"total_tokens":498,"completion_tokens_details":{"reasoning_tokens":304}}}"#;
+    for endpoint in [Endpoint::openai as fn(ApiKey) -> Endpoint, Endpoint::xai, Endpoint::groq, Endpoint::deepseek] {
+        let r = block_on(LlmClient::new(endpoint(ApiKey::new("k")), Canned::new(200, inside)).chat(&ask("m"))).unwrap();
+        assert_eq!(r.usage.output_tokens, Some(472));
+    }
+    let without_total = r#"{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":26,"completion_tokens":472,"completion_tokens_details":{"reasoning_tokens":304}}}"#;
+    let r = block_on(LlmClient::new(Endpoint::openai(ApiKey::new("k")), Canned::new(200, without_total)).chat(&ask("m"))).unwrap();
+    assert_eq!(r.usage.output_tokens, Some(472), "only xAI adds reasoning to completion");
+    // A total under the prompt counts nothing extra.
+    let odd = r#"{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":26,"completion_tokens":5,"total_tokens":3}}"#;
+    let r = block_on(LlmClient::new(Endpoint::groq(ApiKey::new("k")), Canned::new(200, odd)).chat(&ask("m"))).unwrap();
+    assert_eq!(r.usage.output_tokens, Some(5));
+}
