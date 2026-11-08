@@ -280,3 +280,19 @@ fn dialogs1116_escape_goes_to_other_owners_before_the_review() {
         assert!(h.state().batch_review.is_none(), "a further Escape closes the review ({owner})");
     }
 }
+
+/// #1116: an open Tag filter that doesn't hold the keyboard focus takes no Escape, so Escape
+/// still closes Batch items.
+#[test]
+fn dialogs1116_an_unfocused_tag_filter_leaves_escape_to_the_review() {
+    let mut h = super::tests::harness();
+    h.run();
+    let node = *h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().keys().next().unwrap();
+    h.state_mut().batch_review = Some(super::batch_review::BatchReview::new(node));
+    h.state_mut().tag_filter.open = true;
+    h.run();
+    assert!(h.state().tag_filter.open && !h.state().tag_owns_focus(&h.ctx));
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().batch_review.is_none(), "Escape closed the review");
+}

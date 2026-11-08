@@ -285,7 +285,8 @@ struct EnterArmed {
 /// up since the question opened, so the Enter held to choose something in the step before
 /// can't also answer this. While one of the question's own controls other than `field` (its text
 /// field, if it has one) has the keyboard focus, Enter is left to that control: a focused Cancel
-/// cancels. Repeats of a key the question takes are consumed too, so none reaches the canvas.
+/// cancels. Repeats of a key the question takes are consumed too, so none reaches the canvas;
+/// with [`Keys::EscapeOnly`], Enter is consumed without answering.
 pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answer {
     let pass = ctx.cumulative_pass_nr();
     let state_id = id.with("nodecraft.question.enter");
@@ -293,6 +294,10 @@ pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answ
     let last = ctx.data(|data| data.get_temp::<EnterArmed>(state_id)).filter(|last| last.pass.saturating_add(1) >= pass);
     // Asked in the previous pass and armed then: a press now answers.
     let ready = last.is_some_and(|last| last.armed);
+    if last.is_none() {
+        // Just opened: the next pass arms Enter, so a press soon after isn't lost while idle.
+        ctx.request_repaint();
+    }
     ctx.data_mut(|data| data.insert_temp(state_id, EnterArmed { pass, armed: last.is_some() && (ready || !held) }));
     let layer = egui::LayerId::new(egui::Order::Foreground, id);
     let own_control = ctx
@@ -300,7 +305,9 @@ pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answ
         .filter(|focused| Some(*focused) != field)
         .and_then(|focused| ctx.read_response(focused))
         .is_some_and(|response| response.layer_id == layer);
-    let take_enter = keys == Keys::EnterAndEscape && !own_control;
+    // A question that answers only Escape still takes Enter (doing nothing), so no panel drawn
+    // after it gets a keyboard click behind the modal.
+    let take_enter = !own_control;
     ctx.input_mut(|i| {
         let mut answer = Answer::default();
         i.events.retain(|event| match event {
@@ -309,7 +316,7 @@ pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answ
                 false
             }
             egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat, modifiers, .. } if take_enter && modifiers.is_none() => {
-                answer.enter |= !repeat && ready;
+                answer.enter |= !repeat && ready && keys == Keys::EnterAndEscape;
                 false
             }
             _ => true,
@@ -467,34 +474,126 @@ mod tests {
     /// `#[cfg(test)]` modules (skipped by brace depth, so code after them is still read):
     /// `Window::new` called or passed (`.map(egui::Window::new)`), any `egui::Window` path, and
     /// `Window` brought in by a `use egui…` (an alias included).
+    /// `text` with its comments and string and char literals removed, newlines kept, so braces
+    /// and names inside them are never counted.
+    fn code_only(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        let at = |i: usize| chars.get(i).copied();
+        while let Some(c) = at(i) {
+            let ident_before = i > 0 && at(i - 1).is_some_and(|p| p.is_alphanumeric() || p == '_');
+            if c == '/' && at(i + 1) == Some('/') {
+                while at(i).is_some_and(|c| c != '\n') {
+                    i += 1;
+                }
+            } else if c == '/' && at(i + 1) == Some('*') {
+                let mut depth = 0;
+                while let Some(c) = at(i) {
+                    if c == '/' && at(i + 1) == Some('*') {
+                        depth += 1;
+                        i += 2;
+                    } else if c == '*' && at(i + 1) == Some('/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        if c == '\n' {
+                            out.push('\n');
+                        }
+                        i += 1;
+                    }
+                }
+            } else if c == 'r' && !ident_before && matches!(at(i + 1), Some('"' | '#')) {
+                let mut hashes = 0;
+                let mut j = i + 1;
+                while at(j) == Some('#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if at(j) != Some('"') {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                i = j + 1;
+                while let Some(c) = at(i) {
+                    if c == '"' && (1..=hashes).all(|k| at(i + k) == Some('#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            } else if c == '"' {
+                i += 1;
+                while let Some(c) = at(i) {
+                    if c == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    if c == '"' {
+                        break;
+                    }
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+            } else if c == '\'' && at(i + 1) == Some('\\') {
+                // An escaped char literal such as '\n' or '\u{7b}'.
+                i += 2;
+                while at(i).is_some_and(|c| c != '\'' && c != '\n') {
+                    i += 1;
+                }
+                i += 1;
+            } else if c == '\'' && at(i + 2) == Some('\'') {
+                i += 3;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The 1-based lines of `text` that build or name an `egui::Window`, outside its
+    /// `#[cfg(test)]` modules (skipped by brace depth, so code after them is still read):
+    /// `Window::new` called or passed (`.map(egui::Window::new)`), any `egui::Window` path, and
+    /// `Window` brought in by a `use` of egui (`use eframe::egui::…` and aliases included).
+    /// Comments and literals are ignored.
     fn raw_window_lines(text: &str) -> Vec<usize> {
         let mut found = Vec::new();
         let mut test_attr = false;
         let mut skip_depth: Option<i64> = None;
         let mut in_use = false;
-        for (n, line) in text.lines().enumerate() {
-            let trimmed = line.trim();
+        for (n, line) in code_only(text).lines().enumerate() {
+            let code = line.trim();
             if let Some(depth) = &mut skip_depth {
-                *depth += line.matches('{').count() as i64 - line.matches('}').count() as i64;
+                *depth += code.matches('{').count() as i64 - code.matches('}').count() as i64;
                 if *depth <= 0 {
                     skip_depth = None;
                 }
                 continue;
             }
-            if trimmed == "#[cfg(test)]" {
+            if code == "#[cfg(test)]" {
                 test_attr = true;
                 continue;
             }
-            if test_attr && trimmed.contains("mod ") && trimmed.ends_with('{') {
+            if test_attr && code.contains("mod ") && code.ends_with('{') {
                 test_attr = false;
                 skip_depth = Some(1);
                 continue;
             }
-            if !trimmed.is_empty() {
+            if !code.is_empty() {
                 test_attr = false;
             }
-            let code = trimmed.split("//").next().unwrap_or_default();
-            if code.starts_with("use egui") || code.starts_with("pub use egui") || code.starts_with("pub(crate) use egui") {
+            let statement = code.trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ").trim_start_matches("pub ");
+            if statement.starts_with("use ") && statement.contains("egui") {
                 in_use = true;
             }
             let word = code.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == "Window");
@@ -512,6 +611,10 @@ mod tests {
     fn the_raw_window_scan_finds_every_spelling_and_skips_only_test_modules() {
         let text = "use egui::{Area, Window as Win};\nfn a() { let _ = names.map(egui::Window::new); }\nfn b() -> web_sys::Window { todo }\n#[cfg(test)]\nmod tests {\n    fn t() { egui::Window::new(\"x\"); }\n}\nfn c() { Win::new(\"y\"); egui::Window::new(\"z\"); }\nuse egui::{\n    Pos2,\n    Window,\n};\n";
         assert_eq!(raw_window_lines(text), vec![1, 2, 8, 11]);
+        // Braces and names in literals and comments don't count; a module after a test module
+        // with a brace in a string is still read; `use eframe::egui` starts an import too.
+        let text = "#[cfg(test)]\nmod tests {\n    const OPEN: char = '{';\n    const S: &str = \"}}}\";\n    // }\n}\nfn d() { egui::Window::new(\"w\"); }\nuse eframe::egui::{\n    Window,\n};\nconst T: &str = \"egui::Window::new\"; // egui::Window::new\nconst R: &str = r#\"Window::new\"#;\nfn e<'a>(x: &'a str) {}\n";
+        assert_eq!(raw_window_lines(text), vec![7, 9]);
     }
 
     /// #1116: a question is a `question` (a modal) and a tool a `panel` (or `pinned`); nothing

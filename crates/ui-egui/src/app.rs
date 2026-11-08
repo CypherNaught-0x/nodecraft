@@ -2930,14 +2930,18 @@ impl NodeCraftApp {
     /// Which open tool panel this frame's Escape closes: the frontmost of Workflow fields and
     /// Batch items, when nothing else owns the key. Every other Escape owner comes first: a
     /// question, a popup, the quick-add palette or Turn into, a text field (Escape leaves it
-    /// first), the keyboard connect flow, Search, Discussions, the Tag filter, any drag or
-    /// gesture (card, box, wire, reorder, field, comment pin, minimap, a slider) and a browser
-    /// file read. The key is consumed, so the canvas doesn't also act on it.
-    fn take_tool_escape(&self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
+    /// first), the keyboard connect flow, Search (unless something blocks it), Discussions, the
+    /// Tag filter while it has the focus, any drag or gesture (card, box, wire, reorder, field,
+    /// comment pin, minimap, a slider) and a browser file read. The key is consumed, so the
+    /// canvas doesn't also act on it.
+    fn take_tool_escape(&mut self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
         #[cfg(any(test, target_arch = "wasm32"))]
         let reading = self.web_drop.is_some();
         #[cfg(not(any(test, target_arch = "wasm32")))]
         let reading = false;
+        // Search and the Tag filter take Escape only when they can: open Search not blocked by
+        // something else, a Tag filter holding the keyboard focus.
+        let search = self.search.open && !self.search_context(ctx).blocked;
         let owned = blocked
             || self.text_focused
             || canvas::text_input_focused(ctx)
@@ -2946,11 +2950,11 @@ impl NodeCraftApp {
             || self.palette.is_some()
             || self.turn_into.is_some()
             || self.key_wiring.is_some()
-            || self.search.open
+            || search
             || self.comments.open
             || self.comments.drag.is_some()
             || self.comments.gesture_cancelled
-            || self.tag_filter.open
+            || self.tag_owns_focus(ctx)
             || self.drag.is_some()
             || self.marquee.is_some()
             || self.wiring.is_some()
