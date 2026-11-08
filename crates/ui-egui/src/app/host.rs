@@ -58,11 +58,14 @@ impl NodeCraftApp {
             Err(Error::new(ErrorKind::InvalidInput, "not a live view command"))
         }
     }
-    /// What a host command would do. Only Format selection edits the document; the rest change
-    /// what the window shows, which is not the document.
+    /// What a host command would do. Only Format selection edits the document; the interface
+    /// size (#1107) changes and saves a setting of the person's, so it is a host effect that an
+    /// assisting agent asks about first; the rest change only what the window shows.
     pub fn host_impact(&mut self, ctx: &egui::Context, id: &str, params: &Json) -> Result<nodecraft_engine::impact::Impact, Error> {
         if id == LAYOUT {
             self.layout_impact(ctx, params)
+        } else if is_ui_scale_command(id) {
+            self.session.impact(id, params)
         } else {
             self.host_enabled(ctx, id, params)?;
             Ok(nodecraft_engine::impact::Impact::Read)
