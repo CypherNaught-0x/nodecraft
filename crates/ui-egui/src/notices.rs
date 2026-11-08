@@ -16,15 +16,16 @@ use crate::{
 use egui::{Color32, Stroke};
 use nodecraft_types::{Error, ErrorKind};
 
-/// How many notices the stack holds at once; a fourth replaces the oldest that isn't an error.
+/// How many notices the stack shows at once. A fourth replaces the oldest one that isn't
+/// sticky; with only sticky ones shown, a new passing notice is dropped and a new sticky one is
+/// kept, the older ones counted on a "more" line under the stack.
 pub const MAX_NOTICES: usize = 3;
+/// The most sticky notices kept; beyond this the oldest goes, so the stack stays bounded.
+pub const MAX_STICKY: usize = 32;
 /// How long an information, success or warning notice stays on screen.
 pub const TIMEOUT_SECONDS: f64 = 6.0;
 /// The longest notice text kept, in UTF-8 bytes; longer text is cut at a character boundary.
 pub const MAX_TEXT_BYTES: usize = 4096;
-/// The longest step the timeout clock takes in one frame, so a notice drawn again after a pause
-/// (another view, a stalled frame) is not already gone.
-const MAX_STEP_SECONDS: f64 = 0.25;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum NoticeKind {
@@ -157,6 +158,12 @@ impl Notice {
         Self { id: 0, kind, text, action: None, sticky: kind.sticky(), shown: 0.0 }
     }
 
+    /// Keep it until dismissed whatever its kind (a run warning that costs money if missed).
+    pub fn keep(mut self) -> Self {
+        self.sticky = true;
+        self
+    }
+
     pub fn with_action(mut self, label: impl Into<String>, command: impl Into<String>) -> Self {
         self.action = Some(NoticeAction { label: label.into(), command: command.into() });
         self
@@ -180,30 +187,42 @@ pub struct Notices {
     queue: Vec<Notice>,
     next_id: u64,
     last_time: Option<f64>,
+    /// The pass the stack was last drawn in: the clock runs, and the focus and hover below count,
+    /// only while it is drawn pass after pass.
+    drawn_pass: Option<u64>,
     /// The notice whose button had the keyboard focus, or that the pointer was over, last frame.
     focused: Option<u64>,
     hovered: Option<u64>,
 }
 
 impl Notices {
-    pub fn push_notice(&mut self, mut notice: Notice) {
+    /// Add `notice` on top and return its id, or `None` when it was dropped: a passing notice
+    /// while the stack shows only sticky ones, which are never evicted for it.
+    pub fn push_notice(&mut self, mut notice: Notice) -> Option<u64> {
         // The same message again refreshes the one already shown instead of stacking a copy.
         if let Some(index) = self.queue.iter().position(|old| old.kind == notice.kind && old.text == notice.text) {
             let old = self.queue.remove(index);
             notice.id = old.id;
+            notice.sticky |= old.sticky;
         } else {
             self.next_id = self.next_id.wrapping_add(1);
             notice.id = self.next_id;
         }
         while self.queue.len() >= MAX_NOTICES {
-            let index = self.queue.iter().position(|old| !old.sticky).unwrap_or(0);
-            if index < self.queue.len() {
-                self.queue.remove(index);
-            } else {
-                break;
+            match self.queue.iter().position(|old| !old.sticky) {
+                Some(index) => {
+                    self.queue.remove(index);
+                }
+                None if !notice.sticky => return None,
+                None => break,
             }
         }
+        if notice.sticky && self.queue.len() >= MAX_STICKY {
+            self.queue.remove(0);
+        }
+        let id = notice.id;
         self.queue.push(notice);
+        Some(id)
     }
 
     pub fn push(&mut self, kind: NoticeKind, text: impl Into<String>) {
@@ -228,11 +247,17 @@ impl Notices {
 
     /// An engine error, as the kind [`NoticeKind::of_error`] gives it.
     pub fn report(&mut self, error: Error) {
-        self.push(NoticeKind::of_error(error.kind), error.message);
+        self.report_id(error);
     }
 
-    /// Show `text` as `kind`, or clear the stack when there is none: what an action that reports
-    /// its own outcome does on success.
+    /// [`Self::report`], returning the notice's id so the code that raised it can take it back
+    /// with [`Self::dismiss`] once the thing it was about has succeeded.
+    pub fn report_id(&mut self, error: Error) -> Option<u64> {
+        self.push_notice(Notice::new(NoticeKind::of_error(error.kind), error.message))
+    }
+
+    /// Show `text` as `kind`, or [`Self::clear`] when there is none: what an action that
+    /// reports its own outcome does on success.
     pub fn set(&mut self, kind: NoticeKind, text: Option<String>) {
         match text {
             Some(text) => self.push(kind, text),
@@ -240,7 +265,8 @@ impl Notices {
         }
     }
 
-    /// What an action that reports only failures does: clear on success, report an error.
+    /// What an action that reports only failures does: [`Self::clear`] on success, report an
+    /// error.
     pub fn outcome<T>(&mut self, result: Result<T, Error>) {
         match result {
             Ok(_) => self.clear(),
@@ -248,9 +274,12 @@ impl Notices {
         }
     }
 
-    /// Clear every notice: the action they were about has since succeeded.
+    /// Clear the passing notices after an action has succeeded. Sticky ones (every error, and
+    /// run warnings) are never cleared by an unrelated success: only the person dismisses them,
+    /// or the code that raised one takes it back by id or text ([`Self::dismiss`],
+    /// [`Self::dismiss_text`]).
     pub fn clear(&mut self) {
-        self.queue.clear();
+        self.queue.retain(|notice| notice.sticky);
     }
 
     pub fn dismiss(&mut self, id: u64) {
@@ -286,19 +315,29 @@ impl Notices {
 
     /// The notice whose button held the keyboard focus last frame. egui drops the focus on the
     /// Escape press itself, so the shell reads this to give that notice its Escape.
-    pub fn focused(&self) -> Option<u64> {
-        self.focused.filter(|id| self.queue.iter().any(|notice| notice.id == *id))
+    /// Only a stack drawn in the previous pass counts: a hidden one has no focus to take.
+    pub fn focused(&self, ctx: &egui::Context) -> Option<u64> {
+        self.focused.filter(|id| self.drawn_last_pass(ctx) && self.queue.iter().any(|notice| notice.id == *id))
+    }
+
+    fn drawn_last_pass(&self, ctx: &egui::Context) -> bool {
+        self.drawn_pass.is_some_and(|pass| pass.saturating_add(1) == ctx.cumulative_pass_nr())
     }
 
     /// Advance the timeout clock to `now` (egui time), pausing the notice under the pointer or
-    /// holding the focus, and drop notices that have timed out. Returns how long until the next
-    /// one does, for a repaint.
-    fn tick(&mut self, now: f64) -> Option<f64> {
+    /// holding the focus, and drop notices that have timed out. `running` is false when the
+    /// stack wasn't drawn in the previous pass: the time since then doesn't count. Returns how
+    /// long until the next one times out, for a repaint.
+    fn tick(&mut self, now: f64, running: bool) -> Option<f64> {
         let step = match self.last_time {
-            Some(last) if now.is_finite() && last.is_finite() => (now - last).clamp(0.0, MAX_STEP_SECONDS),
+            Some(last) if running && now.is_finite() && last.is_finite() => (now - last).clamp(0.0, TIMEOUT_SECONDS),
             _ => 0.0,
         };
         self.last_time = Some(now);
+        if !running {
+            self.focused = None;
+            self.hovered = None;
+        }
         let paused = [self.focused, self.hovered];
         for notice in &mut self.queue {
             if !notice.sticky && !paused.contains(&Some(notice.id)) {
@@ -320,14 +359,16 @@ impl Notices {
             self.dismiss(id);
         }
         let now = ui.input(|i| i.time);
-        if let Some(next) = self.tick(now) {
+        let running = self.drawn_last_pass(ui.ctx());
+        self.drawn_pass = Some(ui.ctx().cumulative_pass_nr());
+        if let Some(next) = self.tick(now, running) {
             ui.ctx().request_repaint_after(std::time::Duration::from_secs_f64(next.clamp(0.0, TIMEOUT_SECONDS)));
         }
         let mut shown = Shown::default();
         let mut dismissed = Vec::new();
         let (mut focused, mut hovered) = (None, None);
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        for notice in self.queue.iter().rev() {
+        for notice in self.queue.iter().rev().take(MAX_NOTICES) {
             let id = ui.id().with(("notice", notice.id));
             let response = show_one(ui, t, id, notice);
             if response.closed {
@@ -342,6 +383,19 @@ impl Notices {
             if pointer.is_some_and(|pos| response.rect.contains(pos)) {
                 hovered = Some(notice.id);
             }
+        }
+        // Older sticky notices wait under the stack, counted, until the shown ones are dismissed.
+        let more = self.queue.len().saturating_sub(MAX_NOTICES);
+        if more > 0 {
+            let line = if more == 1 {
+                "1 more notice below; dismiss these to see it.".to_owned()
+            } else {
+                format!("{more} more notices below; dismiss these to see them.")
+            };
+            theme::panel_frame(t).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.add(egui::Label::new(egui::RichText::new(line).color(t.text_muted)).wrap());
+            });
         }
         for id in dismissed {
             self.dismiss(id);

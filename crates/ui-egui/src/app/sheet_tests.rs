@@ -835,3 +835,24 @@ fn a_sheets_controls_have_names() {
     let h = on_sheet(&["a fox", "an owl"]);
     assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new());
 }
+
+#[test]
+fn escape_dismisses_a_focused_notice_on_a_sheet() {
+    // The sheet draws the notice stack too, so a focused notice takes its Escape there (#1110).
+    let mut h = scene(&[]);
+    open_sheets(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Title").focus();
+    h.run();
+    h.event(egui::Event::Text("Owls".into()));
+    h.run();
+    press(&mut h, Role::Button, "New sheet");
+    assert!(h.state().on_sheet());
+    h.state_mut().notices.error("Sheet problem");
+    h.run();
+    h.get_by_label("Dismiss notice").focus();
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
+    assert!(h.state().on_sheet(), "the Escape went to the notice only");
+}

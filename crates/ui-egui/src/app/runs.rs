@@ -785,13 +785,7 @@ impl Runs {
                 RunNotice::Finished { .. } => {}
             }
         }
-        // The first says why; the rest are on their cards.
-        // The first says why; the rest are on their cards. The notice is as severe as the worst.
-        let kind = notices.iter().map(|(kind, _)| *kind).max();
-        tick.notice = notices.first().zip(kind).map(|((_, first), kind)| match notices.len().saturating_sub(1) {
-            0 => (kind, first.clone()),
-            more => (kind, format!("{first} (and {more} more)")),
-        });
+        tick.notice = headline(&notices);
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
@@ -1108,9 +1102,30 @@ fn adapters_of(session: &Session, canvas: CanvasId, settings: &ProviderSettings)
     (adapters, expanded.inner)
 }
 
+/// One notice for a tick's run events: as severe as the worst, in the words of the first event of
+/// that kind; the rest are on their cards.
+fn headline(notices: &[(NoticeKind, String)]) -> Option<(NoticeKind, String)> {
+    let kind = notices.iter().map(|(kind, _)| *kind).max()?;
+    let (_, first) = notices.iter().find(|(each, _)| *each == kind)?;
+    Some(match notices.len().saturating_sub(1) {
+        0 => (kind, first.clone()),
+        more => (kind, format!("{first} (and {more} more)")),
+    })
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod plugin_maker_tests {
     use super::*;
+
+    #[test]
+    fn a_batched_run_notice_leads_with_its_worst_event() {
+        let notices = [
+            (NoticeKind::of_run(RunEvent::Placed), "The held result is on the canvas.".to_owned()),
+            (NoticeKind::of_run(RunEvent::Failed), "A run failed: over budget".to_owned()),
+        ];
+        assert_eq!(headline(&notices), Some((NoticeKind::Error, "A run failed: over budget (and 1 more)".to_owned())));
+        assert_eq!(headline(&[]), None);
+    }
 
     #[test]
     fn a_plugin_provider_runs_only_while_the_session_publishes_it() {

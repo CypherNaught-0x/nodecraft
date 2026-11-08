@@ -740,20 +740,22 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 **Notices** (#1110, [decision](decisions/2026-11-08-typed-notices.md)) are view state in
-`notices.rs`: a stack in the bottom-left corner, newest on top, at most three (`MAX_NOTICES`). A
-fourth replaces the oldest that isn't an error, and the same text again refreshes the one shown
-instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
+`notices.rs`: a stack in the bottom-left corner, newest on top, three shown (`MAX_NOTICES`). A
+fourth replaces the oldest that isn't sticky; with only sticky ones shown, a passing notice is
+dropped and a sticky one is kept below, counted on a "N more notices below" line (at most 32). The
+same text again refreshes the one shown instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
 shared panel frame, `notice_width` (380) wide or the window less its margins, with a
 `notice_edge` (3) stripe down its left side and an icon in its kind's colour (`text_muted`,
 `accent`, `stale`, `danger`; Tabler info-circle, circle-check, alert-triangle, alert-circle), so
 colour is never the only cue. Its text is `text`.
 
-- **Errors stay until dismissed**; the others go after 6 s on screen, counted in egui time. The
-  clock stops while the pointer is over a notice or one of its buttons has the keyboard focus, and
-  while the stack isn't drawn.
+- **Errors and run warnings stay until dismissed** (sticky); the others go after 6 s on screen,
+  counted in egui time. The clock stops while the pointer is over a notice or one of its buttons
+  has the keyboard focus, and while the stack isn't drawn.
 - **Dismiss** with the close button (**Dismiss notice**), or **Escape** while that button (or the
-  notice's action button) has the keyboard focus. The notice takes Escape early, with the tools
-  (`take_tool_escape`), and only when no other Escape owner is active; without the focus, Escape
+  notice's action button) has the keyboard focus and the stack was drawn the frame before. The
+  notice takes Escape early, with the tools (`take_tool_escape`; on a sheet, before its table),
+  and only when no other Escape owner is active; without the focus, Escape
   goes where it did before (it clears the selection).
 - An optional **action** button runs a command id as the palette would.
 - Each notice's text is an AccessKit **live region**: polite for information and successes,
@@ -761,7 +763,8 @@ colour is never the only cue. Its text is `text`.
 - Engine errors map to a kind in one place, `NoticeKind::of_error` (a `Busy` refusal is a
   warning; provider, budget, key and network failures are errors), and run events in
   `NoticeKind::of_run`. Code reports with `notices.report(error)`, `error`, `warning`, `success`
-  or `info`; `clear` is for an action that has since succeeded.
+  or `info`. `clear`, after an action has succeeded, removes only passing notices; a sticky one
+  goes when dismissed, or when the code that raised it takes it back by id or text.
 - Views without the corner (a deck being edited or presented, an app form) show the newest as one
   line with `notices::inline_notice`. An error bound to a control (a card's parameter, the model
   picker's choice) is `notices::inline_error`: the error icon, then `danger` text.

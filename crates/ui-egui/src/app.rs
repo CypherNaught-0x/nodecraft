@@ -2951,6 +2951,19 @@ impl NodeCraftApp {
         }
     }
 
+    /// A notice takes Escape only while one of its buttons has the keyboard focus (egui has
+    /// already dropped that focus for this press, so it is last frame's) and the stack was drawn
+    /// last frame. Callers check the other Escape owners first.
+    fn take_notice_escape(&mut self, ctx: &egui::Context) -> bool {
+        if let Some(notice) = self.notices.focused(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.notice_escape = Some(notice);
+            return true;
+        }
+        false
+    }
+
     fn take_tool_escape(&mut self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
         #[cfg(any(test, target_arch = "wasm32"))]
         let reading = self.web_drop.is_some();
@@ -2984,12 +2997,8 @@ impl NodeCraftApp {
         if owned {
             return None;
         }
-        // A notice takes Escape only while one of its buttons has the keyboard focus (egui has
-        // already dropped that focus for this press, so it is last frame's), and before any tool.
-        if let Some(notice) = self.notices.focused()
-            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
-        {
-            self.notice_escape = Some(notice);
+        // A notice takes Escape before any tool.
+        if self.take_notice_escape(ctx) {
             return None;
         }
         let open = [

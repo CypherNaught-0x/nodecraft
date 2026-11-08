@@ -57,3 +57,25 @@ fn an_action_button_runs_its_command() {
     h.run();
     assert_eq!(h.state().navigation.visible, !visible);
 }
+
+#[test]
+fn a_refused_run_survives_undo_delete_paste_and_search() {
+    // The run failure isn't shown on any card: losing it to an unrelated success loses money.
+    let mut h = harness();
+    let id = node(h.state()).id;
+    let refused = "The run didn't start: the budget for today is spent";
+    h.state_mut().notices.push_notice(Notice::new(NoticeKind::Error, refused).keep());
+    h.run();
+    let ctx = h.ctx.clone();
+    h.state_mut().selection.only(id);
+    h.state_mut().run_palette_command(&ctx, "canvas.delete");
+    h.run();
+    h.state_mut().run_palette_command(&ctx, "edit.undo");
+    h.run();
+    h.state_mut().run_palette_command(&ctx, "canvas.paste");
+    h.run();
+    h.state_mut().dispatch_navigation(&ctx, "canvas.search_open", &serde_json::json!({})).ok();
+    h.state_mut().dispatch_search(&ctx, "canvas.search_query", &serde_json::json!({"query": "x"})).ok();
+    h.run();
+    assert!(h.state().notices.iter().any(|notice| notice.text == refused), "{:?}", h.state().notice());
+}

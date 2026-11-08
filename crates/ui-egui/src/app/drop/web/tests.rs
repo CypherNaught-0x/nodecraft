@@ -157,7 +157,11 @@ fn a_stuck_browser_read_expires_and_a_late_result_cannot_import() {
     pending(&mut h, vec![("fresh.txt", Some(Ok(b"fresh read".to_vec())))], vec![]);
     h.run();
     assert_eq!(nodes(&h).len(), before.canvases().get(&h.state().canvas).unwrap().nodes().len() + 1);
-    assert!(h.state().notices.is_empty());
+    // The earlier error is sticky: a later success doesn't take it away (#1110); nothing new is said.
+    assert_eq!(
+        h.state().notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(),
+        ["The browser didn't finish reading files; nothing was added. Drop them again."]
+    );
 }
 
 #[test]

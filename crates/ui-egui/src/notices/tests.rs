@@ -9,11 +9,41 @@ fn the_queue_is_capped_and_keeps_errors_over_older_information() {
     notices.info("three");
     let texts: Vec<&str> = notices.iter().map(|notice| notice.text.as_str()).collect();
     assert_eq!(texts, ["three", "two", "Provider refused the key"]);
-    for i in 0..10 {
-        notices.error(format!("error {i}"));
+}
+
+#[test]
+fn errors_are_never_evicted_for_passing_notices_and_extra_errors_wait_below() {
+    let mut notices = Notices::default();
+    for i in 1..=3 {
+        notices.error(format!("E{i}"));
     }
-    assert_eq!(notices.iter().count(), MAX_NOTICES);
-    assert_eq!(notices.latest_text(), Some("error 9"));
+    // Only errors are shown: a passing notice is dropped rather than evicting one.
+    assert_eq!(notices.push_notice(Notice::new(NoticeKind::Success, "Saved")), None);
+    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["E3", "E2", "E1"]);
+    // A fourth error is kept, under the shown three.
+    notices.error("E4");
+    assert_eq!(notices.iter().count(), 4);
+    assert_eq!(notices.latest_text(), Some("E4"));
+    // Bounded all the same.
+    for i in 0..100 {
+        notices.error(format!("more {i}"));
+    }
+    assert_eq!(notices.iter().count(), MAX_STICKY);
+    assert_eq!(notices.latest_text(), Some("more 99"));
+}
+
+#[test]
+fn clear_keeps_sticky_notices_and_their_owner_takes_them_back() {
+    let mut notices = Notices::default();
+    let id = notices.report_id(Error::new(ErrorKind::InvalidInput, "Bad name"));
+    notices.push_notice(Notice::new(NoticeKind::Warning, "Runs can't be kept for a restart").keep());
+    notices.info("Copied");
+    notices.clear();
+    notices.outcome(Ok::<(), Error>(()));
+    notices.set(NoticeKind::Info, None);
+    assert_eq!(notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Runs can't be kept for a restart", "Bad name"]);
+    notices.dismiss(id.unwrap());
+    assert_eq!(notices.latest_text(), Some("Runs can't be kept for a restart"));
 }
 
 #[test]
@@ -49,9 +79,14 @@ fn the_clock_ignores_non_finite_and_backward_time() {
     let mut notices = Notices::default();
     notices.info("hello");
     for now in [0.0, f64::NAN, -5.0, f64::INFINITY, 1.0] {
-        notices.tick(now);
+        notices.tick(now, true);
     }
     assert_eq!(notices.latest_text(), Some("hello"));
+    // Time while the stack wasn't drawn doesn't count.
+    notices.tick(1000.0, false);
+    assert_eq!(notices.latest_text(), Some("hello"));
+    notices.tick(1000.0 + TIMEOUT_SECONDS, true);
+    assert!(notices.is_empty());
 }
 
 mod kittest {
@@ -132,6 +167,62 @@ mod kittest {
         h.run();
         assert_eq!(h.state().iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Budget reached"]);
         assert!(h.query_by_label("Budget reached").is_some());
+    }
+
+    #[test]
+    fn a_notice_times_out_across_long_gaps_between_frames() {
+        // An idle window repaints only when asked: the clock counts the whole gap, so two frames
+        // a few seconds apart are enough (#1110 review).
+        let mut notices = Notices::default();
+        notices.info("Copied");
+        let mut h = Harness::builder().with_step_dt(4.0).with_size(Vec2::new(520.0, 200.0)).build_ui_state(
+            |ui, notices: &mut Notices| {
+                notices.show(ui, ThemeKind::Dark.tokens(), None);
+            },
+            notices,
+        );
+        // With a quarter-second cap per frame this took 24 frames; now the gap counts in full.
+        let mut frames = 0;
+        while !h.state().is_empty() && frames < 24 {
+            h.step();
+            frames += 1;
+        }
+        assert!(h.state().is_empty() && frames <= 3, "{frames} frames");
+    }
+
+    #[test]
+    fn a_hidden_stack_has_no_clock_and_no_focus() {
+        let mut notices = Notices::default();
+        notices.info("Wait for me");
+        let mut h = Harness::builder().with_step_dt(1.0).with_size(Vec2::new(520.0, 200.0)).build_ui_state(
+            |ui, (notices, drawn): &mut (Notices, bool)| {
+                if *drawn {
+                    notices.show(ui, ThemeKind::Dark.tokens(), None);
+                }
+            },
+            (notices, true),
+        );
+        h.run();
+        h.get_by_label("Dismiss notice").focus();
+        h.run();
+        assert!(h.state().0.focused(&h.ctx).is_some());
+        h.state_mut().1 = false;
+        for _ in 0..20 {
+            h.step();
+        }
+        assert!(h.state().0.focused(&h.ctx).is_none(), "a hidden notice can't take Escape");
+        assert_eq!(h.state().0.latest_text(), Some("Wait for me"), "its clock stopped while hidden");
+    }
+
+    #[test]
+    fn errors_beyond_the_shown_three_are_counted_below() {
+        let mut h = stack(&[(NoticeKind::Error, "E1"), (NoticeKind::Error, "E2"), (NoticeKind::Error, "E3"), (NoticeKind::Error, "E4")]);
+        h.run();
+        assert!(h.query_by_label("E1").is_none());
+        h.get_by_label("1 more notice below; dismiss these to see it.");
+        h.get_all_by_label("Dismiss notice").next().unwrap().click();
+        h.run();
+        h.get_by_label("E1");
     }
 
     #[test]

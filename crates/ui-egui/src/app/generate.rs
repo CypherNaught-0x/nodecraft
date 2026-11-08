@@ -408,7 +408,9 @@ impl NodeCraftApp {
             self.notices.dismiss_text(super::runs::SETTING_UP);
         }
         if let Some((kind, notice)) = tick.notice {
-            self.notices.push(kind, notice);
+            // A run problem costs money if missed: it stays until dismissed, warnings too.
+            let notice = crate::notices::Notice::new(kind, notice);
+            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.keep() } else { notice });
         }
         for estimated in tick.estimated {
             self.estimated(estimated);

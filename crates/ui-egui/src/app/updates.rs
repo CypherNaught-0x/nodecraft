@@ -420,13 +420,15 @@ impl super::NodeCraftApp {
                 self.close_update_banner();
             }
             Chosen::StopChecking => {
-                self.notices.info(match &mut self.store {
+                match &mut self.store {
                     Some(store) => {
                         store.update(|settings| settings.updates.check = false);
-                        "NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.".to_owned()
+                        self.notices.info("NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.");
                     }
-                    None => UNSAVED.to_owned(),
-                });
+                    None => {
+                        self.notices.warning(UNSAVED);
+                    }
+                }
                 self.close_update_banner();
             }
         }
