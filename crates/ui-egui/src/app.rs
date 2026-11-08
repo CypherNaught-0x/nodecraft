@@ -1489,13 +1489,9 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
-        let file_menu_owns_input = {
-            self.web_file_menu(ui, t);
-            false
-        };
-        #[cfg(not(target_arch = "wasm32"))]
+        let file_menu_owns_input = self.web_file_menu(ui, t);
         if file_menu_owns_input {
-            self.clear_file_input(ui.ctx());
+            topbar::clear_menu_input(ui.ctx());
         }
         if !self.centred {
             let home = self.home();

@@ -614,7 +614,7 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
     settle(&mut h);
     let view = h.state().view;
     let visible = h.state().navigation.visible;
-    // #1123: a click outside the File menu closes it and reaches nothing else.
+    // #1123: a click outside the File menu closes it and never reaches the canvas.
     for label in ["Fit all", "100%", "Hide map"] {
         h.get_by_label("File").click();
         settle(&mut h);

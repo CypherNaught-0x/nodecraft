@@ -24,7 +24,8 @@ the right from the commands' own shortcut text (`shortcut::format_shortcut`). It
 top of the frame, before the canvas reads input, from the File entry's rectangle of the previous
 pass, so the existing File ownership rules (input owned, navigation and model picker refused while
 it is open) are unchanged. Its open state is the shell's own (`open_bool`), not egui's popup
-memory. A click outside closes it and reaches nothing else that frame; Escape closes it before any
+memory. A click outside closes it and never reaches the canvas that frame (a click
+on another top-bar entry or a panel's control still acts, as it did before); Escape closes it before any
 canvas handler reads the key. Entries that can't run stay listed, disabled, with the reason on
 hover: without project storage, Open, Save, Save as and the recent projects carry the storage
 reason (also shown at the menu's top, with Focus the other window when another window owns

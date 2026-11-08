@@ -642,14 +642,7 @@ impl NodeCraftApp {
         true
     }
     pub(super) fn clear_file_input(&self, ctx: &egui::Context) {
-        ctx.input_mut(|i| {
-            i.events.clear();
-            i.raw.events.clear();
-            i.raw.dropped_files.clear();
-            i.keys_down.clear();
-            i.modifiers = egui::Modifiers::NONE;
-            i.smooth_scroll_delta = egui::Vec2::ZERO;
-        });
+        super::topbar::clear_menu_input(ctx);
     }
     /// The top bar's File entry (#1123): opens the File menu, or closes it when it was open as
     /// this frame began (the click that reaches the entry also closed it as a click outside).
@@ -666,13 +659,9 @@ impl NodeCraftApp {
             self.files.menu_was_open = false;
             return self.files.pending.is_some();
         }
-        let was_open = self.files.menu_open;
-        self.files.menu_was_open = was_open;
+        let was_open = super::topbar::begin_file_menu(ui.ctx(), &mut self.files.menu_open, &mut self.files.menu_was_open);
         if was_open {
             self.files.own_frame(ui.ctx());
-        }
-        if was_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.files.menu_open = false;
         }
         let mut action = None;
         let mut recent = None;
@@ -714,36 +703,40 @@ impl NodeCraftApp {
                         action = Some(*id);
                     }
                 }
+                // Up to 16 projects and Clear: the list scrolls in a short window.
+                let recent_room = (ui.ctx().content_rect().height() - t.navigation_margin * 2.0).max(t.navigation_toolbar_height);
                 let (submenu, _) = egui::containers::menu::SubMenuButton::new("Open recent").ui(ui, |ui| {
                     ui.set_max_width(t.file_menu_width);
-                    if paths.is_empty() {
-                        ui.add_enabled(false, egui::Label::new(egui::RichText::new("No recent projects").color(t.text_muted)));
-                    }
-                    for path in &paths {
-                        ui.horizontal(|ui| {
-                            let label = Path::new(path)
-                                .file_name()
-                                .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
-                                .unwrap_or_default();
-                            let response = ui.add_enabled(blocked.is_none(), egui::Button::new(label).truncate());
-                            let response = match blocked {
-                                Some(why) => response.on_disabled_hover_text(why),
-                                None => response,
-                            };
-                            if response.clicked() {
-                                recent = Some(PathBuf::from(path));
-                            }
-                            if ui.small_button("Remove").on_hover_text("Forget this project; the file stays where it is").clicked() {
-                                remove = Some(path.clone());
-                            }
-                        });
-                    }
-                    ui.separator();
-                    clear = ui
-                        .add_enabled(!paths.is_empty(), egui::Button::new("Clear recent projects"))
-                        .on_hover_text("Forget every project in this list; the files stay where they are")
-                        .on_disabled_hover_text("There are no recent projects to clear")
-                        .clicked();
+                    egui::ScrollArea::vertical().max_height(recent_room).show(ui, |ui| {
+                        if paths.is_empty() {
+                            ui.add_enabled(false, egui::Label::new(egui::RichText::new("No recent projects").color(t.text_muted)));
+                        }
+                        for path in &paths {
+                            ui.horizontal(|ui| {
+                                let label = Path::new(path)
+                                    .file_name()
+                                    .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
+                                    .unwrap_or_default();
+                                let response = ui.add_enabled(blocked.is_none(), egui::Button::new(label).truncate());
+                                let response = match blocked {
+                                    Some(why) => response.on_disabled_hover_text(why),
+                                    None => response,
+                                };
+                                if response.clicked() {
+                                    recent = Some(PathBuf::from(path));
+                                }
+                                if ui.small_button("Remove").on_hover_text("Forget this project; the file stays where it is").clicked() {
+                                    remove = Some(path.clone());
+                                }
+                            });
+                        }
+                        ui.separator();
+                        clear = ui
+                            .add_enabled(!paths.is_empty(), egui::Button::new("Clear recent projects"))
+                            .on_hover_text("Forget every project in this list; the files stay where they are")
+                            .on_disabled_hover_text("There are no recent projects to clear")
+                            .clicked();
+                    });
                 });
                 // Named without the arrow egui draws after it.
                 submenu.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open recent"));

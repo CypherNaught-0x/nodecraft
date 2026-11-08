@@ -223,7 +223,7 @@ fn header_drag(ui: &mut egui::Ui, id: Id, bottom: f32, right: f32) {
     }
     // Measured for the cascade: everything above the content is title and close button.
     ui.ctx().data_mut(|data| data.insert_temp(header_height_id(id), height));
-    let rect = Rect::from_min_max(area.min, Pos2::new(right.clamp(area.left(), area.right()), bottom));
+    let rect = Rect::from_min_max(area.min, Pos2::new(right.max(area.left()).min(area.right()), bottom));
     let response = ui.interact(rect, header_id(id), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
     let ctx = ui.ctx().clone();
     let held = ctx.data(|data| data.get_temp::<Drag>(moved_id(id)));

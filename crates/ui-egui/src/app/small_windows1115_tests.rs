@@ -335,3 +335,38 @@ fn file1123_from_more_opens_below_more() {
     h.run();
     assert!(!h.state().files.menu_open());
 }
+
+/// #1123: with the most recent projects listed (16), at 640 × 400 and at 200 % interface size,
+/// the File menu stays below File and on the screen, and Open recent scrolls so Clear recent
+/// projects can be reached.
+#[test]
+fn file1123_a_full_recent_list_scrolls_in_a_short_window() {
+    for percent in [100, 200] {
+        let mut app = NodeCraftApp::headless().unwrap();
+        for n in 0..16 {
+            app.files.projects.remember(std::env::temp_dir().join(format!("Public project {n:02}.ncraft")).to_str().unwrap());
+        }
+        assert_eq!(app.files.projects.recent().len(), 16);
+        let mut h = Harness::builder().with_size(SIZES[0]).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        h.run();
+        h.state_mut().session.dispatch("view.ui_scale.set", &json!({"percent": percent})).unwrap();
+        h.run();
+        let what = format!("{percent} %");
+        let file = h.get_by_role_and_label(Role::Button, "File").rect();
+        h.get_by_role_and_label(Role::Button, "File").click();
+        h.run_steps(4);
+        check_menu(&h, topbar::file_popup_id(), &format!("File menu at {what}"));
+        let menu = egui::AreaState::load(&h.ctx, topbar::file_popup_id()).unwrap().rect();
+        assert!(menu.top() >= file.bottom() - 1.0, "{what}: the menu {menu:?} stays below File {file:?}");
+        h.get_by_label("Open recent").click();
+        h.run_steps(4);
+        let screen = h.ctx.content_rect();
+        h.get_by_label("Clear recent projects").scroll_to_me();
+        h.run_steps(4);
+        let clear = h.get_by_label("Clear recent projects").rect();
+        assert!(screen.expand(1.0).contains_rect(clear), "{what}: Clear recent projects {clear:?} leaves {screen:?}");
+        h.get_by_label("Clear recent projects").click();
+        h.run();
+        assert!(h.state().files.projects.recent().is_empty(), "{what}: Clear was reached and cleared the list");
+    }
+}

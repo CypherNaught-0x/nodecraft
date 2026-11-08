@@ -579,9 +579,11 @@ spells them, and in each entry's accessible name ("Open… (Ctrl+O)"). The entri
 flows as the shortcuts and the palette (`file.open`, `file.save`, `file.save_as`, the results save,
 the folder import, opening a recent project). An entry that can't run now stays listed, disabled,
 and says why on hover; without project storage the reason also heads the menu, with Focus the
-other window when another window owns storage. The menu is `file_menu_width` wide,
-scrolls in a short window, and closes on Escape, on a click outside (which does nothing else) or
-when an entry is chosen. The browser's File menu offers Open…, Save and Save as….
+other window when another window owns storage. The menu is `file_menu_width` wide, it and its
+Open recent list scroll in a short window, and it closes on Escape, when an entry is chosen, or on
+a click outside, which never reaches the canvas (a click on another top-bar entry or a panel's
+control still acts, as before). The browser's File menu offers Open…, Save and Save as…, with
+the same rules: while it is open the canvas gets no keys or clicks.
 
 **Tag filter** opens the tag panel below the row, and closes it again. While a filter is active the
 entry shows the match count beside its label and in its accessible name ("Tag filter (3

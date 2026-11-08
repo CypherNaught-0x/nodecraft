@@ -357,17 +357,17 @@ impl NodeCraftApp {
     }
 
     /// The browser's File menu (#1123): open, save and save as, below the top bar's File entry.
-    /// Drawn at the top of the frame, as on the desktop, so its Escape never reaches the canvas.
+    /// Drawn at the top of the frame, as on the desktop, with the same open-state and input rules
+    /// (`topbar::begin_file_menu`). Returns whether the menu owns this frame's input; the caller
+    /// then clears it (`topbar::clear_menu_input`), so no key or click reaches the canvas.
     #[cfg(target_arch = "wasm32")]
-    pub(super) fn web_file_menu(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) {
-        self.web_files.menu_was_open = self.web_files.menu_open;
+    pub(super) fn web_file_menu(&mut self, ui: &egui::Ui, t: &crate::theme::Tokens) -> bool {
         if self.web_files.blocking() || self.model_choice.is_some() || self.model_frame_owned {
+            self.web_files.menu_was_open = false;
             self.web_files.menu_open = false;
-            return;
+            return false;
         }
-        if self.web_files.menu_open && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.web_files.menu_open = false;
-        }
+        let was_open = super::topbar::begin_file_menu(ui.ctx(), &mut self.web_files.menu_open, &mut self.web_files.menu_was_open);
         let shortcut = |id: &str| self.session.registry().specs().find(|spec| spec.id == id).and_then(|spec| spec.shortcut);
         let entries = [
             ("file.open", "Open…", shortcut("file.open"), crate::icons::Icon::Open),
@@ -385,9 +385,11 @@ impl NodeCraftApp {
             }
         });
         self.web_files.menu_open = open && chosen.is_none();
+        let owns = was_open || self.web_files.menu_open || chosen.is_some();
         if let Some(id) = chosen {
             self.web_file(id, ui.ctx());
         }
+        owns
     }
 
     /// Asks before a picked project replaces one with unsaved changes.

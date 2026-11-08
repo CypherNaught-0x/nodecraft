@@ -172,6 +172,31 @@ struct Control {
     hint: String,
 }
 
+/// The start of a File menu frame (#1123), shared by the desktop and the browser: remembers in
+/// `was_open` whether the menu was open as the frame began (so the File entry's click, which
+/// also closes it as a click outside, doesn't reopen it) and takes a fresh Escape to close it,
+/// so the key never reaches the canvas. Returns whether the menu was open.
+pub(super) fn begin_file_menu(ctx: &egui::Context, open: &mut bool, was_open: &mut bool) -> bool {
+    *was_open = *open;
+    if *open && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+        *open = false;
+    }
+    *was_open
+}
+
+/// Drops this frame's remaining input once the File menu (or a file dialog) has used it, so the
+/// canvas drawn after it sees no keys, text, drops or scroll (#407, #1123).
+pub(super) fn clear_menu_input(ctx: &egui::Context) {
+    ctx.input_mut(|i| {
+        i.events.clear();
+        i.raw.events.clear();
+        i.raw.dropped_files.clear();
+        i.keys_down.clear();
+        i.modifiers = egui::Modifiers::NONE;
+        i.smooth_scroll_delta = egui::Vec2::ZERO;
+    });
+}
+
 /// The File menu's popup id (#1123).
 pub(super) fn file_popup_id() -> egui::Id {
     egui::Id::new("nodecraft.topbar.file")
@@ -185,7 +210,10 @@ pub(super) fn file_popup<R>(ctx: &egui::Context, anchor: Rect, open: &mut bool, 
         return None;
     }
     let screen = ctx.content_rect();
-    let room = (screen.bottom() - anchor.bottom() - t.navigation_margin).max(t.navigation_toolbar_height);
+    // The menu frame's own margins and stroke sit outside the scrolled body: leave room for them
+    // too, or a short window would push the menu up over File.
+    let frame = egui::Frame::menu(&ctx.global_style()).total_margin().sum().y;
+    let room = (screen.bottom() - anchor.bottom() - t.navigation_gap - t.navigation_margin - frame).max(t.navigation_toolbar_height);
     let width = t.file_menu_width.min((screen.width() - t.navigation_margin * 2.0).max(t.navigation_toolbar_height));
     let layer = egui::LayerId::new(egui::Order::Foreground, egui::Id::new("comments_toolbar"));
     egui::Popup::new(file_popup_id(), ctx.clone(), anchor, layer)
