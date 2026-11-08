@@ -35,7 +35,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(h.state().deck_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().deck_editor.is_some(), "{:?}", h.state().notice());
 }
 
 fn stored(h: &Harness<'static, NodeCraftApp>) -> Deck {
@@ -84,7 +84,7 @@ fn slides_are_added_named_reordered_and_removed_from_the_sorter() {
 
     h.get_by_label("Add slide").click();
     h.run_steps(3);
-    assert_eq!(stored(&h).slides.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(stored(&h).slides.len(), 2, "{:?}", h.state().notice());
     assert_eq!(picked(&h), stored(&h).slides[1].id, "the new slide comes after the picked one and is picked");
 
     h.get_by_label("Name").click();
@@ -93,7 +93,7 @@ fn slides_are_added_named_reordered_and_removed_from_the_sorter() {
     h.run();
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice);
+    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice());
 
     // Up, then a thumbnail dragged below the other one.
     h.get_by_label("Up").click();
@@ -101,7 +101,7 @@ fn slides_are_added_named_reordered_and_removed_from_the_sorter() {
     assert_eq!(names(&h), ["Closing", "Text"]);
     let (from, to) = (h.get_by_label("1 · Closing").rect().center(), h.get_by_label("2 · Text").rect());
     drag_between(&mut h, from, Pos2::new(to.center().x, to.max.y - 2.0));
-    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice);
+    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice());
 
     // Click picks; Remove takes the picked slide, and undo brings it back.
     h.get_by_label("1 · Text").click();
@@ -133,14 +133,14 @@ fn slides_export_as_a_pdf_or_pngs_from_the_editor() {
     let dir = tempfile::tempdir().unwrap();
 
     export(&mut h, "Slides as PDF…", dir.path().join("talk.pdf"));
-    let pdf = std::fs::read(dir.path().join("talk.pdf")).unwrap_or_else(|_| panic!("{:?}", h.state().notice));
+    let pdf = std::fs::read(dir.path().join("talk.pdf")).unwrap_or_else(|_| panic!("{:?}", h.state().notice()));
     assert_eq!(nodecraft_media::probe_document(&pdf, &Default::default()).unwrap().pages, 2, "one page per slide");
-    assert_eq!(h.state().notice.as_deref(), Some("Exported talk.pdf."));
+    assert_eq!(h.state().notice(), Some("Exported talk.pdf."));
 
     // PNGs go into a folder, numbered past files already there.
     std::fs::write(dir.path().join("Talk-1.png"), b"mine").unwrap();
     export(&mut h, "Slides as PNGs…", dir.path().to_path_buf());
-    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(h.state().notice(), Some("Exported 2 files."));
     assert_eq!(std::fs::read(dir.path().join("Talk-1.png")).unwrap(), b"mine");
     for name in ["Talk-2.png", "Talk-3.png"] {
         let (_, image) = nodecraft_media::decode_image(&std::fs::read(dir.path().join(name)).unwrap(), &Default::default()).unwrap();
@@ -148,7 +148,7 @@ fn slides_export_as_a_pdf_or_pngs_from_the_editor() {
     }
 
     export(&mut h, "This slide as PNG…", dir.path().join("one.png"));
-    assert!(dir.path().join("one.png").exists(), "{:?}", h.state().notice);
+    assert!(dir.path().join("one.png").exists(), "{:?}", h.state().notice());
     assert!(h.state().deck_editor.is_some(), "the editor stays open");
 }
 
@@ -161,14 +161,14 @@ fn a_slide_takes_text_a_drag_in_one_undo_step_and_delete() {
     h.get_by_label("Add text").click();
     h.run_steps(3);
     let ids = layer_ids(&h, 0);
-    assert_eq!(ids.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(ids.len(), 2, "{:?}", h.state().notice());
     let text = ids[1].clone();
     let before = stored(&h).slides[0].layers[1].layer().unwrap().clone();
 
     let (from, to) = (screen(&h, (before.x, before.y)), screen(&h, (before.x + 50.0, before.y + 40.0)));
     drag_between(&mut h, from, to);
     let moved = stored(&h).slides[0].layers[1].layer().unwrap().clone();
-    assert!((moved.x - before.x - 50.0).abs() < 1.0 && (moved.y - before.y - 40.0).abs() < 1.0, "{moved:?} {:?}", h.state().notice);
+    assert!((moved.x - before.x - 50.0).abs() < 1.0 && (moved.y - before.y - 40.0).abs() < 1.0, "{moved:?} {:?}", h.state().notice());
     h.get_by_label("Undo").click();
     h.run_steps(3);
     let back = stored(&h).slides[0].layers[1].layer().unwrap().clone();
@@ -197,14 +197,14 @@ fn each_edit_is_checked_against_the_revision_before_it() {
     let listed = h.state().session.revision();
     let rename = ("deck.slide_update", json!({"canvas": canvas, "id": DECK, "slide": "s-new", "name": "Second"}));
     h.state_mut().deck_run(listed, vec![add("s-new"), rename]);
-    assert_eq!(names(&h), ["Text", "Second"], "{:?}", h.state().notice);
+    assert_eq!(names(&h), ["Text", "Second"], "{:?}", h.state().notice());
 
     // An edit made from a listing older than the document is refused and says so.
     let stale = h.state().session.revision();
     h.state_mut().session.dispatch("node.param_set", &json!({"canvas": canvas, "id": TEXT, "name": "text", "value": Value::Text("Changed".into())})).unwrap();
     h.state_mut().deck_run(stale, vec![("deck.slide_remove", json!({"canvas": canvas, "id": DECK, "slide": slide}))]);
     assert_eq!(names(&h), ["Text", "Second"], "a stale edit changes nothing");
-    assert_eq!(h.state().notice.as_deref(), Some("The deck changed meanwhile; try again."));
+    assert_eq!(h.state().notice(), Some("The deck changed meanwhile; try again."));
 }
 
 #[test]
@@ -226,7 +226,7 @@ fn undo_brings_back_the_last_slide_and_a_drag_outside_the_sorter_cancels() {
     h.run();
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice);
+    assert_eq!(names(&h), ["Text", "Closing"], "{:?}", h.state().notice());
 
     // Released over the stage: nothing moves, and no drop line stays behind.
     let from = h.get_by_label("2 · Closing").rect().center();
@@ -238,7 +238,7 @@ fn undo_brings_back_the_last_slide_and_a_drag_outside_the_sorter_cancels() {
     // Dragged up, above the first slide.
     let (from, to) = (h.get_by_label("2 · Closing").rect().center(), h.get_by_label("1 · Text").rect());
     drag_between(&mut h, from, Pos2::new(to.center().x, to.min.y + 2.0));
-    assert_eq!(names(&h), ["Closing", "Text"], "{:?}", h.state().notice);
+    assert_eq!(names(&h), ["Closing", "Text"], "{:?}", h.state().notice());
 }
 
 #[test]
@@ -281,7 +281,7 @@ fn a_source_layer_is_added_from_the_canvas_and_layers_it_cant_read_are_kept() {
     h.run_steps(3);
     let deck = stored(&h);
     let layers = &deck.slides[0].layers;
-    assert_eq!(layers.len(), 3, "{:?}", h.state().notice);
+    assert_eq!(layers.len(), 3, "{:?}", h.state().notice());
     assert_eq!(layers[0], Item::Unsupported(video.clone()), "the unreadable layer stays first, untouched");
     let added = layers[2].layer().unwrap();
     assert!(matches!(&added.content, nodecraft_actions::layers::Content::Source { origin, .. } if *origin == other.to_string()));
@@ -291,7 +291,7 @@ fn a_source_layer_is_added_from_the_canvas_and_layers_it_cant_read_are_kept() {
     h.run_steps(3);
     let deck = stored(&h);
     let ids: Vec<_> = deck.slides[0].layers.iter().map(|i| i.id().unwrap().to_owned()).collect();
-    assert_eq!(ids, ["v", &added.id, layers[1].id().unwrap()], "{:?}", h.state().notice);
+    assert_eq!(ids, ["v", &added.id, layers[1].id().unwrap()], "{:?}", h.state().notice());
 }
 
 #[test]

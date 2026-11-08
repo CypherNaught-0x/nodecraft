@@ -344,7 +344,7 @@ fn turntable575_visual() {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(ready, "the pointer-created card renders and shows its ordinary video: {:?}", h.state().notice);
+    assert!(ready, "the pointer-created card renders and shows its ordinary video: {:?}", h.state().notice());
     let ctx = h.ctx.clone();
     h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
     // Keep the saved camera and full card below the toolbar without shrinking the evidence text.

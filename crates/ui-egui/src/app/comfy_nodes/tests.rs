@@ -53,7 +53,7 @@ fn answered(h: &mut Harness<'static, NodeCraftApp>) -> String {
         let ctx = h.ctx.clone();
         h.state_mut().tick_comfy_nodes(&ctx);
         if !h.state().comfy_nodes.as_ref().unwrap().is_waiting() {
-            return h.state().notice.clone().unwrap_or_default();
+            return h.state().notice().map(str::to_owned).unwrap_or_default();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }

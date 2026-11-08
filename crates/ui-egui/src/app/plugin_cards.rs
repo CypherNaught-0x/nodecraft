@@ -14,13 +14,15 @@ pub(super) fn outdated(session: &Session, node: &Node) -> bool {
 impl NodeCraftApp {
     /// Brings card `id` to its plugin's current version, one undo step, and says what it dropped.
     pub(super) fn migrate_card(&mut self, id: NodeId) {
-        self.notice = match self.session.dispatch("node.migrate", &json!({"canvas": self.canvas, "node": id})) {
+        match self.session.dispatch("node.migrate", &json!({"canvas": self.canvas, "node": id})) {
             Ok(result) => {
                 let warnings: Vec<&str> = result.get("warnings").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str).collect();
                 let said = if warnings.is_empty() { String::new() } else { format!("{} ", warnings.join(" ")) };
-                Some(format!("Updated the card. {said}Undo to put it back."))
+                // Something it dropped is worth a warning; a clean update is done.
+                let kind = if warnings.is_empty() { crate::notices::NoticeKind::Success } else { crate::notices::NoticeKind::Warning };
+                self.notices.push(kind, format!("Updated the card. {said}Undo to put it back."));
             }
-            Err(error) => Some(error.message),
-        };
+            Err(error) => self.notices.report(error),
+        }
     }
 }

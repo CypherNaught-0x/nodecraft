@@ -106,7 +106,7 @@ fn settle_refusal(h: &mut Harness<'static, NodeCraftApp>) {
         }
         std::thread::sleep(Duration::from_millis(5));
     }
-    panic!("the deferred PDF reader's known 100-page refusal never appeared before paid confirmation; notice: {:?}", h.state().notice);
+    panic!("the deferred PDF reader's known 100-page refusal never appeared before paid confirmation; notice: {:?}", h.state().notice());
 }
 
 #[test]

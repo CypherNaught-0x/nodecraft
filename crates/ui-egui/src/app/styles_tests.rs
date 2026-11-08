@@ -65,7 +65,7 @@ fn a_trained_style_starts_a_styled_card_and_another_style_replaces_it() {
     right_click(&mut h, STYLE);
     h.get_by_label("New image card with this style").click();
     h.run();
-    let [(from, card)] = styled(&h)[..] else { panic!("one styled card: {:?} {:?}", styled(&h), h.state().notice) };
+    let [(from, card)] = styled(&h)[..] else { panic!("one styled card: {:?} {:?}", styled(&h), h.state().notice()) };
     assert_eq!(from, STYLE);
     let made = canvas(&h).nodes().get(&card).unwrap();
     assert_eq!(made.params.get("model"), Some(&Value::Text("fal.flux-lora".into())));
@@ -82,7 +82,7 @@ fn a_trained_style_starts_a_styled_card_and_another_style_replaces_it() {
     assert!(h.query_all_by_label("Ink wash").any(|n| n.accesskit_node().is_disabled()), "the style in use is shown, not offered");
     h.get_by_label("Neon").click();
     h.run();
-    assert_eq!(styled(&h), [(OTHER, card)], "{:?}", h.state().notice);
+    assert_eq!(styled(&h), [(OTHER, card)], "{:?}", h.state().notice());
     for _ in 0..2 {
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
         h.run();

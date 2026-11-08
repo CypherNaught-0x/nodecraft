@@ -98,7 +98,7 @@ fn recover_brings_the_work_back_unsaved_at_its_file_and_saving_drops_the_copy() 
     let status = h.state().session.file_status();
     assert!(status.dirty, "unsaved");
     assert_eq!(status.location, Some(StorageLocation::Path(dir.project())), "at the file its session had open");
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Recovered")));
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Recovered")));
     assert!(!asked(&h));
     assert_eq!(dir.kept_files(), 1, "kept until it's saved");
     // ⌘S saves it there, and only then is the copy dropped.
@@ -167,7 +167,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     let status = h.state().session.file_status();
     assert!(!status.dirty);
     assert_eq!(status.location, Some(StorageLocation::Path(dir.project())), "the last save is open");
-    assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
+    assert_eq!(h.state().notice(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
     assert_eq!(dir.kept_files(), 0, "discarded on the person's word");
     assert!(!asked(&h));
     // An untitled project's work is simply discarded.
@@ -177,7 +177,7 @@ fn start_from_last_save_opens_that_file_and_says_so() {
     h.get_by_label("Start from last save").click();
     settle(&mut h);
     assert!(!has_added(&h));
-    assert_eq!(h.state().notice.as_deref(), Some("The selected unsaved recovery copy was discarded."));
+    assert_eq!(h.state().notice(), Some("The selected unsaved recovery copy was discarded."));
 }
 
 #[test]
@@ -576,7 +576,7 @@ fn failed_last_save_open_keeps_the_exact_selected_copy() {
     settle(&mut h);
     assert_eq!(std::fs::read(copy).unwrap(), bytes);
     assert_eq!(h.state().session.document(), &doc);
-    assert!(h.state().notice.as_ref().unwrap().contains("kept"));
+    assert!(h.state().notice().unwrap().contains("kept"));
 }
 
 #[test]
@@ -792,7 +792,7 @@ fn start_from_last_save_removes_the_copy_only_after_the_background_open_succeeds
     assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
     assert!(!h.state().session.file_status().dirty);
     assert!(!copy.exists() && !storage::location_file(&copy).exists(), "discarded once the open succeeded");
-    assert_eq!(h.state().notice.as_deref(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
+    assert_eq!(h.state().notice(), Some("Started from the last save; the selected unsaved recovery copy was discarded."));
     assert!(!asked(&h));
     assert!(!h.state().recovery_deciding(), "decided: runs may go on");
     assert_eq!(h.state().files.projects.recent(), vec![dir.project().to_str().unwrap()], "listed once");
@@ -808,7 +808,7 @@ fn a_failed_background_last_save_open_keeps_the_copy_and_the_project_and_asks_ag
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
     assert!(storage::location_file(&copy).exists());
     assert_eq!(h.state().session.document(), &before, "the project is as it was");
-    let notice = h.state().notice.clone().unwrap();
+    let notice = h.state().notice().map(str::to_owned).unwrap();
     assert!(
         notice.starts_with("The last save couldn't be opened: ")
             && notice.ends_with("Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."),
@@ -836,10 +836,7 @@ fn cancelling_a_background_last_save_open_keeps_the_copy_and_the_project_and_ask
     settle(&mut h);
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
     assert_eq!(h.state().session.document(), &before);
-    assert_eq!(
-        h.state().notice.as_deref(),
-        Some("Opening the last save was cancelled. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder.")
-    );
+    assert_eq!(h.state().notice(), Some("Opening the last save was cancelled. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."));
     assert!(asked(&h));
     // The question works as before: start from the last save again, this time letting it finish.
     h.get_by_label("Start from last save").click();
@@ -860,7 +857,7 @@ fn a_late_cancel_reports_the_open_that_finished_and_only_then_drops_the_copy() {
     assert_eq!(h.state().session.file_status().location, Some(StorageLocation::Path(dir.project())));
     assert!(!has_added(&h));
     assert!(!copy.exists(), "the project now is the last save, so the copy is resolved");
-    assert!(h.state().notice.as_deref().unwrap().starts_with("Started from the last save"));
+    assert!(h.state().notice().unwrap().starts_with("Started from the last save"));
 }
 
 #[test]
@@ -875,7 +872,7 @@ fn a_last_save_result_for_a_replaced_session_touches_neither_the_copy_nor_the_ne
     settle(&mut h);
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is untouched");
     assert_eq!(h.state().session.document(), &replaced);
-    assert!(h.state().notice.as_deref().unwrap().contains("kept as"), "{:?}", h.state().notice);
+    assert!(h.state().notice().unwrap().contains("kept as"), "{:?}", h.state().notice());
     assert!(!asked(&h), "the question belonged to the replaced session");
 }
 
@@ -907,7 +904,7 @@ fn a_last_save_open_the_runner_refuses_runs_inline_and_drops_the_copy_after_it()
     h.step();
     assert!(copy.exists());
     assert!(h.state().recovery.is_some(), "asked again");
-    assert!(h.state().notice.as_deref().unwrap().starts_with("The last save couldn't be opened: "));
+    assert!(h.state().notice().unwrap().starts_with("The last save couldn't be opened: "));
 }
 
 #[test]
@@ -967,7 +964,7 @@ fn a_newer_format_last_save_keeps_the_advice_to_update_and_the_copy() {
     settle(&mut h);
     assert_eq!(std::fs::read(&copy).unwrap(), bytes);
     assert_eq!(
-        h.state().notice.as_deref(),
+        h.state().notice(),
         Some(
             "The last save couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. Unsaved work was kept as session.journal.unrecovered-1 in the recovery folder."
         )
@@ -1014,7 +1011,7 @@ fn recover_restores_in_the_background_behind_its_progress_window() {
     let status = h.state().session.file_status();
     assert!(status.dirty && status.operation.is_none());
     assert_eq!(status.location, Some(StorageLocation::Path(dir.project())));
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Recovered a.ncraft")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Recovered a.ncraft")), "{:?}", h.state().notice());
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "kept until the recovered work is saved");
     assert!(!h.state().recovery_deciding());
     h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
@@ -1043,7 +1040,7 @@ fn cancelling_a_background_recovery_keeps_the_copy_and_asks_again() {
     settle(&mut h);
     assert_eq!(h.state().session.document(), &current, "the current project is unchanged");
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy is byte for byte");
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.starts_with("Recovering was cancelled.") && notice.contains("kept as"), "{notice}");
     assert!(asked(&h), "Recover is still one click away");
     // Asked again, it recovers on the app's own save thread.
@@ -1051,7 +1048,7 @@ fn cancelling_a_background_recovery_keeps_the_copy_and_asks_again() {
     h.get_by_label("Recover").click();
     settle(&mut h);
     assert!(has_added(&h));
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Recovered")));
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Recovered")));
 }
 
 #[test]
@@ -1074,7 +1071,7 @@ fn a_session_replaced_while_recovering_keeps_the_copy_and_drops_the_question() {
     assert!(!asked(&h), "the question went with the session it was asked over");
     assert!(!has_added(&h));
     assert_eq!(std::fs::read(&copy).unwrap(), bytes, "the copy stays for the next launch");
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("kept as")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("kept as")), "{:?}", h.state().notice());
     // The old session's job, run late, changes nothing the window shows.
     held.release();
     h.run();

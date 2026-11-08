@@ -23,6 +23,7 @@ pub mod mesh_view;
 pub mod model_picker;
 pub mod navigation;
 pub mod noodle;
+pub mod notices;
 pub mod order;
 pub mod palette;
 pub mod plugins;

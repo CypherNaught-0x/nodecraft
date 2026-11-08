@@ -324,7 +324,7 @@ impl NodeCraftApp {
             match editor.request().and_then(|request| self.session.dispatch("comfy.workflow.mapping_set", &request)) {
                 Ok(_) => {
                     open = false;
-                    self.notice = Some("Workflow fields saved. Undo restores the previous mapping.".into());
+                    self.notices.success("Workflow fields saved. Undo restores the previous mapping.");
                 }
                 Err(error) => editor.error = Some(error.message),
             }

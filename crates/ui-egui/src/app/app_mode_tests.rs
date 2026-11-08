@@ -57,7 +57,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>) {
     crate::app::topbar_tests::reveal(h, "Open as app");
     h.get_by_label("Open as app").click();
     h.run();
-    assert!(h.state().app_mode.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().app_mode.is_some(), "{:?}", h.state().notice());
 }
 
 fn form(h: &mut Harness<'static, NodeCraftApp>) -> serde_json::Value {
@@ -90,7 +90,7 @@ fn the_form_shows_the_examples_and_typing_fills_an_input_as_one_undo_step() {
 
     retype(&mut h, "Brief", "a fox");
     let form = form(&mut h);
-    assert_eq!(form["inputs"][0]["feed"], json!("form"), "{:?}", h.state().notice);
+    assert_eq!(form["inputs"][0]["feed"], json!("form"), "{:?}", h.state().notice());
     assert_eq!(form["inputs"][0]["values"], json!([{"type": "text", "value": "a fox"}]));
     // The source sits on the canvas too, wired to the node.
     let canvas = h.state().canvas;
@@ -112,7 +112,7 @@ fn a_setting_changes_on_the_node_and_resets() {
     let canvas = h.state().canvas;
     let params =
         |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&PLACED).unwrap().params.clone();
-    assert_eq!(params(&h).get("find"), Some(&Value::Text("fox".into())), "{:?}", h.state().notice);
+    assert_eq!(params(&h).get("find"), Some(&Value::Text("fox".into())), "{:?}", h.state().notice());
     h.get_by_label("Reset").click();
     h.run();
     assert_eq!(params(&h).get("find"), None, "back to the technique's own value");
@@ -127,7 +127,7 @@ fn a_chosen_image_fills_its_input_and_the_example_comes_back() {
     h.run();
     let form = form(&mut h);
     let photo = &form["inputs"][1];
-    assert_eq!((photo["feed"].clone(), photo["values"][0]["type"].clone()), (json!("form"), json!("media")), "{:?}", h.state().notice);
+    assert_eq!((photo["feed"].clone(), photo["values"][0]["type"].clone()), (json!("form"), json!("media")), "{:?}", h.state().notice());
     h.get_by_label("Use the example").click();
     h.run();
     assert_eq!(self::form(&mut h)["inputs"][1]["feed"], json!("example"));
@@ -136,7 +136,7 @@ fn a_chosen_image_fills_its_input_and_the_example_comes_back() {
     h.state_mut().app_file_chosen("photo", None, "notes.txt", b"just words");
     h.run();
     assert_eq!(self::form(&mut h)["inputs"][1]["feed"], json!("example"));
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("notes.txt")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("notes.txt")));
 }
 
 #[test]
@@ -160,7 +160,7 @@ fn run_asks_for_the_price_and_done_or_escape_closes() {
     assert!(h.query_by_label("No charge").is_some(), "the form shows what a run costs");
     h.get_by_label("Run").click();
     h.run();
-    assert!(h.state().run_confirm.is_some(), "the price is shown first: {:?}", h.state().notice);
+    assert!(h.state().run_confirm.is_some(), "the price is shown first: {:?}", h.state().notice());
     // Escape cancels the price dialog only; the form stays open under it.
     h.key_press(egui::Key::Escape);
     h.run();

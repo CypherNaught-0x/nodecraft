@@ -236,7 +236,7 @@ fn selected_badge_beside_right_panel_does_not_fall_back_over_the_node_preview() 
     let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
     h.get_by_role_and_label(Role::Button, &label).click();
     h.run();
-    assert_eq!(h.state().comments.active, Some(id), "notice={:?}, from={from:?}", h.state().notice);
+    assert_eq!(h.state().comments.active, Some(id), "notice={:?}, from={from:?}", h.state().notice());
     let shown = h.get_by_role_and_label(Role::Button, &label).rect();
     let body = h.state().view.rect_to_screen(h.state().viewport.min, h.state().navigation.geometry.rects[&node]);
     assert!(!shown.intersects(body));
@@ -269,7 +269,7 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
             h.get_by_role_and_label(Role::Button, "Comments").click();
             h.run();
             assert_eq!(h.state().view, view, "Comments click must not also pan the minimap");
-            assert!(h.state().comments.open, "real right-side button must own its click: size={size:?}, search={search}, notice={:?}", h.state().notice);
+            assert!(h.state().comments.open, "real right-side button must own its click: size={size:?}, search={search}, notice={:?}", h.state().notice());
             h.state_mut().tag_filter.open = true;
             h.run();
             let panel = h.state().discussion_rect();
@@ -510,7 +510,7 @@ fn projected_node_pin_click_cancel_drag_and_undo_keep_the_original_offset_contra
             Some(id),
             "zoom={zoom}, ppp={pixels_per_point}, viewport={:?}, notice={:?}, from={from:?}",
             h.state().viewport,
-            h.state().notice
+            h.state().notice()
         );
         assert_eq!(h.state().session.document(), &original);
         for cancel in [true, false] {

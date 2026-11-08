@@ -173,7 +173,7 @@ fn each_server_is_checked_on_its_own_and_only_the_default_gives_the_node_list() 
     let spare = comfy_server_cmds::report(&h.state().session, "spare").unwrap();
     assert!(spare.error.is_some(), "{spare:?}");
     assert_eq!(nodes(&h), Some(1), "another server failing keeps the default's nodes");
-    assert!(h.state().notice.as_deref().unwrap_or_default().starts_with("spare: "), "{:?}", h.state().notice);
+    assert!(h.state().notice().unwrap_or_default().starts_with("spare: "), "{:?}", h.state().notice());
     assert!(comfy_server_cmds::report(&h.state().session, "studio").unwrap().error.is_none());
 
     assert_eq!(h.state_mut().add_comfy_server("spare", "http://other:8188", "").unwrap_err().kind, ErrorKind::Conflict);
@@ -187,7 +187,7 @@ fn each_server_is_checked_on_its_own_and_only_the_default_gives_the_node_list() 
     h.state_mut().session.dispatch("comfy.nodes.refresh", &serde_json::json!({"server": "ghost"})).unwrap();
     answered(&mut h);
     assert!(comfy_server_cmds::report(&h.state().session, "ghost").is_none());
-    assert_eq!(h.state().notice.as_deref(), Some("There's no ComfyUI server called ghost."));
+    assert_eq!(h.state().notice(), Some("There's no ComfyUI server called ghost."));
     assert_eq!(nodes(&h), Some(1));
 
     // Making the failing server the default drops the node list it can't give.
@@ -454,7 +454,7 @@ fn a_comfy_cards_menu_picks_its_server() {
     h.get_by_label("Default (studio)");
     h.get_by_label("spare").click();
     h.run();
-    assert_eq!(picked(&h), Some(nodecraft_types::Value::Text("spare".into())), "{:?}", h.state().notice);
+    assert_eq!(picked(&h), Some(nodecraft_types::Value::Text("spare".into())), "{:?}", h.state().notice());
     crate::app::split_tests::right_click(&mut h, CARD);
     h.get_by_label_contains("ComfyUI server").hover();
     h.run();
@@ -478,7 +478,7 @@ fn comfy9_server_visual() {
     h.state_mut().add_comfy_server("spare", "http://down:8188", "").unwrap();
     answered(&mut h);
     h.state_mut().comfy_server.open = true;
-    h.state_mut().notice = None;
+    h.state_mut().notices.clear();
     for _ in 0..4 {
         h.step();
     }

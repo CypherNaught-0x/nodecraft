@@ -252,7 +252,7 @@ impl NodeCraftApp {
     pub(super) fn partial_intent(&mut self, id: NodeId, keep: bool) {
         if let Some(runs) = &mut self.runs {
             let done = if keep { runs.keep_partial(&mut self.session, self.canvas, id) } else { runs.discard_partial(self.canvas, id) };
-            self.notice = done.err().map(|error| error.message);
+            self.notices.outcome(done);
         }
     }
 
@@ -307,7 +307,7 @@ impl NodeCraftApp {
             if let Some(runs) = &mut self.runs
                 && runs.route(&mut self.session, self.canvas, &nodes, kind, &stale, &settings)? == super::runs::Route::Waiting
             {
-                self.notice = Some(super::runs::SETTING_UP.into());
+                self.notices.info(super::runs::SETTING_UP);
                 return Ok(());
             }
         }
@@ -315,7 +315,7 @@ impl NodeCraftApp {
         let value = self.session.dispatch(command, &request)?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
         if kind.whole() && quote.nothing() {
-            self.notice = Some(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN }.into());
+            self.notices.info(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN });
             return Ok(());
         }
         let request = kind.estimate_request(self.canvas, &nodes);
@@ -404,11 +404,13 @@ impl NodeCraftApp {
         if runs.is_busy() || runs.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
-        if (tick.ready.is_some() || tick.abandoned) && self.notice.as_deref() == Some(super::runs::SETTING_UP) {
-            self.notice = None;
+        if tick.ready.is_some() || tick.abandoned {
+            self.notices.dismiss_text(super::runs::SETTING_UP);
         }
-        if let Some(notice) = tick.notice {
-            self.notice = Some(notice);
+        if let Some((kind, notice)) = tick.notice {
+            // A run problem costs money if missed: it stays until dismissed, warnings too.
+            let notice = crate::notices::Notice::new(kind, notice);
+            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.from_run() } else { notice });
         }
         for estimated in tick.estimated {
             self.estimated(estimated);
@@ -422,7 +424,7 @@ impl NodeCraftApp {
         if let Some((nodes, kind)) = tick.ready
             && let Err(error) = self.request_runs(nodes, kind)
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
     }
 
@@ -577,7 +579,7 @@ impl NodeCraftApp {
             }
             match self.session.dispatch("run.start", &confirm.kind.start_request(confirm.canvas, &confirm.nodes, accept)) {
                 Ok(_) => {
-                    self.notice = None;
+                    self.notices.clear();
                     close = true;
                 }
                 Err(error) => confirm.error = Some(error.message),
@@ -585,7 +587,7 @@ impl NodeCraftApp {
         }
         if requote {
             if let Err(error) = self.request_runs(confirm.nodes, confirm.kind) {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
             return true;
         }
@@ -817,15 +819,15 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("prompt-assist", id, self.session.revision());
         let (Some(node), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         match self.session.dispatch("node.prompt_assist", &json!({"canvas": self.canvas, "node": id, "id": node, "edge": edge})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(node);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 

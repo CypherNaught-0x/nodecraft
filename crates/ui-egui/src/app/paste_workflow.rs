@@ -12,7 +12,7 @@ impl NodeCraftApp {
             return false;
         }
         let Some(id) = ids::node_id(self.session.document(), ("paste-workflow", self.session.revision(), text.len())) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return true;
         };
         let t = self.theme.tokens();
@@ -32,9 +32,9 @@ impl NodeCraftApp {
                 if !imported.nodes.is_empty() {
                     self.selection.only(id);
                 }
-                self.notice = imported.notice();
+                self.notices.set(crate::notices::NoticeKind::Warning, imported.notice());
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
         true
     }
@@ -99,7 +99,7 @@ mod tests {
             assert!(card.mapping.params.iter().any(|param| param.input == "text"));
             assert_eq!(card.mapping.outputs.len(), 1);
             assert_eq!(h.state().session.revision(), 1);
-            assert!(h.state().notice.is_none());
+            assert!(h.state().notices.is_empty());
             h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
             assert_eq!(h.state().session.document(), &before);
             let canvas = h.state().canvas;
@@ -125,7 +125,7 @@ mod tests {
             paste(&mut h, workflow);
             assert_eq!(h.state().session.document(), &before);
             assert_eq!(h.state().session.revision(), 0);
-            let notice = h.state().notice.clone().unwrap();
+            let notice = h.state().notice().map(str::to_owned).unwrap();
             assert!(notice.contains("Read ComfyUI server nodes"));
             let canvas = h.state().canvas;
             let dropped = nodecraft_engine::import::import_files(
@@ -169,7 +169,7 @@ mod tests {
         let before = h.state().session.document().clone();
         paste(&mut h, &API.replace("SaveImage", "UnknownSave"));
         assert_eq!(h.state().session.document(), &before);
-        assert!(h.state().notice.as_ref().unwrap().contains("UnknownSave"));
+        assert!(h.state().notice().unwrap().contains("UnknownSave"));
         assert_eq!(h.state().session.revision(), 0);
     }
 
