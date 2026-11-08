@@ -18,10 +18,11 @@ use rig_core::Model;
 use rig_core::completion::{CompletionRequest, CompletionResponse, FinishReason};
 use rig_core::message::{
     AssistantContent, AssistantMessage, CallId, Document, DocumentData, DocumentMediaType, DocumentSourceKind, Image, ImageMediaType, Message as RigMessage,
-    MimeType as _, Text, ToolCall as RigCall, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
+    MimeType as _, Reasoning, Text, ToolCall as RigCall, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
 };
 use rig_core::providers::openai::OpenAIConfig;
-use rig_core::providers::openai::wire::{Auth, BodyRewrite, Chat, Dialect as RigDialect, Quirks};
+use rig_core::providers::openai::wire::{Auth, BodyRewrite, Chat, DEEPSEEK, Dialect as RigDialect, GROQ, MISTRAL, Quirks};
+use rig_core::providers::xai::DIALECT as XAI;
 use serde_json::Value;
 
 use super::{ChatRequest, ChatResponse, LlmClient, MAX_REPLY_BLOCKS, Part, Role, StopReason, base64, bedrock, rig_chat};
@@ -34,6 +35,37 @@ use crate::{ErrorKind, ProviderError};
 /// shortening, its catalog's limits). A stream that ends with `[DONE]` but no finish reason is
 /// whole, as it always was here.
 const DIALECT: RigDialect = RigDialect::gateway("openai-compatible", "", "").with_quirks(quirks());
+
+/// The wire's own dialect for a provider it knows, where that dialect's rules are what the
+/// provider needs (#1122): DeepSeek's reasoning sent back with tool calls, Mistral's content
+/// chunks. Every other endpoint speaks the shared [`DIALECT`].
+fn dialect(id: &str) -> RigDialect {
+    match id {
+        DEEPSEEK_ID => DEEPSEEK,
+        MISTRAL_ID => MISTRAL,
+        GROQ_ID => GROQ,
+        XAI_ID => XAI,
+        _ => DIALECT,
+    }
+}
+
+/// Endpoint ids of the providers spoken in their own dialect.
+pub(super) const DEEPSEEK_ID: &str = "deepseek";
+pub(super) const MISTRAL_ID: &str = "mistral";
+pub(super) const GROQ_ID: &str = "groq";
+pub(super) const XAI_ID: &str = "xai";
+
+/// Whether the endpoint's replies keep their reasoning, to send back in later turns: DeepSeek's
+/// thinking models want every earlier turn's `reasoning_content` back when the request carries
+/// tools (https://api-docs.deepseek.com/guides/thinking_mode, read 2026-11-08).
+fn keeps_reasoning(id: &str) -> bool {
+    id == DEEPSEEK_ID
+}
+
+/// The reasoning a reply kept, as the part that carries it to the next turn.
+fn reasoning_part(text: String) -> Part {
+    Part::Opaque { dialect: super::Dialect::OpenAi, block: serde_json::json!({ "reasoning_content": text }) }
+}
 
 const fn quirks() -> Quirks {
     let mut quirks = Quirks::openai();
@@ -53,7 +85,8 @@ fn tool_name(name: &str) -> Result<ToolName, ProviderError> {
 }
 
 /// The request in the crate's terms, and the tool calls whose arguments must go back as they came.
-fn request(req: &ChatRequest, completion_cap: bool) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
+/// `reasoning`: earlier turns' kept reasoning goes back as reasoning (see [`keeps_reasoning`]).
+fn request(req: &ChatRequest, completion_cap: bool, reasoning: bool) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
     let mut history = Vec::new();
     if let Some(system) = &req.system {
         history.push(RigMessage::System { content: system.clone() });
@@ -110,6 +143,15 @@ fn request(req: &ChatRequest, completion_cap: bool) -> Result<(CompletionRequest
             }
             Role::Assistant => {
                 let mut content = Vec::new();
+                if reasoning {
+                    for p in &m.parts {
+                        if let Part::Opaque { block, .. } = p
+                            && let Some(text) = block.get("reasoning_content").and_then(Value::as_str)
+                        {
+                            content.push(AssistantContent::Reasoning(Reasoning::new(text)));
+                        }
+                    }
+                }
                 let texts: Vec<&str> = m.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect();
                 if !texts.is_empty() {
                     content.push(AssistantContent::text(texts.join("\n\n")));
@@ -167,6 +209,8 @@ fn request(req: &ChatRequest, completion_cap: bool) -> Result<(CompletionRequest
     out.temperature = rig_chat::temperature(req.temperature);
     out.additional_params = (!params.is_empty()).then_some(Value::Object(params));
     out.accept_unknown_finish_reasons = true;
+    // Kept reasoning is sent as reasoning, under the dialect's field, not turned into text.
+    out.foreign_reasoning = reasoning;
     Ok((out, raw))
 }
 
@@ -235,7 +279,8 @@ fn guard() -> crate::rig_http::events::Guard {
 }
 
 /// The crate's reply as ours: its text, then its tool calls in order.
-fn reply(response: &CompletionResponse) -> Result<ChatResponse, ProviderError> {
+/// `reasoning`: the reply's reasoning is kept (see [`keeps_reasoning`]).
+fn reply(response: &CompletionResponse, reasoning: bool) -> Result<ChatResponse, ProviderError> {
     // The wire leaves out a call that never names its tool; here such a reply is malformed, as
     // the agent can't answer the call. The reply's provider document still has it.
     let calls = response.raw.pointer("/choices/0/message/tool_calls").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
@@ -258,6 +303,10 @@ fn reply(response: &CompletionResponse) -> Result<ChatResponse, ProviderError> {
         Some(other) => StopReason::Other(format!("{other:?}")),
     };
     let mut parts = Vec::new();
+    let thought: String = response.choice.iter().filter_map(|c| if let AssistantContent::Reasoning(r) = c { Some(r.text.as_str()) } else { None }).collect();
+    if reasoning && !thought.is_empty() {
+        parts.push(reasoning_part(thought));
+    }
     let text: String = response.choice.iter().filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text()) } else { None }).collect();
     if !text.is_empty() {
         parts.push(Part::Text(text));
@@ -307,20 +356,23 @@ impl LlmClient {
         let req = self.validated(req)?;
         let (cap, timeout) = self.limits(&req, on_text.is_some());
         let completion_cap = matches!(self.endpoint.id.as_str(), "openai" | "azure-openai" | bedrock::BEDROCK);
-        let (request, raw) = request(&req, completion_cap)?;
+        let reasoning = keeps_reasoning(&self.endpoint.id);
+        let (request, raw) = request(&req, completion_cap, reasoning)?;
+        // Our own URL: some dialects put the version in their paths, ours is in the base URL.
         let mut transport = RigHttp::new(Arc::clone(&self.http), timeout, cap)
             .with_delivery(context.map(crate::SubmitContext::link))
+            .with_url(self.endpoint.url("chat/completions"))
             .with_fix(Box::new(move |body| fix(body, &raw)))
             .with_guard(guard);
         if let Some(key) = &self.endpoint.key {
             transport = transport.with_secret("Authorization", format!("Bearer {}", key.expose()));
         }
         // The key goes with the transport, never through the crate.
-        let config = OpenAIConfig::with_key(&DIALECT, "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
+        let config = OpenAIConfig::with_key(&dialect(&self.endpoint.id), "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
         // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
         let model = Model::new(Chat::new(config, req.model.as_str()), transport.clone()).with_idle_timeout(None);
         let response = rig_chat::send(model, &transport, request, on_text, &RULES).await?;
-        let mut reply = reply(&response)?;
+        let mut reply = reply(&response, reasoning)?;
         if let Exchange::Answered { headers, .. } = transport.exchange() {
             reply.usage.cost = self.reported_cost(&headers);
         }
