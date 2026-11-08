@@ -61,6 +61,8 @@ fn anthropic_can_be_served_from_a_custom_base_url_too() {
     let http = Canned::new(200, ANTHROPIC_REPLY);
     let client = LlmClient::with_base_url(Endpoint::anthropic(ApiKey::new("ak-fixture")), &base, http.clone());
     assert_eq!(client.id(), "anthropic");
+    assert!(!client.retry_ambiguous_submit(), "never resent (#1122)");
+    assert!(!LlmClient::new(Endpoint::anthropic(ApiKey::new("ak-fixture")), http.clone()).retry_ambiguous_submit(), "nor at its own address");
     let mut request = job();
     request.model = "claude-x".into();
     let Submission::Finished(done) = block_on(client.submit(&request)).unwrap() else { panic!("queued") };

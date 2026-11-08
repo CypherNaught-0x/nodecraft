@@ -1,17 +1,35 @@
 //! The Anthropic Messages dialect (`POST /v1/messages`, `x-api-key`, `anthropic-version`).
 //!
+//! Spoken through `rig-core`'s Messages wire (#1122, docs/decisions/2026-11-06-llm-layer-rig.md)
+//! over NodeCraft's own [`crate::Http`] ([`RigHttp`]): the crate builds the request and reads the
+//! reply, whole or streamed. NodeCraft keeps validation, caps, keys, error kinds, money, and the
+//! reply's blocks as Claude sent them (thinking goes back unchanged in later turns).
+//!
 //! Current Claude models reject sampling parameters and always think adaptively, so
 //! `temperature` is only sent when the job sets one and `thinking` is never sent. The default
 //! catalog model is `claude-opus-5-5`.
 
+use std::collections::HashMap;
+use std::sync::Arc;
+
+use rig_core::Model;
+use rig_core::completion::{CompletionRequest, CompletionResponse};
+use rig_core::message::{
+    Api, AssistantContent, AssistantMessage, CallId, Document, DocumentData, DocumentMediaType, DocumentSourceKind, Image, ImageMediaType,
+    Message as RigMessage, MimeType as _, Opaque, Origin, Text, ToolCall as RigCall, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
+};
+use rig_core::providers::anthropic::wire::{AnthropicConfig, Dialect as RigDialect, MaxTokens, Quirks, ToolInputStreaming, compatible};
 use serde_json::{Value, json};
 
-use super::sse::SseEvent;
-use super::{ChatRequest, ChatResponse, Dialect, MAX_REPLY_BLOCKS, Part, Role, StopReason, StreamState, base64, tool_input};
+use super::{ChatRequest, ChatResponse, Dialect, LlmClient, MAX_REPLY_BLOCKS, Part, Role, StopReason, base64, rig_chat};
 use crate::provider::Usage;
+use crate::rig_http::{Exchange, RigHttp};
 use crate::{ErrorKind, ProviderError};
 
 pub(super) const VERSION: &str = "2023-06-01";
+
+/// The API the crate's Messages wire names its turns by.
+const MESSAGES_API: &str = "anthropic.messages";
 
 /// Claude models that reject sampling parameters (`temperature`, `top_p`): the 5-series and later.
 pub(super) fn rejects_sampling(model: &str) -> bool {
@@ -23,49 +41,108 @@ pub(super) fn rejects_sampling(model: &str) -> bool {
 /// The default model for Anthropic text nodes.
 pub const DEFAULT_MODEL: &str = "claude-opus-5-5";
 
-pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
-    let block = |p: &Part| match p {
-        Part::Text(t) => json!({ "type": "text", "text": t }),
-        Part::Image { mime, bytes } => json!({ "type": "image", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
-        Part::Document { mime, bytes } => json!({ "type": "document", "source": { "type": "base64", "media_type": mime, "data": base64(bytes) } }),
-        // Claude's own calls always carry an object; arguments from another server that weren't
-        // JSON can't be sent as tool input.
-        Part::ToolUse { id, name, input } => {
-            json!({ "type": "tool_use", "id": id, "name": name, "input": if input.is_object() { input.clone() } else { json!({}) } })
-        }
-        Part::ToolResult { id, content, is_error } => {
-            let mut b = json!({ "type": "tool_result", "tool_use_id": id, "content": content });
-            if *is_error {
-                b["is_error"] = json!(true);
-            }
-            b
-        }
-        Part::Opaque { block, .. } => block.clone(),
-    };
-    let messages: Vec<Value> = req
-        .messages
-        .iter()
-        .map(|m| {
-            let role = match m.role {
-                Role::User => "user",
-                Role::Assistant => "assistant",
-            };
-            // The user's order is kept (captions like "Image 1:" sit next to their image), except
-            // that tool results must come first.
-            let results = m.parts.iter().filter(|p| matches!(p, Part::ToolResult { .. }));
-            let others = m.parts.iter().filter(|p| !matches!(p, Part::ToolResult { .. }));
-            let content: Vec<Value> = results.chain(others).map(block).collect();
-            json!({ "role": role, "content": content })
-        })
-        .collect();
-    // The Messages API requires max_tokens.
-    let max_tokens = req.max_tokens.unwrap_or(super::DEFAULT_MAX_TOKENS);
-    let mut body = json!({ "model": req.model, "max_tokens": max_tokens, "messages": messages });
+/// What Anthropic is spoken as: the Messages wire under a name of its own, so the crate applies
+/// none of a vendor's rules (model-bound thinking, its catalog's limits or prices).
+const DIALECT: RigDialect = RigDialect { quirks: quirks(), ..compatible("anthropic-messages", "", "", None) };
+
+const fn quirks() -> Quirks {
+    let mut quirks = Quirks::gateway();
+    // The Messages API requires max_tokens; a request without one gets ours.
+    quirks.max_tokens = MaxTokens::Fixed(super::DEFAULT_MAX_TOKENS as u64);
+    // Tools go as written: no strict rewriting, no per-tool streaming flag.
+    quirks.strict_tool_schemas = false;
+    quirks.tool_input_streaming = ToolInputStreaming::Off;
+    // Money is NodeCraft's: replies are never priced from the crate's catalog.
+    quirks.catalog_priced = false;
+    quirks.cache_ttl_pricing = false;
+    quirks
+}
+
+fn tool_name(name: &str) -> Result<ToolName, ProviderError> {
+    ToolName::new(name).map_err(|_| ProviderError::new(ErrorKind::UnsupportedInput, "a tool call has no name"))
+}
+
+/// The request in the crate's terms, and each tool result's content as it goes out.
+fn request(req: &ChatRequest) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
+    let mut history = Vec::new();
     if let Some(system) = &req.system {
-        body["system"] = json!(system);
+        history.push(RigMessage::System { content: system.clone() });
     }
+    let mut names: HashMap<&str, &str> = HashMap::new();
+    let mut results = HashMap::new();
+    for m in &req.messages {
+        match m.role {
+            Role::User => {
+                // The user's order is kept (captions like "Image 1:" sit next to their image),
+                // except that tool results must come first.
+                let mut content = Vec::new();
+                for p in m.parts.iter().filter(|p| matches!(p, Part::ToolResult { .. })) {
+                    if let Part::ToolResult { id, content: text, is_error } = p {
+                        results.insert(id.clone(), text.clone());
+                        content.push(UserContent::ToolResult(ToolResult {
+                            call: CallId::from_wire(id.clone()),
+                            name: tool_name(names.get(id.as_str()).copied().unwrap_or("tool"))?,
+                            content: vec![ToolResultContent::Text(Text::new(text.clone()))],
+                            is_error: *is_error,
+                        }));
+                    }
+                }
+                for p in &m.parts {
+                    content.push(match p {
+                        Part::Text(t) => UserContent::text(t.clone()),
+                        Part::Image { mime, bytes } => UserContent::Image(Image {
+                            data: DocumentSourceKind::Base64(base64(bytes)),
+                            media_type: ImageMediaType::from_mime_type(mime),
+                            ..Image::default()
+                        }),
+                        Part::Document { bytes, .. } => UserContent::Document(Document {
+                            data: DocumentData::File(DocumentSourceKind::Base64(base64(bytes))),
+                            media_type: Some(DocumentMediaType::PDF),
+                            additional_params: None,
+                        }),
+                        _ => continue,
+                    });
+                }
+                if !content.is_empty() {
+                    history.push(RigMessage::User { content });
+                }
+            }
+            Role::Assistant => {
+                let mut content = Vec::new();
+                for p in &m.parts {
+                    content.push(match p {
+                        Part::Text(t) => AssistantContent::text(t.clone()),
+                        Part::ToolUse { id, name, input } => {
+                            names.insert(id, name);
+                            // Claude's own calls always carry an object; arguments from another
+                            // server that weren't one go as `{}`.
+                            let input = if input.is_object() { input.clone() } else { json!({}) };
+                            AssistantContent::ToolCall(RigCall::new(CallId::from_wire(id.clone()), ToolFunction::new(tool_name(name)?, input)))
+                        }
+                        // Thinking and server tool blocks go back exactly as Claude sent them.
+                        Part::Opaque { block, .. } => AssistantContent::Opaque(Opaque { item: block.clone(), replay: true }),
+                        _ => continue,
+                    });
+                }
+                if !content.is_empty() {
+                    // Named as this wire's own turn, so the crate keeps its blocks: it drops a
+                    // provider block from any other model's turn, where Claude takes them back
+                    // from any model.
+                    let mut turn = AssistantMessage::new(content);
+                    turn.origin = Some(Origin::new(Api::from_static(MESSAGES_API), DIALECT.name, req.model.as_str()));
+                    history.push(RigMessage::Assistant(turn));
+                }
+            }
+        }
+    }
+    let mut out = CompletionRequest::new("");
+    out.chat_history = history.into_iter().map(Arc::new).collect();
+    // The Messages API requires max_tokens.
+    out.max_tokens = Some(u64::from(req.max_tokens.unwrap_or(super::DEFAULT_MAX_TOKENS)));
+    out.temperature = rig_chat::temperature(req.temperature);
     if !req.tools.is_empty() {
-        // No `tool_choice`: the default is `auto`, and current models reject forcing a call.
+        // Sent as they are: no `tool_choice` (the default is `auto`, and current models reject
+        // forcing a call), each tool strict or not as it asks.
         let tools: Vec<Value> = req
             .tools
             .iter()
@@ -77,15 +154,35 @@ pub(super) fn body(req: &ChatRequest, stream: bool) -> Value {
                 tool
             })
             .collect();
-        body["tools"] = Value::Array(tools);
+        out.additional_params = Some(json!({ "tools": tools }));
     }
-    if let Some(t) = req.temperature {
-        body["temperature"] = json!(t);
+    out.accept_unknown_finish_reasons = true;
+    Ok((out, results))
+}
+
+/// The request back in the shape Claude has been sent, where the wire differs:
+/// - the system prompt is a string, not a list of text blocks;
+/// - a tool result's content is its text as it was written, a string (the wire makes a list of
+///   text blocks, and writes its own words for an empty failed result).
+fn fix(body: &mut Value, results: &HashMap<String, String>) {
+    if let Some(system) = body.get_mut("system")
+        && let Some(blocks) = system.as_array().filter(|b| !b.is_empty() && b.iter().all(|b| b.get("type").and_then(Value::as_str) == Some("text")))
+    {
+        let text: Vec<&str> = blocks.iter().filter_map(|b| b.get("text").and_then(Value::as_str)).collect();
+        *system = Value::String(text.join("\n\n"));
     }
-    if stream {
-        body["stream"] = json!(true);
+    let messages = body.get_mut("messages").and_then(Value::as_array_mut);
+    for message in messages.into_iter().flatten() {
+        for block in message.get_mut("content").and_then(Value::as_array_mut).into_iter().flatten() {
+            if block.get("type").and_then(Value::as_str) != Some("tool_result") {
+                continue;
+            }
+            let id = block.get("tool_use_id").and_then(Value::as_str).map(str::to_owned);
+            if let (Some(text), Some(block)) = (id.and_then(|id| results.get(&id)), block.as_object_mut()) {
+                block.insert("content".into(), Value::String(text.clone()));
+            }
+        }
     }
-    body
 }
 
 fn stop(reason: Option<&str>) -> Result<StopReason, ProviderError> {
@@ -103,38 +200,103 @@ fn malformed(what: &str) -> ProviderError {
 }
 
 /// A finished content block as a part: text and tool calls are understood, everything else
-/// (thinking, redacted thinking, server tool blocks) is kept as it came. `args` is a streamed
-/// block's input text (tool calls, and server tool calls such as web search).
-fn part(mut block: Value, args: Option<&str>) -> Result<Option<Part>, ProviderError> {
-    let streamed = args.filter(|raw| !raw.trim().is_empty()).map(tool_input);
+/// (thinking, redacted thinking, server tool blocks) is kept as it came. `invalid` is the input
+/// text of a tool call whose input wasn't a JSON object, as it streamed.
+fn part(block: Value, invalid: Option<&String>) -> Result<Option<Part>, ProviderError> {
     Ok(match block.get("type").and_then(Value::as_str) {
         Some("text") => block.get("text").and_then(Value::as_str).filter(|t| !t.is_empty()).map(|t| Part::Text(t.to_owned())),
         Some("tool_use") => {
             let text = |k: &str| block.get(k).and_then(Value::as_str).filter(|v| !v.is_empty()).map(str::to_owned);
             let (Some(id), Some(name)) = (text("id"), text("name")) else { return Err(malformed("a tool call without an id or name")) };
-            let input = streamed.unwrap_or_else(|| block.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})));
+            let input = match invalid {
+                Some(raw) => Value::String(raw.clone()),
+                None => block.get("input").cloned().filter(Value::is_object).unwrap_or_else(|| json!({})),
+            };
             Some(Part::ToolUse { id, name, input })
         }
-        _ => {
-            if let (Some(input), Some(obj)) = (streamed, block.as_object_mut()) {
-                obj.insert("input".into(), input);
+        _ => Some(Part::Opaque { dialect: Dialect::Anthropic, block }),
+    })
+}
+
+/// Checks a streamed reply's events before the wire reads them:
+/// - a block index past the reply's block limit is refused: the wire sizes the reply by it;
+/// - a stream that reaches `message_stop` without a stop reason (a gateway that sends
+///   `"stop_reason": null`) ends the turn, as it always did here: the wire ends a stream only at
+///   a stop reason, so one is added just before, with the counts the last `message_delta` gave.
+fn guard() -> crate::rig_http::events::Guard {
+    let mut stopped = false;
+    let mut usage: Option<Value> = None;
+    Box::new(move |data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
+        // Stricter than the wire, which also reads a whole float or a numeric string as an index:
+        // any index that isn't a plain integer under the limit is refused.
+        if let Some(index) = event.get("index")
+            && !index.as_u64().is_some_and(|i| i < MAX_REPLY_BLOCKS as u64)
+        {
+            return Err(malformed("the reply has too many parts"));
+        }
+        match event.get("type").and_then(Value::as_str) {
+            Some("message_delta") => {
+                stopped |= event.pointer("/delta/stop_reason").and_then(Value::as_str).is_some();
+                if let Some(counts) = event.get("usage").filter(|u| u.is_object()) {
+                    usage = Some(counts.clone());
+                }
+                Ok(None)
             }
-            Some(Part::Opaque { dialect: Dialect::Anthropic, block })
+            Some("message_stop") if !stopped => {
+                stopped = true;
+                let mut delta = json!({ "type": "message_delta", "delta": { "stop_reason": "end_turn" } });
+                if let Some(counts) = usage.take() {
+                    delta["usage"] = counts;
+                }
+                Ok(Some(format!("event: message_delta\ndata: {delta}\n\n")))
+            }
+            _ => Ok(None),
         }
     })
 }
 
-pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
-    let v: Value = serde_json::from_slice(body).map_err(|e| malformed(&format!("messages reply: {e}")))?;
-    let content = v.get("content").and_then(Value::as_array).ok_or_else(|| malformed("messages reply without content"))?;
+/// A whole reply the wire reads only when it says it is a `message`, which a compatible server
+/// may leave out: a reply with `content` and no `type` is one.
+fn whole_message(reply: &mut Value) {
+    if let Some(reply) = reply.as_object_mut()
+        && reply.contains_key("content")
+        && !reply.contains_key("type")
+    {
+        reply.insert("type".into(), json!("message"));
+    }
+}
+
+/// The reply as Claude sent it: the crate's provider document of it, whole or rebuilt from the
+/// stream, so every block (thinking with its signature included) is kept as it came.
+fn reply(response: &CompletionResponse, streamed: bool) -> Result<ChatResponse, ProviderError> {
+    let v = &response.raw;
+    // A stream that ended properly with no block in it is an empty reply.
+    let none = Vec::new();
+    let content = match v.get("content").and_then(Value::as_array) {
+        Some(content) => content,
+        None if streamed => &none,
+        None => return Err(malformed("messages reply without content")),
+    };
     // Stop reason first: a refusal must not surface partial text as a result.
     let stop = stop(v.get("stop_reason").and_then(Value::as_str))?;
     if content.len() > MAX_REPLY_BLOCKS {
         return Err(malformed("the reply has too many parts"));
     }
+    // Streamed input that wasn't a JSON object stays text, which fails any object schema.
+    let invalid: HashMap<String, String> = response
+        .choice
+        .iter()
+        .filter_map(|c| match c {
+            AssistantContent::ToolCall(call) => Some((call.id.wire().into_owned(), call.function.invalid_arguments.clone()?)),
+            _ => None,
+        })
+        .collect();
     let mut parts = Vec::new();
-    for b in content {
-        parts.extend(part(b.clone(), None)?);
+    // A gap in a stream's block indexes leaves an empty slot: no block, nothing to send back.
+    for b in content.iter().filter(|b| b.is_object()) {
+        let id = b.get("id").and_then(Value::as_str).unwrap_or_default();
+        parts.extend(part(b.clone(), invalid.get(id))?);
     }
     let usage = v.get("usage");
     let usage = Usage {
@@ -147,84 +309,56 @@ pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse::new(parts, stop, usage))
 }
 
-/// Appends `piece` to the string field `key` of a streamed block.
-fn append(block: &mut Value, key: &str, piece: &str) {
-    if let Some(obj) = block.as_object_mut() {
-        // In place: copying the string on every delta would make long replies quadratic.
-        match obj.get_mut(key) {
-            Some(Value::String(s)) => s.push_str(piece),
-            _ => {
-                obj.insert(key.to_owned(), Value::String(piece.to_owned()));
-            }
-        }
-    }
+/// How this dialect reads its errors.
+const RULES: rig_chat::Rules = rig_chat::Rules { status: error, event: event_error, unended: "messages reply without content" };
+
+fn event_error(err: &Value) -> ProviderError {
+    error_from(err, None)
 }
 
-pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Option<String>, ProviderError> {
-    let v: Value = serde_json::from_str(&e.data).map_err(|err| malformed(&format!("stream event: {err}")))?;
-    let kind = v.get("type").and_then(Value::as_str).or(e.event.as_deref()).unwrap_or_default();
-    let index = v.get("index").and_then(Value::as_u64).unwrap_or(0);
-    match kind {
-        "message_start" => {
-            state.usage.input_tokens = v.get("message").and_then(|m| m.get("usage")).and_then(|u| u.get("input_tokens")).and_then(Value::as_u64);
-            Ok(None)
+impl LlmClient {
+    /// Sends `req` to Claude, streamed when `on_text` takes the pieces, through the runner's
+    /// delivery scope when there is one.
+    pub(super) async fn anthropic_chat(
+        &self,
+        req: &ChatRequest,
+        on_text: Option<&mut (dyn FnMut(&str) + Send)>,
+        context: Option<&crate::SubmitContext>,
+    ) -> Result<ChatResponse, ProviderError> {
+        let req = self.validated(req)?;
+        let streamed = on_text.is_some();
+        let (cap, timeout) = self.limits(&req, streamed);
+        let (request, results) = request(&req)?;
+        // Our own URL and headers: the crate's path is always `/v1/messages` under its root.
+        let mut transport = RigHttp::new(Arc::clone(&self.http), timeout, cap)
+            .with_delivery(context.map(crate::SubmitContext::link))
+            .with_url(self.endpoint.url("messages"))
+            .with_header("anthropic-version", VERSION)
+            .with_reply_fix(whole_message)
+            .with_guard(guard)
+            .with_fix(Box::new(move |body| fix(body, &results)));
+        // Anthropic answers a page's request only when it says it comes from a browser with the
+        // person's own key (#118); the key is theirs, kept in their browser.
+        #[cfg(target_arch = "wasm32")]
+        {
+            transport = transport.with_header("anthropic-dangerous-direct-browser-access", "true");
         }
-        "content_block_start" => {
-            let start = v.get("content_block").cloned().filter(Value::is_object).unwrap_or_else(|| json!({}));
-            state.block(index, || start)?;
-            Ok(None)
+        if let Some(key) = &self.endpoint.key {
+            transport = transport.with_secret("x-api-key", key.expose().to_owned());
         }
-        "content_block_delta" => {
-            let Some(delta) = v.get("delta") else { return Ok(None) };
-            let piece = |key: &str| delta.get(key).and_then(Value::as_str).unwrap_or_default();
-            match delta.get("type").and_then(Value::as_str).unwrap_or_default() {
-                "text_delta" => {
-                    let text = piece("text");
-                    append(&mut state.block(index, || json!({ "type": "text", "text": "" }))?.value, "text", text);
-                    state.text.push_str(text);
-                    Ok((!text.is_empty()).then(|| text.to_owned()))
-                }
-                "input_json_delta" => {
-                    state.block(index, || json!({ "type": "tool_use" }))?.args.push_str(piece("partial_json"));
-                    Ok(None)
-                }
-                "thinking_delta" => {
-                    append(&mut state.block(index, || json!({ "type": "thinking", "thinking": "" }))?.value, "thinking", piece("thinking"));
-                    Ok(None)
-                }
-                "signature_delta" => {
-                    let block = state.block(index, || json!({ "type": "thinking", "thinking": "" }))?;
-                    if let Some(obj) = block.value.as_object_mut() {
-                        obj.insert("signature".into(), json!(piece("signature")));
-                    }
-                    Ok(None)
-                }
-                _ => Ok(None), // citations, future deltas
-            }
+        // The key goes with the transport, never through the crate.
+        let config = AnthropicConfig::with_key(&DIALECT, "").with_base_url(self.endpoint.base_url.as_str()).with_version(VERSION);
+        let mut wire = config.completion(req.model.as_str()).with_default_max_tokens(u64::from(super::DEFAULT_MAX_TOKENS));
+        wire.tool_input_streaming = ToolInputStreaming::Off;
+        // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
+        let model = Model::new(wire, transport.clone()).with_idle_timeout(None);
+        let response = rig_chat::send(model, &transport, request, on_text, &RULES).await?;
+        let mut reply = reply(&response, streamed)?;
+        if let Exchange::Answered { headers, .. } = transport.exchange() {
+            reply.usage.cost = self.reported_cost(&headers);
         }
-        "message_delta" => {
-            state.stop = Some(stop(v.get("delta").and_then(|d| d.get("stop_reason")).and_then(Value::as_str))?);
-            if let Some(n) = v.get("usage").and_then(|u| u.get("output_tokens")).and_then(Value::as_u64) {
-                state.usage.output_tokens = Some(n);
-            }
-            Ok(None)
-        }
-        "message_stop" => {
-            state.finished = true;
-            Ok(None)
-        }
-        "error" => Err(error_from(v.get("error").unwrap_or(&Value::Null), None)),
-        _ => Ok(None), // ping, content_block_stop, future events
+        Ok(reply)
     }
-}
-
-/// The streamed reply's parts, in block order.
-pub(super) fn stream_parts(state: &mut StreamState) -> Result<Vec<Part>, ProviderError> {
-    let mut parts = Vec::new();
-    for b in std::mem::take(&mut state.blocks).into_values() {
-        parts.extend(part(b.value, Some(&b.args))?);
-    }
-    Ok(parts)
 }
 
 fn error_from(err: &Value, status: Option<u16>) -> ProviderError {
@@ -259,90 +393,4 @@ pub(super) fn error(status: u16, body: &[u8]) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{Canned, request};
-    use super::super::{ApiKey, Endpoint, LlmClient};
-    use super::*;
-    use futures::executor::block_on;
-
-    #[test]
-    fn request_shape() {
-        let http = Canned::new(200, r#"{"content":[{"type":"text","text":"ok"}],"stop_reason":"end_turn"}"#);
-        let client = LlmClient::new(Endpoint::anthropic(ApiKey::new("sk-ant")), http.clone());
-        let mut r = request();
-        r.model = DEFAULT_MODEL.into();
-        r.temperature = None;
-        block_on(client.chat(&r)).unwrap();
-        let req = http.request();
-        assert_eq!(req.url, "https://api.anthropic.com/v1/messages");
-        assert!(req.headers.contains(&("x-api-key".into(), "sk-ant".into())));
-        assert!(req.headers.contains(&("anthropic-version".into(), VERSION.into())));
-        assert!(!req.headers.iter().any(|(n, _)| n == "Authorization"));
-        let b = http.body();
-        assert_eq!(b["model"], "claude-opus-5-5");
-        assert_eq!(b["system"], "be brief");
-        assert_eq!(b["messages"][0]["content"][0], json!({"type":"text","text":"hi"}), "the user's order is kept");
-        assert_eq!(b["messages"][0]["content"][1], json!({"type":"image","source":{"type":"base64","media_type":"image/png","data":"UE5H"}}));
-        assert_eq!(b["max_tokens"], 100);
-        let unset = body(&ChatRequest { max_tokens: None, ..request() }, false);
-        assert_eq!(unset["max_tokens"], super::super::DEFAULT_MAX_TOKENS, "required by the API");
-        assert!(rejects_sampling("claude-opus-5-5") && rejects_sampling("anthropic/claude-sonnet-5-5") && !rejects_sampling("claude-3-5-haiku"));
-        assert!(b.get("temperature").is_none() && b.get("thinking").is_none());
-    }
-
-    #[test]
-    fn replies() {
-        let r = parse(br#"{"content":[{"type":"thinking","thinking":""},{"type":"text","text":"Hello "},{"type":"text","text":"there"}],"stop_reason":"max_tokens","usage":{"input_tokens":4,"output_tokens":9}}"#).unwrap();
-        assert_eq!((r.text.as_str(), r.stop, r.usage.output_tokens), ("Hello there", StopReason::MaxTokens, Some(9)));
-        let refused = parse(br#"{"content":[{"type":"text","text":"partial"}],"stop_reason":"refusal","stop_details":{"type":"refusal","category":"cyber"}}"#)
-            .unwrap_err();
-        assert_eq!(refused.kind, ErrorKind::BlockedContent);
-        assert_eq!(parse(br#"{"type":"message"}"#).unwrap_err().kind, ErrorKind::Malformed);
-    }
-
-    #[test]
-    fn errors() {
-        let e = |s, b: &str| error(s, b.as_bytes()).kind;
-        assert_eq!(e(529, r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#), ErrorKind::Busy);
-        assert_eq!(e(529, ""), ErrorKind::Busy);
-        assert_eq!(e(429, r#"{"type":"error","error":{"type":"rate_limit_error","message":"slow"}}"#), ErrorKind::RateLimited);
-        assert_eq!(e(402, r#"{"type":"error","error":{"type":"billing_error","message":"pay"}}"#), ErrorKind::Budget);
-        assert_eq!(e(401, r#"{"type":"error","error":{"type":"authentication_error","message":"bad key"}}"#), ErrorKind::Auth);
-        assert_eq!(e(404, r#"{"type":"error","error":{"type":"not_found_error","message":"model"}}"#), ErrorKind::NotFound);
-        assert_eq!(e(400, r#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#), ErrorKind::UnsupportedInput);
-        assert_eq!(e(500, r#"{"type":"error","error":{"type":"api_error","message":"oops"}}"#), ErrorKind::Server);
-        let long = error(400, br#"{"type":"error","error":{"type":"invalid_request_error","message":"prompt is too long: 210000 tokens > 200000 maximum"}}"#);
-        assert!(long.is_context_limit() && long.message.contains("210000 tokens"), "{long}");
-        assert!(!error(400, br#"{"type":"error","error":{"type":"invalid_request_error","message":"bad"}}"#).is_context_limit());
-        assert!(ErrorKind::Busy.is_transient() && !ErrorKind::Budget.is_transient());
-    }
-
-    #[test]
-    fn streaming_events() {
-        let mut s = StreamState::default();
-        let ev = |name: &str, d: &str| SseEvent { event: Some(name.into()), data: d.into() };
-        let events = [
-            ev("message_start", r#"{"type":"message_start","message":{"id":"msg_1","usage":{"input_tokens":12,"output_tokens":1}}}"#),
-            ev("content_block_start", r#"{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}"#),
-            ev("ping", r#"{"type":"ping"}"#),
-            ev("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}"#),
-            ev("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"…"}}"#),
-            ev("content_block_delta", r#"{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo"}}"#),
-            ev("content_block_stop", r#"{"type":"content_block_stop","index":0}"#),
-            ev("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"output_tokens":12}}"#),
-            ev("message_stop", r#"{"type":"message_stop"}"#),
-        ];
-        let mut pieces = Vec::new();
-        for e in &events {
-            if let Some(t) = stream_event(e, &mut s).unwrap() {
-                pieces.push(t);
-            }
-        }
-        assert_eq!(pieces, ["Hel", "lo"]);
-        assert_eq!((s.text.as_str(), s.finished, s.usage.input_tokens, s.usage.output_tokens), ("Hello", true, Some(12), Some(12)));
-        let err = stream_event(&ev("error", r#"{"type":"error","error":{"type":"overloaded_error","message":"Overloaded"}}"#), &mut s).unwrap_err();
-        assert_eq!(err.kind, ErrorKind::Busy);
-        let refusal = stream_event(&ev("message_delta", r#"{"type":"message_delta","delta":{"stop_reason":"refusal"}}"#), &mut s).unwrap_err();
-        assert_eq!(refusal.kind, ErrorKind::BlockedContent);
-    }
-}
+mod tests;

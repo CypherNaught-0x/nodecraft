@@ -122,91 +122,6 @@ fn opaque_blocks_go_only_to_their_dialect() {
     assert!(only.clone().validate(Dialect::Anthropic).is_ok());
 }
 
-#[test]
-fn anthropic_tool_requests() {
-    let mut r = tool_turns();
-    r.messages[1].parts.insert(0, Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type": "thinking", "thinking": "plan", "signature": "sig"}) });
-    r.messages[2].parts.push(Part::ToolResult { id: "call_1".into(), content: "again".into(), is_error: true });
-    r.messages[1].parts.push(Part::ToolUse { id: "call_1".into(), name: "get_weather".into(), input: json!("not an object") });
-    let b = anthropic::body(&r, false);
-    assert_eq!(
-        b["tools"][0],
-        json!({"name": "get_weather", "description": "Current weather for a city", "input_schema": weather().input_schema, "strict": true})
-    );
-    assert!(b.get("tool_choice").is_none(), "auto: current Claude models reject forced calls");
-    let assistant = &b["messages"][1]["content"];
-    assert_eq!(assistant[0], json!({"type": "thinking", "thinking": "plan", "signature": "sig"}), "thinking goes back unchanged");
-    assert_eq!(assistant[2], json!({"type": "tool_use", "id": "call_1", "name": "get_weather", "input": {"city": "Oslo"}}));
-    assert_eq!(assistant[3]["input"], json!({}), "non-object input can't be sent to Claude");
-    let user = &b["messages"][2]["content"];
-    assert_eq!(user[0], json!({"type": "tool_result", "tool_use_id": "call_1", "content": "4 °C, rain"}), "results first");
-    assert_eq!(user[1]["is_error"], true);
-    assert_eq!(user[2], json!({"type": "text", "text": "Thanks"}));
-}
-
-#[test]
-fn anthropic_tool_replies_keep_thinking() {
-    let r = anthropic::parse(
-        br#"{"content":[
-            {"type":"thinking","thinking":"I should call the tool","signature":"EqQB"},
-            {"type":"text","text":"Checking."},
-            {"type":"tool_use","id":"toolu_1","name":"get_weather","input":{"city":"Oslo"}},
-            {"type":"redacted_thinking","data":"abc"}
-        ],"stop_reason":"tool_use","usage":{"input_tokens":30,"output_tokens":12}}"#,
-    )
-    .unwrap();
-    assert_eq!(r.stop, StopReason::ToolUse);
-    assert_eq!(r.text, "Checking.");
-    assert_eq!(r.message.parts.len(), 4);
-    assert_eq!(
-        r.message.parts[0],
-        Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type":"thinking","thinking":"I should call the tool","signature":"EqQB"}) }
-    );
-    assert!(matches!(&r.message.parts[3], Part::Opaque { block, .. } if block["type"] == "redacted_thinking"));
-    let calls: Vec<_> = r.tool_calls().collect();
-    assert_eq!((calls[0].id, calls[0].input), ("toolu_1", &json!({"city": "Oslo"})));
-}
-
-#[test]
-fn anthropic_streamed_tool_calls_and_thinking() {
-    let mut s = StreamState::default();
-    let ev = |d: &str| sse::SseEvent { event: None, data: d.into() };
-    let mut text = String::new();
-    for d in [
-        r#"{"type":"message_start","message":{"usage":{"input_tokens":30}}}"#,
-        r#"{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":""}}"#,
-        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"Use the "}}"#,
-        r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"tool."}}"#,
-        r#"{"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"EqQB"}}"#,
-        r#"{"type":"content_block_stop","index":0}"#,
-        r#"{"type":"content_block_start","index":1,"content_block":{"type":"text","text":""}}"#,
-        r#"{"type":"content_block_delta","index":1,"delta":{"type":"text_delta","text":"Checking."}}"#,
-        r#"{"type":"content_block_start","index":2,"content_block":{"type":"tool_use","id":"toolu_1","name":"get_weather","input":{}}}"#,
-        r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":""}}"#,
-        r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"{\"city\": \"Os"}}"#,
-        r#"{"type":"content_block_delta","index":2,"delta":{"type":"input_json_delta","partial_json":"lo\"}"}}"#,
-        r#"{"type":"content_block_start","index":3,"content_block":{"type":"tool_use","id":"toolu_2","name":"get_time","input":{}}}"#,
-        r#"{"type":"message_delta","delta":{"stop_reason":"tool_use"},"usage":{"output_tokens":40}}"#,
-        r#"{"type":"message_stop"}"#,
-    ] {
-        if let Some(t) = anthropic::stream_event(&ev(d), &mut s).unwrap() {
-            text.push_str(&t);
-        }
-    }
-    assert_eq!(text, "Checking.");
-    let parts = anthropic::stream_parts(&mut s).unwrap();
-    assert_eq!(
-        parts,
-        vec![
-            Part::Opaque { dialect: Dialect::Anthropic, block: json!({"type": "thinking", "thinking": "Use the tool.", "signature": "EqQB"}) },
-            Part::Text("Checking.".into()),
-            Part::ToolUse { id: "toolu_1".into(), name: "get_weather".into(), input: json!({"city": "Oslo"}) },
-            Part::ToolUse { id: "toolu_2".into(), name: "get_time".into(), input: json!({}) },
-        ]
-    );
-    assert_eq!((s.usage.input_tokens, s.usage.output_tokens, s.stop.clone()), (Some(30), Some(40), Some(StopReason::ToolUse)));
-}
-
 /// The agent loop: ask, run the tool, send the reply back as it came plus the result.
 #[test]
 fn a_tool_loop_round_trips() {
@@ -265,28 +180,7 @@ fn litellm_key_spend() {
 
 #[test]
 fn review_regressions() {
-    let ev = |d: &str| sse::SseEvent { event: None, data: d.into() };
-    // Unnamed calls are malformed in every path (the OpenAI-compatible ones: `openai::tests`).
-    let mut s = StreamState::default();
-    anthropic::stream_event(&ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"tool_use","id":"t"}}"#), &mut s).unwrap();
-    assert_eq!(anthropic::stream_parts(&mut s).unwrap_err().kind, ErrorKind::Malformed);
-    assert_eq!(
-        anthropic::parse(br#"{"content":[{"type":"tool_use","name":"f","input":{}}],"stop_reason":"tool_use"}"#).unwrap_err().kind,
-        ErrorKind::Malformed
-    );
-    // Server tool blocks keep their streamed input.
-    let mut s = StreamState::default();
-    anthropic::stream_event(
-        &ev(r#"{"type":"content_block_start","index":0,"content_block":{"type":"server_tool_use","id":"srv","name":"web_search","input":{}}}"#),
-        &mut s,
-    )
-    .unwrap();
-    anthropic::stream_event(
-        &ev(r#"{"type":"content_block_delta","index":0,"delta":{"type":"input_json_delta","partial_json":"{\"query\":\"oslo\"}"}}"#),
-        &mut s,
-    )
-    .unwrap();
-    assert!(matches!(&anthropic::stream_parts(&mut s).unwrap()[0], Part::Opaque { block, .. } if block["input"] == json!({"query": "oslo"})));
+    // Unnamed calls and server tool blocks: `openai::tests` and `anthropic::tests`.
     // Duplicate ids are refused before sending.
     let mut r = tool_turns();
     r.messages[1].parts.push(call("call_1"));
@@ -304,17 +198,4 @@ fn review_regressions() {
     }
     assert_eq!(usd(1.000_000_4), Some(Money::new(Currency::USD, 1_000_001)), "large amounts still round up");
     assert_eq!(usd(12.345_678_4), Some(Money::new(Currency::USD, 12_345_679)));
-}
-
-/// Long streamed replies stay linear: each delta appends in place.
-#[test]
-fn long_anthropic_streams_are_linear() {
-    let mut s = StreamState::default();
-    let ev = sse::SseEvent { event: None, data: r#"{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"abcdefgh"}}"#.into() };
-    let started = std::time::Instant::now();
-    for _ in 0..200_000 {
-        anthropic::stream_event(&ev, &mut s).unwrap();
-    }
-    assert_eq!(s.blocks[&0].value["thinking"].as_str().map(str::len), Some(1_600_000));
-    assert!(started.elapsed() < std::time::Duration::from_secs(20), "{:?}", started.elapsed());
 }

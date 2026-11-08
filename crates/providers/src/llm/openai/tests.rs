@@ -573,3 +573,37 @@ fn a_stream_that_fails_or_is_cancelled_leaves_nothing_behind() {
     assert_eq!(Arc::strong_count(&http), 2);
     assert!(context.finish_error().is_none(), "possibly billed");
 }
+
+/// A tool call index from the wire is refused past the reply's limit before anything is sized by
+/// it: one small hostile event must not allocate the index's worth of slots.
+#[test]
+fn a_huge_tool_call_index_is_refused_not_allocated() {
+    for index in ["100000000000", "1024", "4294967295"] {
+        let event = format!(r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":{index},"id":"a","function":{{"name":"f","arguments":"{{}}"}}}}]}}}}]}}"#);
+        let (e, _) = streamed(&[&event, "[DONE]"]);
+        let e = e.unwrap_err();
+        assert_eq!((e.kind, e.message.as_str()), (ErrorKind::Malformed, "the reply has too many tool calls"), "{index}");
+    }
+}
+
+/// A lone CR between events or a BOM opening the stream doesn't hide a tool call index from the
+/// guard; an index the wire doesn't read as one (a float, a string) allocates nothing.
+#[test]
+fn a_tool_call_index_cannot_slip_past_the_guard() {
+    let huge = r#"{"choices":[{"delta":{"tool_calls":[{"index":100000000000,"id":"a","function":{"name":"f","arguments":"{}"}}]}}]}"#;
+    let read = |body: String| {
+        let http = Arc::new(Pieces { body: body.into_bytes(), piece: 5, status: 200, headers: vec![], seen: Mutex::default() });
+        block_on(LlmClient::new(Endpoint::openai(ApiKey::new("k")), http).chat_stream(&request(), &mut |_| {}))
+    };
+    for body in [format!("data: {{\"choices\":[]}}\r\rdata: {huge}\r\r\n\n"), format!("\u{feff}data: {huge}\n\ndata: [DONE]\n\n")] {
+        let e = read(body).unwrap_err();
+        assert_eq!((e.kind, e.message.as_str()), (ErrorKind::Malformed, "the reply has too many tool calls"));
+    }
+    for index in ["1e11", "\"100000000000\""] {
+        let event = format!(
+            r#"{{"choices":[{{"delta":{{"tool_calls":[{{"index":{index},"id":"a","function":{{"name":"f","arguments":"{{}}"}}}}]}},"finish_reason":"tool_calls"}}]}}"#
+        );
+        let r = read(format!("data: {event}\n\ndata: [DONE]\n\n")).unwrap();
+        assert_eq!(r.tool_calls().count(), 1, "{index}: read as a call without an index");
+    }
+}

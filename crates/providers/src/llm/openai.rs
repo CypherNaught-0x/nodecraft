@@ -14,7 +14,6 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use futures::StreamExt as _;
 use rig_core::Model;
 use rig_core::completion::{CompletionRequest, CompletionResponse, FinishReason};
 use rig_core::message::{
@@ -23,10 +22,9 @@ use rig_core::message::{
 };
 use rig_core::providers::openai::OpenAIConfig;
 use rig_core::providers::openai::wire::{Auth, BodyRewrite, Chat, Dialect as RigDialect, Quirks};
-use rig_core::streaming::{Item, StreamEvent};
 use serde_json::Value;
 
-use super::{ChatRequest, ChatResponse, LlmClient, MAX_REPLY_BLOCKS, Part, Role, StopReason, base64, bedrock};
+use super::{ChatRequest, ChatResponse, LlmClient, MAX_REPLY_BLOCKS, Part, Role, StopReason, base64, bedrock, rig_chat};
 use crate::provider::Usage;
 use crate::rig_http::{Exchange, RigHttp};
 use crate::{ErrorKind, ProviderError};
@@ -166,8 +164,7 @@ fn request(req: &ChatRequest, completion_cap: bool) -> Result<(CompletionRequest
         }
         other => out.max_tokens = other.map(u64::from),
     }
-    // Through its decimal text, so 0.7 goes as 0.7, not as the nearest f32.
-    out.temperature = req.temperature.and_then(|t| t.to_string().parse::<f64>().ok());
+    out.temperature = rig_chat::temperature(req.temperature);
     out.additional_params = (!params.is_empty()).then_some(Value::Object(params));
     out.accept_unknown_finish_reasons = true;
     Ok((out, raw))
@@ -221,6 +218,20 @@ fn fix(body: &mut Value, raw: &HashMap<String, String>) {
             }
         }
     }
+}
+
+/// Checks a streamed reply's events before the wire reads them: a tool call index past the
+/// reply's limit is refused, as the wire sizes the reply by it.
+fn guard() -> crate::rig_http::events::Guard {
+    Box::new(|data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
+        let choices = event.get("choices").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let calls = choices.iter().filter_map(|c| c.pointer("/delta/tool_calls").and_then(Value::as_array)).flatten();
+        if calls.filter_map(|c| c.get("index").and_then(Value::as_u64)).any(|i| i >= MAX_REPLY_BLOCKS as u64) {
+            return Err(malformed("the reply has too many tool calls"));
+        }
+        Ok(None)
+    })
 }
 
 /// The crate's reply as ours: its text, then its tool calls in order.
@@ -277,35 +288,11 @@ fn reply(response: &CompletionResponse) -> Result<ChatResponse, ProviderError> {
     Ok(ChatResponse::new(parts, stop, usage))
 }
 
-/// The crate's error in NodeCraft's terms, from what the transport saw first: its own failure as
-/// it raised it, an error status by the dialect's rules, then the crate's reading of the reply.
-fn failure(error: &rig_core::ProviderError, exchange: Exchange, streamed: bool) -> ProviderError {
-    match exchange {
-        Exchange::Failed(e) => return e,
-        Exchange::Answered { status, headers, body } if !(200..300).contains(&status) => {
-            let mut e = self::error(status, &body);
-            e.retry_after_ms = super::retry_after(headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("retry-after")).map(|(_, v)| v.as_str()));
-            return e;
-        }
-        _ => {}
-    }
-    // An error event inside a 200 reply.
-    if let Some(body) = error.provider_response_body() {
-        return match serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("error").cloned()) {
-            Some(err) => error_from(None, &err),
-            None => malformed(&format!("stream event: {}", crate::error::excerpt(body.as_bytes()))),
-        };
-    }
-    let message = crate::error::excerpt(error.to_string().as_bytes());
-    match error {
-        rig_core::ProviderError::Truncated if streamed => ProviderError::new(ErrorKind::Network, "the reply stream ended early"),
-        // A whole reply that doesn't end the turn: no choice in it.
-        rig_core::ProviderError::Truncated => malformed("chat reply without choices"),
-        rig_core::ProviderError::Stalled(_) => ProviderError::new(ErrorKind::Timeout, "the reply stream stalled"),
-        // Refused before anything was sent.
-        rig_core::ProviderError::Request(_) | rig_core::ProviderError::UnsupportedOption(_) => ProviderError::new(ErrorKind::UnsupportedInput, message),
-        _ => malformed(&format!("chat reply: {message}")),
-    }
+/// How this dialect reads its errors.
+const RULES: rig_chat::Rules = rig_chat::Rules { status: error, event: event_error, unended: "chat reply without choices" };
+
+fn event_error(err: &Value) -> ProviderError {
+    error_from(None, err)
 }
 
 impl LlmClient {
@@ -318,55 +305,26 @@ impl LlmClient {
         context: Option<&crate::SubmitContext>,
     ) -> Result<ChatResponse, ProviderError> {
         let req = self.validated(req)?;
-        let streamed = on_text.is_some();
-        let (cap, timeout) = self.limits(&req, streamed);
+        let (cap, timeout) = self.limits(&req, on_text.is_some());
         let completion_cap = matches!(self.endpoint.id.as_str(), "openai" | "azure-openai" | bedrock::BEDROCK);
         let (request, raw) = request(&req, completion_cap)?;
         let mut transport = RigHttp::new(Arc::clone(&self.http), timeout, cap)
             .with_delivery(context.map(crate::SubmitContext::link))
-            .with_fix(Box::new(move |body| fix(body, &raw)));
+            .with_fix(Box::new(move |body| fix(body, &raw)))
+            .with_guard(guard);
         if let Some(key) = &self.endpoint.key {
             transport = transport.with_secret("Authorization", format!("Bearer {}", key.expose()));
         }
-        // Whatever way this ends (an error, a cancel), a send the crate stopped reading goes with
-        // it; declared first, so it is dropped after the stream that may leave one.
-        let _discard = Discard(transport.clone());
         // The key goes with the transport, never through the crate.
         let config = OpenAIConfig::with_key(&DIALECT, "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
         // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
         let model = Model::new(Chat::new(config, req.model.as_str()), transport.clone()).with_idle_timeout(None);
-        let response = match on_text {
-            None => model.call(request).await,
-            Some(on_text) => {
-                let mut stream = model.stream(request).map_err(|e| failure(&e, transport.exchange(), streamed))?;
-                while let Some(item) = stream.next().await {
-                    match item {
-                        Ok(Item::Event(StreamEvent::Text { text, .. })) => on_text(&text),
-                        Ok(_) => {}
-                        Err(e) => return Err(failure(&e, transport.exchange(), streamed)),
-                    }
-                }
-                stream.finish().await
-            }
-        };
-        let response = response.map_err(|e| failure(&e, transport.exchange(), streamed))?;
-        // The crate stops reading a stream at its last event; the send runs to its end, so the
-        // reply's head is read and its delivery closes as the transport finished it.
-        transport.finish().await?;
+        let response = rig_chat::send(model, &transport, request, on_text, &RULES).await?;
         let mut reply = reply(&response)?;
         if let Exchange::Answered { headers, .. } = transport.exchange() {
             reply.usage.cost = self.reported_cost(&headers);
         }
         Ok(reply)
-    }
-}
-
-/// Drops the transport's unfinished send when `openai_chat` ends, however it ends.
-struct Discard(RigHttp);
-
-impl Drop for Discard {
-    fn drop(&mut self) {
-        self.0.discard();
     }
 }
 

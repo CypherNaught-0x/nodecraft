@@ -62,6 +62,12 @@ struct Inner {
     timeout_ms: u64,
     max_response_bytes: usize,
     fix: Option<BodyFix>,
+    /// Rewrites a whole 2xx JSON reply before the crate reads it.
+    reply_fix: Option<fn(&mut serde_json::Value)>,
+    /// Checks each event of a streamed reply before the crate reads it.
+    guard: Option<fn() -> events::Guard>,
+    /// Where the request goes instead of the crate's URL, when the dialect's own path differs.
+    url: Option<String>,
     exchange: Mutex<Exchange>,
     /// A streamed send the crate stopped reading before it ended (it stops at `[DONE]`), with
     /// its body still draining: [`RigHttp::finish`] runs it to its end.
@@ -111,6 +117,9 @@ impl RigHttp {
                 timeout_ms,
                 max_response_bytes,
                 fix: None,
+                reply_fix: None,
+                guard: None,
+                url: None,
                 exchange: Mutex::new(Exchange::Unsent),
                 unfinished: Mutex::new(None),
             }),
@@ -149,6 +158,23 @@ impl RigHttp {
     #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn forwarding(self, forward: &'static [&'static str]) -> Self {
         self.edit(|inner| inner.forward = forward)
+    }
+
+    /// Rewrites a whole (not streamed) 2xx JSON reply before the crate reads it, for what the
+    /// crate needs a server to say that the dialect's servers may leave out.
+    pub(crate) fn with_reply_fix(self, fix: fn(&mut serde_json::Value)) -> Self {
+        self.edit(|inner| inner.reply_fix = Some(fix))
+    }
+
+    /// Runs each event of a streamed reply past a fresh `guard` before the crate reads it: what
+    /// the crate would size by a number from the wire is refused here first.
+    pub(crate) fn with_guard(self, guard: fn() -> events::Guard) -> Self {
+        self.edit(|inner| inner.guard = Some(guard))
+    }
+
+    /// Sends the request to `url` rather than where the crate addressed it.
+    pub(crate) fn with_url(self, url: String) -> Self {
+        self.edit(|inner| inner.url = Some(url))
     }
 
     /// Rewrites the JSON body before it is sent.
@@ -211,7 +237,8 @@ impl Inner {
             "DELETE" => HttpMethod::Delete,
             other => return Err(ProviderError::new(ErrorKind::UnsupportedInput, format!("the chat client asked for an HTTP {other} request"))),
         };
-        let mut out = HttpRequest::get(parts.uri.to_string()).timeout_ms(self.timeout_ms).max_response_bytes(self.max_response_bytes);
+        let url = self.url.clone().unwrap_or_else(|| parts.uri.to_string());
+        let mut out = HttpRequest::get(url).timeout_ms(self.timeout_ms).max_response_bytes(self.max_response_bytes);
         out.method = method;
         for (name, value) in &parts.headers {
             if self.forward.contains(&name.as_str()) {
@@ -295,8 +322,16 @@ impl HttpClientExt for RigHttp {
         let request = inner.request(req.map(Into::into));
         async move {
             let request = request.map_err(|e| inner.fail(e))?;
-            let reply = inner.send(request).await.map_err(|e| inner.fail(e))?;
+            let mut reply = inner.send(request).await.map_err(|e| inner.fail(e))?;
             let (status, headers) = inner.head(reply.status, &reply.headers, &reply.body).map_err(|e| inner.fail(e))?;
+            if let Some(fix) = inner.reply_fix.filter(|_| reply.is_success())
+                && let Ok(mut json) = serde_json::from_slice::<serde_json::Value>(&reply.body)
+            {
+                fix(&mut json);
+                if let Ok(body) = serde_json::to_vec(&json) {
+                    reply.body = body;
+                }
+            }
             Ok(response(status, headers, reply.body))
         }
     }
@@ -342,7 +377,8 @@ impl HttpClientExt for RigHttp {
                 Some(first) => first,
                 None => First::Done(sending.as_mut().await),
             };
-            let mut body = Body { first: None, received, sending: None, failure: None, closed: false, inner: Arc::clone(&inner) };
+            let events = inner.guard.map(|guard| events::Events::new(guard()));
+            let mut body = Body { first: None, received, sending: None, failure: None, closed: false, events, inner: Arc::clone(&inner) };
             let headers = match first {
                 First::Done(Err(e)) => {
                     // The send is over: its sink, and with it the channel's sender, goes now.
@@ -387,31 +423,68 @@ struct Body {
     sending: Option<BoxFuture<'static, Result<HttpResponse, ProviderError>>>,
     /// How the send failed, read after everything that arrived before.
     failure: Option<http_client::Error>,
-    /// Whether the closing blank line went out.
+    /// Whether the body ended: its closing blank line went out, or a guard refused it.
     closed: bool,
+    /// The events, checked one at a time, when the dialect has a guard.
+    events: Option<events::Events>,
     inner: Arc<Inner>,
 }
 
 impl Body {
+    /// `chunk` as the crate reads it: as it came, or the whole events it completes once checked;
+    /// `None` while it completes none.
+    fn deliver(&mut self, chunk: Bytes) -> Option<http_client::Result<Bytes>> {
+        let Some(events) = self.events.as_mut() else { return Some(Ok(chunk)) };
+        match events.push(&chunk) {
+            Ok(out) if out.is_empty() => None,
+            Ok(out) => Some(Ok(Bytes::from(out))),
+            Err(e) => Some(Err(self.refuse(e))),
+        }
+    }
+
+    /// Ends the body with `e`: nothing after it is read.
+    fn refuse(&mut self, e: ProviderError) -> http_client::Error {
+        self.closed = true;
+        self.failure = None;
+        self.inner.fail(e)
+    }
+
     fn poll(&mut self, cx: &mut std::task::Context<'_>) -> Poll<Option<http_client::Result<Bytes>>> {
-        if let Some(chunk) = self.first.take() {
-            return Poll::Ready(Some(Ok(chunk)));
+        if let Some(chunk) = self.first.take()
+            && let Some(read) = self.deliver(chunk)
+        {
+            return Poll::Ready(Some(read));
         }
         loop {
+            if self.closed {
+                return Poll::Ready(None);
+            }
             match self.received.poll_next_unpin(cx) {
-                Poll::Ready(Some(chunk)) => return Poll::Ready(Some(Ok(chunk))),
+                Poll::Ready(Some(chunk)) => match self.deliver(chunk) {
+                    Some(read) => return Poll::Ready(Some(read)),
+                    None => continue,
+                },
                 // The channel closes when the send ends.
                 Poll::Ready(None) => {
                     if let Some(error) = self.failure.take() {
+                        self.closed = true;
                         return Poll::Ready(Some(Err(error)));
                     }
-                    if !self.closed {
-                        // A last event the server left without its blank line still counts, as
-                        // it always did here; after a whole event this adds nothing.
-                        self.closed = true;
-                        return Poll::Ready(Some(Ok(Bytes::from_static(b"\n\n"))));
-                    }
-                    return Poll::Ready(None);
+                    // A last event the server left without its blank line still counts, as it
+                    // always did here; after a whole event this adds nothing.
+                    self.closed = true;
+                    let last = match self.events.as_mut().map(events::Events::finish) {
+                        None => Ok(b"\n\n".to_vec()),
+                        Some(Ok(mut out)) => {
+                            out.extend_from_slice(b"\n\n");
+                            Ok(out)
+                        }
+                        Some(Err(e)) => Err(e),
+                    };
+                    return Poll::Ready(Some(match last {
+                        Ok(out) => Ok(Bytes::from(out)),
+                        Err(e) => Err(self.refuse(e)),
+                    }));
                 }
                 Poll::Pending => {}
             }
@@ -449,6 +522,8 @@ impl Drop for Body {
         *self.inner.unfinished.lock().unwrap_or_else(PoisonError::into_inner) = Some(work);
     }
 }
+
+pub(crate) mod events;
 
 #[cfg(test)]
 mod tests;
