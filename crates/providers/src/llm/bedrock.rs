@@ -3,9 +3,10 @@
 //! AWS documents `https://bedrock-runtime.{region}.amazonaws.com/openai/v1/chat/completions`
 //! authenticated with a Bedrock API key as `Authorization: Bearer` (checked 2026-11-03,
 //! <https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html>). That is
-//! the existing OpenAI dialect at a regional base, so this is a preset, not a new wire. SigV4 and
-//! the native Converse API are deferred to the #489 decision; no AWS credential discovery happens
-//! here: the key is whatever the caller read from its secret store.
+//! the existing OpenAI dialect at a regional base, so this is a preset, not a new wire. The native
+//! Converse API is [`Endpoint::bedrock_converse`] (#1150), with the same key and Region. SigV4 is
+//! not spoken; no AWS credential discovery happens here: the key is whatever the caller read from
+//! its secret store.
 
 use super::{ApiKey, Endpoint};
 use crate::{ErrorKind, ProviderError};
@@ -54,5 +55,14 @@ impl Endpoint {
         let region = region.trim();
         validate_bedrock_region(region)?;
         Ok(Self::openai_compatible(BEDROCK, &format!("https://bedrock-runtime.{region}.amazonaws.com/openai/v1"), Some(key)))
+    }
+
+    /// Bedrock's native Converse API on `bedrock-runtime` in `region`, with a Bedrock API key as
+    /// `Authorization: Bearer` (#1150). The request's model is a Bedrock model id, inference
+    /// profile id or ARN, such as `us.anthropic.claude-sonnet-4-6`, sent in the path.
+    pub fn bedrock_converse(region: &str, key: ApiKey) -> Result<Self, ProviderError> {
+        let region = region.trim();
+        validate_bedrock_region(region)?;
+        Ok(Self { id: BEDROCK.into(), dialect: super::Dialect::Converse, base_url: format!("https://bedrock-runtime.{region}.amazonaws.com"), key: Some(key) })
     }
 }
