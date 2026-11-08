@@ -700,6 +700,7 @@ impl LlmClient {
             return Ok(response);
         }
         let mut e = match self.endpoint.dialect {
+            Dialect::OpenAi if self.endpoint.id == BEDROCK => openai::bedrock_error(response.status, &response.headers, &response.body),
             Dialect::OpenAi => openai::error(response.status, &response.body),
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
             Dialect::Converse => converse::error(response.status, &response.headers, &response.body),

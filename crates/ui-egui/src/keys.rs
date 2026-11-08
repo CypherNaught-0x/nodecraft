@@ -569,7 +569,6 @@ impl KeysPanel {
     }
 }
 
-/// What a row says when the keychain hasn't answered `op` in time.
 /// What to store under an account whose key isn't simply an API key.
 fn account_hint(account: &str) -> Option<&'static str> {
     Some(match account {
@@ -584,6 +583,7 @@ fn account_hint(account: &str) -> Option<&'static str> {
     })
 }
 
+/// What a row says when the keychain hasn't answered `op` in time.
 fn unknown_outcome(op: Op) -> &'static str {
     match op {
         Op::Set => "No answer from the keychain yet (is an unlock prompt open?). The key may still be saved; this updates when it answers, or Check later.",

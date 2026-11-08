@@ -123,6 +123,8 @@ fn query_names_and_values_are_decoded_then_encoded_and_sorted() {
     assert_eq!(canonical_query("b=2&a=%7e1&a=0&c"), "a=0&a=~1&b=2&c=");
     // A stray `%` is a literal percent sign.
     assert_eq!(canonical_query("x=100%&y=%zz"), "x=100%25&y=%25zz");
+    // `from_str_radix` would take a sign: `%+1` is not an escape.
+    assert_eq!(canonical_query("a=%+1&b=%-1"), "a=%25%2B1&b=%25-1");
     assert_eq!(canonical_query(""), "");
 }
 

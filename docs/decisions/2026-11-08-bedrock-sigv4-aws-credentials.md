@@ -52,9 +52,17 @@ this follow-up, and [the Bedrock OpenAI route](2026-11-03-bedrock-openai-compati
   not AWS's message (which can quote the canonical request). `RequestTimeTooSkewed` and a
   "Signature expired" refusal say to set the computer's clock (AWS accepts about 15 minutes of
   difference); `SignatureDoesNotMatch` says to check the secret matches the access key ID.
+- **Redirects in the browser.** On the desktop, the transport follows redirects itself and drops
+  every secret header (`Authorization` and `x-amz-security-token`) when one leaves the origin.
+  In the browser `fetch` follows redirects on its own and drops only `Authorization` across
+  origins, so the session token header would follow a cross-origin redirect. `bedrock-runtime`
+  doesn't redirect, and the signer only signs requests to that one host, but this is weaker than
+  the desktop and is accepted for now.
 - **Same money rules.** Signing changes nothing about billing: no automatic resend of a request
   that may have been sent, prices from the catalog only.
 - **Limits.** A keychain entry holds at most 1024 characters (Windows' credential limit), so a
   session token longer than that can't be stored yet; `GetSessionToken` tokens fit, some role
-  sessions with many tags may not. The browser keeps the same accounts in the site's storage, as
+  sessions with many tags may not. Only the standard `bedrock-runtime.{region}.amazonaws.com`
+  hosts are signed for: FIPS endpoints (`bedrock-runtime-fips…`) and the China, European
+  Sovereign Cloud and isolated partitions are not supported. The browser keeps the same accounts in the site's storage, as
   it does every key, and still needs a custom host for the Region.

@@ -65,7 +65,11 @@ fn percent_decode(text: &str) -> Vec<u8> {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0usize;
     while let Some(&b) = bytes.get(i) {
-        let pair = bytes.get(i.saturating_add(1)..i.saturating_add(3)).and_then(|h| std::str::from_utf8(h).ok()).and_then(|h| u8::from_str_radix(h, 16).ok());
+        let pair = bytes
+            .get(i.saturating_add(1)..i.saturating_add(3))
+            .filter(|h| h.iter().all(u8::is_ascii_hexdigit))
+            .and_then(|h| std::str::from_utf8(h).ok())
+            .and_then(|h| u8::from_str_radix(h, 16).ok());
         match (b, pair) {
             (b'%', Some(decoded)) => {
                 out.push(decoded);

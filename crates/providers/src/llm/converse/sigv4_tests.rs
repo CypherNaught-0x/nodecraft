@@ -109,6 +109,8 @@ fn signature_clock_and_expiry_refusals_are_actionable_and_quote_nothing() {
         ("RequestTimeTooSkewed", "The difference between the request time and the current time is too large.", SKEWED),
         ("ExpiredTokenException", "The security token included in the request is expired", EXPIRED),
         ("UnrecognizedClientException", "The security token included in the request is invalid.", UNRECOGNISED),
+        ("RequestExpired", "Request has expired.", SKEWED),
+        ("InvalidSignatureException", "Signature not yet current: 20150830T123600Z is still later than 20150830T122100Z (20150830T121600Z + 5 min.)", SKEWED),
     ] {
         let body = json!({ "message": message }).to_string();
         let http =
@@ -121,6 +123,44 @@ fn signature_clock_and_expiry_refusals_are_actionable_and_quote_nothing() {
         let error = block_on(client.chat_stream(&request(), &mut |_| {})).unwrap_err();
         assert_eq!((error.kind, error.message.as_str()), (ErrorKind::Auth, says), "{name} streamed");
     }
+}
+
+/// The OpenAI-compatible route (the one the catalog's cards use) answers credential refusals in
+/// AWS's shape too: they get the same words, not AWS's text, whole and streamed.
+#[test]
+fn the_openai_route_maps_aws_credential_refusals_the_same_way() {
+    let quoted =
+        format!("The request signature we calculated does not match. The Canonical String for this request should have been 'x-amz-security-token:{TOKEN}'");
+    for (name, in_body, says) in [
+        ("SignatureDoesNotMatch", false, BAD_SIGNATURE),
+        ("RequestTimeTooSkewed", true, SKEWED),
+        ("ExpiredTokenException", false, EXPIRED),
+        ("UnrecognizedClientException", true, UNRECOGNISED),
+    ] {
+        // The name in `x-amzn-ErrorType`, or only in the body's `__type`.
+        let (headers, body) = if in_body {
+            (vec![], json!({ "__type": format!("com.amazon.coral.service#{name}"), "message": quoted }).to_string())
+        } else {
+            (
+                vec![("x-amzn-errortype".to_owned(), format!("{name}:http://internal.amazon.com/coral/com.amazon.coral.service/"))],
+                json!({ "message": quoted }).to_string(),
+            )
+        };
+        for streamed in [false, true] {
+            let http = Canned::with_headers(403, &body, headers.clone());
+            let client = LlmClient::bedrock_chat("us-west-2", aws(Some(TOKEN)), http).unwrap();
+            let error = if streamed { block_on(client.chat_stream(&request(), &mut |_| {})) } else { block_on(client.chat(&request())) }.unwrap_err();
+            assert_eq!((error.kind, error.message.as_str()), (ErrorKind::Auth, says), "{name} streamed={streamed}");
+        }
+    }
+    // Other Bedrock errors on that route, and other OpenAI-compatible servers, read as before.
+    let body = json!({ "error": { "message": "slow down", "code": "rate_limit_exceeded" } }).to_string();
+    let error = block_on(LlmClient::bedrock_chat("us-west-2", aws(None), Canned::new(429, &body)).unwrap().chat(&request())).unwrap_err();
+    assert_eq!((error.kind, error.message.as_str()), (ErrorKind::RateLimited, "slow down"));
+    let named = vec![("x-amzn-errortype".to_owned(), "SignatureDoesNotMatch".to_owned())];
+    let other = crate::llm::Endpoint::openai_compatible("vllm", "https://gateway.example/v1", None);
+    let error = block_on(LlmClient::new(other, Canned::with_headers(403, r#"{"error":{"message":"theirs"}}"#, named)).chat(&request())).unwrap_err();
+    assert_eq!(error.message, "theirs");
 }
 
 mod delivery {

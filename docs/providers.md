@@ -263,7 +263,8 @@ seconds early) are refused before anything is sent. A refused signature, a clock
 15 minutes off (`RequestTimeTooSkewed`, "Signature expired") and an expired token are
 Authentication errors that say what to fix, in NodeCraft's words: AWS's own message can quote the
 signed request. A keychain entry holds at most 1024 characters, so a longer session token can't
-be stored yet. `keys.test` can't check these accounts (no free request does). The signer is pure
+be stored yet. FIPS endpoints (`bedrock-runtime-fips…`) and the China, European Sovereign Cloud
+and isolated partitions are not supported. `keys.test` can't check these accounts (no free request does). The signer is pure
 Rust (`nodecraft_providers::aws`) and builds for the browser; it passes AWS's published SigV4
 test suite. See [the decision](decisions/2026-11-08-bedrock-sigv4-aws-credentials.md).
 

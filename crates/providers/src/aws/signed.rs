@@ -92,10 +92,13 @@ impl SigV4Http {
         Ok(request.secret_header("Authorization", authorization))
     }
 
-    /// An error reply with the session token taken out, so no error built from it can show it.
+    /// An error reply with the session token taken out, so no error built from it can show it:
+    /// as it is, JSON-escaped (`/` as `\/`) and percent-encoded.
     fn scrubbed(&self, mut response: HttpResponse) -> HttpResponse {
         if let Some(token) = self.credentials.session_token().filter(|_| !response.is_success()) {
-            response.body = scrub(&response.body, token.as_bytes());
+            for form in [token.to_owned(), token.replace('/', "\\/"), sigv4::uri_encode(token.as_bytes(), false)] {
+                response.body = scrub(&response.body, form.as_bytes());
+            }
         }
         response
     }

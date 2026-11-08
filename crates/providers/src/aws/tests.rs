@@ -142,6 +142,15 @@ fn an_error_reply_quoting_the_session_token_has_it_removed() {
     let body = String::from_utf8(reply.body).unwrap();
     assert!(!body.contains(TOKEN), "{body}");
     assert_eq!(body.matches("[redacted]").count(), 2);
+    // JSON-escaped and percent-encoded, too.
+    let escaped = TOKEN.replace('/', "\\/");
+    let encoded = crate::aws::sigv4::uri_encode(TOKEN.as_bytes(), false);
+    assert!(escaped != TOKEN && encoded != TOKEN);
+    let http = Recorder::new(400, &format!(r#"{{"message":"token {escaped} and {encoded}"}}"#));
+    let reply = block_on(signer(http, Some(TOKEN)).send(converse("/model/m/converse"))).unwrap();
+    let body = String::from_utf8(reply.body).unwrap();
+    assert!(!body.contains(&escaped) && !body.contains(&encoded) && !body.contains("EXAMPLEtc764"), "{body}");
+    assert_eq!(body.matches("[redacted]").count(), 2);
     // A successful reply is passed on as it came.
     let http = Recorder::new(200, TOKEN);
     assert_eq!(block_on(signer(http, Some(TOKEN)).send(converse("/model/m/converse"))).unwrap().body, TOKEN.as_bytes());

@@ -68,3 +68,15 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## aws-c-auth NOTICE
+
+The SigV4 test-suite fixtures in `crates/providers/src/aws/fixtures/sigv4/` come from
+[awslabs/aws-c-auth](https://github.com/awslabs/aws-c-auth), licensed under the Apache License,
+Version 2.0. Its NOTICE file reads, per section 4(d) of that licence:
+
+```text
+AWS C Auth
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
+```
