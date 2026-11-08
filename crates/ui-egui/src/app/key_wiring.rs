@@ -208,11 +208,10 @@ impl NodeCraftApp {
         if was_pending && !pending {
             // However the flow ended, the port left holding focus gets its ordinary keys back:
             // egui keeps a lock filter until focus moves, which would trap Tab, arrows and Escape.
-            ctx.memory_mut(|m| {
-                if let Some(id) = m.focused() {
-                    m.set_focus_lock_filter(id, egui::EventFilter::default());
-                }
-            });
+            // Only a port: a widget that took focus meanwhile keeps any lock filter of its own.
+            if let Some(id) = ctx.memory(|m| m.focused()).filter(|id| self.port_widgets.by_id(*id).is_some()) {
+                ctx.memory_mut(|m| m.set_focus_lock_filter(id, egui::EventFilter::default()));
+            }
         }
     }
 
