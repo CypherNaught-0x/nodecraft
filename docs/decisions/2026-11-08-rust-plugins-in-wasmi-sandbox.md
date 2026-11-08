@@ -9,7 +9,7 @@ embedded sandbox, and native Rust plugins run as child processes and spoken to o
 (pinned `=2.0.0`), on desktop and in the browser. Out-of-process native plugins are rejected for
 third-party code.** The refusal stays in force until the follow-up implementation lands with its
 own conformance tests and the separate security review §11 asks for; that change replaces the
-refusal record and flips `plugin_store::MODULE_REFUSED`.
+refusal record and removes the `MODULE_REFUSED` refusal in `plugin-store`.
 
 ### How it was measured
 
@@ -21,9 +21,14 @@ and a `StoreLimits` of 64 MiB memory and 1 instance; the same against wasmtime 5
 stdio parent/child using the [plugin-wire](../plugin-wire.md#frames-and-messages) framing
 (4-byte big-endian length, at most 1 MiB) with a reader thread, a bounded queue, a deadline and
 `kill`. Linux x86_64, 4 vCPUs, rustc 1.99.1, release builds, stripped with LTO. Node 22.23.4 (V8)
-stood in for a browser engine. Windows and macOS were **not** run.
+stood in for a browser engine. Windows and macOS were **not** run. The spike sources, their build
+commands and reports through #151/#152, which §11 asks for as reproducible evidence, were not kept;
+they are deferred to the follow-up, which rebuilds them as tests in the repo.
 
 ### In-process engines
+
+wasmi and wasmtime are the RFC's "at most two candidate" engines. The browser's own WebAssembly is
+listed as a baseline, not a third candidate.
 
 | | wasmi 2.0.0 | wasmtime 50.0.1 (Cranelift) | browser's own WebAssembly |
 |---|---|---|---|
@@ -45,15 +50,18 @@ stood in for a browser engine. Windows and macOS were **not** run.
 
 So wasmi runs about 13× slower under V8 than natively (10 M fuel: 57 ms against 4.4 ms) and about
 5× slower than wasmtime's JIT natively. For pure CPU text and data actions under the RFC's 10 s
-job ceiling that is acceptable; in these runs it meets the RFC §10 proposals it was measured against (warm no-op p95 ≤ 2 ms,
-1 MiB round trip ≤ 20 ms in single runs, cancel ≤ 500 ms, ≤ 64 MiB per instance). Wasmtime's speed costs a
+job ceiling that is acceptable. Natively it meets the RFC §10 proposals it was measured against:
+warm no-op p95 ≤ 2 ms, cancel ≤ 500 ms, ≤ 64 MiB per instance, and 1 MiB round trip ≤ 20 ms, though
+that last one from single runs, not a p95. In the browser it does not yet: under V8 a 64 KiB
+normalize took 16 ms, so the 1 MiB target fails there, and browser no-op latency wasn't measured. Wasmtime's speed costs a
 10 MB binary, 1,800+ internal `unsafe` sites, a JIT and no browser build, which would mean two
 engines with different behaviour. The browser's own engine has no fuel, no host-set memory cap and
 no way to stop a synchronous loop without JavaScript Worker glue, and it differs per browser.
 
-**A trap to remember:** with `default-features = false` and no `auto-dispatch`, wasmi compiled for
-wasm32 (which has no tail calls by default) recursed in its dispatcher and every non-trivial call
-failed with `StackOverflow`. Keep the `auto-dispatch` feature; the follow-up tests it.
+**A trap to remember:** with `default-features = false` and no `auto-dispatch`, wasmi uses tail-call
+dispatch even where LLVM can't emit tail calls (wasm32 without the `tail-call` feature, and any
+build below opt-level 2), and every non-trivial call failed with `StackOverflow`. Keep
+`auto-dispatch`; the follow-up tests it in debug and release, natively and in wasm32.
 
 ### Child processes over RPC
 
@@ -98,9 +106,11 @@ package code.
   files) and never sees a key: paid work stays declarative through `provider_operations` and the
   broker, which shows the cost first and keeps budgets and idempotency keys.
 - **Limits.** One fresh `Store` per job with fuel, a `StoreLimits` (memory ≤ 64 MiB, one instance,
-  one memory, one table) and a capped call stack. Calibration from these numbers: about
-  2.3 × 10⁹ fuel per second natively and 1.8 × 10⁸ under V8, so the follow-up sets one ceiling per
-  job that ends within the RFC's 10 s in the browser, and runs in fuel slices so the UI never waits.
+  one memory, one table) and a capped call stack. Fuel per second depends on the workload: natively
+  the loop ran about 2.3 × 10⁹ fuel/s and the normalize about 4.6 × 10⁹; the loop ran about
+  1.8 × 10⁸ under V8. The ceiling per job is set from the slowest workload measured, so a job ends
+  within the RFC's 10 s in the browser, and the follow-up re-checks it against its own workloads.
+  Jobs run in fuel slices so the UI never waits.
 - **Placement.** wasmi goes in a new exec-layer crate that builds for wasm32, registered in
   `xtask/src/layers.rs`; the engine owns grants and lifecycle as for `text_actions`.
 - **Exports need one `unsafe` attribute.** A guest must export its entry points with
@@ -109,7 +119,8 @@ package code.
   but the attribute then lives in that SDK's source. Where the SDK lives and how it squares with
   "no `unsafe`, anywhere" is for the owner to decide in the follow-up.
 - **Not shown yet:** Windows and macOS conformance (wasmi has no OS-specific code; its build script
-  only picks a dispatch method by architecture), a real browser rather than Node's V8, and an
-  audit of wasmi 2.0: its two published audits (SRLabs 2023, 0.31.0; Runtime Verification 2024,
+  picks a dispatch method by architecture, target features and opt-level), a real browser rather
+  than Node's V8, browser latency against §10, reproducible spike sources and build commands with
+  reports through #151/#152, and an audit of wasmi 2.0: its two published audits (SRLabs 2023, 0.31.0; Runtime Verification 2024,
   0.36–0.38) predate the 2.0 rewrite. These, and the security review, are exit criteria for the
   follow-up, not assumptions.
