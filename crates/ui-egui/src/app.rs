@@ -443,6 +443,7 @@ mod timeline_editor;
 mod topbar;
 #[cfg(test)]
 mod topbar_tests;
+mod ui_scale;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -483,6 +484,10 @@ pub struct NodeCraftApp {
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     /// What `history.copy` last put on the clipboard, until the frame hands it to egui (#831).
     copied: Rc<RefCell<Option<nodecraft_engine::copy_cmds::Clip>>>,
+    /// The interface size (#1107), shared with the session's `view.ui_scale.*` commands.
+    ui_scale: ui_scale::UiScale,
+    /// The size last applied to the window; `None` until the first frame applies one.
+    ui_scale_applied: Option<nodecraft_engine::settings::InterfaceSize>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -702,6 +707,9 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         let (mut app, accounts) = Self::browser()?;
         app.apply_settings(ctx, &NodeCraftSettings::default());
+        // The browser keeps the interface size for this origin (#1107).
+        #[cfg(target_arch = "wasm32")]
+        app.apply_interface_size(Self::browser_interface_size());
         // No settings file remembers the accounts in the browser: list the ones with a stored key.
         #[cfg(target_arch = "wasm32")]
         for account in &accounts {
@@ -911,6 +919,7 @@ impl NodeCraftApp {
             Theme::Light => ThemeKind::Light,
         };
         self.canvas_prefs = settings.canvas.clone();
+        self.apply_interface_size(settings.appearance.interface_size);
         self.key_accounts = settings.keys.clone();
         self.set_budget_caps(settings.budgets.clone());
         self.set_media_tools(settings.media.tools());
@@ -1164,6 +1173,8 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
         metrics::install_clock(&mut session);
+        let ui_scale = ui_scale::UiScale::default();
+        nodecraft_engine::ui_scale_cmds::install(&mut session, ui_scale.clone())?;
         let navigation_mailbox = Rc::new(RefCell::new(None));
         let mailbox = Rc::clone(&navigation_mailbox);
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
@@ -1228,6 +1239,8 @@ impl NodeCraftApp {
             comments_mailbox,
             navigation_mailbox,
             copied,
+            ui_scale,
+            ui_scale_applied: None,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1393,6 +1406,8 @@ impl NodeCraftApp {
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         self.keep_canvas();
+        // Before anything reads the keyboard: Ctrl+Alt+= must not also zoom the canvas.
+        self.ui_scale_frame(ui.ctx());
         #[cfg(any(test, target_arch = "wasm32"))]
         self.browser_paste_frame(ui.ctx());
         // Dismissing or choosing from a palette must not replay another key from the same
@@ -1805,7 +1820,7 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
-        let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
+        let home = if ui.input(|i| i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         // Menus draw later in the frame. Leave their wheel input untouched and keep their world
         // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
         let scroll_navigation =

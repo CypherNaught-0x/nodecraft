@@ -34,6 +34,18 @@ fn three_cards() -> (NodeCraftApp, egui::Context, Vec<NodeId>) {
     (app, ctx, ids)
 }
 
+/// #1107: the interface size changes and saves the person's setting, so it isn't a read an
+/// assisting agent may run without asking.
+#[test]
+fn interface_size_commands_are_host_effects_not_reads() {
+    let (mut app, ctx, _) = three_cards();
+    let mut live = LiveCommands { app: &mut app, ctx: &ctx, roots: None };
+    for (id, params) in [("view.ui_scale.increase", json!({})), ("view.ui_scale.decrease", json!({})), ("view.ui_scale.set", json!({"percent": 150}))] {
+        assert_eq!(live.impact(id, &params).unwrap(), nodecraft_engine::impact::Impact::Host, "{id}");
+    }
+    assert_eq!(app.interface_size().percent(), 100, "judging the impact changes nothing");
+}
+
 #[test]
 fn an_agent_formats_named_cards_it_never_selected_in_one_undo_step() {
     let (mut app, ctx, ids) = three_cards();
