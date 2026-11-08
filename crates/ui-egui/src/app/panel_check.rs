@@ -22,9 +22,11 @@ fn interactive(role: Role) -> bool {
     )
 }
 
+/// The node's rect in points, for nodes that have bounds. AccessKit's bounding boxes are in
+/// physical pixels, which differ from points at an interface size other than 100 % (#1107) or on
+/// a high-density screen; `Node::rect` converts them.
 fn bounds(node: &egui_kittest::Node<'_>) -> Option<Rect> {
-    let b = node.accesskit_node().bounding_box()?;
-    Some(Rect::from_min_max(Pos2::new(b.x0 as f32, b.y0 as f32), Pos2::new(b.x1 as f32, b.y1 as f32)))
+    node.accesskit_node().bounding_box().map(|_| node.rect())
 }
 
 /// Pairs of the panel's own on-screen controls that cross; a control may share space only with

@@ -130,6 +130,7 @@ pub mod technique_node_cmds;
 pub mod timeline_captions;
 pub mod timeline_cmds;
 pub mod turn_into_cmds;
+pub mod ui_scale_cmds;
 pub mod update_check;
 pub mod update_install;
 pub mod url_import;
