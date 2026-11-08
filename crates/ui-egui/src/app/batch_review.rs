@@ -288,11 +288,10 @@ impl NodeCraftApp {
         let mut open = true;
         let mut pick = None;
         let frame = crate::theme::panel_frame(t);
-        egui::Window::new("Batch items")
+        crate::floating::on_screen(egui::Window::new("Batch items"), ctx, Some(t.batch_review_width), t)
             .id(egui::Id::new("nodecraft.batch_review"))
             .open(&mut open)
             .constrain_to(self.viewport)
-            .default_width(t.batch_review_width)
             .collapsible(false)
             .frame(frame)
             .show(ctx, |ui| {

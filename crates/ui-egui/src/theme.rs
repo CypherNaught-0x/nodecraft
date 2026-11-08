@@ -115,9 +115,20 @@ pub struct Tokens {
     pub comment_marker_gap: f32,
     pub comment_marker_radius: u8,
     pub comments_button_width: f32,
-    /// The agent sidebar's width (#114).
+    /// The agent sidebar's width (#114): where it opens, and the narrowest it can be dragged.
+    /// It never takes more than `agent_max_fraction` of the window (#1115).
     pub agent_width: f32,
+    pub agent_min_width: f32,
+    pub agent_max_fraction: f32,
+    /// The navigation panel's (minimap and its toolbar) widest, and its narrowest: enough for
+    /// the toolbar's labels. Between them it takes `navigation_fraction` of the canvas width,
+    /// and the map keeps its `navigation_width` : `minimap_height` shape (#1115).
     pub navigation_width: f32,
+    pub navigation_min_width: f32,
+    pub navigation_fraction: f32,
+    /// Below this canvas width or height the map hides itself, leaving the toolbar (#1115).
+    pub minimap_hide_width: f32,
+    pub minimap_hide_height: f32,
     pub minimap_height: f32,
     pub navigation_toolbar_height: f32,
     pub navigation_margin: f32,
@@ -324,7 +335,13 @@ pub const DARK: Tokens = Tokens {
     comment_marker_radius: 6,
     comments_button_width: 110.0,
     agent_width: 360.0,
+    agent_min_width: 280.0,
+    agent_max_fraction: 0.5,
     navigation_width: 320.0,
+    navigation_min_width: 240.0,
+    navigation_fraction: 1.0 / 3.0,
+    minimap_hide_width: 720.0,
+    minimap_hide_height: 480.0,
     minimap_height: 160.0,
     navigation_toolbar_height: 30.0,
     navigation_margin: 16.0,

@@ -415,7 +415,7 @@ impl NodeCraftApp {
         // Capture its owner before constructing even the disabled chrome widget.
         let editor = (self.text_focused || canvas::text_input_focused(ui.ctx())).then(|| ui.ctx().memory(|m| m.focused()).or(self.last_text_focus)).flatten();
         let chrome = self.topbar(ui);
-        if self.topbar.search.is_none()
+        if self.topbar.more.zip(ui.input(|i| i.pointer.interact_pos())).is_some_and(|(more, pointer)| more.contains(pointer))
             && chrome
             && !egui::Popup::is_any_open(ui.ctx())
             && ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released())

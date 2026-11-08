@@ -591,3 +591,31 @@ fn the_settings_screen_chooses_the_endpoint_and_model_and_refuses_what_wont_work
     assert_eq!(reopened.get().agent.endpoint, AgentEndpoint::Ollama);
     assert_eq!(reopened.get().agent.model(), Some("llama3.2"));
 }
+
+#[test]
+fn the_sidebar_leaves_a_small_window_half_its_canvas_and_keeps_its_bounds() {
+    use egui_kittest::Harness;
+    let tokens = nodecraft_ui_egui::theme::ThemeKind::Dark.tokens();
+    for (size, opens) in [(egui::vec2(640.0, 400.0), None), (egui::vec2(1200.0, 800.0), Some(tokens.agent_width))] {
+        let (mut panel, _script) = panel(AgentSettings::default());
+        panel.open = false;
+        let mut h = Harness::builder().with_size(size).build_ui_state(frame, shell(panel));
+        h.run_steps(2);
+        let full = canvas_width(h.state());
+        h.state_mut().agent.open = true;
+        h.run_steps(2);
+        let sidebar = full - canvas_width(h.state());
+        // A small window gives it half of the window's space; a large one its usual width.
+        let expected = opens.unwrap_or(full * tokens.agent_max_fraction);
+        // At most half the window (#1115), and never narrower than its controls need.
+        assert!(sidebar <= size.x * tokens.agent_max_fraction + 1.0, "{size:?}: {sidebar}");
+        assert!(sidebar >= tokens.agent_min_width - 1.0, "{size:?}: {sidebar}");
+        assert!((sidebar - expected).abs() < 1.0, "{size:?}: {sidebar} vs {expected}");
+    }
+    // The bounds themselves, for windows from tiny to hostile.
+    for width in [0.0, 300.0, 640.0, 1440.0, f32::NAN, f32::INFINITY] {
+        let (default, range) = sidebar_width(width, tokens);
+        assert!(range.min <= range.max && range.min == tokens.agent_min_width, "{width}");
+        assert!(range.contains(default), "{width}: {default} outside {range:?}");
+    }
+}

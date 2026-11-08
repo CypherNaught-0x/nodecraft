@@ -7,6 +7,8 @@ pub(super) struct Topbar {
     pub rect: Option<Rect>,
     pub search: Option<Rect>,
     pub comments: Option<Rect>,
+    /// The More button, while some entries have no room in the row.
+    pub more: Option<Rect>,
 }
 
 pub(super) fn popup_id() -> egui::Id {
@@ -80,10 +82,65 @@ impl Entry {
             Self::Keys | Self::Providers | Self::Automation | Self::Plugins => 2,
             #[cfg(not(target_arch = "wasm32"))]
             Self::Comfy => 2,
-            Self::Search | Self::Comments => 3,
+            Self::Search | Self::Comments => TAIL,
         }
     }
 }
+
+/// Which entries the row shows (#1115); the rest go into More. `widths` are the entries' own
+/// widths, `groups` their dividers' groups, `pinned` the entries showing an open panel, `more`
+/// the More button's width and `gap` the row's spacing. Entries leave from the right of the
+/// first three groups first, then open panels, then Comments, then Search; the row never needs
+/// more than `available`.
+pub(super) fn fit(widths: &[f32], groups: &[u8], pinned: &[bool], more: f32, available: f32, gap: f32) -> Vec<bool> {
+    let tail = |i: usize| groups.get(i).is_some_and(|g| *g == TAIL);
+    let needed = |shown: &[bool]| {
+        let mut total = 0.0;
+        let mut count = 0usize;
+        let mut last_group = None;
+        let mut hidden = false;
+        for (i, show) in shown.iter().enumerate() {
+            if !show {
+                hidden = true;
+                continue;
+            }
+            let group = groups.get(i).copied();
+            if last_group.is_some() && last_group != group {
+                total += gap * 2.0;
+            }
+            last_group = group;
+            total += widths.get(i).copied().unwrap_or(0.0);
+            count += 1;
+        }
+        if hidden {
+            total += more;
+            count += 1;
+            // More sits before the tail: a divider whenever a tail entry still shows.
+            if shown.iter().enumerate().any(|(i, s)| *s && tail(i)) && !shown.iter().enumerate().any(|(i, s)| *s && !tail(i)) {
+                total += gap * 2.0;
+            }
+        }
+        total + gap * count.saturating_sub(1) as f32
+    };
+    let mut shown = vec![true; widths.len()];
+    // The order entries leave the row in: unpinned non-tail entries from the right, pinned ones
+    // from the right, then the tail from the right (Comments before Search).
+    let unpinned = (0..widths.len()).rev().filter(|i| !tail(*i) && !pinned.get(*i).copied().unwrap_or(false));
+    let pinned_order = (0..widths.len()).rev().filter(|i| !tail(*i) && pinned.get(*i).copied().unwrap_or(false));
+    let tail_order = (0..widths.len()).rev().filter(|i| tail(*i));
+    for i in unpinned.chain(pinned_order).chain(tail_order) {
+        if needed(&shown) <= available {
+            break;
+        }
+        if let Some(show) = shown.get_mut(i) {
+            *show = false;
+        }
+    }
+    shown
+}
+
+/// The group of Search and Comments, kept at the row's right end.
+const TAIL: u8 = 3;
 
 struct Control {
     entry: Entry,
@@ -218,10 +275,15 @@ impl NodeCraftApp {
         // panel stays below this row; it never overlaps a menu or a discussion editor.
         let format = if self.selection.len() >= 2 { self.layout_toolbar_width() + t.navigation_gap } else { 0.0 };
         let available = (self.viewport.width() - t.navigation_margin * 2.0 - self.closed_tag_width() - t.navigation_gap - format).max(1.0);
-        let group_count = controls.windows(2).filter(|pair| pair.first().zip(pair.get(1)).is_some_and(|(a, b)| a.entry.group() != b.entry.group())).count();
         let widths: Vec<f32> = controls.iter().map(|control| control.width(ui, t)).collect();
-        let needed = widths.iter().sum::<f32>() + t.navigation_gap * (controls.len().saturating_sub(1) as f32 + group_count as f32 * 2.0);
-        let collapsed = needed > available - t.navigation_gap * 2.0;
+        let groups: Vec<u8> = controls.iter().map(|control| control.entry.group()).collect();
+        let pinned: Vec<bool> = controls.iter().map(|control| control.active).collect();
+        let more_width = {
+            let font = egui::TextStyle::Button.resolve(ui.style());
+            ui.painter().layout_no_wrap("More".to_owned(), font.clone(), t.text).size().x + t.icon_size.min(font.size) + t.control_gap + t.navigation_gap * 2.0
+        };
+        let shown = fit(&widths, &groups, &pinned, more_width, available - t.navigation_gap * 2.0, t.navigation_gap);
+        let collapsed = shown.iter().any(|show| !show);
         if !collapsed {
             egui::Popup::close_id(ui.ctx(), popup_id());
         }
@@ -239,6 +301,7 @@ impl NodeCraftApp {
         let mut menu_rect = None;
         self.topbar.search = None;
         self.topbar.comments = None;
+        let mut more_rect = None;
         let toolbar = egui::Area::new(egui::Id::new("comments_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
@@ -255,63 +318,54 @@ impl NodeCraftApp {
                     .corner_radius(t.panel_radius)
                     .inner_margin(t.navigation_gap)
                     .show(ui, |ui| {
-                        if collapsed {
-                            let response = ui
-                                .add_enabled(
-                                    menu_enabled,
-                                    Icon::More.button(ui, "More", t).gap(t.control_gap).min_size(Vec2::new(0.0, t.navigation_toolbar_height)),
-                                )
-                                .on_hover_text("All menu entries; finish any active editor or gesture before opening")
-                                .on_disabled_hover_text("Finish the active editor or gesture first");
-                            if let Some(menu) = egui::Popup::menu(&response).id(popup_id()).show(|ui| {
-                                egui::ScrollArea::vertical()
-                                    .max_height(
-                                        (self.viewport.height() - t.navigation_toolbar_height - t.navigation_margin * 3.0).max(t.navigation_toolbar_height),
-                                    )
-                                    .show(ui, |ui| {
-                                        let mut group = None;
-                                        for control in &controls {
-                                            if group.is_some_and(|group| group != control.entry.group()) {
-                                                ui.separator();
-                                            }
-                                            group = Some(control.entry.group());
-                                            if control.show(ui, t).clicked() {
-                                                action = Some(control.entry);
-                                                ui.close();
-                                            }
-                                        }
-                                    });
-                            }) {
-                                menu_rect = Some(menu.response.rect);
-                            }
-                        } else {
+                        // With only More and the tail left the row stays compact at the right.
+                        let full = shown.iter().zip(&groups).any(|(show, group)| *show && *group != TAIL);
+                        if full {
                             ui.set_width((available - t.navigation_gap * 2.0).max(1.0));
-                            ui.horizontal(|ui| {
-                                let mut group = None;
-                                for control in &controls {
-                                    if group.is_some_and(|group| group != control.entry.group()) {
-                                        if control.entry.group() == 3 {
-                                            let tail = controls.iter().filter(|c| c.entry.group() == 3).map(|c| c.width(ui, t) + t.navigation_gap).sum::<f32>();
-                                            ui.add_space((ui.available_width() - tail - t.navigation_gap * 2.0).max(0.0));
-                                        }
-                                        ui.separator();
-                                    }
-                                    group = Some(control.entry.group());
-                                    let response = control.show(ui, t);
-                                    match control.entry {
-                                        Entry::Search => self.topbar.search = Some(response.rect),
-                                        Entry::Comments => self.topbar.comments = Some(response.rect),
-                                        _ => {}
-                                    }
-                                    if response.clicked() {
-                                        action = Some(control.entry);
-                                    }
-                                }
-                            });
                         }
+                        ui.horizontal(|ui| {
+                            let mut group = None;
+                            let mut more_drawn = false;
+                            for (control, show) in controls.iter().zip(shown.iter().copied()) {
+                                if !show {
+                                    continue;
+                                }
+                                if control.entry.group() == TAIL && collapsed && !more_drawn {
+                                    more_drawn = true;
+                                    (more_rect, menu_rect) = self.topbar_more(ui, &controls, &shown, menu_enabled, &mut action);
+                                    group = Some(u8::MAX);
+                                }
+                                if group.is_some_and(|group| group != control.entry.group()) {
+                                    if full && control.entry.group() == TAIL {
+                                        let tail = controls
+                                            .iter()
+                                            .zip(widths.iter().zip(shown.iter()))
+                                            .filter(|(c, (_, show))| c.entry.group() == TAIL && **show)
+                                            .map(|(_, (width, _))| width + t.navigation_gap)
+                                            .sum::<f32>();
+                                        ui.add_space((ui.available_width() - tail - t.navigation_gap * 2.0).max(0.0));
+                                    }
+                                    ui.separator();
+                                }
+                                group = Some(control.entry.group());
+                                let response = control.show(ui, t);
+                                match control.entry {
+                                    Entry::Search => self.topbar.search = Some(response.rect),
+                                    Entry::Comments => self.topbar.comments = Some(response.rect),
+                                    _ => {}
+                                }
+                                if response.clicked() {
+                                    action = Some(control.entry);
+                                }
+                            }
+                            if collapsed && !more_drawn {
+                                (more_rect, menu_rect) = self.topbar_more(ui, &controls, &shown, menu_enabled, &mut action);
+                            }
+                        });
                     });
             });
         self.topbar.rect = Some(toolbar.response.rect);
+        self.topbar.more = more_rect;
         let exposed = ui.ctx().pointer_interact_pos().is_some_and(|pos| {
             toolbar.response.rect.contains(pos) && ui.ctx().layer_id_at(pos) == Some(toolbar.response.layer_id)
                 || menu_rect.is_some_and(|rect| rect.contains(pos))
@@ -321,6 +375,34 @@ impl NodeCraftApp {
             self.activate_topbar(action, ui.ctx());
         }
         exposed
+    }
+
+    /// The More button and its menu, holding the entries the row has no room for, in row order.
+    /// Returns the button's rect and the open menu's.
+    fn topbar_more(&self, ui: &mut egui::Ui, controls: &[Control], shown: &[bool], enabled: bool, action: &mut Option<Entry>) -> (Option<Rect>, Option<Rect>) {
+        let t = self.theme.tokens();
+        let response = ui
+            .add_enabled(enabled, Icon::More.button(ui, "More", t).gap(t.control_gap).min_size(Vec2::new(0.0, t.navigation_toolbar_height)))
+            .on_hover_text("The menu entries without room in this row; finish any active editor or gesture before opening")
+            .on_disabled_hover_text("Finish the active editor or gesture first");
+        let menu = egui::Popup::menu(&response).id(popup_id()).show(|ui| {
+            egui::ScrollArea::vertical()
+                .max_height((self.viewport.height() - t.navigation_toolbar_height - t.navigation_margin * 3.0).max(t.navigation_toolbar_height))
+                .show(ui, |ui| {
+                    let mut group = None;
+                    for (control, _) in controls.iter().zip(shown.iter()).filter(|(_, show)| !**show) {
+                        if group.is_some_and(|group| group != control.entry.group()) {
+                            ui.separator();
+                        }
+                        group = Some(control.entry.group());
+                        if control.show(ui, t).clicked() {
+                            *action = Some(control.entry);
+                            ui.close();
+                        }
+                    }
+                });
+        });
+        (Some(response.rect), menu.map(|menu| menu.response.rect))
     }
 
     fn activate_topbar(&mut self, entry: Entry, ctx: &egui::Context) {

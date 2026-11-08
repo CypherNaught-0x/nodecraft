@@ -375,7 +375,7 @@ impl NodeCraftApp {
         let name: String = picked.name.chars().filter(|c| !c.is_control()).take(80).collect();
         let t = self.theme.tokens();
         let mut choice = None;
-        egui::Window::new("Unsaved changes")
+        crate::floating::on_screen(egui::Window::new("Unsaved changes"), ctx, None, t)
             .id(egui::Id::new("nodecraft.web_files.confirm"))
             .order(egui::Order::Foreground)
             .collapsible(false)

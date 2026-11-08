@@ -369,12 +369,11 @@ impl ModelPicker {
         let mut chosen = None;
         let mut server_chosen = None;
         let mut changed_catalog = false;
-        egui::Window::new("Choose a model")
+        crate::floating::on_screen(egui::Window::new("Choose a model"), ctx, Some(t.dialog_width), t)
             .id(egui::Id::new("model_picker157"))
             .order(egui::Order::Foreground)
             .open(&mut open)
             .collapsible(false)
-            .default_width(t.dialog_width)
             .show(ctx, |ui| {
                 let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
                 if self.focus {
