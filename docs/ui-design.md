@@ -303,7 +303,7 @@ inset, 6-point corner radius and 12-point gap from node decorations. Open bubble
 as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
 checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
 uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
-The Comments entry shares the application row with Search; both move into More when the row does not fit. Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
+The Comments entry shares the application row with Search; they are the last entries to move into More when the row does not fit (#1115). Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Since the map hides itself in short canvases (#1115), the panel no longer overlaps the map. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
 
 ## Minimap and fit navigation
 
@@ -312,6 +312,15 @@ the current viewport. Its toolbar keeps Fit all, Fit selected, the map toggle an
 reset discoverable. Map visibility, pan and zoom are session-local view state, never project data or
 undo entries. Default map size is 320×160 points, with a 30-point toolbar, 16-point outer margin
 and 6-point gaps; these dimensions and the 24-point fit padding are theme tokens.
+
+In smaller windows (#1115) the panel takes a third of the canvas width (`navigation_fraction`),
+between `navigation_min_width` (240 points, room for the toolbar's labels) and `navigation_width`,
+and the map keeps the 320×160 shape. Each toolbar button gets its label's width plus an equal share
+of what is left. Below a canvas of `minimap_hide_width` × `minimap_hide_height` (720×480 points)
+the map hides itself, leaving Fit all, Fit selected and the zoom badge; Hide map is left out then,
+since there is no map to hide. Shift+M still records the choice for when the window grows. At the
+desktop's smallest window (640×400) and at 800×520 the panel covers at most a quarter of the canvas
+(`small_windows1115_tests`).
 
 Fit resolves actual instance geometry for every node, including offscreen nodes, and includes titles,
 unsaved labels and handles. Every instance hook and node payload is checked; identical borrowed descriptors share successful
@@ -511,8 +520,10 @@ page shows on a light window; the current thumbnail is outlined in the accent co
 
 ## Agent sidebar
 
-The agent sidebar (#114, Cmd+/) is a right panel `agent_width` (360 screen points) wide; the canvas
-takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear, then a muted line
+The agent sidebar (#114, Cmd+/) is a right panel that opens `agent_width` (360 screen points) wide;
+the canvas takes the rest of the window. Its left edge drags it between `agent_min_width` (280
+points) and `agent_max_fraction` (half) of the window, so a small window keeps half its width for
+the canvas (#1115); the sidebar never goes below its minimum. Its header shows the mode (Assist/Auto) and Clear, then a muted line
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
@@ -549,13 +560,17 @@ Browser server settings add Providers, and a selected Technique adds Open as app
 uses the same token-based height, padding, hover, active and disabled styling. Queue counts
 appear beside its label and remain in its accessible name; unavailable services stay disabled.
 
-If the measured row does not fit, one More menu contains the same entries, icons, states and
-order. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+If the measured row does not fit, entries move into one More menu from the row's right (#1115):
+first the navigation, activity and service entries from the right, then the entry of an open panel
+(kept in the row while others go), then Comments, then Search. More sits after the entries the row
+keeps, before Search and Comments, and lists only what moved, with the same icons, states and
+order. Search and Comments stay in the row down to the desktop's smallest window. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
 entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
 reserved left slot; Format selection reserves the next slot when present, with the Tags panel
 below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
-[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md) and the
+[small-window decision](decisions/2026-11-08-small-window-layout.md).
 
 ## Starter templates in the Techniques panel
 
@@ -698,7 +713,8 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
-they follow the card, so they are not clamped or cascaded.
+they follow the card, so they are not clamped or cascaded, except that the generation toolbar of a
+card under the application row stays below the row (#1115).
 
 ## Menu and panel inventory (#959, in progress)
 
@@ -736,8 +752,13 @@ accepts a window with no controls.
 | Model choice unavailable | the model picker, when it can't offer a choice | window, message only | `models::tests` (with the message-window check) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
-| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |
 | Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+Windows that aren't floating panels are kept on the screen with `floating::on_screen` (#1115): no
+wider than the window less its margins, and held inside it. Replacing them is #1116.
+`small_windows1115_tests` opens Techniques, Budgets, API keys and Project files at 640 × 400,
+800 × 520 and 1440 × 900 with the layout checks.
 
 **Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
 The API keys panel sits past the window's right edge for its first placement frames at 1000 px

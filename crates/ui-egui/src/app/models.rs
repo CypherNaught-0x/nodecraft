@@ -207,9 +207,11 @@ impl NodeCraftApp {
         let mut back = false;
         let mut apply = false;
         if choice.stale {
-            egui::Window::new("Model preview changed").id(egui::Id::new("nodecraft.model_stale")).order(egui::Order::Foreground).collapsible(false).show(
-                ui.ctx(),
-                |ui| {
+            crate::floating::on_screen(egui::Window::new("Model preview changed"), ui.ctx(), t.dialog_width, &t)
+                .id(egui::Id::new("nodecraft.model_stale"))
+                .order(egui::Order::Foreground)
+                .collapsible(false)
+                .show(ui.ctx(), |ui| {
                     ui.label("The document, selection or model catalog changed. Nothing was applied. Refresh and review the new proposal.");
                     if let Some(error) = &choice.error {
                         ui.label(error);
@@ -220,8 +222,7 @@ impl NodeCraftApp {
                     if ui.button("Cancel model change").clicked() {
                         close = true;
                     }
-                },
-            );
+                });
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
                 close = true;
             }
@@ -276,7 +277,7 @@ impl NodeCraftApp {
                     },
                 },
                 Step::Review(preview) => {
-                    egui::Window::new("Review model change").id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).default_width(t.dialog_width).show(
+                    crate::floating::on_screen(egui::Window::new("Review model change"), ui.ctx(), t.dialog_width, &t).id(egui::Id::new("nodecraft.model_review")).order(egui::Order::Foreground).collapsible(false).show(
                         ui.ctx(),
                         |ui| {
                             ui.label(format!("Change {} node(s) to {}", preview.targets.len(), preview.model));
@@ -337,7 +338,7 @@ impl NodeCraftApp {
             if matches!(choice.step, Step::Picking(_))
                 && let Some(error) = &choice.error
             {
-                egui::Window::new("Model choice unavailable")
+                crate::floating::on_screen(egui::Window::new("Model choice unavailable"), ui.ctx(), t.dialog_width, &t)
                     .id(egui::Id::new("nodecraft.model_unavailable"))
                     .order(egui::Order::Foreground)
                     .collapsible(false)

@@ -658,7 +658,9 @@ impl NodeCraftApp {
             return intents;
         }
         let above = card::outer_insets(t, self.view.zoom, false).1 * self.view.zoom + t.toolbar_gap + t.toolbar_height;
-        let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
+        // Held below the application row, which spans the canvas's top at most widths (#1115).
+        let top = viewport.top().max(self.topbar_rect().bottom() + t.navigation_gap).min(viewport.bottom());
+        let pos = Pos2::new(screen.left(), (screen.top() - above).max(top));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
         let canvas = self.session.document().canvases().get(&self.canvas);

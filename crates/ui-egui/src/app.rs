@@ -427,6 +427,8 @@ mod search;
 mod shader_editor;
 mod sharing;
 mod sheet_view;
+#[cfg(test)]
+mod small_windows1115_tests;
 mod split;
 mod stale;
 mod stale_badges;

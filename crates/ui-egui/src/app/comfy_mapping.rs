@@ -244,14 +244,13 @@ impl NodeCraftApp {
         }
         let mut open = true;
         let (mut apply, mut reload, mut read, mut cancel) = (false, false, false, false);
-        egui::Window::new("Workflow fields")
+        crate::floating::on_screen(egui::Window::new("Workflow fields"), ctx, t.dialog_width * 1.5, t)
             .id(egui::Id::new(("comfy_mapping", editor.canvas, editor.node)))
             .open(&mut open)
             .collapsible(false)
             .order(egui::Order::Foreground)
             .default_pos(ctx.content_rect().center() - egui::vec2(t.dialog_width * 0.75, t.card_max_height * 0.3))
             .resizable(true)
-            .default_width(t.dialog_width * 1.5)
             .show(ctx, |ui| {
                 ui.label("Choose what appears on this card.");
                 ui.horizontal_wrapped(|ui| {

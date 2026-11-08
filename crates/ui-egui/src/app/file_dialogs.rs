@@ -681,13 +681,12 @@ impl NodeCraftApp {
         let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
         let importing = self.folder_import_busy();
-        egui::Window::new("Project files")
+        crate::floating::on_screen(egui::Window::new("Project files"), ui.ctx(), t.card_width, t)
             .id(egui::Id::new("project_files407"))
             .open(&mut self.files.menu_open)
             .collapsible(false)
             .resizable(false)
             .default_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 7.0))
-            .default_width(t.card_width)
             .max_height(ui.max_rect().height() * 0.8)
             .vscroll(true)
             .show(ui.ctx(), |ui| {
