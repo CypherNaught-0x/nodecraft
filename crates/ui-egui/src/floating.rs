@@ -142,6 +142,30 @@ impl<'open> Panel<'open> {
         self
     }
 
+    pub fn max_size(mut self, size: Vec2) -> Self {
+        self.window = self.window.max_size(size);
+        self
+    }
+
+    /// Uses a custom header with the shared drag, clamp and stacking behavior.
+    pub fn show_with_header<H, R>(
+        self,
+        ctx: &Context,
+        add_header: impl FnOnce(&mut egui::Ui) -> (Rect, H),
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<(H, R)>>> {
+        let Panel { window, id, open, vscroll, .. } = self;
+        if open.as_deref() == Some(&false) {
+            return None;
+        }
+        window.show(ctx, |ui| {
+            let (handle, header) = add_header(ui);
+            header_drag(ui, id, handle.bottom(), handle.right());
+            let body = if vscroll { egui::ScrollArea::vertical().show(ui, add_contents).inner } else { add_contents(ui) };
+            (header, body)
+        })
+    }
+
     /// The tallest the panel may be, so it can open below the control that opened it.
     pub fn max_height(mut self, height: f32) -> Self {
         if height.is_finite() && height > 0.0 {

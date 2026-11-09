@@ -31,9 +31,16 @@ pub enum Icon {
     Close,
     File,
     Tag,
+    Clear,
+    Previous,
+    Next,
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("x", include_bytes!("../../../assets/icons/tabler/x.svg")),
+    ("filter-off", include_bytes!("../../../assets/icons/tabler/filter-off.svg")),
+    ("chevron-left", include_bytes!("../../../assets/icons/tabler/chevron-left.svg")),
+    ("chevron-right", include_bytes!("../../../assets/icons/tabler/chevron-right.svg")),
     ("table", include_bytes!("../../../assets/icons/tabler/table.svg")),
     ("affiliate", include_bytes!("../../../assets/icons/tabler/affiliate.svg")),
     ("components", include_bytes!("../../../assets/icons/tabler/components.svg")),
@@ -55,7 +62,6 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("circle-check", include_bytes!("../../../assets/icons/tabler/circle-check.svg")),
     ("alert-triangle", include_bytes!("../../../assets/icons/tabler/alert-triangle.svg")),
     ("alert-circle", include_bytes!("../../../assets/icons/tabler/alert-circle.svg")),
-    ("x", include_bytes!("../../../assets/icons/tabler/x.svg")),
     ("file", include_bytes!("../../../assets/icons/tabler/file.svg")),
     ("tag", include_bytes!("../../../assets/icons/tabler/tag.svg")),
 ];
@@ -74,7 +80,7 @@ fn catalog() -> &'static SvgIconSet {
 }
 
 impl Icon {
-    pub const ALL: [Self; 24] = [
+    pub const ALL: [Self; 27] = [
         Self::Search,
         Self::Comments,
         Self::Key,
@@ -99,6 +105,9 @@ impl Icon {
         Self::Close,
         Self::File,
         Self::Tag,
+        Self::Clear,
+        Self::Previous,
+        Self::Next,
     ];
 
     pub fn name(self) -> &'static str {
@@ -127,6 +136,9 @@ impl Icon {
             Self::Close => "x",
             Self::File => "file",
             Self::Tag => "tag",
+            Self::Clear => "filter-off",
+            Self::Previous => "chevron-left",
+            Self::Next => "chevron-right",
         }
     }
 
@@ -156,6 +168,9 @@ impl Icon {
             Self::Close => "Close",
             Self::File => "File",
             Self::Tag => "Tag filter",
+            Self::Clear => "Clear filter",
+            Self::Previous => "Previous",
+            Self::Next => "Next",
         }
     }
 

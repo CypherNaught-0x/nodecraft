@@ -1,4 +1,5 @@
 //! Tagging menus and scoped view-only filter host.
+mod filter_panel;
 use super::*;
 use crate::tags::PALETTE;
 #[cfg(test)]
@@ -60,7 +61,7 @@ pub(super) fn tag_menu(ui: &mut egui::Ui, canvas: &Canvas, selection: &Selection
                     } else {
                         " (mixed)"
                     };
-                    let text = tag_definitions::row_text(ui, tag, state, t);
+                    let text = tag_definitions::row_text(ui, tag, state, false, t);
                     if tag_definitions::row(ui, !selection.is_empty(), egui::Button::new(text).truncate(), t).clicked() {
                         action = Some(TagAction::Existing(tag.id));
                         ui.close();
@@ -78,6 +79,8 @@ impl NodeCraftApp {
             self.tag_filter = crate::tags::TagFilter::default();
             self.search = crate::search::Search::default();
             self.tag_focus_ids.clear();
+            self.tag_button_ids.clear();
+            self.tag_panel_rect = None;
             self.tag_focused = false;
             self.tag_focus_pending = false;
             self.tag_session_identity = Some(identity);
@@ -119,38 +122,28 @@ impl NodeCraftApp {
     }
     pub(super) fn tag_rect(&self) -> Rect {
         let t = self.theme.tokens();
-        let available = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
-        let left = self.viewport.min.x + t.navigation_margin;
-        let width_limit = if self.tag_filter.open && self.comments.open { ((available - t.navigation_gap) / 2.0).max(1.0) } else { available };
-        let width = if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }
-            .min(width_limit)
-            .min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
-        let top = if !self.tag_filter.open {
-            self.topbar_rect().top() + t.navigation_gap
-        } else if self.search.open {
-            self.search_rect().bottom() + t.navigation_gap
-        } else {
-            self.topbar_rect().bottom() + t.navigation_gap
-        };
-        let height =
-            if self.tag_filter.open { t.tag_panel_height } else { t.navigation_toolbar_height }.min((self.viewport.max.y - top - t.navigation_margin).max(1.0));
-        Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, height))
+        if !self.tag_filter.open {
+            return self.topbar_rect();
+        }
+        self.tag_panel_rect.unwrap_or_else(|| {
+            let area = self.floating_bounds().area;
+            Rect::from_min_size(area.min, Vec2::new(t.tag_panel_width, t.tag_panel_height).min(area.size()))
+        })
     }
+
     fn tag_context(&mut self, ctx: &egui::Context) -> TagFilterContext {
         self.tag_context_scoped(ctx, None)
     }
-    /// The filter's context, with the popup `owner` (the top bar's More menu, which lists the
-    /// Tag filter entry when the row has no room for it) not counting as a blocking popup.
     pub(super) fn tag_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> TagFilterContext {
         self.sync_tag_session();
         self.tag_filter.sync(self.session.document(), self.canvas, self.session.revision());
+        let own_focus = self.tag_owns_focus(ctx);
         TagFilterContext {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
             blocked: self.tag_definition.is_some()
                 || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
-                || canvas::text_input_focused(ctx)
-                || (self.text_focused && !self.tag_owns_focus(ctx))
+                || ((canvas::text_input_focused(ctx) || self.text_focused) && !own_focus)
                 || self.drag.is_some()
                 || self.marquee.is_some()
                 || self.comments.drag.is_some()
@@ -201,6 +194,7 @@ impl NodeCraftApp {
             Some("close") => {
                 let owned = self.tag_owns_focus(ctx);
                 self.tag_filter.open = false;
+                self.tag_panel_rect = None;
                 self.tag_filter.cancel_navigation();
                 self.tag_focus_pending = false;
                 let id = ctx.memory(|m| m.focused());
@@ -222,7 +216,9 @@ impl NodeCraftApp {
                 self.search.cancel_navigation();
                 self.tag_filter.advance(true);
             }
-            _ => return Err(Error::new(ErrorKind::InvalidInput, "unknown tag filter intent")),
+            _ => {
+                return Err(Error::new(ErrorKind::InvalidInput, "unknown tag filter intent"));
+            }
         }
         self.apply_tag_frame(ctx);
         ctx.request_repaint();
@@ -243,176 +239,99 @@ impl NodeCraftApp {
         let ctx = ui.ctx().clone();
         self.sync_tag_session();
         self.tag_filter.tick(self.session.document(), self.canvas, self.session.revision());
-        if self.tag_filter.scanning || self.tag_filter.indexing {
+        if self.tag_filter.scanning || self.tag_filter.indexing || self.tag_filter.open && (self.tag_filter.query_pending() || self.tag_filter.counts_pending())
+        {
             ctx.request_repaint();
         }
-        if !self.tag_filter.open {
-            // Closed, the filter is the top bar's Tag filter entry (#1123); a filter still applies.
-            // The panel's area stays alive, empty and inert, so opening it keeps its place in the
-            // stacking order instead of jumping above a popup opened before it.
-            egui::Area::new(ui.id().with("tag_filter_overlay"))
-                .order(egui::Order::Foreground)
-                .fixed_pos(self.tag_rect().min)
-                .movable(false)
-                .interactable(false)
-                .constrain(false)
-                .show(&ctx, |_| {});
-            self.tag_focus_ids.clear();
-            self.apply_tag_frame(&ctx);
-            return false;
-        }
-        let rect = self.tag_rect();
         let t = self.theme.tokens();
         let allowed = !self.tag_context(&ctx).blocked;
         if !allowed {
             self.tag_focus_pending = false;
         }
-        let steps = allowed && self.tag_filter.active() && (self.tag_filter.scanning || !self.tag_filter.results.is_empty());
         let mut action = None;
-        let mut filter = None;
-        let mut definition = None;
-        let mut focus_ids = Vec::new();
-        let mut control_rects = Vec::new();
-        if self.tag_filter.open && self.tag_owns_focus(&ctx) && allowed {
+        if self.tag_owns_focus(&ctx) && allowed {
+            let activate_focused_button = ctx.memory(|m| m.focused()).is_some_and(|id| self.tag_button_ids.contains(&id));
             action = ui.input_mut(|i| {
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                     Some("canvas.tag_filter_close")
                 } else if i.consume_key(egui::Modifiers::SHIFT, egui::Key::Enter) {
                     Some("canvas.tag_filter_previous")
-                } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+                } else if !activate_focused_button && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                     Some("canvas.tag_filter_next")
                 } else {
                     None
                 }
             });
         }
-        let area =
-            egui::Area::new(ui.id().with("tag_filter_overlay")).order(egui::Order::Foreground).fixed_pos(rect.min).movable(false).constrain(false).show(
-                &ctx,
-                |ui| {
-                    crate::comments::checkbox_visuals(ui.visuals_mut(), t);
-                    ui.set_min_size(rect.size());
-                    ui.set_max_size(rect.size());
-                    ui.set_clip_rect(rect);
-                    ui.painter().rect(rect, t.panel_radius, t.panel_fill, egui::Stroke::new(t.handle_stroke, t.panel_stroke), egui::StrokeKind::Inside);
-                    ui.add_space(t.navigation_gap);
-                    let header = ui.add_enabled(allowed, egui::Button::new("Tag filter · highlight matches"));
-                    focus_ids.push(header.id);
-                    control_rects.push(header.rect);
-                    if allowed && (self.tag_focus_pending || header.clicked()) {
-                        header.request_focus();
-                        self.tag_focus_pending = false;
+        self.tag_focus_ids.clear();
+        self.tag_button_ids.clear();
+        let mut panel_owns_pointer = false;
+        if self.tag_filter.open {
+            use crate::floating::{self, Home};
+            let id = egui::Id::new("nodecraft.tag_filter");
+            let bounds = self.floating_bounds();
+            let max_size = bounds.area.size();
+            let canvas = self.session.document().canvases().get(&self.canvas);
+            let panel = floating::panel_with_bounds(&ctx, "Tag filter", id, Home::LeftTop, t, bounds)
+                .max_size(max_size)
+                .vscroll(true)
+                .default_width(t.tag_panel_width.min(max_size.x))
+                .default_height(t.tag_panel_height.min(max_size.y))
+                .show_with_header(
+                    &ctx,
+                    |ui| filter_panel::header(ui, allowed, &mut self.tag_focus_pending, t),
+                    |ui| filter_panel::body(ui, canvas, &mut self.tag_filter, allowed, t),
+                );
+            if let Some(panel) = panel {
+                let rect = panel.response.rect;
+                self.tag_panel_rect = Some(rect);
+                panel_owns_pointer = self.tag_surface_owns_pointer(&ctx, rect, panel.response.layer_id, allowed);
+                if let Some(((title, close), controls)) = panel.inner {
+                    self.tag_focus_ids.extend([title.id, close.id]);
+                    self.tag_focus_ids.extend(controls.focus);
+                    self.tag_button_ids.push(close.id);
+                    self.tag_button_ids.extend(controls.buttons);
+                    if close.clicked() {
+                        action = Some("canvas.tag_filter_close");
+                    } else if controls.action.is_some() {
+                        action = controls.action;
                     }
-                    ui.horizontal(|ui| {
-                        for (label, id, enabled) in [
-                            ("Previous tag", "canvas.tag_filter_previous", steps),
-                            ("Next tag", "canvas.tag_filter_next", steps),
-                            ("Close tags", "canvas.tag_filter_close", allowed),
-                        ] {
-                            let r = ui.add_enabled(enabled, egui::Button::new(label));
-                            focus_ids.push(r.id);
-                            control_rects.push(r.rect);
-                            if r.clicked() {
-                                action = Some(id);
-                            }
-                        }
-                    });
-                    let r = ui.add_enabled(allowed, egui::Button::new("Clear tag filter"));
-                    focus_ids.push(r.id);
-                    control_rects.push(r.rect);
-                    if r.clicked() {
-                        filter = Some((BTreeSet::new(), false));
+                    if let Some((tag, deleting)) = controls.definition {
+                        self.tag_definition = Some(tag_definitions::Editor::new(self.canvas, tag, deleting, self.session.view_identity()));
                     }
-                    let mut untagged = self.tag_filter.untagged;
-                    let r = ui.add_enabled(allowed, egui::Checkbox::new(&mut untagged, "Untagged"));
-                    focus_ids.push(r.id);
-                    control_rects.push(r.rect);
-                    if r.changed() {
-                        filter = Some((self.tag_filter.tags.clone(), untagged));
+                    if let Some((tags, untagged)) = controls.filter
+                        && let Err(error) = self.dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":tags,"untagged":untagged}))
+                    {
+                        self.notices.report(error);
                     }
-                    let status = if self.tag_filter.scanning {
-                        format!("Scanning… {} matches", self.tag_filter.results.len())
-                    } else {
-                        format!("{} tag matches", self.tag_filter.results.len())
-                    };
-                    ui.label(status);
-                    ui.label(egui::RichText::new("Right-click or Shift+F10: rename or delete").small().color(t.text_muted));
-                    if let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
-                        egui::ScrollArea::vertical()
-                            .id_salt("filter_tags")
-                            .max_height((rect.bottom() - ui.cursor().min.y - t.navigation_gap).max(1.0))
-                            .show_rows(ui, t.tag_definition_row_height, self.tag_filter.presentation.len(), |ui, range| {
-                                ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Truncate);
-                                for id in self.tag_filter.presentation.get(range.clone()).unwrap_or(&[]) {
-                                    let Some(tag) = canvas.tags().get(id) else {
-                                        continue;
-                                    };
-                                    let mut selected = self.tag_filter.tags.contains(&tag.id);
-                                    let text = tag_definitions::row_text(ui, tag, "", t);
-                                    let r = tag_definitions::row(ui, allowed, egui::Checkbox::new(&mut selected, text), t);
-                                    let keyboard_menu = allowed && r.has_focus() && ui.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::F10));
-                                    if keyboard_menu {
-                                        egui::Popup::open_id(ui.ctx(), egui::Popup::default_response_id(&r));
-                                    }
-                                    egui::Popup::context_menu(&r).anchor(&r).show(|ui| {
-                                        let rename = ui.button("Rename tag…");
-                                        if keyboard_menu {
-                                            rename.request_focus();
-                                        }
-                                        if rename.clicked() {
-                                            definition = Some((tag.clone(), false));
-                                            ui.close();
-                                        }
-                                        if ui.button("Delete tag…").clicked() {
-                                            definition = Some((tag.clone(), true));
-                                            ui.close();
-                                        }
-                                    });
-                                    focus_ids.push(r.id);
-                                    control_rects.push(r.rect);
-                                    if r.changed() {
-                                        let mut tags = self.tag_filter.tags.clone();
-                                        if selected {
-                                            tags.insert(tag.id);
-                                        } else {
-                                            tags.remove(&tag.id);
-                                        }
-                                        filter = Some((tags, untagged));
-                                    }
-                                }
-                            });
-                    }
-                },
-            );
-        if !allowed
+                }
+            }
+        } else {
+            self.tag_panel_rect = None;
+        }
+        if let Some(action) = action
+            && let Err(error) = self.dispatch_tag_filter(&ctx, action, &json!({}))
+        {
+            self.notices.report(error);
+        }
+        self.apply_tag_frame(&ctx);
+        panel_owns_pointer
+    }
+
+    fn tag_surface_owns_pointer(&self, ctx: &egui::Context, rect: Rect, layer: egui::LayerId, allowed: bool) -> bool {
+        let owns = ctx.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p) && ctx.layer_id_at(p) == Some(layer));
+        if owns
+            && !allowed
             && self.text_focused
-            && !egui::Popup::is_any_open(&ctx)
+            && !egui::Popup::is_any_open(ctx)
             && let Some(owner) = self.last_text_focus
             && ctx.memory(|m| m.focused()).is_none_or(|id| id == owner)
-            && ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
-            && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
-            && (control_rects.iter().any(|r| r.contains(pointer)) || self.tag_filter.open && rect.contains(pointer))
-            && ctx.layer_id_at(pointer) == Some(area.response.layer_id)
+            && ctx.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
         {
             ctx.memory_mut(|m| m.request_focus(owner));
             ctx.options_mut(|o| o.input_options.surrender_focus_on = egui::SurrenderFocusOn::Never);
         }
-        if let Some((tag, deleting)) = definition {
-            self.tag_definition = Some(tag_definitions::Editor::new(self.canvas, tag, deleting, self.session.view_identity()));
-        }
-        self.tag_focus_ids = focus_ids;
-        if let Some((tags, untagged)) = filter
-            && let Err(e) = self.dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":tags,"untagged":untagged}))
-        {
-            self.notices.report(e);
-        }
-        if let Some(action) = action
-            && let Err(e) = self.dispatch_tag_filter(&ctx, action, &json!({}))
-        {
-            self.notices.report(e);
-        }
-        self.apply_tag_frame(&ctx);
-        ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p) && ctx.layer_id_at(p) == Some(area.response.layer_id))
+        owns
     }
 }
 
@@ -420,7 +339,10 @@ impl NodeCraftApp {
 mod tests {
     use super::*;
     use egui::accesskit::Role;
-    use egui_kittest::{Harness, kittest::Queryable};
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
     fn harness() -> Harness<'static, NodeCraftApp> {
         Harness::builder()
             .with_step_dt(1.0 / 60.0)
@@ -453,14 +375,127 @@ mod tests {
         let ctx = h.ctx.clone();
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
         h.run();
-        h.get_by_role_and_label(Role::Button, "Tag filter · highlight matches").click();
-        h.run();
         assert!(h.state().tag_owns_focus(&ctx));
         h.event(egui::Event::Key { key: egui::Key::F, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
         h.run();
         assert!(h.state().search.open, "{:?}", h.state().notice());
         assert_eq!(ctx.memory(|m| m.focused()), Some(h.state().search_input_id()));
     }
+    #[test]
+    fn tag_panel_lists_counts_searches_and_navigates_in_both_themes() {
+        for (theme, width) in [(ThemeKind::Dark, 1100.0), (ThemeKind::Light, 480.0)] {
+            let mut app = sample();
+            app.theme = theme;
+            app.comments.open = width < 500.0;
+            let mut h = Harness::builder().with_size(Vec2::new(width, 760.0)).with_max_steps(160).build_ui_state(
+                |ui, app: &mut NodeCraftApp| {
+                    theme::apply(ui.ctx(), app.theme);
+                    app.show(ui);
+                },
+                app,
+            );
+            let trigger = h.get_by_role_and_label(Role::Button, "Tag filter").rect().center();
+            press_at(&mut h, trigger, egui::PointerButton::Primary);
+            h.run();
+            assert!(h.state().tag_filter.open);
+            assert!(h.query_by_label("No tags yet. Add a colour tag to a card to filter by it.").is_some());
+            assert!(h.get_by_role_and_label(Role::Button, "Previous match").accesskit_node().is_disabled());
+            assert!(h.get_by_role_and_label(Role::Button, "Next match").accesskit_node().is_disabled());
+            assert!(h.get_by_role_and_label(Role::Button, "Clear tag filter").accesskit_node().is_disabled());
+
+            let c = h.state().canvas;
+            let blue = TagId::from_bytes([8; 16]);
+            let orange = TagId::from_bytes([9; 16]);
+            for (id, title, color) in [(blue, "Blue skies", "blue"), (orange, "Orange dust", "orange")] {
+                h.state_mut().session.dispatch("tag.put", &json!({"canvas":c,"tag":{"id":id,"title":title,"color":color}})).unwrap();
+            }
+            let first = NodeId::from_bytes([3; 16]);
+            let second = NodeId::from_bytes([4; 16]);
+            h.state_mut().session.dispatch("node.tag_set", &json!({"canvas":c,"nodes":[first],"tag":blue})).unwrap();
+            let revision = h.state().session.revision();
+            h.run();
+
+            let blue_label = format!("{blue}\nBlue skies");
+            let orange_label = format!("{orange}\nOrange dust");
+            let mut previous_bottom = f32::NEG_INFINITY;
+            for (label, description) in [(&*blue_label, "1 card"), (&*orange_label, "0 cards"), ("Untagged", "1 card")] {
+                let row = h.get_by_role_and_label(Role::CheckBox, label);
+                assert_eq!(row.accesskit_node().description().as_deref(), Some(description));
+                let rect = row.rect();
+                assert!(h.state().tag_rect().contains_rect(rect));
+                assert!(rect.top() >= previous_bottom, "{label}: {rect:?} overlaps the previous row");
+                previous_bottom = rect.bottom();
+            }
+            assert!(h.get_by_role_and_label(Role::Button, "Next match").rect().top() >= previous_bottom);
+            for label in ["Previous match", "Next match", "Clear tag filter"] {
+                assert!(h.state().tag_rect().contains_rect(h.get_by_role_and_label(Role::Button, label).rect()), "{width}: {label} leaves the panel");
+            }
+            let panel = h.state().tag_rect();
+            let title = h.get_by_role_and_label(Role::Label, "Tag filter").rect();
+            assert!((title.center().x - panel.center().x).abs() <= h.state().theme.tokens().control_gap, "the title is centered: {title:?} in {panel:?}");
+            let field = h.get_by_role_and_label(Role::TextInput, "Find a tag").rect().center();
+            press_at(&mut h, field, egui::PointerButton::Primary);
+            h.event(egui::Event::Text("BLUE".into()));
+            h.run();
+            assert!(h.query_by_label(&orange_label).is_none());
+            let blue_row = h.get_by_role_and_label(Role::CheckBox, &blue_label).rect().center();
+            press_at(&mut h, blue_row, egui::PointerButton::Primary);
+            h.run();
+            assert_eq!(h.state().tag_filter.results, vec![first]);
+
+            let untagged = h.get_by_role_and_label(Role::CheckBox, "Untagged").rect().center();
+            press_at(&mut h, untagged, egui::PointerButton::Primary);
+            h.run();
+            assert_eq!(h.state().tag_filter.results, vec![first, second]);
+            for (label, current) in [("Previous match", second), ("Next match", first), ("Next match", second), ("Next match", first)] {
+                let button = h.get_by_role_and_label(Role::Button, label).rect().center();
+                press_at(&mut h, button, egui::PointerButton::Primary);
+                h.run();
+                assert_eq!(h.state().tag_filter.current, Some(current));
+            }
+            assert_eq!(h.get_by_label("1 of 2 matches").accesskit_node().live(), egui::accesskit::Live::Polite);
+            let clear = h.get_by_role_and_label(Role::Button, "Clear tag filter").rect().center();
+            press_at(&mut h, clear, egui::PointerButton::Primary);
+            h.run();
+            assert!(!h.state().tag_filter.active());
+            assert!(h.state().selection.contains(first));
+            let close = h.get_by_role_and_label(Role::Button, "Close tags").rect().center();
+            press_at(&mut h, close, egui::PointerButton::Primary);
+            h.run();
+            assert!(!h.state().tag_filter.open);
+            assert_eq!(h.state().session.revision(), revision);
+            assert_eq!(h.state().theme, theme);
+        }
+    }
+
+    #[test]
+    fn tag_panel_moves_by_its_header_and_stays_outside_pinned_chrome() {
+        let mut h = harness();
+        h.get_by_role_and_label(Role::Button, "Tag filter").click();
+        h.run();
+        let before = h.state().tag_rect();
+        let file = h.get_by_role_and_label(Role::Button, "File").rect();
+        assert!(!before.intersects(file), "{before:?} covers the File control at {file:?}");
+        let t = h.state().theme.tokens();
+        let from = before.left_top() + Vec2::splat(t.card_padding + t.control_gap);
+        let delta = Vec2::new(140.0, 100.0);
+        h.drag_at(from);
+        h.run();
+        h.hover_at(from + delta);
+        h.run();
+        h.drop_at(from + delta);
+        h.run();
+        let moved = h.state().tag_rect();
+        assert!(moved.left() > before.left() && moved.top() > before.top(), "{before:?} → {moved:?}");
+        h.state_mut().comments.open = true;
+        h.set_size(Vec2::new(520.0, 650.0));
+        h.run();
+        let clamped = h.state().tag_rect();
+        assert!(h.state().floating_bounds().area.expand(1.0).contains_rect(clamped), "{clamped:?}");
+        assert!(!clamped.intersects(h.state().discussion_rect()));
+        assert_eq!(h.state().session.revision(), 0);
+    }
+
     #[test]
     fn palette_ids_are_secure_and_entropy_failure_leaves_document_intact() {
         let mut h = harness();
@@ -511,6 +546,11 @@ mod tests {
         theme::apply(&ctx, ThemeKind::Light);
         h.run();
         h.render().unwrap().save(folder.join("light.png")).unwrap();
+        h.state_mut().selection.clear();
+        h.state_mut().comments.open = true;
+        h.set_size(Vec2::new(520.0, 700.0));
+        h.run();
+        h.render().unwrap().save(folder.join("light-narrow.png")).unwrap();
         h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
         h.run();
         assert!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().tags().is_empty());
@@ -580,8 +620,9 @@ mod tests {
         h.hover_at(pos);
         for pressed in [true, false] {
             h.event(egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE });
-            h.run();
+            h.step();
         }
+        h.run();
     }
     fn sample() -> NodeCraftApp {
         let base = NodeCraftApp::headless().unwrap();
@@ -746,7 +787,7 @@ mod tests {
             let owner = ctx.memory(|m| m.focused()).unwrap();
             let policy = ctx.options(|o| o.input_options.surrender_focus_on);
             let point = match target {
-                0 => h.get_by_role_and_label(Role::Button, "Tag filter · highlight matches").rect().center(),
+                0 => h.get_by_role_and_label(Role::Button, "Close tags").rect().center(),
                 1 => h.get_by_role_and_label(Role::Button, "Clear tag filter").rect().center(),
                 _ => h.state().tag_rect().left_bottom() + Vec2::new(10.0, -10.0),
             };
@@ -838,7 +879,12 @@ mod tests {
         let mut h =
             Harness::builder().with_size(Vec2::new(1200.0, 800.0)).with_max_steps(160).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), sample());
         let ctx = h.ctx.clone();
+        let canvas = h.state().canvas;
+        let tag = TagId::from_bytes([9; 16]);
+        h.state_mut().session.dispatch("tag.put", &json!({"canvas":canvas,"tag":{"id":tag,"title":"Unassigned"}})).unwrap();
+        let revision = h.state().session.revision();
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_open", &json!({})).unwrap();
+        h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":[tag],"untagged":false})).unwrap();
         h.run();
         let selected = NodeId::from_bytes([4; 16]);
         h.state_mut().selection.only(selected);
@@ -859,7 +905,7 @@ mod tests {
             h.state().tag_filter.current,
             h.state().tag_filter.frame_request
         );
-        assert_eq!(h.state().session.revision(), 0);
+        assert_eq!(h.state().session.revision(), revision);
     }
     #[test]
     fn narrow_populated_discussions_and_tags_never_cover_framed_cards() {
