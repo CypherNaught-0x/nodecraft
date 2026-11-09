@@ -142,6 +142,12 @@ impl<'open> Panel<'open> {
         self
     }
 
+    /// The body's minimum width; callers cap it to the published panel area.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.window = self.window.min_width(width);
+        self
+    }
+
     pub fn max_size(mut self, size: Vec2) -> Self {
         self.window = self.window.max_size(size);
         self

@@ -272,7 +272,11 @@ impl NodeCraftApp {
             let bounds = self.floating_bounds();
             let max_size = bounds.area.size();
             let canvas = self.session.document().canvases().get(&self.canvas);
+            // Keep the body readable instead of retaining an empty panel's tiny intrinsic
+            // width. When Comments narrows the area, use all the room it leaves.
+            let minimum = (t.tag_panel_width - t.card_padding * 2.0).min((max_size.x - t.card_padding * 2.0).max(0.0));
             let panel = floating::panel(&ctx, "Tag filter", id, Home::RightTop, t)
+                .min_width(minimum)
                 .max_size(max_size)
                 .vscroll(true)
                 .default_width(t.tag_panel_width.min(max_size.x))
