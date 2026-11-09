@@ -30,8 +30,14 @@ impl Drop for Relay {
 }
 
 fn relay() -> Relay {
+    relay_with(&[])
+}
+
+/// A relay started with `more` arguments after its listen address.
+fn relay_with(more: &[&str]) -> Relay {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
         .args(["relay", "--listen", "127.0.0.1:0"])
+        .args(more)
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()
@@ -39,7 +45,7 @@ fn relay() -> Relay {
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();
-    let url = line.split_whitespace().find(|word| word.starts_with("ws://")).unwrap().trim_end_matches('.').to_string();
+    let url = line.split_whitespace().find(|word| word.starts_with("ws://") || word.starts_with("wss://")).unwrap().trim_end_matches('.').to_string();
     Relay { child, url, stderr }
 }
 
@@ -278,4 +284,248 @@ fn relay_takes_only_listen() {
     let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(["relay", "--listen", "not an address"]).output().unwrap();
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("--listen"));
+    for args in [&["relay", "--keep-days", "3"][..], &["relay", "--store", "x", "--keep-days", "0"], &["relay", "--store-max-gib"], &["relay", "--other", "1"]]
+    {
+        let out = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli")).args(args).output().unwrap();
+        assert!(!out.status.success(), "{args:?}");
+    }
+}
+
+/// `used` in the kept room's links file, once the relay has written one.
+fn kept_used(store: &std::path::Path) -> Option<u64> {
+    let room = std::fs::read_dir(store).ok()?.flatten().find(|entry| entry.path().is_dir())?;
+    let links: serde_json::Value = serde_json::from_slice(&std::fs::read(room.path().join("links.json")).ok()?).ok()?;
+    links["used"].as_u64()
+}
+
+fn seconds() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs()
+}
+
+/// With a store (#1068), a room, its document and its links survive the relay being killed and
+/// started again: the project comes back to whoever joins, a link still lets its holder in with
+/// its role, and a link revoked before the restart stays revoked. Neither the room id nor a link
+/// key is written to the store.
+#[test]
+fn a_room_and_its_links_survive_a_relay_restart() {
+    let store = tempfile::tempdir().unwrap();
+    let path = store.path().to_str().unwrap().to_owned();
+    let mut relay = relay_with(&["--store", &path]);
+    let mut project = Project::new(ProjectId::from_bytes([1; 16]), "Shared").unwrap();
+    Changeset::new(vec![Change::AddCanvas { canvas: Canvas::new(canvas(), "Main") }]).apply(&mut project).unwrap();
+    let session = Session::new(project).unwrap();
+    let mut owner = Person::connect(&relay, Collab::share(&session, room()).unwrap(), Some(session));
+    let comment = owner.collab.links_request(&json!({"op": "create", "role": "comment", "name": "Ana"}), 0).unwrap();
+    let view = owner.collab.links_request(&json!({"op": "create", "role": "view", "name": "Bo"}), 0).unwrap();
+    let comment_key: LinkKey = comment["key"].as_str().unwrap().parse().unwrap();
+    let view_key: LinkKey = view["key"].as_str().unwrap().parse().unwrap();
+    let mut people = vec![owner];
+    until(&mut people, |p| same(p, 0));
+    add(&mut people[0], 5);
+    add(&mut people[0], 6);
+    // The owner's turns send its links and cards before anyone comes in through one.
+    let flushed = Instant::now();
+    while flushed.elapsed() < Duration::from_millis(500) {
+        people[0].turn();
+    }
+    // Someone else has both cards: the relay merged them.
+    people.push(Person::connect(&relay, Collab::join_link(view_key.clone()), None));
+    until(&mut people, |p| same(p, 2));
+    people.pop();
+    people[0].collab.links_request(&json!({"op": "revoke", "id": view["id"]}), 0).unwrap();
+    for _ in 0..20 {
+        people[0].turn();
+    }
+
+    // Everyone leaves; the relay writes the room down once they have.
+    let edited = seconds();
+    std::thread::sleep(Duration::from_millis(1100));
+    people.clear();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    while !kept_used(store.path()).is_some_and(|used| used > edited) {
+        assert!(Instant::now() < deadline, "the relay never kept the room");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // Killed, not stopped: nothing is written on the way out.
+    relay.child.kill().unwrap();
+    relay.child.wait().unwrap();
+
+    let relay = relay_with(&["--store", &path]);
+    // The project comes back to whoever joins by the room id.
+    let mut people = vec![Person::connect(&relay, Collab::join(room()), None)];
+    until(&mut people, |p| same(p, 2));
+    people.clear();
+    // The comment link still lets Ana in, as a commenter.
+    let mut people = vec![Person::connect(&relay, Collab::join_link(comment_key.clone()), None)];
+    until(&mut people, |p| same(p, 2));
+    assert_eq!(people[0].collab.role(), Some(Role::Comment));
+    // The revoked one stays revoked.
+    people.push(Person::connect(&relay, Collab::join_link(view_key.clone()), None));
+    until(&mut people, |p| p[1].ended.is_some());
+
+    // The store names the room by a hash and holds no key.
+    let mut written = Vec::new();
+    let mut folders = vec![store.path().to_owned()];
+    while let Some(folder) = folders.pop() {
+        for entry in std::fs::read_dir(&folder).unwrap().flatten() {
+            written.extend(entry.file_name().to_string_lossy().bytes());
+            if entry.path().is_dir() {
+                folders.push(entry.path());
+            } else {
+                written.extend(std::fs::read(entry.path()).unwrap());
+            }
+        }
+    }
+    for secret in [room().to_string(), comment_key.as_str().to_owned(), view_key.as_str().to_owned()] {
+        assert!(!written.windows(secret.len()).any(|w| w == secret.as_bytes()), "the store holds a key");
+    }
+}
+
+/// A hello with a made-up room id, and nothing sent after it, leaves nothing in the store
+/// (#1068): strangers can't fill it, nor push kept rooms out.
+#[test]
+fn a_hello_alone_leaves_nothing_in_the_store() {
+    let store = tempfile::tempdir().unwrap();
+    let path = store.path().to_str().unwrap().to_owned();
+    let relay = relay_with(&["--store", &path]);
+    for n in 0..4u8 {
+        let (mut socket, _) = tungstenite::connect(&relay.url).unwrap();
+        let hello = Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: RoomId::from_bytes([100 + n; 32]) };
+        socket.send(Message::binary(hello.encode().unwrap())).unwrap();
+        let _ = socket.close(None);
+    }
+    // Past a save pass (every 5 s).
+    std::thread::sleep(Duration::from_millis(6500));
+    assert_eq!(std::fs::read_dir(store.path()).unwrap().count(), 0, "nothing kept");
+}
+
+/// Given a certificate and its key, the relay serves `wss://` itself (#1067): a TLS client that
+/// trusts the certificate gets in and is answered, and a plain `ws://` client isn't. The
+/// certificate is made for the test, so no key is kept in the repository; without `openssl`
+/// the test says so and passes.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[test]
+fn a_relay_with_a_certificate_serves_wss() {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+    let dir = tempfile::tempdir().unwrap();
+    let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+    // A test CA and a certificate for localhost signed by it, as an operator's would be.
+    let (ca, ca_key, request, extensions) = (dir.path().join("ca.pem"), dir.path().join("ca.key"), dir.path().join("leaf.csr"), dir.path().join("leaf.ext"));
+    std::fs::write(&extensions, "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n").unwrap();
+    let openssl = |args: &[&std::ffi::OsStr]| Command::new("openssl").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let os = |text: &'static str| std::ffi::OsStr::new(text);
+    let steps: [Vec<&std::ffi::OsStr>; 3] = [
+        vec![
+            os("req"),
+            os("-x509"),
+            os("-newkey"),
+            os("ec"),
+            os("-pkeyopt"),
+            os("ec_paramgen_curve:prime256v1"),
+            os("-nodes"),
+            os("-keyout"),
+            ca_key.as_os_str(),
+            os("-out"),
+            ca.as_os_str(),
+            os("-days"),
+            os("1"),
+            os("-subj"),
+            os("/CN=NodeCraft test CA"),
+        ],
+        vec![
+            os("req"),
+            os("-newkey"),
+            os("ec"),
+            os("-pkeyopt"),
+            os("ec_paramgen_curve:prime256v1"),
+            os("-nodes"),
+            os("-keyout"),
+            key.as_os_str(),
+            os("-out"),
+            request.as_os_str(),
+            os("-subj"),
+            os("/CN=localhost"),
+        ],
+        vec![
+            os("x509"),
+            os("-req"),
+            os("-in"),
+            request.as_os_str(),
+            os("-CA"),
+            ca.as_os_str(),
+            os("-CAkey"),
+            ca_key.as_os_str(),
+            os("-CAcreateserial"),
+            os("-out"),
+            cert.as_os_str(),
+            os("-days"),
+            os("1"),
+            os("-extfile"),
+            extensions.as_os_str(),
+        ],
+    ];
+    for step in &steps {
+        let Ok(made) = openssl(step) else {
+            eprintln!("skipped: no openssl to make a test certificate");
+            return;
+        };
+        assert!(made.success(), "{step:?}");
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
+        .args(["relay", "--listen", "127.0.0.1:0", "--tls-listen", "127.0.0.1:0", "--tls-cert", cert.to_str().unwrap(), "--tls-key", key.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
+    /// Stops the relay when the test ends, however it ends.
+    struct Stop(Child);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let relay = Stop(child);
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let plain = words.iter().find(|w| w.starts_with("ws://")).unwrap().trim_end_matches('.').trim_end_matches('/').trim_start_matches("ws://").to_owned();
+    let addr = words.iter().find(|w| w.starts_with("wss://")).unwrap().trim_end_matches('.').trim_end_matches('/').trim_start_matches("wss://").to_owned();
+    let port = addr.rsplit(':').next().unwrap().to_owned();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(CertificateDer::from_pem_file(&ca).unwrap()).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tcp = TcpStream::connect(&addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let connection = rustls::ClientConnection::new(std::sync::Arc::new(config), "localhost".try_into().unwrap()).unwrap();
+    let tls = rustls::StreamOwned::new(connection, tcp);
+    let (mut socket, _) = tungstenite::client(format!("wss://localhost:{port}/"), tls).unwrap();
+    socket.send(Message::binary(Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: room() }.encode().unwrap())).unwrap();
+    let answer = loop {
+        match socket.read().unwrap() {
+            Message::Binary(bytes) => break Frame::decode(&bytes).unwrap(),
+            _ => continue,
+        }
+    };
+    assert!(matches!(answer, Frame::Step1(_)), "the owner is asked what it has: {answer:?}");
+
+    // Plain ws:// on the secure port gets no WebSocket; the plain port still serves it, for the
+    // desktop app, and its peers share the same rooms.
+    assert!(tungstenite::connect(format!("ws://{addr}/")).is_err());
+    let (mut desktop, _) = tungstenite::connect(format!("ws://{plain}/")).unwrap();
+    desktop.send(Message::binary(Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: room() }.encode().unwrap())).unwrap();
+    let answer = loop {
+        match desktop.read().unwrap() {
+            Message::Binary(bytes) => break Frame::decode(&bytes).unwrap(),
+            _ => continue,
+        }
+    };
+    assert!(matches!(answer, Frame::Step1(_)), "{answer:?}");
+    drop(relay);
 }

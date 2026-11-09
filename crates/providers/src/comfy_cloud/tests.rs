@@ -488,3 +488,19 @@ fn mapping947_cloud_honors_saved_result_order_when_the_api_reports_node_ids() {
     assert_eq!(http.requests()[1].url, format!("{ORIGIN}/api/v2/assets/{ASSET}/content"));
     assert_eq!(http.requests()[2].url, format!("{ORIGIN}/api/v2/assets/{OUT}/content"));
 }
+
+#[test]
+fn recraft35_svg_reference_is_refused_before_hosted_upload_and_paid_job() {
+    let http = Transport::new(vec![object_info()]);
+    let mut j = job();
+    j.inputs = vec![JobInput::Media {
+        role: "1.image".into(),
+        mime: nodecraft_media::svg::MIME.into(),
+        bytes: Arc::from(br#"<svg xmlns="http://www.w3.org/2000/svg" width="8" height="6"/>"#.as_slice()),
+    }];
+    let scope = SubmitContext::new();
+    let error = block_on(provider(http.clone()).submit_with_delivery(&j, &scope)).unwrap_err();
+    assert!(error.message.contains("Rasterize SVG"));
+    assert_eq!(http.paths(), ["/api/object_info"], "no upload or paid job POST");
+    assert!(scope.finish_error().is_some(), "the rejected reference cannot be billed");
+}

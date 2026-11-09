@@ -70,18 +70,9 @@ impl NodeCraftApp {
         let nodes = comfy_workflow_cmds::last(&self.session).1;
         let mut open = true;
         let mut asked = None;
-        let anchor = [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap];
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("ComfyUI servers")
-            .id(egui::Id::new("nodecraft.comfy_server"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, anchor)
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
+        crate::floating::panel(ctx, "ComfyUI servers", egui::Id::new("nodecraft.comfy_server"), crate::floating::Home::RightTop, t).open(&mut open).show(
+            ctx,
+            |ui| {
                 ui.set_max_width(t.search_width);
                 ui.label(
                     egui::RichText::new(
@@ -130,7 +121,12 @@ impl NodeCraftApp {
                         } else {
                             "Check"
                         };
-                        if ui.add_enabled(edited || !waiting, egui::Button::new(label)).on_hover_text(format!("Check {}", row.name)).clicked() {
+                        if ui
+                            .add_enabled(edited || !waiting, egui::Button::new(label))
+                            .on_hover_text(format!("Check {}", row.name))
+                            .on_disabled_hover_text("Checking; wait for the server to answer")
+                            .clicked()
+                        {
                             asked = Some(if edited { Asked::Save(row.clone()) } else { Asked::Check(row.name.clone()) });
                         }
                     });
@@ -165,7 +161,8 @@ impl NodeCraftApp {
                         asked = Some(Asked::AddCloud);
                     }
                 }
-            });
+            },
+        );
         self.comfy_server.open &= open;
         let done = match asked {
             Some(Asked::Save(row)) => self.save_comfy_server(&row.name, &row.url, &row.jobs),

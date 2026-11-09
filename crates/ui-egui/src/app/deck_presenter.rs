@@ -277,7 +277,7 @@ impl NodeCraftApp {
                     slide_rect.center(),
                     egui::Align2::CENTER_CENTER,
                     if listing.writable { "This deck has no slides yet." } else { "This deck was made by a newer NodeCraft and can't be shown here." },
-                    egui::FontId::proportional(t.control_gap * 4.0),
+                    egui::FontId::proportional(t.display_size),
                     t.text_muted,
                 );
             }

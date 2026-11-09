@@ -1,242 +1,410 @@
-//! The OpenAI Chat Completions dialect (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM).
+//! The OpenAI Chat Completions dialect (OpenAI, Ollama, LM Studio, vLLM, OpenRouter, LiteLLM, and
+//! the endpoints that speak it: Azure v1, Bedrock's OpenAI route, Gemini, Hugging Face).
+//!
+//! Spoken through `rig-core`'s Chat Completions wire (#1122,
+//! docs/decisions/2026-11-06-llm-layer-rig.md): the crate builds the request and reads the reply,
+//! whole or streamed, and every byte goes through NodeCraft's own [`crate::Http`]
+//! ([`RigHttp`]). NodeCraft keeps what the crate doesn't decide: validation, the size caps and
+//! timeouts, keys, the error kinds, the spend a reply reports, and money (the crate's prices are
+//! never read).
+//!
+//! The wire sends a few things differently from what these servers have been sent so far; the
+//! request is brought back to that shape ([`fix`]), each for a reason given there.
 
-use serde_json::{Value, json};
+use std::collections::HashMap;
+use std::sync::Arc;
 
-use super::sse::SseEvent;
-use super::{ChatRequest, ChatResponse, MAX_REPLY_BLOCKS, Part, Role, StopReason, StreamState, base64, tool_input};
+use rig_core::Model;
+use rig_core::completion::{CompletionRequest, CompletionResponse, FinishReason};
+use rig_core::message::{
+    AssistantContent, AssistantMessage, CallId, Document, DocumentData, DocumentMediaType, DocumentSourceKind, Image, ImageMediaType, Message as RigMessage,
+    MimeType as _, Reasoning, Text, ToolCall as RigCall, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
+};
+use rig_core::providers::openai::OpenAIConfig;
+use rig_core::providers::openai::wire::{Auth, BodyRewrite, Chat, DEEPSEEK, Dialect as RigDialect, GROQ, MISTRAL, Quirks};
+use rig_core::providers::xai::DIALECT as XAI;
+use serde_json::Value;
+
+use super::{ChatRequest, ChatResponse, LlmClient, MAX_REPLY_BLOCKS, Part, Role, StopReason, base64, bedrock, rig_chat};
 use crate::provider::Usage;
+use crate::rig_http::{Exchange, RigHttp};
 use crate::{ErrorKind, ProviderError};
 
-/// Text-only content goes as a plain string: some OpenAI-compatible servers accept nothing else.
-fn content(parts: &[&Part]) -> Value {
-    if parts.iter().all(|p| matches!(p, Part::Text(_))) {
-        return Value::String(parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect::<Vec<_>>().join("\n\n"));
+/// What every OpenAI-compatible endpoint here is spoken as: the shared Chat Completions wire,
+/// under a name of its own so the crate applies none of a vendor's rules (OpenAI's id
+/// shortening, its catalog's limits). A stream that ends with `[DONE]` but no finish reason is
+/// whole, as it always was here.
+const DIALECT: RigDialect = RigDialect::gateway("openai-compatible", "", "").with_quirks(quirks());
+
+/// The wire's own dialect for a provider it knows, where that dialect's rules are what the
+/// provider needs (#1122): DeepSeek's reasoning sent back with tool calls, Mistral's content
+/// chunks. Every other endpoint speaks the shared [`DIALECT`].
+fn dialect(id: &str) -> RigDialect {
+    match id {
+        DEEPSEEK_ID => DEEPSEEK,
+        MISTRAL_ID => MISTRAL,
+        GROQ_ID => GROQ,
+        XAI_ID => XAI,
+        _ => DIALECT,
     }
-    let mut files = 0usize;
-    Value::Array(
-        parts
-            .iter()
-            .filter_map(|p| match p {
-                Part::Text(t) => Some(json!({ "type": "text", "text": t })),
-                Part::Image { mime, bytes } => Some(json!({ "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{}", base64(bytes)) } })),
-                // The API wants a file name with inline file data; numbered, so several differ.
-                Part::Document { mime, bytes } => {
-                    files += 1;
-                    Some(json!({ "type": "file", "file": { "filename": format!("document-{files}.pdf"), "file_data": format!("data:{mime};base64,{}", base64(bytes)) } }))
-                }
-                _ => None,
-            })
-            .collect(),
-    )
 }
 
-/// `openai` is the OpenAI API or Azure v1, which take `max_completion_tokens` (reasoning models
-/// reject `max_tokens`); other servers get `max_tokens`, and only when the job sets a limit.
-pub(super) fn body(req: &ChatRequest, stream: bool, openai: bool) -> Value {
-    let mut messages = Vec::new();
-    if let Some(system) = &req.system {
-        messages.push(json!({ "role": "system", "content": system }));
-    }
-    for m in &req.messages {
-        match m.role {
-            Role::User => {
-                // Tool results are `tool` messages, which must come straight after the calls.
-                for p in &m.parts {
-                    if let Part::ToolResult { id, content, is_error } = p {
-                        // The API has no error flag; say it in the text.
-                        let content = if *is_error { format!("Error: {content}") } else { content.clone() };
-                        messages.push(json!({ "role": "tool", "tool_call_id": id, "content": content }));
-                    }
-                }
-                let rest: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_) | Part::Image { .. } | Part::Document { .. })).collect();
-                if !rest.is_empty() {
-                    messages.push(json!({ "role": "user", "content": content(&rest) }));
-                }
-            }
-            Role::Assistant => {
-                let texts: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_))).collect();
-                let calls: Vec<Value> = m
-                    .parts
-                    .iter()
-                    .filter_map(|p| match p {
-                        Part::ToolUse { id, name, input } => {
-                            // Arguments that weren't JSON go back as they came.
-                            let arguments = match input {
-                                Value::String(raw) => raw.clone(),
-                                other => other.to_string(),
-                            };
-                            Some(json!({ "id": id, "type": "function", "function": { "name": name, "arguments": arguments } }))
-                        }
-                        _ => None,
-                    })
-                    .collect();
-                let mut msg = json!({ "role": "assistant", "content": if texts.is_empty() { Value::Null } else { content(&texts) } });
-                if !calls.is_empty() {
-                    msg["tool_calls"] = Value::Array(calls);
-                }
-                messages.push(msg);
-            }
-        }
-    }
-    let mut body = json!({ "model": req.model, "messages": messages });
-    if !req.tools.is_empty() {
-        let tools: Vec<Value> = req
-            .tools
-            .iter()
-            .map(|t| {
-                let mut function = json!({ "name": t.name, "description": t.description, "parameters": t.input_schema });
-                if t.strict {
-                    function["strict"] = json!(true);
-                }
-                json!({ "type": "function", "function": function })
-            })
-            .collect();
-        body["tools"] = Value::Array(tools);
-    }
-    if let Some(n) = req.max_tokens {
-        body[if openai { "max_completion_tokens" } else { "max_tokens" }] = json!(n);
-    }
-    if let Some(t) = req.temperature {
-        body["temperature"] = json!(t);
-    }
-    if stream {
-        body["stream"] = json!(true);
-        body["stream_options"] = json!({ "include_usage": true });
-    }
-    body
+/// Endpoint ids of the providers spoken in their own dialect.
+pub(super) const DEEPSEEK_ID: &str = "deepseek";
+pub(super) const MISTRAL_ID: &str = "mistral";
+pub(super) const GROQ_ID: &str = "groq";
+pub(super) const XAI_ID: &str = "xai";
+
+/// Whether the endpoint's replies keep their reasoning, to send back in later turns: DeepSeek's
+/// thinking models want every earlier turn's `reasoning_content` back when the request carries
+/// tools (https://api-docs.deepseek.com/guides/thinking_mode, read 2026-11-08).
+fn keeps_reasoning(id: &str) -> bool {
+    id == DEEPSEEK_ID
 }
 
-fn stop(reason: Option<&str>) -> Result<StopReason, ProviderError> {
-    Ok(match reason {
-        None | Some("stop") => StopReason::EndTurn,
-        Some("length") => StopReason::MaxTokens,
-        Some("tool_calls" | "function_call") => StopReason::ToolUse,
-        Some("content_filter") => return Err(ProviderError::new(ErrorKind::BlockedContent, "the reply was withheld by the provider's content filter")),
-        Some(other) => StopReason::Other(other.to_owned()),
-    })
+/// The reasoning a reply kept, as the part that carries it to the next turn.
+fn reasoning_part(text: String) -> Part {
+    Part::Opaque { dialect: super::Dialect::OpenAi, block: serde_json::json!({ "reasoning_content": text }) }
+}
+
+const fn quirks() -> Quirks {
+    let mut quirks = Quirks::openai();
+    quirks.rewrite = BodyRewrite::None;
+    quirks.done_without_finish_reason = true;
+    // Money is NodeCraft's: replies are never priced from the crate's catalog.
+    quirks.catalog_priced = false;
+    quirks
 }
 
 fn malformed(what: &str) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, what.to_owned())
 }
 
-fn usage(u: Option<&Value>) -> Usage {
-    Usage {
-        input_tokens: u.and_then(|u| u.get("prompt_tokens")).and_then(Value::as_u64),
-        output_tokens: u.and_then(|u| u.get("completion_tokens")).and_then(Value::as_u64),
-        cost: None,
-        billable_units: None,
-        execution_ms: None,
-    }
+fn tool_name(name: &str) -> Result<ToolName, ProviderError> {
+    ToolName::new(name).map_err(|_| ProviderError::new(ErrorKind::UnsupportedInput, "a tool call has no name"))
 }
 
-/// Arguments arrive as a JSON string; some local servers send the object itself.
-fn arguments(v: Option<&Value>) -> Value {
-    match v {
-        Some(Value::String(raw)) => tool_input(raw),
-        Some(Value::Null) | None => tool_input(""),
-        Some(other) => other.clone(),
+/// The request in the crate's terms, and the tool calls whose arguments must go back as they came.
+/// `reasoning`: earlier turns' kept reasoning goes back as reasoning (see [`keeps_reasoning`]).
+fn request(req: &ChatRequest, completion_cap: bool, reasoning: bool) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
+    let mut history = Vec::new();
+    if let Some(system) = &req.system {
+        history.push(RigMessage::System { content: system.clone() });
     }
-}
-
-pub(super) fn parse(body: &[u8]) -> Result<ChatResponse, ProviderError> {
-    let v: Value = serde_json::from_slice(body).map_err(|e| malformed(&format!("chat reply: {e}")))?;
-    let choice = v.get("choices").and_then(|c| c.get(0)).ok_or_else(|| malformed("chat reply without choices"))?;
-    let message = choice.get("message");
-    let stop = stop(choice.get("finish_reason").and_then(Value::as_str))?;
-    let mut parts = Vec::new();
-    let text = message.and_then(|m| m.get("content")).and_then(Value::as_str).unwrap_or_default();
-    if !text.is_empty() {
-        parts.push(Part::Text(text.to_owned()));
-    }
-    let calls = message.and_then(|m| m.get("tool_calls")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    if calls.len() > MAX_REPLY_BLOCKS {
-        return Err(malformed("the reply has too many tool calls"));
-    }
-    for (i, call) in calls.iter().enumerate() {
-        let function = call.get("function");
-        let name =
-            function.and_then(|f| f.get("name")).and_then(Value::as_str).filter(|n| !n.is_empty()).ok_or_else(|| malformed("a tool call without a name"))?;
-        let id = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty()).map_or_else(|| format!("call_{i}"), str::to_owned);
-        parts.push(Part::ToolUse { id, name: name.to_owned(), input: arguments(function.and_then(|f| f.get("arguments"))) });
-    }
-    Ok(ChatResponse::new(parts, stop, usage(v.get("usage"))))
-}
-
-/// Handles one streamed event; returns new text, if any.
-pub(super) fn stream_event(e: &SseEvent, state: &mut StreamState) -> Result<Option<String>, ProviderError> {
-    if e.data.trim() == "[DONE]" {
-        state.finished = true;
-        return Ok(None);
-    }
-    let v: Value = serde_json::from_str(&e.data).map_err(|err| malformed(&format!("stream event: {err}")))?;
-    if let Some(err) = v.get("error") {
-        return Err(error_from(None, err));
-    }
-    if let Some(u) = v.get("usage").filter(|u| !u.is_null()) {
-        state.usage = usage(Some(u));
-    }
-    let Some(choice) = v.get("choices").and_then(|c| c.get(0)) else { return Ok(None) };
-    if let Some(reason) = choice.get("finish_reason").and_then(Value::as_str) {
-        state.stop = Some(stop(Some(reason))?);
-        // Some servers end the stream without `[DONE]`; a finish reason means the reply is whole.
-        state.finished = true;
-    }
-    let delta = choice.get("delta");
-    // Tool calls stream as pieces keyed by index: the id and name first, then the arguments.
-    let calls = delta.and_then(|d| d.get("tool_calls")).and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
-    for (i, call) in calls.iter().enumerate() {
-        let id = call.get("id").and_then(Value::as_str).filter(|id| !id.is_empty());
-        let index = match call.get("index").and_then(Value::as_u64) {
-            Some(index) => index,
-            // No index (some compatibility layers): a new id starts a new call, anything else
-            // continues the last one.
-            None => match state.blocks.iter().next_back() {
-                Some((last, block)) => match (id, block.value["id"].as_str()) {
-                    (Some(new), Some(known)) if !known.is_empty() && new != known => last.saturating_add(1),
-                    _ => *last,
-                },
-                None => i as u64,
-            },
-        };
-        let block = state.block(index, || json!({ "id": "", "name": "" }))?;
-        if let Some(id) = id {
-            block.value["id"] = json!(id);
-        }
-        let function = call.get("function");
-        if let Some(name) = function.and_then(|f| f.get("name")).and_then(Value::as_str).filter(|n| !n.is_empty()) {
-            // Most servers send the name once; some repeat it on every piece, a few split it.
-            let known = block.value["name"].as_str().unwrap_or_default().to_owned();
-            if known != name {
-                block.value["name"] = json!(format!("{known}{name}"));
+    // Tool names by call id, which a result names too; and arguments that weren't JSON objects.
+    let mut names: HashMap<&str, &str> = HashMap::new();
+    let mut raw = HashMap::new();
+    for m in &req.messages {
+        match m.role {
+            Role::User => {
+                let mut content = Vec::new();
+                // Tool results are `tool` messages, which must come straight after the calls.
+                for p in &m.parts {
+                    if let Part::ToolResult { id, content: text, is_error } = p {
+                        // The API has no error flag; say it in the text.
+                        let text = if *is_error { format!("Error: {text}") } else { text.clone() };
+                        let name = names.get(id.as_str()).copied().unwrap_or("tool");
+                        content.push(UserContent::ToolResult(ToolResult {
+                            call: CallId::from_wire(id.clone()),
+                            name: tool_name(name)?,
+                            content: vec![ToolResultContent::Text(Text::new(text))],
+                            is_error: *is_error,
+                        }));
+                    }
+                }
+                let rest: Vec<&Part> = m.parts.iter().filter(|p| matches!(p, Part::Text(_) | Part::Image { .. } | Part::Document { .. })).collect();
+                if rest.iter().all(|p| matches!(p, Part::Text(_))) {
+                    // Text only: one string, as some compatible servers accept nothing else.
+                    let text: Vec<&str> = rest.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect();
+                    if !text.is_empty() {
+                        content.push(UserContent::text(text.join("\n\n")));
+                    }
+                } else {
+                    for p in rest {
+                        content.push(match p {
+                            Part::Image { mime, bytes } => UserContent::Image(Image {
+                                data: DocumentSourceKind::Base64(base64(bytes)),
+                                media_type: ImageMediaType::from_mime_type(mime),
+                                ..Image::default()
+                            }),
+                            Part::Document { bytes, .. } => UserContent::Document(Document {
+                                data: DocumentData::File(DocumentSourceKind::Base64(base64(bytes))),
+                                media_type: Some(DocumentMediaType::PDF),
+                                additional_params: None,
+                            }),
+                            Part::Text(t) => UserContent::text(t.clone()),
+                            _ => continue,
+                        });
+                    }
+                }
+                if !content.is_empty() {
+                    history.push(RigMessage::User { content });
+                }
+            }
+            Role::Assistant => {
+                let mut content = Vec::new();
+                if reasoning {
+                    for p in &m.parts {
+                        if let Part::Opaque { block, .. } = p
+                            && let Some(text) = block.get("reasoning_content").and_then(Value::as_str)
+                        {
+                            content.push(AssistantContent::Reasoning(Reasoning::new(text)));
+                        }
+                    }
+                }
+                let texts: Vec<&str> = m.parts.iter().filter_map(|p| if let Part::Text(t) = p { Some(t.as_str()) } else { None }).collect();
+                if !texts.is_empty() {
+                    content.push(AssistantContent::text(texts.join("\n\n")));
+                }
+                for p in &m.parts {
+                    if let Part::ToolUse { id, name, input } = p {
+                        names.insert(id, name);
+                        // The wire sends any input but an object as `{}`.
+                        match input {
+                            Value::Object(_) => {}
+                            Value::String(text) => {
+                                raw.insert(id.clone(), text.clone());
+                            }
+                            other => {
+                                raw.insert(id.clone(), other.to_string());
+                            }
+                        }
+                        content
+                            .push(AssistantContent::ToolCall(RigCall::new(CallId::from_wire(id.clone()), ToolFunction::new(tool_name(name)?, input.clone()))));
+                    }
+                }
+                if !content.is_empty() {
+                    history.push(RigMessage::Assistant(AssistantMessage::new(content)));
+                }
             }
         }
-        match function.and_then(|f| f.get("arguments")) {
-            Some(Value::String(piece)) => block.args.push_str(piece),
-            Some(Value::Null) | None => {}
-            Some(whole) => block.args = whole.to_string(),
+    }
+    let mut params = serde_json::Map::new();
+    if !req.tools.is_empty() {
+        // Sent as they are: the wire's strict mode applies to every tool and rewrites schemas;
+        // here each tool asks for it or not.
+        let tools: Vec<Value> = req
+            .tools
+            .iter()
+            .map(|t| {
+                let mut function = serde_json::json!({ "name": t.name, "description": t.description, "parameters": t.input_schema });
+                if t.strict {
+                    function["strict"] = Value::Bool(true);
+                }
+                serde_json::json!({ "type": "function", "function": function })
+            })
+            .collect();
+        params.insert("tools".into(), Value::Array(tools));
+    }
+    let mut out = CompletionRequest::new("");
+    out.chat_history = history.into_iter().map(Arc::new).collect();
+    match req.max_tokens {
+        // OpenAI itself, Azure v1 and Bedrock's OpenAI route take `max_completion_tokens`
+        // (reasoning models reject `max_tokens`), whatever the model.
+        Some(n) if completion_cap => {
+            params.insert("max_completion_tokens".into(), Value::from(n));
         }
+        other => out.max_tokens = other.map(u64::from),
     }
-    let text = delta.and_then(|d| d.get("content")).and_then(Value::as_str).filter(|t| !t.is_empty());
-    if let Some(t) = text {
-        state.text.push_str(t);
-    }
-    Ok(text.map(str::to_owned))
+    out.temperature = rig_chat::temperature(req.temperature);
+    out.additional_params = (!params.is_empty()).then_some(Value::Object(params));
+    out.accept_unknown_finish_reasons = true;
+    // Kept reasoning is sent as reasoning, under the dialect's field, not turned into text.
+    out.foreign_reasoning = reasoning;
+    Ok((out, raw))
 }
 
-/// The streamed reply's parts: its text, then its tool calls in index order.
-pub(super) fn stream_parts(state: &mut StreamState) -> Result<Vec<Part>, ProviderError> {
+/// The request back in the shape these servers have been sent, where the wire differs:
+/// - text-only content is a plain string, the system prompt's too: some compatible servers
+///   accept nothing else (the wire's rewrite that does this also stops it sending PDFs);
+/// - several PDFs in one message get distinct file names (`document-1.pdf`, …);
+/// - images name no `detail`, which the wire adds to every one;
+/// - an assistant turn of only tool calls says `"content": null`;
+/// - tool arguments that weren't a JSON object go back as they came, not as `{}`.
+fn fix(body: &mut Value, raw: &HashMap<String, String>) {
+    let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
+    for message in messages {
+        if let Some(content) = message.get_mut("content")
+            && let Some(parts) = content.as_array().filter(|p| !p.is_empty() && p.iter().all(|p| p.get("type").and_then(Value::as_str) == Some("text")))
+        {
+            let text: Vec<&str> = parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect();
+            *content = Value::String(text.join("\n\n"));
+        }
+        if let Some(parts) = message.get_mut("content").and_then(Value::as_array_mut) {
+            let mut files = 0usize;
+            for part in parts {
+                match part.get("type").and_then(Value::as_str) {
+                    Some("file") => {
+                        if let Some(file) = part.get_mut("file").and_then(Value::as_object_mut).filter(|f| f.contains_key("file_data")) {
+                            files = files.saturating_add(1);
+                            file.insert("filename".into(), Value::String(format!("document-{files}.pdf")));
+                        }
+                    }
+                    Some("image_url") => {
+                        if let Some(image) = part.get_mut("image_url").and_then(Value::as_object_mut) {
+                            image.remove("detail");
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if message.get("role").and_then(Value::as_str) != Some("assistant") {
+            continue;
+        }
+        if let Some(message) = message.as_object_mut() {
+            message.entry("content").or_insert(Value::Null);
+        }
+        for call in message.get_mut("tool_calls").and_then(Value::as_array_mut).into_iter().flatten() {
+            let id = call.get("id").and_then(Value::as_str).map(str::to_owned);
+            if let (Some(text), Some(function)) = (id.and_then(|id| raw.get(&id)), call.get_mut("function").and_then(Value::as_object_mut)) {
+                function.insert("arguments".into(), Value::String(text.clone()));
+            }
+        }
+    }
+}
+
+/// Checks a streamed reply's events before the wire reads them: a tool call index past the
+/// reply's limit is refused, as the wire sizes the reply by it.
+fn guard() -> crate::rig_http::events::Guard {
+    Box::new(|data| {
+        let Ok(event) = serde_json::from_str::<Value>(data) else { return Ok(None) };
+        let choices = event.get("choices").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+        let calls = choices.iter().filter_map(|c| c.pointer("/delta/tool_calls").and_then(Value::as_array)).flatten();
+        if calls.filter_map(|c| c.get("index").and_then(Value::as_u64)).any(|i| i >= MAX_REPLY_BLOCKS as u64) {
+            return Err(malformed("the reply has too many tool calls"));
+        }
+        Ok(None)
+    })
+}
+
+/// The crate's reply as ours: its text, then its tool calls in order.
+/// The reply tokens to settle, reasoning included: the largest of what the wire counted, the
+/// reply's `completion_tokens` and its `total_tokens` less `prompt_tokens`. OpenAI counts
+/// reasoning inside `completion_tokens` (and total is prompt plus completion), so nothing is
+/// counted twice; xAI counts it apart (`reasoning_apart`): its total includes it, and without a
+/// total its `completion_tokens_details.reasoning_tokens` is added. A count a server leaves out
+/// stays unknown; no input makes this overflow.
+fn output_tokens(usage: Option<&Value>, counted: Option<u64>, reasoning_apart: bool) -> Option<u64> {
+    let count = |pointer: &str| usage.and_then(|u| u.pointer(pointer)).and_then(Value::as_u64);
+    let completion = count("/completion_tokens");
+    let total = count("/total_tokens");
+    let beyond_prompt = total.and_then(|total| total.checked_sub(count("/prompt_tokens").unwrap_or(0)));
+    let with_reasoning = match (reasoning_apart, total, completion, count("/completion_tokens_details/reasoning_tokens")) {
+        (true, None, Some(completion), Some(reasoning)) => Some(completion.saturating_add(reasoning)),
+        _ => None,
+    };
+    [counted, completion, beyond_prompt, with_reasoning].into_iter().flatten().max()
+}
+
+/// `reasoning`: the reply's reasoning is kept (see [`keeps_reasoning`]). `reasoning_apart`: the
+/// endpoint counts reasoning tokens apart from `completion_tokens` (see [`output_tokens`]).
+fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) -> Result<ChatResponse, ProviderError> {
+    // The wire leaves out a call that never names its tool; here such a reply is malformed, as
+    // the agent can't answer the call. The reply's provider document still has it.
+    let calls = response.raw.pointer("/choices/0/message/tool_calls").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let unnamed = |call: &Value| {
+        let kind = call.get("type").and_then(Value::as_str);
+        let name = call.pointer("/function/name").or_else(|| call.pointer("/custom/name")).and_then(Value::as_str);
+        matches!(kind, None | Some("function" | "custom")) && name.is_none_or(str::is_empty)
+    };
+    if calls.iter().any(unnamed) {
+        return Err(malformed("a tool call without a name"));
+    }
+    let stop = match response.finish_reason() {
+        None | Some(FinishReason::Stop) => StopReason::EndTurn,
+        Some(FinishReason::Length) => StopReason::MaxTokens,
+        Some(FinishReason::ToolCalls) => StopReason::ToolUse,
+        Some(FinishReason::ContentFilter) => {
+            return Err(ProviderError::new(ErrorKind::BlockedContent, "the reply was withheld by the provider's content filter"));
+        }
+        Some(FinishReason::Other(other)) => StopReason::Other(other),
+        Some(other) => StopReason::Other(format!("{other:?}")),
+    };
     let mut parts = Vec::new();
-    let text = std::mem::take(&mut state.text);
+    let thought: String = response.choice.iter().filter_map(|c| if let AssistantContent::Reasoning(r) = c { Some(r.text.as_str()) } else { None }).collect();
+    if reasoning && !thought.is_empty() {
+        parts.push(reasoning_part(thought));
+    }
+    let text: String = response.choice.iter().filter_map(|c| if let AssistantContent::Text(t) = c { Some(t.text()) } else { None }).collect();
     if !text.is_empty() {
         parts.push(Part::Text(text));
     }
-    for (index, block) in std::mem::take(&mut state.blocks) {
-        let name = block.value["name"].as_str().filter(|n| !n.is_empty()).ok_or_else(|| malformed("a tool call without a name"))?.to_owned();
-        let id = block.value["id"].as_str().filter(|id| !id.is_empty()).map_or_else(|| format!("call_{index}"), str::to_owned);
-        parts.push(Part::ToolUse { id, name, input: tool_input(&block.args) });
+    let calls: Vec<&RigCall> = response.choice.iter().filter_map(|c| if let AssistantContent::ToolCall(call) = c { Some(call) } else { None }).collect();
+    if calls.len() > MAX_REPLY_BLOCKS {
+        return Err(malformed("the reply has too many tool calls"));
     }
-    Ok(parts)
+    for (i, call) in calls.into_iter().enumerate() {
+        let name = call.function.name.as_str();
+        if name.is_empty() {
+            return Err(malformed("a tool call without a name"));
+        }
+        // An id the server didn't send is numbered, as before.
+        let id = match &call.id {
+            CallId::Provider(id) => id.as_str().to_owned(),
+            CallId::Local(_) => format!("call_{i}"),
+        };
+        // Arguments that weren't a JSON object stay text, which fails any object schema.
+        let input = match &call.function.invalid_arguments {
+            Some(text) => Value::String(text.clone()),
+            None => call.function.arguments_value(),
+        };
+        parts.push(Part::ToolUse { id, name: name.to_owned(), input });
+    }
+    let output_tokens = output_tokens(response.raw.get("usage"), response.usage.output_tokens, reasoning_apart);
+    let usage = Usage { input_tokens: response.usage.input_tokens, output_tokens, cost: None, billable_units: None, execution_ms: None };
+    Ok(ChatResponse::new(parts, stop, usage))
+}
+
+/// How this dialect reads its errors.
+const RULES: rig_chat::Rules = rig_chat::Rules { status: |status, _, body| error(status, body), event: event_error, unended: "chat reply without choices" };
+/// Bedrock's OpenAI-compatible route: AWS answers signature and credential refusals in its own
+/// shape, mapped as Converse maps them (#1163); everything else as OpenAI's.
+const BEDROCK_RULES: rig_chat::Rules = rig_chat::Rules { status: bedrock_error, ..RULES };
+
+pub(super) fn bedrock_error(status: u16, headers: &[(String, String)], body: &[u8]) -> ProviderError {
+    super::converse::credential_error(status, headers, body).unwrap_or_else(|| error(status, body))
+}
+
+fn event_error(err: &Value) -> ProviderError {
+    error_from(None, err)
+}
+
+impl LlmClient {
+    /// Sends `req` to an OpenAI-compatible endpoint, streamed when `on_text` takes the pieces,
+    /// through the runner's delivery scope when there is one.
+    pub(super) async fn openai_chat(
+        &self,
+        req: &ChatRequest,
+        on_text: Option<&mut (dyn FnMut(&str) + Send)>,
+        context: Option<&crate::SubmitContext>,
+    ) -> Result<ChatResponse, ProviderError> {
+        let req = self.validated(req)?;
+        let (cap, timeout) = self.limits(&req, on_text.is_some());
+        let completion_cap = matches!(self.endpoint.id.as_str(), "openai" | "azure-openai" | bedrock::BEDROCK);
+        let reasoning = keeps_reasoning(&self.endpoint.id);
+        let (request, raw) = request(&req, completion_cap, reasoning)?;
+        // Our own URL: some dialects put the version in their paths, ours is in the base URL.
+        let mut transport = RigHttp::new(Arc::clone(&self.http), timeout, cap)
+            .with_delivery(context.map(crate::SubmitContext::link))
+            .with_url(self.endpoint.url("chat/completions"))
+            .with_fix(Box::new(move |body| fix(body, &raw)))
+            .with_guard(guard);
+        if let Some(key) = &self.endpoint.key {
+            transport = transport.with_secret("Authorization", format!("Bearer {}", key.expose()));
+        }
+        // The key goes with the transport, never through the crate.
+        let config = OpenAIConfig::with_key(&dialect(&self.endpoint.id), "").with_auth(Auth::OptionalBearer).with_base_url(self.endpoint.base_url.as_str());
+        // No idle timeout of the crate's: the stream's own timeout and size cap bound it, as before.
+        let model = Model::new(Chat::new(config, req.model.as_str()), transport.clone()).with_idle_timeout(None);
+        let rules = if self.endpoint.id == bedrock::BEDROCK { &BEDROCK_RULES } else { &RULES };
+        let response = rig_chat::send(model, &transport, request, on_text, rules).await?;
+        let mut reply = reply(&response, reasoning, self.endpoint.id == XAI_ID)?;
+        if let Exchange::Answered { headers, .. } = transport.exchange() {
+            reply.usage.cost = self.reported_cost(&headers);
+        }
+        Ok(reply)
+    }
 }
 
 fn error_from(status: Option<u16>, err: &Value) -> ProviderError {
@@ -263,6 +431,9 @@ fn error_from(status: Option<u16>, err: &Value) -> ProviderError {
         (Some(s), None) => ProviderError::from_status(s, b"").kind,
         (None, None) => ErrorKind::Server,
     };
+    if code == "context_length_exceeded" && kind == ErrorKind::UnsupportedInput {
+        return ProviderError::context_limit(&message);
+    }
     ProviderError::new(kind, message)
 }
 
@@ -274,78 +445,4 @@ pub(super) fn error(status: u16, body: &[u8]) -> ProviderError {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{Canned, request};
-    use super::super::{ApiKey, Endpoint, LlmClient};
-    use super::*;
-    use futures::executor::block_on;
-
-    #[test]
-    fn request_shape() {
-        let http = Canned::new(200, r#"{"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}]}"#);
-        let client = LlmClient::new(Endpoint::openai(ApiKey::new("sk-1")), http.clone());
-        block_on(client.chat(&request())).unwrap();
-        let req = http.request();
-        assert_eq!(req.url, "https://api.openai.com/v1/chat/completions");
-        assert!(req.headers.contains(&("Authorization".into(), "Bearer sk-1".into())));
-        let b = http.body();
-        assert_eq!(b["messages"][0], json!({"role": "system", "content": "be brief"}));
-        assert_eq!(b["messages"][1]["content"][1]["image_url"]["url"], "data:image/png;base64,UE5H");
-        assert_eq!(b["max_completion_tokens"], 100, "OpenAI itself takes max_completion_tokens");
-        assert!(b.get("max_tokens").is_none());
-        let text_only = body(&ChatRequest { messages: vec![super::super::Message::user("hi")], max_tokens: None, ..request() }, false, false);
-        assert_eq!(text_only["messages"][1]["content"], "hi", "text-only content is a plain string");
-        assert!(text_only.get("max_tokens").is_none(), "no limit unless the job sets one");
-        let other = body(&request(), false, false);
-        assert_eq!(other["max_tokens"], 100);
-        assert!(b.get("stream").is_none());
-        let local = LlmClient::new(Endpoint::ollama(None), http.clone());
-        assert_eq!(local.endpoint().base_url, "http://127.0.0.1:11434/v1");
-    }
-
-    #[test]
-    fn replies_and_finish_reasons() {
-        let r = parse(br#"{"choices":[{"message":{"content":"Hi"},"finish_reason":"length"}],"usage":{"prompt_tokens":5,"completion_tokens":7}}"#).unwrap();
-        assert_eq!((r.text.as_str(), r.stop, r.usage.input_tokens, r.usage.output_tokens), ("Hi", StopReason::MaxTokens, Some(5), Some(7)));
-        assert_eq!(parse(br#"{"choices":[{"message":{"content":null},"finish_reason":"content_filter"}]}"#).unwrap_err().kind, ErrorKind::BlockedContent);
-        assert_eq!(parse(br#"{"choices":[]}"#).unwrap_err().kind, ErrorKind::Malformed);
-        assert_eq!(parse(b"<html>").unwrap_err().kind, ErrorKind::Malformed);
-    }
-
-    #[test]
-    fn errors() {
-        let e = |s, b: &str| error(s, b.as_bytes()).kind;
-        assert_eq!(
-            e(429, r#"{"error":{"message":"You exceeded your current quota","type":"insufficient_quota","code":"insufficient_quota"}}"#),
-            ErrorKind::Budget
-        );
-        assert_eq!(e(429, r#"{"error":{"message":"slow down","type":"requests","code":"rate_limit_exceeded"}}"#), ErrorKind::RateLimited);
-        assert_eq!(e(400, r#"{"error":{"message":"too long","code":"context_length_exceeded"}}"#), ErrorKind::UnsupportedInput);
-        assert_eq!(e(401, r#"{"error":{"message":"bad key","code":"invalid_api_key"}}"#), ErrorKind::Auth);
-        assert_eq!(e(404, r#"{"error":{"message":"no such model","code":"model_not_found"}}"#), ErrorKind::NotFound);
-        assert_eq!(e(503, "Service Unavailable"), ErrorKind::Busy);
-        assert_eq!(
-            e(401, r#"{"error":{"message":"You didn't provide an API key.","type":"invalid_request_error","code":null}}"#),
-            ErrorKind::Auth,
-            "status wins over type"
-        );
-        assert_eq!(e(400, r#"{"error":{"message":"bad","type":"invalid_request_error","code":null}}"#), ErrorKind::UnsupportedInput);
-        let long = format!(r#"{{"error":{{"message":"{}"}}}}"#, "x".repeat(100_000));
-        assert!(error(500, long.as_bytes()).message.len() <= 300, "messages are capped");
-        assert_eq!(e(500, r#"{"error":"boom"}"#), ErrorKind::Server);
-    }
-
-    #[test]
-    fn streaming_events() {
-        let mut s = StreamState::default();
-        let ev = |d: &str| SseEvent { event: None, data: d.into() };
-        assert_eq!(stream_event(&ev(r#"{"choices":[{"delta":{"role":"assistant","content":""}}]}"#), &mut s).unwrap(), None);
-        assert_eq!(stream_event(&ev(r#"{"choices":[{"delta":{"content":"Hel"}}]}"#), &mut s).unwrap().as_deref(), Some("Hel"));
-        assert_eq!(stream_event(&ev(r#"{"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}"#), &mut s).unwrap().as_deref(), Some("lo"));
-        stream_event(&ev(r#"{"choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}"#), &mut s).unwrap();
-        stream_event(&ev("[DONE]"), &mut s).unwrap();
-        assert_eq!((s.text.as_str(), s.finished, s.usage.output_tokens), ("Hello", true, Some(2)));
-        assert_eq!(stream_event(&ev(r#"{"error":{"message":"overloaded","code":"rate_limit_exceeded"}}"#), &mut s).unwrap_err().kind, ErrorKind::RateLimited);
-        assert!(stream_event(&ev("{"), &mut s).is_err());
-    }
-}
+mod tests;

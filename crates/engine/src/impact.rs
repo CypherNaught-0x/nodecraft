@@ -35,7 +35,9 @@ pub struct RunImpact {
 impl Impact {
     pub(crate) fn of(effect: &Effect) -> Result<Self, Error> {
         Ok(match effect {
-            Effect::None { .. } | Effect::Elements { request: crate::element_library::Request::List } => Self::Read,
+            Effect::None { .. }
+            | Effect::Elements { request: crate::element_library::Request::List }
+            | Effect::Assets { request: crate::asset_library::Request::List { .. } } => Self::Read,
             Effect::TemplateAdd { .. } | Effect::Edit { .. } | Effect::DocumentExtract { .. } | Effect::Undo | Effect::Redo | Effect::Place { .. } => {
                 Self::Edit
             }
@@ -53,7 +55,8 @@ impl Impact {
             | Effect::LocalExport { .. }
             | Effect::ResultsExport { .. }
             | Effect::Perf { .. }
-            | Effect::Elements { .. } => Self::Host,
+            | Effect::Elements { .. }
+            | Effect::Assets { .. } => Self::Host,
         })
     }
 }

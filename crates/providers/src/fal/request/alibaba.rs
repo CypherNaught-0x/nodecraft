@@ -196,7 +196,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits, model: Model) -> Result<(Recor
         let uris: Vec<String> = images.iter().zip(lengths).map(|((mime, bytes), size)| uri(mime, bytes, size)).collect::<Result<_, _>>()?;
         body.image_urls = edit.then(|| uris.iter().map(String::as_str).collect());
         let requested = u8::try_from(count).map_err(|_| invalid("Qwen image count refused"))?;
-        Ok((Record { model, requested, width: 0, height: 0 }, encode(&body, size)?))
+        Ok((Record { model, requested, width: 0, height: 0, duration_ms: 0 }, encode(&body, size)?))
     } else {
         images.extend(first);
         images.extend(last);
@@ -218,6 +218,6 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits, model: Model) -> Result<(Recor
         let uris: Vec<String> = images.iter().zip(lengths).map(|((mime, bytes), size)| uri(mime, bytes, size)).collect::<Result<_, _>>()?;
         body.start_image_url = first.and_then(|_| uris.first().map(String::as_str));
         body.end_image_url = last.and_then(|_| uris.get(1).map(String::as_str));
-        Ok((Record { model, requested: 1, width: 0, height: 0 }, encode(&body, size)?))
+        Ok((Record { model, requested: 1, width: 0, height: 0, duration_ms: 0 }, encode(&body, size)?))
     }
 }

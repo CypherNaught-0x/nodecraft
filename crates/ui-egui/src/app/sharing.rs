@@ -145,6 +145,8 @@ pub(crate) struct Panel {
     show_link: bool,
     relay: String,
     join: String,
+    /// The Soul IDs the project holds, for the document and revision they were counted at.
+    bound: Option<((nodecraft_types::ProjectId, u64), nodecraft_engine::soul_ids::Handles)>,
 }
 
 pub(crate) struct Sharing {
@@ -536,6 +538,12 @@ impl NodeCraftApp {
     /// Takes in what the worker reported, applies what it planned, and hands it the session as
     /// it now is. An error ends the sharing.
     fn drive_sharing(&mut self) -> Result<(), String> {
+        // While a background save writes, taking in a peer's edit would wait for the disk on
+        // this thread (#367). The worker keeps the connection; its reports wait until the save
+        // has settled, and the session it is handed is then the saved one.
+        if self.session.file_status().saving {
+            return Ok(());
+        }
         let Some(sharing) = &mut self.sharing else { return Ok(()) };
         let Some(live) = &mut sharing.live else { return Ok(()) };
         let mut desk = sharing.desk.try_borrow_mut().map_err(|_| "live sharing is busy".to_string())?;
@@ -632,32 +640,35 @@ impl NodeCraftApp {
 
     /// The share panel, under its chip.
     pub(super) fn share_panel(&mut self, ctx: &egui::Context, t: &Tokens) {
-        let anchor = [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap];
         let Some(sharing) = &self.sharing else { return };
         if !sharing.panel.open {
             return;
         }
+        // Counted once per revision, not every frame.
+        let key = (self.session.document().id(), self.session.revision());
+        let handles = match &mut self.sharing {
+            Some(sharing) => match sharing.panel.bound {
+                Some((counted, handles)) if counted == key => handles,
+                _ => {
+                    let handles = nodecraft_engine::soul_ids::handles(self.session.document());
+                    sharing.panel.bound = Some((key, handles));
+                    handles
+                }
+            },
+            None => return,
+        };
         let mut open = true;
         let mut command: Option<(&'static str, serde_json::Value)> = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Share live")
-            .id(egui::Id::new("nodecraft.share"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, anchor)
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                ui.set_max_width(t.minimap_height * 2.5);
-                ui.horizontal(|ui| self.people_avatars(ui, t));
-                let Some(sharing) = &mut self.sharing else { return };
-                match &sharing.live {
-                    None => idle(ui, t, &mut sharing.panel, &mut command),
-                    Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
-                }
-            });
+        crate::floating::panel(ctx, "Share live", egui::Id::new("nodecraft.share"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            ui.set_max_width(t.minimap_height * 2.5);
+            ui.horizontal(|ui| self.people_avatars(ui, t));
+            let Some(sharing) = &mut self.sharing else { return };
+            match &sharing.live {
+                None => idle(ui, t, &mut sharing.panel, &mut command),
+                Some(live) => shared(ui, t, live, live.status.role, &mut sharing.panel, &mut command),
+            }
+            account_bound(ui, t, handles);
+        });
         if let Some(sharing) = &mut self.sharing {
             sharing.panel.open &= open;
         }
@@ -684,6 +695,22 @@ const RELAY_HINT: &str = "wss://relay.example";
 const JOIN_LABEL: &str = "Join a shared project in a new window";
 #[cfg(target_arch = "wasm32")]
 const JOIN_LABEL: &str = "Join a shared project in this tab";
+
+/// Says that the project's Soul IDs go with it only as handles (#180): whoever it is shared
+/// with sees them, but only the Higgsfield account that trained them can run them.
+fn account_bound(ui: &mut egui::Ui, t: &Tokens, handles: nodecraft_engine::soul_ids::Handles) {
+    if !handles.any() {
+        return;
+    }
+    ui.separator();
+    ui.label(
+        egui::RichText::new(
+            "This project uses Higgsfield Soul IDs. They work only on the account that trained them: others see the cards and settings, but runs on another account are refused before anything is paid.",
+        )
+        .small()
+        .color(t.text_muted),
+    );
+}
 
 /// Nothing shared: share through a relay, or join with a link.
 fn idle(ui: &mut egui::Ui, t: &Tokens, panel: &mut Panel, command: &mut Option<(&'static str, serde_json::Value)>) {
@@ -750,4 +777,4 @@ fn shared(ui: &mut egui::Ui, t: &Tokens, live: &Live, role: Option<Role>, panel:
 }
 
 #[cfg(test)]
-mod tests;
+pub(super) mod tests;

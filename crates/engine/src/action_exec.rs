@@ -246,8 +246,18 @@ impl LocalActions {
     /// The image `value` names, decoded within the actions' limits: one of the project's, or one
     /// an earlier action in this run made (chains).
     fn raster(&self, value: Option<&Value>) -> Result<Raster, String> {
+        self.raster_with_svg(value, None)
+    }
+
+    fn raster_with_svg(&self, value: Option<&Value>, svg_edge: Option<u32>) -> Result<Raster, String> {
         self.check_work()?;
         let Some(Value::Media(source)) = value else { return Err("connect an image first".into()) };
+        if svg_edge.is_some() && source.mime.essence() != nodecraft_media::svg::MIME {
+            return Err("Rasterize SVG requires an SVG image".into());
+        }
+        if svg_edge.is_none() && source.mime.essence() == nodecraft_media::svg::MIME {
+            return Err("This tool needs a raster image; connect a Rasterize SVG action first".into());
+        }
         let staged = self
             .staged
             .lock()
@@ -276,6 +286,11 @@ impl LocalActions {
         }
         let actions = ImageLimits::default();
         let limits = decode_limits();
+        if let Some(edge) = svg_edge {
+            let svg = nodecraft_media::svg::render(bytes, edge, &limits).map_err(|e| format!("the SVG can't be rasterized: {e}"))?;
+            self.check_work()?;
+            return Raster::new(svg.width, svg.height, svg.rgba, actions).map_err(|e| format!("the SVG can't be processed: {e}"));
+        }
         let meta = nodecraft_media::probe_image(bytes, &limits).map_err(|e| format!("the input image can't be read: {e}"))?;
         if u64::from(meta.width).saturating_mul(u64::from(meta.height)) > actions.pixels {
             return Err(format!("the input image is larger than {} megapixels", actions.pixels / 1_000_000));
@@ -304,12 +319,24 @@ impl LocalActions {
     }
 
     fn image(&self, action: &str, params: &ParamValues, inputs: &[Value]) -> Result<Value, String> {
+        if action == nodecraft_nodes::svg::RASTERIZE {
+            let edge = u32::try_from(whole(params, "edge")?).ok().filter(|n| (1..=2048).contains(n)).ok_or("SVG raster edge must be 1 to 2048")?;
+            if params.len() != 1 || inputs.len() != 1 {
+                return Err("SVG rasterization requires one image and one edge setting".into());
+            }
+            return self.stage(&self.raster_with_svg(inputs.first(), Some(edge))?);
+        }
         let request = image_request(action, params)?;
         let source = self.raster(inputs.first())?;
         let overlay = if action == "image.overlay" { Some(self.raster(inputs.get(1))?) } else { None };
         let inputs = nodecraft_actions::image::ImageInputs { source: &source, overlay: overlay.as_ref() };
-        let mut executor = CpuExecutor::serial().with_work_check(self.work_check());
-        let result = request.execute(inputs, &mut executor, ImageLimits::default()).map_err(|e| self.control_error(format!("{action} failed: {e}")))?;
+        let result = match self.image_on_gpu(&request, inputs)? {
+            Some(result) => result,
+            None => {
+                let mut executor = CpuExecutor::serial().with_work_check(self.work_check());
+                request.execute(inputs, &mut executor, ImageLimits::default()).map_err(|e| self.control_error(format!("{action} failed: {e}")))?
+            }
+        };
         match result {
             ImageResult::Image(out) => self.stage(&out),
             // Duplicate's copies are the same image: encode once, refer to it as often as asked.
@@ -321,6 +348,29 @@ impl LocalActions {
                 _ => all.iter().map(|out| self.stage(out)).collect::<Result<Vec<_>, _>>().map(Value::List),
             },
         }
+    }
+}
+
+impl LocalActions {
+    /// `request` on the GPU, when the desktop app turned it on and one is there (#1058); `None`
+    /// runs it on the CPU. A result is charged the work it would take on the CPU, so a live round's
+    /// budget counts it the same way; one that falls back is charged by the CPU as it goes.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn image_on_gpu(&self, request: &ImageRequest, inputs: nodecraft_actions::image::ImageInputs<'_>) -> Result<Option<ImageResult>, String> {
+        if !image_gpu::enabled() {
+            return Ok(None);
+        }
+        // A request the CPU would refuse is left to it, which says why.
+        let Ok(work) = request.prepare(inputs, ImageLimits::default()).and_then(|prepared| prepared.reference_work()) else { return Ok(None) };
+        self.check_work()?;
+        let Some(result) = image_gpu::execute(request, inputs, ImageLimits::default(), &|| self.check_work().is_err()) else { return Ok(None) };
+        self.charge_work(work)?;
+        Ok(Some(result))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn image_on_gpu(&self, _: &ImageRequest, _: nodecraft_actions::image::ImageInputs<'_>) -> Result<Option<ImageResult>, String> {
+        Ok(None)
     }
 }
 
@@ -361,6 +411,8 @@ mod capture_state;
 pub use capture_state::{CLOSE_WAIT as CAPTURE_CLOSE_WAIT, Shutdown as CaptureShutdown, shutdown as shutdown_captures};
 pub(crate) mod control;
 mod document;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod image_gpu;
 pub(crate) mod layers;
 mod mesh;
 mod mesh_capture;

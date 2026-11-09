@@ -15,7 +15,7 @@ fn role(name: &str, modality: Modality, min: u16, max: u16) -> GenerationRole {
     GenerationRole { role: name.into(), modality, min, max, inline: name == "prompt" }
 }
 fn mode(id: &str, roles: Vec<GenerationRole>) -> GenerationMode {
-    GenerationMode { id: ModeId::new(id).unwrap(), inputs: roles, params: None, audio: None, edit: None, document: None }
+    GenerationMode { id: ModeId::new(id).unwrap(), inputs: roles, params: None, audio: None, edit: None, document: None, reads: None }
 }
 fn kind(modes: Vec<GenerationMode>, video: bool) -> GenerationKind {
     let model = GenerationModel {

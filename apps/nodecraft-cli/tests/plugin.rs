@@ -206,7 +206,9 @@ fn lint_refuses_reserved_names_and_rights_this_build_cant_grant() {
 
 #[test]
 fn bad_arguments_are_explained() {
-    assert!(stderr(&cli(&["plugin"])).contains("pack, inventory, lint or key"));
+    assert!(stderr(&cli(&["plugin"])).contains("pack, inventory, lint, try or key"));
+    assert!(stderr(&cli(&["plugin", "try", "a"])).contains("a package file and a registration"));
+    assert!(stderr(&cli(&["plugin", "try", "a", "b", "--input", "nope"])).contains("<name>=<text>"));
     assert!(stderr(&cli(&["plugin", "pack", "."])).contains("--out"));
     assert!(stderr(&cli(&["plugin", "lint", "a", "b"])).contains("one package file"));
     assert!(stderr(&cli(&["plugin", "lint", "a", "--out", "b"])).contains("doesn't take --out"));
@@ -343,4 +345,22 @@ fn a_package_over_a_budget_is_refused_with_too_large() {
     });
     let error = refusal(descriptor.path());
     assert!(error.contains("too_large"), "{error}");
+}
+
+/// #866: `plugin try` runs the example text action on its inputs, with nothing installed.
+#[test]
+fn the_example_text_action_can_be_tried() {
+    let out = tempfile::tempdir().unwrap();
+    let file = out.path().join("shout.ncraft-plugin");
+    pack(&example("shout"), &file);
+    let report = json(&cli(&["plugin", "try", s(&file), "shout", "--input", "words=hello there"]));
+    assert_eq!(report["outputs"]["out"], "HELLO THERE", "{report}");
+    // A scripted replies file that isn't a list is refused before anything runs.
+    let replies = out.path().join("replies.json");
+    std::fs::write(&replies, "{}").unwrap();
+    assert!(stderr(&cli(&["plugin", "try", s(&file), "shout", "--replies", s(&replies)])).contains("isn't a JSON list"));
+    // A run that fails exits non-zero.
+    let failed = cli(&["plugin", "try", s(&file), "shout"]);
+    assert!(!failed.status.success());
+    assert!(stderr(&failed).contains("the action failed"));
 }

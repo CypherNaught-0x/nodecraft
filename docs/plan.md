@@ -162,7 +162,9 @@ lacks: staleness tracking, optional caching, and live deterministic nodes.
   node count and **total estimated cost** before you confirm.
 - **Run modes:** *Run selected* (upstream must already have results; otherwise "can't run yet"
   with the missing input highlighted), *Run with upstream* (also runs stale or empty
-  ancestors), *Run field*, *Run all stale*.
+  ancestors), *Run field*, *Run all stale*, *Run changed* (⌘/Ctrl+Enter: stale, part-made or
+  never-run cards with what they need) and *Run workflow* (every generative card). Each is
+  quoted and confirmed before it starts (#965).
 - **Staleness instead of silent drift.** Each generation records the content hash of the
   inputs it consumed. When an upstream result or parameter changes, downstream nodes are not
   re-run (it costs money) but get a **stale badge** and can be refreshed in one click.
@@ -315,12 +317,13 @@ See [provider availability](providers.md#retired-apis) before reviving this work
 - Provider-agnostic LLM tool loop; Anthropic Claude as the default backend, local models
   supported.
 
-### 2.7 Collaboration (later, designed for from day one)
+### 2.7 Collaboration
 
-- Every mutation is already a serialisable changeset (§4.3), so live sync is "ship changesets",
-  not a rewrite. Plan: CRDT document (`yrs`/Yjs-compatible or `automerge`) behind the
-  `graph` changeset API, a small relay server, presence (named cursors, avatars, selections),
-  shared comments, share links with roles (view / comment / edit), private canvases.
+Desktop and browser peers share canvas edits through `nodecraft-cli relay`. The engine maps the
+project to a yrs document and applies remote changes through the same graph API as local edits.
+Share links grant view, comment or edit access. Named pointers and selections show who is working
+where, and private canvases stay out of the room. See [live sharing](architecture.md#live-sharing-119)
+and [relay setup](install.md#live-sharing-in-the-browser).
 
 ---
 
@@ -467,7 +470,7 @@ UI / CLI / MCP / agent ──► engine.dispatch(CommandId, params)
 ```
 
 Job results come back as events and are applied as `AddGeneration` changesets, so history, undo,
-autosave and future collaboration all see them the same way.
+autosave and collaboration all see them the same way.
 
 ### 4.4 Execution engine (`exec`)
 
@@ -489,10 +492,12 @@ browser. HTTP via `reqwest` (works on both).
 
 - **Images:** `image` crate (+ `fast_image_resize`); thumbnails per content hash; GPU textures
   cached and evicted by LRU budget.
-- **Video:** FFmpeg via a sidecar process (`ffmpeg-sidecar`-style) behind the `video` feature
-  on desktop; decode frames for previews/scrubbing, encode for timeline renders and actions.
-  Pure-Rust paths (e.g. `rav1e`/`re_mp4` style) evaluated later; browser uses WebCodecs.
-- **Audio:** `symphonia` decode, `rodio`/`cpal` playback, waveform thumbnails.
+- **Video:** the optional library feature `nodecraft-media/video` provides bounded FFmpeg
+  processes. The native app enables it through its dependencies and discovers installed
+  FFmpeg and ffprobe for previews, scrubbing, Timeline renders and video actions.
+- **Audio:** the native host uses FFmpeg for bounded PCM decode and `cpal` for sound card
+  playback, with cached waveform thumbnails. Browser playback and native FFmpeg operations
+  are unsupported. See [native media](media-video.md).
 - **3D:** `gltf` import/export (+ OBJ), wgpu viewer as an egui paint callback, offscreen render
   for photo/turntable/sheet capture.
 - **PDF:** page rendering and text extraction through `craft-pdf` (pure Rust, from craft-libs;
@@ -670,7 +675,7 @@ scripts (`packaging/env.sh`, `packaging/{macos,windows,linux}/…`, modelled on 
 | Licence | MIT OR Apache-2.0 | Same as the Craft suite and craft-libs |
 | Shared libraries | craft-libs (`craft-ui`, `craft-settings`, `craft-atomic`, `craft-quit`, `craft-pdf`), pinned by rev | Shared look and behaviour with the Craft apps; fixes land upstream once |
 | Multi-user work | `/claim` bot + draft-PR claims (CONTRIBUTING.md) | Lets several people and agents pick issues without collisions |
-| Video | FFmpeg sidecar behind a feature | Only realistic route to broad codec support today; keeps core pure Rust |
+| Video | Bounded installed FFmpeg and ffprobe processes, enabled in native builds | Broad codec support without linking FFmpeg into NodeCraft |
 | Custom actions | LLM-written WGSL with declared params | Sandboxed by construction, GPU fast, parameters become sliders |
 | Persistence | Local `.ncraft` + content-addressed assets | Offline, portable, dedupes variations; cloud sync is an add-on |
 | Distribution | GitHub releases from our own workflow modelled on the shared Craft one: desktop installers, CLI with integrated MCP server, wasm web bundle | Same artifact names as the other Craft apps; releases don't wait for signing |
@@ -765,7 +770,47 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   (#173); a session-only store in the browser (#823); structured property tests over hostile
   archives and failing operation sequences (#824).
 - [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
-- [ ] Close the M4 documentation follow-up (#375), then GitHub can mark its milestone closed.
+- [x] Close the M4 documentation follow-up (#375).
+
+### M7 video and audio
+
+M7's feature and exit-criterion checklist:
+
+- [x] Native video card playback and scrubbing (#105), audio waveforms and playback (#106)
+  and playback while minimized (#666). Installed FFmpeg and ffprobe support native preview,
+  actions and rendering (#107, #411). Audio and video durations are probed at import (#572, #608).
+- [x] Explicit video actions and Timeline renders (#108, #109). Timeline includes captions
+  (#574), layered picture and audio tracks (#576), clip placement, speed and snapping (#577),
+  source version tracking (#578), and staged filter scripts with short relative paths (#642).
+- [x] Timeline interchange exports the cut and source media (#166). Cross-editor import
+  verification and cancellable background export remain separate follow-up work (#643).
+- [x] ComfyUI video/audio workflows (#110), Generate video and audio cards (#559, #672),
+  fal video modes (#607) and provider-specific video editing (#179).
+- [x] Gemini Omni video (#17), Veo on Google Cloud (#742), Seedance (#18), Kling (#19),
+  ElevenLabs (#20), Google TTS (#21), prompt-length quotes (#673) and desktop ElevenLabs
+  voice choices and streamed speech previews (#670, #671, #875).
+- [x] Exit criterion: four picture clips with sound and fades rendered through the Timeline
+  run host. See the [four-clip render check](media-video.md#m7-four-clip-render-check).
+- [x] M7 documentation close-out (#378).
+
+### M10 sharing and collaboration
+
+M10's feature and exit-criterion checklist (#381 closes the documentation follow-up):
+
+- [x] Browser preview with project files, keys stored per site, supported runs and recovery
+  (#118, #717). Provider servers and background option fetching (#721).
+- [x] CRDT document mirror, bounded relay and desktop Share/Join (#119, #698). Browser WebSocket
+  transport (#699), paced large-asset transfer on desktop (#700), and asset queue, retry and
+  cancellation fixes (#842, #855, #880).
+- [x] Named presence and selections (#120). View/comment/edit links, signed comments, revocation
+  and private canvases (#121).
+- [x] Deck presentation, slide editor and sorter, PDF/PNG export, per-deck fonts and remapped
+  sources on copy (#122, #692–#695).
+- [x] Exit criterion. The [real relay integration test](../apps/nodecraft-cli/tests/relay.rs)
+  has two peers edit the same canvas, checks convergence and then verifies a late joiner.
+  The [desktop sharing tests](../crates/ui-egui/src/app/sharing/tests.rs) also cover opening and
+  joining a live room through the app host on loopback.
+- [x] Close the M10 documentation follow-up (#381).
 
 ---
 

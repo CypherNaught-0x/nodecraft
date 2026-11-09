@@ -29,11 +29,9 @@ fn wheel(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2, modifiers: egui::Mod
     h.run();
 }
 
-fn label(entry: &palette::Entry) -> String {
-    match &entry.shortcut {
-        Some(key) => format!("{}    {key}", entry.label),
-        None => entry.label.clone(),
-    }
+/// A row's accessible name as the harness spells it (kittest reports Linux on every host).
+fn label(h: &Harness<'static, NodeCraftApp>, entry: &palette::Entry) -> String {
+    palette::row_name(&h.ctx, entry)
 }
 
 #[test]
@@ -41,15 +39,22 @@ fn wheel_reaches_a_later_palette_row_without_moving_canvas_and_click_selects_it(
     let mut h = open_palette();
     let entry = h.state().palette_entries().get(16).unwrap().clone();
     let palette::Target::Kind(kind) = &entry.target else { panic!("fixture must offer a kind") };
-    assert!(h.query_by_label(&label(&entry)).is_none(), "later row starts outside the viewport");
+    assert!(h.query_by_label(&label(&h, &entry)).is_none(), "later row starts outside the viewport");
     let view = h.state().view;
     let document = h.state().session.document().clone();
     let pos = menu_rect(&h, "quick_add_palette").center();
-    wheel(&mut h, pos, egui::Modifiers::NONE);
-    assert!(h.state().palette.is_some(), "wheel must scroll the palette instead of closing it");
+    // Two-line rows under section headings (#1121): wheel until the row comes into view.
+    for _ in 0..8 {
+        let menu = menu_rect(&h, "quick_add_palette");
+        if h.query_by_label(&label(&h, &entry)).is_some_and(|row| menu.contains_rect(row.rect())) {
+            break;
+        }
+        wheel(&mut h, pos, egui::Modifiers::NONE);
+        assert!(h.state().palette.is_some(), "wheel must scroll the palette instead of closing it");
+    }
     assert_eq!(h.state().view, view);
     assert_eq!(h.state().session.document(), &document);
-    h.get_by_label(&label(&entry)).click();
+    h.get_by_label(&label(&h, &entry)).click();
     h.run();
     assert!(h.state().palette.is_none());
     let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
@@ -66,7 +71,7 @@ fn keyboard_reaches_later_rows_and_filtering_resets_the_scroll() {
         h.run();
     }
     assert_eq!(h.state().palette.as_ref().unwrap().highlighted, 17);
-    let row = h.get_by_label(&label(&entry)).rect();
+    let row = h.get_by_label(&label(&h, &entry)).rect();
     assert!(menu_rect(&h, "quick_add_palette").contains_rect(row), "keyboard highlight is visible");
     h.event(egui::Event::Text("Audio".into()));
     h.run();
@@ -124,7 +129,7 @@ fn reopening_each_menu_resets_its_scroll_to_the_highlighted_first_row() {
     for palette in [true, false] {
         let mut h = if palette { open_palette() } else { open_turn_into() };
         let area = if palette { "quick_add_palette" } else { "turn_into_menu" };
-        let first_label = if palette { label(h.state().palette_entries().first().unwrap()) } else { "Turn into Choice 00".into() };
+        let first_label = if palette { label(&h, h.state().palette_entries().first().unwrap()) } else { "Turn into Choice 00".into() };
         let pos = menu_rect(&h, area).center();
         wheel(&mut h, pos, egui::Modifiers::NONE);
         assert!(h.query_by_label(&first_label).is_none());
@@ -182,4 +187,38 @@ fn render_palette_scroll_evidence() {
     let pos = menu_rect(&h, "turn_into_menu").center();
     wheel(&mut h, pos, egui::Modifiers::NONE);
     h.render().unwrap().save(root.join("turn-into-scrolled.png")).unwrap();
+}
+
+/// #1117: a row's shortcut is spelled for this platform and painted right-aligned, apart from
+/// its label, rather than a few spaces after it.
+#[test]
+fn palette_shortcuts_are_platform_spelled_and_right_aligned() {
+    let mut h = open_palette();
+    let entry = h.state().palette_entries().into_iter().find(|entry| entry.shortcut.as_deref() == Some("A")).expect("a kind with a one-key shortcut");
+    // Its section may start below the fold (#1121): ask for it by name.
+    h.event(egui::Event::Text(entry.label.clone()));
+    h.run();
+    let name = palette::row_name(&h.ctx, &entry);
+    assert_eq!(name, format!("{} (A)", entry.label));
+    let row = h.get_by_label(&name).rect();
+    let galleys = |text: &str| -> Vec<egui::Rect> {
+        h.output()
+            .shapes
+            .iter()
+            .filter_map(|clipped| match &clipped.shape {
+                egui::epaint::Shape::Text(shape) if shape.galley.text() == text => Some(shape.visual_bounding_rect()),
+                _ => None,
+            })
+            .filter(|rect| rect.center().y > row.top() && rect.center().y < row.bottom())
+            .collect()
+    };
+    let label = galleys(&entry.label).into_iter().next().expect("the label is painted in its row");
+    let key = galleys("A").into_iter().next().expect("the shortcut is painted in its row");
+    assert!(key.left() > label.right() + 20.0, "a gap separates the shortcut from the label: {label:?} {key:?}");
+    assert!(row.right() - key.right() < 16.0, "the shortcut sits against the row's right edge: {row:?} {key:?}");
+    // The engine's raw "Command" never reaches the screen: the palette's own entries are spelled.
+    let spelled: Vec<String> =
+        h.state().palette_entries().iter().filter_map(|entry| entry.shortcut.as_deref()).map(|key| crate::shortcut::format_shortcut(&h.ctx, key)).collect();
+    assert!(!spelled.is_empty(), "some entries have shortcuts");
+    assert!(spelled.iter().all(|key| !key.contains("Command")), "{spelled:?}");
 }

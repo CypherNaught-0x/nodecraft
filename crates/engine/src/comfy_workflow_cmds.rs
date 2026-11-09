@@ -150,11 +150,22 @@ pub fn finish(session: &mut Session, id: u64, fetched: Result<Fetched, Error>) -
 pub fn forget(session: &mut Session) {
     crate::comfy_partner_quotes::forget(session, None);
     session.swap_resource::<ComfyNodes>(None);
+    session.swap_resource::<crate::comfy_models::ListedServer>(None);
     session.swap_resource::<LastFetch>(None);
     if let Some(mut lists) = session.swap_resource::<OptionLists>(None) {
         lists.clear_sources("comfyui.");
         session.swap_resource(Some(lists));
     }
+}
+
+/// The default server's installed node list, for reading its models (#970).
+pub(crate) fn installed(resources: &crate::commands::Resources) -> Option<&NodeCatalog> {
+    resources.get::<ComfyNodes>().map(|nodes| nodes.0.as_ref())
+}
+
+/// The id of the default server's last check, which a refresh changes (#970).
+pub(crate) fn last_id(resources: &crate::commands::Resources) -> Option<u64> {
+    resources.get::<LastFetch>().map(|last| last.0.id)
 }
 
 /// The last fetch's outcome, and how many node types are installed.

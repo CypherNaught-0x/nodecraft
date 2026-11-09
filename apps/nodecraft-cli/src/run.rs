@@ -6,6 +6,7 @@
 //! hang on a prompt. Jobs run on a small tokio runtime, as the app's do, and the CLI waits for
 //! them. Results are exported with `history.export` and never replace a file; the project file
 //! itself is left unchanged.
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ use nodecraft_engine::Session;
 use nodecraft_engine::commands::Services;
 use nodecraft_engine::jobs::JobBudget;
 use nodecraft_engine::run_host::{RunHost, RunNotice};
+use nodecraft_engine::run_jobs::JobKey;
 use nodecraft_exec::cost::{Budgets, UsageLog};
 use nodecraft_exec::driver::{Runtime, TaskFuture};
 use nodecraft_types::{CanvasId, Error, ErrorKind, NodeId, Value as Output};
@@ -81,13 +83,31 @@ const CANCEL_GRACE: Duration = Duration::from_secs(30);
 pub struct Runner {
     host: RunHost,
     tokio: Option<tokio::runtime::Runtime>,
+    /// Told how much of a sound has arrived while it streams (#1070).
+    progress: Option<Progress>,
 }
+
+/// Where a runner says how much of a sound has arrived: one line at a time.
+pub type Progress = Box<dyn FnMut(&str) + Send>;
+
+/// The least time between two progress lines about one job.
+const PROGRESS_EVERY: Duration = Duration::from_secs(1);
 
 impl Runner {
     /// A runner whose commands are registered in `services`; give them to the session, then
     /// [`Self::install`] it.
     pub fn new(services: &mut Services, session_id: String) -> Result<Self, Error> {
         Self::with_runs(services, session_id, true, Spend::default())
+    }
+
+    /// [`Self::new`], asking providers that can for the sound so far while it arrives (#1070),
+    /// as the apps do to play it, and telling `progress` how much has come, at most once a
+    /// second a job. The previews are bounded by the provider's own stream limits.
+    pub fn with_progress(services: &mut Services, session_id: String, progress: Progress) -> Result<Self, Error> {
+        let mut runner = Self::build(session_id, Spend::default(), true)?;
+        runner.register(services, true)?;
+        runner.progress = Some(progress);
+        Ok(runner)
     }
 
     /// A runner held to `spend`'s budgets, together with every other runner given it.
@@ -101,6 +121,21 @@ impl Runner {
     }
 
     fn with_runs(services: &mut Services, session_id: String, runs: bool, spend: Spend) -> Result<Self, Error> {
+        let runner = Self::build(session_id, spend, false)?;
+        runner.register(services, runs)?;
+        Ok(runner)
+    }
+
+    fn register(&self, services: &mut Services, runs: bool) -> Result<(), Error> {
+        if runs {
+            self.host.register(services)?;
+            self.host.register_ownership(services)?;
+            self.host.register_resolution(services)?;
+        }
+        self.host.register_estimates(services)
+    }
+
+    fn build(session_id: String, spend: Spend, previews: bool) -> Result<Self, Error> {
         let tokio = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .thread_name("nodecraft-runs")
@@ -116,14 +151,8 @@ impl Runner {
                 std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
             }),
         };
-        let host = RunHost::new(runtime, budget);
-        if runs {
-            host.register(services)?;
-            host.register_ownership(services)?;
-            host.register_resolution(services)?;
-        }
-        host.register_estimates(services)?;
-        Ok(Self { host, tokio: Some(tokio) })
+        let host = RunHost::new(runtime, budget).with_previews(previews);
+        Ok(Self { host, tokio: Some(tokio), progress: None })
     }
 
     /// Dispatches the shared estimate command and waits for its own terminal host notice.
@@ -181,7 +210,7 @@ impl Runner {
             },
         );
         host.register_estimates(services)?;
-        Ok(Self { host, tokio: None })
+        Ok(Self { host, tokio: None, progress: None })
     }
 
     /// Hands the run host's budget state to `session`; call after the providers are routed.
@@ -201,7 +230,12 @@ impl Runner {
 
     pub fn key_test_host(&self, http: Arc<dyn nodecraft_providers::Http>) -> Result<nodecraft_engine::key_test::KeyTestHost, Error> {
         let runtime = self.tokio.as_ref().ok_or_else(|| Error::new(ErrorKind::Unsupported, "provider checks need the CLI runtime"))?;
-        Ok(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::new(Tokio { handle: runtime.handle().clone(), start: Instant::now() }), http })
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(|| vec![nodecraft_engine::settings::peek().providers]);
+        Ok(nodecraft_engine::key_test::KeyTestHost {
+            runtime: Arc::new(Tokio { handle: runtime.handle().clone(), start: Instant::now() }),
+            http,
+            providers: Some(providers),
+        })
     }
 
     /// Runs `targets` with their stale upstream (every stale card when empty) once `quote`'s
@@ -233,6 +267,7 @@ impl Runner {
             started.get("reused").and_then(Value::as_array).into_iter().flatten().map(|node| json!({"node": node, "status": "reused"})).collect();
         let mut finished = false;
         let mut cancelled: Option<Instant> = None;
+        let mut told: BTreeMap<JobKey, (usize, Instant)> = BTreeMap::new();
         let timed_out =
             || Error::new(ErrorKind::Timeout, "the run took longer than it may and was cancelled; jobs a provider had already accepted may still be charged");
         loop {
@@ -258,6 +293,7 @@ impl Runner {
             if finished || !self.host.is_busy() {
                 return if cancelled.is_some() { Err(timed_out()) } else { Ok(steps) };
             }
+            self.tell_progress(canvas, &mut told);
             let now = Instant::now();
             match (deadline, cancelled) {
                 (Some(deadline), None) if now >= deadline => {
@@ -270,6 +306,29 @@ impl Runner {
             std::thread::sleep(PUMP_EVERY);
         }
     }
+}
+
+impl Runner {
+    /// Says how much of each sound on `canvas` has arrived, when it grew and the job wasn't
+    /// told about in the last [`PROGRESS_EVERY`]. `told` holds what each job was last told.
+    fn tell_progress(&mut self, canvas: CanvasId, told: &mut BTreeMap<JobKey, (usize, Instant)>) {
+        let Some(progress) = &mut self.progress else { return };
+        let now = Instant::now();
+        for job in self.host.jobs() {
+            let Some(preview) = job.preview.as_ref().filter(|_| job.canvas == canvas) else { continue };
+            let arrived = preview.bytes.len();
+            if due(told.get(&job.key).copied(), arrived, now) {
+                told.insert(job.key, (arrived, now));
+                progress(&format!("{}: {} KiB of sound so far", job.node, arrived / 1024));
+            }
+        }
+    }
+}
+
+/// Whether a job last told `told` (bytes, when) should be told it now has `arrived` bytes: the
+/// first time, and then only once it grew and [`PROGRESS_EVERY`] passed.
+fn due(told: Option<(usize, Instant)>, arrived: usize, now: Instant) -> bool {
+    told.is_none_or(|(last, at)| arrived > last && now.saturating_duration_since(at) >= PROGRESS_EVERY)
 }
 
 impl Drop for Runner {

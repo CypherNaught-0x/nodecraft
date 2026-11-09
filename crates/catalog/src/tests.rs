@@ -75,6 +75,24 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
                 other => panic!("{other}: no verified Grok price"),
             };
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id.starts_with("fal.heygen-") {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None);
+        } else if model.id.starts_with("fal.minimax-") {
+            let micros = if model.id == "fal.minimax-music3" {
+                Some(120_000)
+            } else if model.id == "fal.minimax-speech28-hd" {
+                None
+            } else {
+                Some(250_000)
+            };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), micros.map(|n| Money::new(Currency::USD, n)));
+        } else if model.id == "fal.pika25-i2v" || model.id == "fal.pika25-keyframes" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 250_000)));
+        } else if model.id == "fal.topaz-precision" {
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 80_000)));
+        } else if matches!(model.id.as_str(), "fal.recraft41" | "fal.recraft41-vector") {
+            let price = if model.id.ends_with("-vector") { 80_000 } else { 35_000 };
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, price)));
         } else if model.id == "fal.bria-rmbg" {
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 18_000)));
@@ -117,6 +135,46 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             let mut short = ParamValues::new();
             short.insert("max_tokens".into(), Value::Unsigned(Unsigned(1000)));
             assert_eq!(model.quote(&short).unwrap(), Some(Money::new(Currency::USD, per_thousand)), "{}", model.id);
+        } else if ["groq", "xai"].contains(&model.provider.as_str()) {
+            // Reasoning models whose docs don't say `max_tokens` caps reasoning (#1122): no
+            // up-front quote, settled at the vendors' per-token rates (read 2026-11-08).
+            assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD }, "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{}", model.id);
+            let rates = model.usage.as_ref().unwrap_or_else(|| panic!("{}: no usage rates", model.id));
+            let (input, output) = match model.id.as_str() {
+                "groq.gpt-oss-120b" => (150, 600),
+                "groq.gpt-oss-20b" => (75, 300),
+                "xai.grok-4.7" => (2_000, 6_000),
+                "xai.grok-4.3" => (1_250, 2_500),
+                other => panic!("{other}: no verified rates in this test"),
+            };
+            assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, input), Money::new(Currency::USD, output)), "{}", model.id);
+        } else if ["deepseek", "mistral"].contains(&model.provider.as_str()) {
+            // Chat models (#1122): the output price per 1000 tokens, counted on max_tokens. From the
+            // vendors' own pages, read 2026-11-08 (each catalog file cites its page): DeepSeek's
+            // peak rate, so each quote stays an upper bound.
+            let Pricing::PerUnit { unit: Unit::ThousandTokens, price, count: Some(count), default_count: None } = &model.pricing else {
+                panic!("{}: {:?}", model.id, model.pricing)
+            };
+            assert_eq!(count, "max_tokens", "{}", model.id);
+            let per_thousand = match model.id.as_str() {
+                "deepseek.flash" => 1_200,
+                "deepseek.v4-pro" => 3_960,
+                "mistral.large-4" => 2_100,
+                "mistral.small-4" => 600,
+                other => panic!("{other}: no verified price in this test"),
+            };
+            assert_eq!(price.0, Money::new(Currency::USD, per_thousand), "{}", model.id);
+            if model.id == "mistral.small-4" {
+                // Unlabelled prices: the higher for both rates.
+                let rates = model.usage.as_ref().unwrap();
+                assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, 600), Money::new(Currency::USD, 600)));
+            }
+            for thousands in [1, 2] {
+                let mut capped = ParamValues::new();
+                capped.insert("max_tokens".into(), Value::Unsigned(Unsigned(thousands * 1000)));
+                assert_eq!(model.quote(&capped).unwrap(), Some(Money::new(Currency::USD, per_thousand * thousands)), "{}", model.id);
+            }
         } else if model.provider == "elevenlabs" {
             // ElevenLabs pricing page, checked 2026-10-21.
             match model.id.as_str() {
@@ -205,6 +263,36 @@ fn builtin_prices_preserve_free_unknown_and_documented_estimates() {
             // Fixed Balanced rendering and one output (#34), checked 2026-10-27.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
             assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 60_000)));
+        } else if model.id == "bfl.flux-2-klein-4b" {
+            // By output megapixels (#1062); quoted in bfl_klein_is_priced_per_output_megapixel_rounded_up.
+            assert!(matches!(&model.pricing, Pricing::PerOutputMegapixel { .. }));
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, 14_000)));
+        } else if model.provider == "bfl" {
+            // The other direct BFL models (#1060), from bfl.ai/pricing on 2026-11-06: FLUX.2 by
+            // output megapixels (the default 1024 x 1024 is one), Kontext per image.
+            let first = match model.id.as_str() {
+                "bfl.flux-2-klein-9b" => 15_000,
+                "bfl.flux-2-pro" => 30_000,
+                "bfl.flux-2-max" => 70_000,
+                "bfl.flux-2-flex" => 50_000,
+                "bfl.flux-kontext-pro" => 40_000,
+                "bfl.flux-kontext-max" => 80_000,
+                other => panic!("an unlisted BFL model {other}"),
+            };
+            assert!(matches!(&model.pricing, Pricing::PerOutputMegapixel { .. } | Pricing::PerCall { .. }), "{}", model.id);
+            assert_eq!(model.quote(&ParamValues::new()).unwrap(), Some(Money::new(Currency::USD, first)), "{}", model.id);
+            // Two megapixels (2048 x 1024) adds one `additional` for FLUX.2.
+            let additional = match model.id.as_str() {
+                "bfl.flux-2-klein-9b" => Some(2_000),
+                "bfl.flux-2-pro" => Some(15_000),
+                "bfl.flux-2-max" => Some(30_000),
+                "bfl.flux-2-flex" => Some(50_000),
+                _ => None,
+            };
+            if let Some(additional) = additional {
+                let two: ParamValues = [("width".into(), Value::Unsigned(Unsigned(1984))), ("height".into(), Value::Unsigned(Unsigned(1056)))].into();
+                assert_eq!(model.quote(&two).unwrap(), Some(Money::new(Currency::USD, first + additional)), "{}", model.id);
+            }
         } else if model.id == "higgsfield.soul-id-trainer" {
             // Soul ID training's list price per request (#680), checked 2026-10-22.
             assert!(matches!(&model.pricing, Pricing::PerCall { .. }));
@@ -252,7 +340,11 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert_eq!(
         order,
         vec![
+            ("bfl.flux-2-max", true),
+            ("bfl.flux-2-flex", true),
+            ("bfl.flux-2-pro", true),
             ("bfl.flux-2-klein-4b", true),
+            ("bfl.flux-2-klein-9b", true),
             ("comfyui.flux-dev", true),
             ("comfyui.sdxl", true),
             ("fal.flux-schnell", true),
@@ -260,6 +352,8 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.ideogram-v3", true),
             ("fal.luma-photon", true),
             ("fal.qwen-image3", true),
+            ("fal.recraft41-vector", true),
+            ("fal.recraft41", true),
             ("gemini-images.pro", true),
             ("gemini-images.nano-banana-2.1", true),
             ("gemini-images.flash-lite", true),
@@ -279,7 +373,13 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("anthropic.claude-sonnet-5-5", false),
             ("anthropic.claude-haiku-5-5", false),
             ("azure-openai.deployment", false),
+            ("bedrock.gpt-oss-120b", false),
+            ("bedrock.gpt-oss-20b", false),
+            ("bfl.flux-kontext-max", false),
+            ("bfl.flux-kontext-pro", false),
             ("deepgram.nova-3", false),
+            ("deepseek.v4-pro", false),
+            ("deepseek.flash", false),
             ("elevenlabs.v3", false),
             ("elevenlabs.multilingual-v2", false),
             ("elevenlabs.music", false),
@@ -289,12 +389,22 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("fal.flux-lora", false),
             ("fal.ltx23", false),
             ("fal.ltx23-i2v", false),
+            ("fal.minimax-h3-i2v", false),
+            ("fal.minimax-h3", false),
+            ("fal.minimax-music3", false),
+            ("fal.minimax-speech28-hd", false),
+            ("fal.pika25-i2v", false),
+            ("fal.pika25-keyframes", false),
+            ("fal.topaz-precision", false),
             ("fal.bria-rmbg", false),
             ("fal.esrgan", false),
             ("fal.flux-lora-trainer", false),
             ("fal.grok-image2-edit", false),
             ("fal.grok-video15", false),
             ("fal.grok-video15-i2v", false),
+            ("fal.heygen-lipsync-precision", false),
+            ("fal.heygen-lipsync-speed", false),
+            ("fal.heygen-avatar4", false),
             ("fal.hunyuan3d-v3-image", false),
             ("fal.hunyuan3d-v3-sketch", false),
             ("fal.hunyuan3d-v3", false),
@@ -326,21 +436,27 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("google-veo.veo-3.1", false),
             ("google-veo.veo-3.1-fast", false),
             ("google-veo.veo-3.1-lite", false),
+            ("groq.gpt-oss-120b", false),
+            ("groq.gpt-oss-20b", false),
             ("higgsfield.genjutsu-motion-transfer", false),
             ("higgsfield.genjutsu-object-swap", false),
             ("higgsfield.genjutsu-restyle", false),
+            ("higgsfield.soul-2-i2i", false),
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("huggingface.gpt-oss-120b-groq", false),
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
+            ("magnific.precision-v2", false),
             ("meshy.image-to-3d", false),
             ("meshy.multi-image-to-3d", false),
             ("meshy.remesh", false),
             ("meshy.retexture", false),
             ("meshy.retexture-image", false),
             ("meshy.text-to-3d", false),
+            ("mistral.large-4", false),
+            ("mistral.small-4", false),
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
@@ -358,7 +474,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("test.video", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
-            ("tripo.text-to-3d", false)
+            ("tripo.text-to-3d", false),
+            ("xai.grok-4.7", false),
+            ("xai.grok-4.3", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.
@@ -1102,4 +1220,117 @@ fn a_model_cards_dont_offer_is_kept_but_never_picked() {
     }
     let unlisted = PRICED.replace("quality = 5", "quality = 5\ncards = false");
     assert!(!Catalog::from_toml(&unlisted).unwrap().models().next().unwrap().cards);
+}
+
+/// A text model whose one mode takes `inputs` and declares `reads` (#84).
+fn watcher(inputs: &str, reads: &str, output: &str) -> Result<Catalog, nodecraft_types::Error> {
+    Catalog::from_toml(&format!(
+        r#"
+[[model]]
+id = "test.watcher"
+provider = "test"
+provider_model = "watcher-v1"
+label = "Test Watcher"
+description = "Reads clips."
+latency_s = 10
+quality = 3
+pricing = {{ type = "per_call", price = "0.01 USD" }}
+
+[[model.modes]]
+id = "read"
+output = "{output}"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}{inputs}]
+{reads}
+"#
+    ))
+}
+
+#[test]
+fn reading_capabilities_are_explicit_and_need_the_inputs_they_describe() {
+    const VIDEO: &str = r#", { role = "clip", modality = "video", min = 1, max = 1 }"#;
+    const AUDIO: &str = r#", { role = "talk", modality = "audio", min = 1, max = 1 }"#;
+    let catalog = watcher(VIDEO, r#"reads = { context_tokens = 32000, frames = { every_ms = 1000, max = 64 }, timestamps = true }"#, "text").unwrap();
+    let reads = catalog.get("test.watcher").unwrap().mode("read").and_then(|mode| mode.reads.clone()).unwrap();
+    assert_eq!(reads.frames, Some(nodecraft_types::FrameSampling { every_ms: 1000, max: 64 }));
+    assert!(reads.timestamps && !reads.speakers, "only what is declared is promised");
+    assert!(watcher(AUDIO, "reads = { timestamps = true, speakers = true }", "text").is_ok());
+    assert!(watcher("", "reads = { context_tokens = 200000, max_output_tokens = 8000 }", "text").is_ok());
+    assert!(watcher("", "", "text").unwrap().get("test.watcher").unwrap().mode("read").unwrap().reads.is_none(), "declaring nothing is allowed");
+    for (inputs, reads, output, reason) in [
+        (VIDEO, "", "text", "says how it samples frames"),
+        (VIDEO, "reads = { context_tokens = 32000 }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { frames = { every_ms = 1000, max = 64 } }", "text", "exactly when the mode takes a video"),
+        ("", "reads = { speakers = true }", "text", "need an audio or video input"),
+        ("", "reads = { context_tokens = 0 }", "text", "`context_tokens` is 1 to"),
+        (VIDEO, "reads = { frames = { every_ms = 0, max = 64 } }", "text", "`frames.every_ms`"),
+        ("", "reads = { context_tokens = 1000, max_output_tokens = 2000 }", "text", "can't be more than"),
+        ("", "reads = { context_tokens = 1000 }", "image", "describes a text answer"),
+        ("", "reads = { fps = 1 }", "text", ""),
+        ("", "reads = { video_bytes = 1000 }", "text", "need a video input"),
+        ("", r#"reads = { video_types = ["video/mp4"] }"#, "text", "need a video input"),
+        (VIDEO, r#"reads = { frames = { every_ms = 1000, max = 64 }, video_types = ["image/png"] }"#, "text", "`video_types`"),
+    ] {
+        let error = watcher(inputs, reads, output).unwrap_err();
+        assert!(error.message.contains(reason), "{reads}: {}", error.message);
+    }
+}
+
+/// #1062: FLUX.2 [klein] 4B is priced by output megapixels, rounded up (bfl.ai/pricing).
+#[test]
+fn bfl_klein_is_priced_per_output_megapixel_rounded_up() {
+    let catalog = Catalog::builtin().unwrap();
+    let model = catalog.get("bfl.flux-2-klein-4b").unwrap();
+    let usd = |micros| Some(Money::new(Currency::USD, micros));
+    let size = |w: u64, h: u64| -> ParamValues { [("width".into(), Value::Unsigned(Unsigned(w))), ("height".into(), Value::Unsigned(Unsigned(h)))].into() };
+    assert_eq!(model.quote(&Default::default()).unwrap(), usd(14_000), "the default 1024 x 1024 is one megapixel");
+    assert_eq!(model.quote(&size(64, 64)).unwrap(), usd(14_000), "never less than one");
+    assert_eq!(model.quote(&size(1024, 1040)).unwrap(), usd(15_000), "a pixel over is the next megapixel");
+    assert_eq!(model.quote(&size(1984, 1984)).unwrap(), usd(17_000), "3.75 MP is charged as 4");
+}
+
+/// #1062: megapixel pricing reads two distinct settings that are always there; anything else is
+/// refused when the catalog loads, never at quote time.
+#[test]
+fn impossible_megapixel_pricing_is_refused() {
+    let model = |pricing: &str, height: &str| {
+        format!(
+            r#"
+[[model]]
+id = "test.image"
+provider = "test"
+provider_model = "image-v1"
+label = "Test Image"
+description = "Priced by area."
+latency_s = 1
+quality = 1
+pricing = {pricing}
+[[model.modes]]
+id = "text-to-image"
+output = "image"
+inputs = [{{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }}]
+[[model.params.params]]
+name = "width"
+label = "Width"
+control = {{ type = "unsigned", min = "64", max = "2048", step = "16" }}
+default = {{ type = "unsigned", value = "1024" }}
+{height}"#
+        )
+    };
+    let height = r#"[[model.params.params]]
+name = "height"
+label = "Height"
+control = { type = "unsigned", min = "64", max = "2048", step = "16" }
+default = { type = "unsigned", value = "1024" }"#;
+    let priced = |w: &str, h: &str, first: &str| {
+        format!(r#"{{ type = "per_output_megapixel", width = "{w}", height = "{h}", first = "{first}", additional = "0.001 USD" }}"#)
+    };
+    assert!(Catalog::from_toml(&model(&priced("width", "height", "0.014 USD"), height)).is_ok());
+    for (pricing, height) in [
+        (priced("width", "width", "0.014 USD"), height),
+        (priced("width", "height", "0.014 USD"), ""),
+        (priced("width", "height", "0 USD"), height),
+        (priced("width", "height", "0.014 EUR"), height),
+    ] {
+        assert!(Catalog::from_toml(&model(&pricing, height)).is_err(), "{pricing} with {height:?}");
+    }
 }

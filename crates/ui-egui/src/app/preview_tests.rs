@@ -30,6 +30,26 @@ fn an_image_card_shows_its_picture_once_decoded() {
     assert_eq!(h.query_all_by_label("Image 8×6").count(), 1);
 }
 
+/// A tall image opens in the viewer smaller, inside the window, at both checked sizes (#959).
+#[test]
+fn a_tall_image_fits_the_viewer_inside_the_window() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let mut h = Harness::builder().with_size(size).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), harness().into_state());
+        let png = nodecraft_media::encode_png(100, 400, &[90; 100 * 400 * 4], &Default::default()).unwrap();
+        let canvas = h.state().canvas;
+        let at = nodecraft_graph::Position { x: 200.0, y: -110.0 };
+        let id = NodeId::from_bytes([41; 16]);
+        import_files(&mut h.state_mut().session, canvas, at, 300.0, &[Incoming { name: "tall.png", bytes: &png }], &[id]).unwrap();
+        assert!(wait_for(&mut h, "Image 100×400").is_some(), "the thumbnail appears");
+        h.state_mut().viewer = Some(id);
+        for _ in 0..4 {
+            h.run();
+        }
+        assert!(crate::floating::shown(&h.ctx).iter().any(|(shown, _)| *shown == egui::Id::new("image_viewer")), "the viewer is open");
+        crate::app::panel_check::check_open_panels(&h, &format!("Image viewer, tall image, at {size:?}"));
+    }
+}
+
 #[test]
 fn a_corrupt_image_says_so_without_panicking() {
     let mut h = harness();

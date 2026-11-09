@@ -15,7 +15,7 @@ struct State {
 
 const SHOUT: &str = r#"{"id":"user.shout","inputs":[{"kind":"text","name":"words"}],"label":"Shout","outputs":[{"expr":"upper(words)","kind":"text","name":"out"}],"schema":1,"version":1}"#;
 
-const PROVIDER: &str = r#"{"credential":"bearer","label":"Acme","limits":{"concurrency":1,"response_bytes":65536,"timeout_ms":30000},"models":[{"id":"acme/v1","price":{"currency":"USD","micros":"40000"}}],"origin":"https://api.acme.example","output_origins":["https://cdn.acme.example"],"schema":1,"submit":{"body":{"prompt":"{text:prompt}"},"method":"POST","outputs":[{"at":"/url","kind":"url","mime":"image/png"}],"path":"/v1/{model}"}}"#;
+const PROVIDER: &str = r#"{"credential":"bearer","idempotency":"idempotency-key","label":"Acme","limits":{"concurrency":1,"response_bytes":65536,"timeout_ms":30000},"models":[{"id":"acme/v1","price":{"currency":"USD","micros":"40000"}}],"origin":"https://api.acme.example","output_origins":["https://cdn.acme.example"],"schema":1,"submit":{"body":{"prompt":"{text:prompt}"},"method":"POST","outputs":[{"at":"/url","kind":"url","mime":"image/png"}],"path":"/v1/{model}"}}"#;
 
 /// A text action package file in `dir`, with `license` as its LICENSE text; its path.
 fn package(dir: &std::path::Path, runtime: &str, license: &str) -> String {
@@ -95,6 +95,14 @@ fn settle(h: &mut Harness<'static, State>) {
     h.run_steps(2);
 }
 
+/// Clicks the consent's Grant button, scrolling the panel to it first: the publisher's claims
+/// can push it below the panel's fold.
+fn click_grant(h: &mut Harness<'static, State>) {
+    h.get_by_label("Grant").scroll_to_me();
+    h.run();
+    h.get_by_label("Grant").click();
+}
+
 fn check(h: &mut Harness<'static, State>, location: &str) {
     h.state_mut().panel.location = location.to_owned();
     // The panel lists packages when it opens; a slow worker keeps it repainting until answered.
@@ -132,7 +140,7 @@ fn a_package_is_checked_installed_granted_enabled_and_uninstalled_through_the_pa
     settle(&mut h);
     h.get_by_label_contains("Let io.example.text run?");
     assert!(h.state().panel.rows()[0].grant.is_none(), "nothing is granted before the person agrees");
-    h.get_by_label("Grant").click();
+    click_grant(&mut h);
     settle(&mut h);
     assert!(h.state().panel.rows()[0].grant.is_some());
     h.get_by_label("Enable").click();
@@ -277,7 +285,10 @@ fn a_grant_gives_exactly_the_ticked_capabilities_and_their_addresses() {
     h.get_by_label("Grant…").click();
     settle(&mut h);
     h.get_by_label("reach the internet, only at the addresses listed (required)");
-    h.get_by_label("Grant").click();
+    // Where the key goes is said apart from where results come from (#174 review).
+    h.get_by_label("It sends your key to: https://api.acme.example");
+    h.get_by_label("It downloads results from, without the key: https://cdn.acme.example");
+    click_grant(&mut h);
     settle(&mut h);
     assert_eq!(granted(&mut h), (vec!["network".to_owned()], origins.clone()), "the unticked optional capability isn't granted");
     h.get_by_label("Revoke").click();
@@ -286,11 +297,53 @@ fn a_grant_gives_exactly_the_ticked_capabilities_and_their_addresses() {
     settle(&mut h);
     h.get_by_label("use one of your API keys").click();
     h.run();
-    h.get_by_label("Grant").click();
+    click_grant(&mut h);
     settle(&mut h);
     let (mut capabilities, reached) = granted(&mut h);
     capabilities.sort();
     assert_eq!((capabilities, reached), (vec!["network".to_owned(), "secret".to_owned()], origins));
+}
+
+/// #174: the consent shows what the template says of its service — its price per job and its
+/// idempotency claim — as its publisher's word, apart from what is granted.
+#[test]
+fn the_consent_shows_the_templates_prices_and_idempotency_claim_as_the_publishers_word() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut h = harness(direct());
+    settle(&mut h);
+    check(&mut h, &package(dir.path(), "provider_operations", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("Its publisher says (NodeCraft can't check this):");
+    h.get_by_label("Acme · acme/v1: USD 0.040000 a job");
+    assert!(h.query_all_by_label_contains("won't bill twice for a job sent again with the same idempotency-key").next().is_some());
+    let consent = h.state().panel.consent().unwrap();
+    assert_eq!(consent.claims.len(), 2);
+}
+
+/// Manual evidence: the consent with the publisher's claims, rendered on the GPU.
+#[test]
+#[ignore = "manual native GPU evidence; NODECRAFT_PLUGIN_CONSENT_RENDER_ROOT"]
+fn render_the_consent_with_the_publishers_claims() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_PLUGIN_CONSENT_RENDER_ROOT").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let panel = PluginsPanel { open: true, ..PluginsPanel::default() };
+    let mut h = Harness::builder()
+        .with_size(egui::Vec2::new(900.0, 700.0))
+        .wgpu()
+        .build_ui_state(|ui, s: &mut State| s.panel.show(ui.ctx(), &mut s.session, crate::theme::ThemeKind::Dark.tokens()), State { panel, session: direct() });
+    settle(&mut h);
+    check(&mut h, &package(dir.path(), "provider_operations", "MIT\n"));
+    h.get_by_label("Install").click();
+    settle(&mut h);
+    h.get_by_label("Grant…").click();
+    settle(&mut h);
+    h.get_by_label("Grant").scroll_to_me();
+    h.run();
+    h.render().unwrap().save(root.join("plugin-consent-claims.png")).unwrap();
 }
 
 /// Every update drops the grant, so a granted package's update preview and result say so.
@@ -304,7 +357,7 @@ fn updating_a_granted_package_says_its_grant_is_removed() {
     settle(&mut h);
     h.get_by_label("Grant…").click();
     settle(&mut h);
-    h.get_by_label("Grant").click();
+    click_grant(&mut h);
     settle(&mut h);
     assert!(h.state().panel.rows()[0].grant.is_some());
     h.state_mut().panel.update = true;
@@ -393,7 +446,7 @@ fn reloading_a_granted_package_leaves_it_disabled_until_granted_again() {
     settle(&mut h);
     h.get_by_label("Grant…").click();
     settle(&mut h);
-    h.get_by_label("Grant").click();
+    click_grant(&mut h);
     settle(&mut h);
     h.get_by_label("Enable").click();
     settle(&mut h);

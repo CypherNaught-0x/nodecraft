@@ -6,7 +6,9 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | Path | Title | Author | Source | License |
 |---|---|---|---|---|
 | `assets/comfy/template-mappings.v1.json`, `assets/comfy/LICENSE`, `crates/comfy/src/templates/fixtures/*.json` (workflow files and `pinned-selector-*` facts/provenance), `crates/comfy/src/templates/fixtures/LICENSE`, `docs/comfy-template-survey.md` | Structural template contracts, redacted test workflows, pinned selector facts and template inventory (adapted: original synthetic prompts/model/media names; no reference media) | Comfy Org; mapping choices and redaction by NodeCraft contributors | [Comfy-Org/workflow_templates@3c2199b](https://github.com/Comfy-Org/workflow_templates/tree/3c2199b9362457b12b9c60c6cc303501526ebd62/templates) | MIT |
-| `nodecraft-template-data` Git dependency, compiled workflow/fixture bytes | Original workflow templates moved from NodeCraft #952 with filtered history; immutable offline snapshot | NodeCraft contributors | [nodecraft-templates@c5e4f50](https://github.com/CypherNaught-0x/nodecraft-templates/tree/c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9) | MIT OR Apache-2.0 |
+| `crates/comfy/src/templates/fixtures/catalog-facts.json` | Minimal public `/object_info` protocol facts observed 2026-10-27; private options and prose removed | Comfy Org; selection by NodeCraft contributors | Public ComfyUI node-descriptor endpoint; provenance and limitations in the adjacent fixture README | Protocol facts; no implementation or documentation prose copied |
+| `crates/comfy/src/templates/fixtures/documented-nodes.json`, `documented-provenance.json` | Original projections of public interface names, types, choices and bounds; source URLs and retained collector metadata | NodeCraft contributors | [docs.comfy.org built-in node reference](https://docs.comfy.org/built-in-nodes); exact per-class URLs in `documented-provenance.json` | Interface facts only; no implementation or documentation prose copied |
+| `nodecraft-template-data` Git dependency, compiled workflow/fixture bytes | Original workflow templates moved from NodeCraft #952 with filtered history; immutable offline snapshot | NodeCraft contributors | [nodecraft-templates@5e7ed63](https://github.com/CypherNaught-0x/nodecraft-templates/tree/5e7ed638fa75d4615701832184e5141cfe7cc293) | MIT OR Apache-2.0 |
 | `scripts/claim/claim.js`, `scripts/claim/claim.test.js`, `.github/workflows/claim.yml` | `/claim` issue bot (adapted: NodeCraft paths, test fixtures; the workflow's comment filter uses `contains` so it matches the script's whitespace-tolerant parser) | SolidCraft contributors | [bherbruck/solidcraft@77b33ef](https://github.com/bherbruck/solidcraft/tree/77b33efd8f0e8498f4d0d00697419d0992150759/scripts/claim) | MIT OR Apache-2.0 |
 | `xtask/src/layers.rs`, `xtask/src/version.rs`, `xtask/src/main.rs` | Workspace tooling: layering check, version management, CI runner (adapted: NodeCraft's layer table, UI-crate allow-list instead of a UI layer, one batched wasm check) | PhotoCraft contributors | [storytold/photocraft@2a952f1](https://github.com/storytold/photocraft/tree/2a952f164c0b4cf936b1c6497db10dd095341c00) `xtask/` | MIT OR Apache-2.0 |
 | `crates/engine/src/build_info.rs` | Build provenance for `--version` and About (adapted: NodeCraft names, char-safe SHA shortening) | PhotoCraft contributors | [storytold/photocraft@2a952f1](https://github.com/storytold/photocraft/tree/2a952f164c0b4cf936b1c6497db10dd095341c00) `crates/engine/src/build_info.rs` | MIT OR Apache-2.0 |
@@ -36,6 +38,10 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | `assets/icons/tabler/dots.svg` | Tabler outline dots icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/dots.svg) | MIT |
 | `assets/icons/tabler/apps.svg` | Tabler outline apps icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/apps.svg) | MIT |
 | `assets/icons/tabler/cloud.svg` | Tabler outline cloud icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/cloud.svg) | MIT |
+| `assets/icons/tabler/plug-connected.svg` | Tabler outline plug-connected icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/plug-connected.svg) | MIT |
+| `assets/icons/tabler/file.svg` | Tabler outline file icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/file.svg) | MIT |
+| `assets/icons/tabler/tag.svg` | Tabler outline tag icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/tag.svg) | MIT |
+| `crates/providers/src/aws/fixtures/sigv4/` | AWS SigV4 test-suite cases (22 of `tests/aws-signing-test-suite/v4`, unmodified: `context.json`, `request.txt` and the expected canonical request, string to sign and signature; AWS's public example credentials only) | Amazon.com, Inc. or its affiliates | [awslabs/aws-c-auth@bdb7cef](https://github.com/awslabs/aws-c-auth/tree/bdb7cef99d8bd1ad3c189b1400140a7787e47105/tests/aws-signing-test-suite/v4) | Apache-2.0 |
 
 ## Tabler icon license
 
@@ -64,4 +70,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## aws-c-auth NOTICE
+
+The SigV4 test-suite fixtures in `crates/providers/src/aws/fixtures/sigv4/` come from
+[awslabs/aws-c-auth](https://github.com/awslabs/aws-c-auth), licensed under the Apache License,
+Version 2.0. Its NOTICE file reads, per section 4(d) of that licence:
+
+```text
+AWS C Auth
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
 ```

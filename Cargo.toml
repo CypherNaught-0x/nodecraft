@@ -3,10 +3,10 @@ resolver = "3"
 members = ["crates/*", "apps/*", "xtask"]
 
 [workspace.package]
-version = "0.5.0"
+version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.95"
+rust-version = "1.97.1"
 repository = "https://github.com/CypherNaught-0x/nodecraft"
 
 [workspace.dependencies]
@@ -41,7 +41,7 @@ craft-quit = { git = "https://github.com/storytold/craft-libs", rev = "8f5a28316
 craft-pdf = { git = "https://github.com/storytold/craft-libs", rev = "aaa46f2e524c209efb0f21bd387974ee58a28dd9", features = ["raster"] }
 
 # Original offline workflow data; refresh deliberately through a fully gated pin update.
-nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9" }
+nodecraft-template-data = { git = "https://github.com/CypherNaught-0x/nodecraft-templates", rev = "5e7ed638fa75d4615701832184e5141cfe7cc293" }
 
 # external
 blake3 = { version = "1.8", default-features = false, features = ["std"] }
@@ -64,6 +64,8 @@ serde_path_to_error = "0.1"
 # Catalog data files; parsing only (no writer), and no std-only extras so wasm builds.
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 url = "2"
+# Substring search for the broker's credential-echo scan; already in the tree through futures-util.
+memchr = "2.8"
 reqwest = { version = "0.13", default-features = false, features = ["http2"] }
 tokio = { version = "1", default-features = false }
 tempfile = "3"

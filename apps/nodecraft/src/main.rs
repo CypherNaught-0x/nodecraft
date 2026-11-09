@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 mod agent_panel;
 mod control;
+mod mcp_server;
 mod shell;
 mod storage_window;
 mod video_tools;
@@ -131,6 +132,9 @@ fn main() -> ExitCode {
     // that could point somewhere else by the time an update restarts the app.
     nodecraft_ui_egui::remember_update_roots(control, roots.read_roots(), roots.write_roots());
     let join = args.join.then(read_join_link);
+    // Built-in image actions run on the GPU when there is one, the CPU reference otherwise
+    // (#1058); NODECRAFT_IMAGE_GPU=0 keeps them on the CPU.
+    nodecraft_engine::action_exec::image_gpu::enable(true);
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_app_id(APP_ID)
@@ -168,7 +172,10 @@ fn main() -> ExitCode {
             }
             let recovery_path = storage.as_ref().map(|setup| setup.recovery.clone());
             let mut app = nodecraft_ui_egui::NodeCraftApp::with_settings_and_storage(&cc.egui_ctx, store, storage)?;
-            let storage_window = recovery_path.as_ref().and_then(|path| {
+            // While an earlier session's journal is kept aside (#1053), the window owns storage
+            // only once that settles; the shell starts its focus endpoint then.
+            let keeping_aside = app.keeping_aside();
+            let storage_window = recovery_path.as_ref().filter(|_| !keeping_aside).and_then(|path| {
                 storage_window::StorageWindow::start(&mut app, &cc.egui_ctx, path)
                     .map_err(|error| log::warn!("storage window focus unavailable: {}", error.message))
                     .ok()
@@ -200,12 +207,30 @@ fn main() -> ExitCode {
                 app.set_renderer(format!("{} ({:?})", info.name, info.backend));
                 app.install_mesh_renderer(render);
             }
+            // Settings › Automation (#116): off unless the person turned it on.
+            let mcp = {
+                let waker = cc.egui_ctx.clone();
+                let port = app.automation_settings().mcp_port();
+                let server = std::rc::Rc::new(std::cell::RefCell::new(mcp_server::Server::new(
+                    port,
+                    std::sync::Arc::new(nodecraft_engine::secrets::KeyringStore),
+                    std::sync::Arc::new(move || waker.request_repaint()),
+                )));
+                match app.install_mcp_server(server.clone()) {
+                    Ok(()) => Some((server, control::CallPump::new(roots.clone()))),
+                    Err(e) => {
+                        log::warn!("the built-in MCP server is unavailable: {}", e.message);
+                        None
+                    }
+                }
+            };
             // Without the channel the app still opens; the log says why.
             let channel = control
                 .then(|| control::Channel::start(&cc.egui_ctx, dir, roots).map_err(|e| log::error!("control channel not started: {}", e.message)).ok())
                 .flatten();
-            let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings());
-            Ok(Box::new(shell::Shell { app, agent, channel, storage_window }))
+            let agent = agent_panel::AgentPanel::live(&cc.egui_ctx, app.agent_settings(), app.loaded_provider_settings());
+            let storage_window_pending = recovery_path.filter(|_| keeping_aside);
+            Ok(Box::new(shell::Shell { app, agent, channel, storage_window, storage_window_pending, mcp }))
         }),
     );
     match result {

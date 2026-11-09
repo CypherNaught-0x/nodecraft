@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 
 mod agent;
 mod budgets;
+mod interface;
 mod projects;
 pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
 pub use budgets::BudgetSettings;
+pub use interface::InterfaceSize;
 pub use projects::ProjectSettings;
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
@@ -46,6 +48,37 @@ pub struct NodeCraftSettings {
     pub agent: AgentSettings,
     pub share: ShareSettings,
     pub budgets: BudgetSettings,
+    pub automation: AutomationSettings,
+}
+
+/// Settings › Automation (#116): the desktop app's built-in MCP server. Its bearer token lives in
+/// the keychain ([`MCP_TOKEN_ACCOUNT`]), never here.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AutomationSettings {
+    /// Start the server with the app. Off unless the person turns it on.
+    pub mcp_server: bool,
+    /// The loopback port it listens on. Read through [`Self::mcp_port`].
+    pub mcp_port: u16,
+}
+
+/// The port the built-in MCP server listens on unless settings name another.
+pub const DEFAULT_MCP_PORT: u16 = 41116;
+/// The keychain account holding the built-in MCP server's bearer token.
+pub const MCP_TOKEN_ACCOUNT: &str = "nodecraft-mcp-server";
+
+impl Default for AutomationSettings {
+    fn default() -> Self {
+        Self { mcp_server: false, mcp_port: DEFAULT_MCP_PORT }
+    }
+}
+
+impl AutomationSettings {
+    /// The port, or [`DEFAULT_MCP_PORT`] for one that needs special rights or picks at random
+    /// (below 1024, or 0).
+    pub fn mcp_port(&self) -> u16 {
+        if self.mcp_port >= 1024 { self.mcp_port } else { DEFAULT_MCP_PORT }
+    }
 }
 
 /// External tools for video (#105). NodeCraft never downloads or bundles them, and never takes
@@ -99,6 +132,19 @@ pub struct ProviderSettings {
     pub litellm_url: Option<String>,
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
+    /// Amazon Bedrock AWS Region code (such as `us-east-1`) for its `bedrock-runtime` OpenAI
+    /// route; the Bedrock API key uses account `bedrock`, or else AWS access keys the
+    /// `bedrock:aws-*` accounts, signed with SigV4 (#1163). No AWS credentials are read from the
+    /// environment or profiles.
+    pub bedrock_region: Option<String>,
+    /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
+    /// provider id, such as `openai = "http://127.0.0.1:4000/v1"` for a LiteLLM proxy. Only the
+    /// providers [`crate::custom_endpoints::PROVIDERS`] lists take one; the URL is checked when the
+    /// adapter is built. An entry that isn't text, or a key spelled like a provider's with other
+    /// case or separators, is kept as written and refuses that provider. Other keys are kept and
+    /// ignored. The key stays in the provider's keychain account.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
     /// A random value made once per install; it keeps prompt ids of different installs apart on
     /// a shared ComfyUI server. Empty until the host first creates it.
     pub install_salt: String,
@@ -116,14 +162,17 @@ struct ReadProviderSettings {
     comfyui_url: Option<String>,
     litellm_url: Option<String>,
     azure_openai_url: Option<String>,
+    bedrock_region: Option<String>,
+    #[serde(deserialize_with = "crate::custom_endpoints::lenient_base_urls")]
+    base_urls: std::collections::BTreeMap<String, crate::custom_endpoints::BaseUrlEntry>,
 }
 
 impl From<ReadProviderSettings> for ProviderSettings {
     fn from(read: ReadProviderSettings) -> Self {
-        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url } = read;
+        let ReadProviderSettings { comfyui, comfyui_default, install_salt, comfyui_url, litellm_url, azure_openai_url, bedrock_region, base_urls } = read;
         match comfyui_url.as_deref().map(str::trim).filter(|url| !url.is_empty()) {
-            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, ..Self::with_comfyui(url, &install_salt) },
-            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, install_salt },
+            Some(url) if comfyui.is_empty() => Self { litellm_url, azure_openai_url, bedrock_region, base_urls, ..Self::with_comfyui(url, &install_salt) },
+            _ => Self { comfyui, comfyui_default, litellm_url, azure_openai_url, bedrock_region, base_urls, install_salt },
         }
     }
 }
@@ -335,6 +384,9 @@ fn migrate_comfy_servers(doc: &mut DocumentMut) -> Result<(), String> {
 #[serde(default)]
 pub struct AppearanceSettings {
     pub theme: Theme,
+    /// How large panels, menus and dialogs are drawn (#1107), in percent; a damaged value reads
+    /// as 100 % and says so.
+    pub interface_size: InterfaceSize,
 }
 
 /// Colour theme of the whole app.
@@ -414,14 +466,36 @@ impl KeySettings {
         out
     }
 
-    /// Adds `account` to the list (no-op if listed or the list is full). Like [`Self::forget`],
-    /// it rewrites the list from [`Self::accounts`], so invalid, duplicate and surplus names from a
-    /// hand-edited file are dropped.
-    pub fn remember(&mut self, account: &crate::secrets::Account) {
+    /// Adds `account` to the list and says whether it is listed now: `false` when the list was
+    /// already full, so the caller can say so (check [`Self::admits`] before writing a key). Like
+    /// [`Self::forget`], adding rewrites the list from [`Self::accounts`], so invalid, duplicate
+    /// and surplus names from a hand-edited file are dropped.
+    pub fn remember(&mut self, account: &crate::secrets::Account) -> bool {
         let known = self.accounts();
-        if !known.contains(account) && known.len() < Self::MAX_ACCOUNTS {
-            self.accounts = known.iter().map(|a| a.as_str().to_owned()).chain([account.as_str().to_owned()]).collect();
+        if known.contains(account) {
+            return true;
         }
+        if known.len() >= Self::MAX_ACCOUNTS {
+            return false;
+        }
+        self.accounts = known.iter().map(|a| a.as_str().to_owned()).chain([account.as_str().to_owned()]).collect();
+        true
+    }
+
+    /// Whether `account` would fit in the list, counting `reserved` (new accounts whose key is
+    /// still being written) as listed already, so every write admitted this way can be remembered
+    /// when it succeeds. A listed or reserved account always fits: replacing its key adds nothing.
+    pub fn admits(&self, account: &crate::secrets::Account, reserved: &[crate::secrets::Account]) -> bool {
+        let mut taken = self.accounts();
+        if taken.contains(account) || reserved.contains(account) {
+            return true;
+        }
+        for other in reserved {
+            if !taken.contains(other) {
+                taken.push(other.clone());
+            }
+        }
+        taken.len() < Self::MAX_ACCOUNTS
     }
 
     /// Removes `account` from the list.
@@ -540,6 +614,25 @@ mod tests {
         let (store, _) = open_in(dir.path());
         let caps = &store.get().budgets;
         assert_eq!((caps.per_call_usd_cents, caps.session_usd_cents, caps.project_usd_cents, caps.total_usd_cents), (Some(0), Some(700), Some(12), Some(0)));
+    }
+
+    #[test]
+    fn the_mcp_server_is_off_unless_turned_on_and_its_port_is_checked() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, _) = open_in(dir.path());
+        assert!(!store.get().automation.mcp_server, "off by default");
+        assert_eq!(store.get().automation.mcp_port(), DEFAULT_MCP_PORT);
+        drop(store);
+        write_config(dir.path(), "[automation]\nmcp_server = true\nmcp_port = 5000\n");
+        let (store, _) = open_in(dir.path());
+        assert!(store.get().automation.mcp_server);
+        assert_eq!(store.get().automation.mcp_port(), 5000);
+        drop(store);
+        for bad in ["mcp_port = 80", "mcp_port = 0", "mcp_port = 70000", "mcp_port = \"x\""] {
+            write_config(dir.path(), &format!("[automation]\nmcp_server = true\n{bad}\n"));
+            let (store, _) = open_in(dir.path());
+            assert_eq!(store.get().automation.mcp_port(), DEFAULT_MCP_PORT, "{bad}");
+        }
     }
 
     #[test]
@@ -715,12 +808,38 @@ mod tests {
         assert_eq!(keys.accounts().len(), 2);
         let mut many = KeySettings { accounts: (0..100).map(|i| format!("p{i}")).collect() };
         assert_eq!(many.accounts().len(), KeySettings::MAX_ACCOUNTS);
-        many.remember(&anthropic);
+        assert!(!many.remember(&anthropic));
         assert!(!many.accounts().contains(&anthropic), "the list is full");
         let dir = tempfile::tempdir().unwrap();
         write_config(dir.path(), "schema_version = 1\n[keys]\naccounts = [\"openai\"]\n");
         let (store, _) = open_in(dir.path());
         assert_eq!(store.get().keys.accounts().len(), 1);
+    }
+
+    #[test]
+    fn key_capacity_counts_writes_in_flight_and_allows_replacements() {
+        let account = |name: &str| crate::secrets::Account::new(name).unwrap();
+        let names = |n: usize| KeySettings { accounts: (0..n).map(|i| format!("p{i}")).collect() };
+        let max = KeySettings::MAX_ACCOUNTS;
+        // One short of full: exactly one new account fits, and is then remembered.
+        let mut keys = names(max - 1);
+        assert!(keys.admits(&account("openai"), &[]));
+        assert!(!keys.admits(&account("openai"), &[account("fal")]), "a save in flight holds the last place");
+        assert!(keys.admits(&account("fal"), &[account("fal")]), "the reserved account itself still fits");
+        assert!(keys.admits(&account("p0"), &[account("fal")]), "replacing a listed key adds nothing");
+        assert!(keys.admits(&account("openai"), &[account("p3")]), "a listed account reserves nothing extra");
+        assert!(keys.remember(&account("openai")));
+        assert_eq!(keys.accounts().len(), max);
+        // Full: only replacements.
+        assert!(!keys.admits(&account("fal"), &[]));
+        assert!(keys.admits(&account("p1"), &[]));
+        assert!(keys.remember(&account("openai")), "already listed");
+        assert!(!keys.remember(&account("fal")));
+        // One over (a hand-edited file): the surplus is not listed and nothing new fits.
+        let over = names(max + 1);
+        assert!(!over.admits(&account("fal"), &[]));
+        assert!(!over.admits(&account(&format!("p{max}")), &[]), "the surplus name isn't listed");
+        assert!(over.admits(&account("p0"), &[]));
     }
 
     #[test]
@@ -779,6 +898,70 @@ mod tests {
         }
     }
 
+    /// Custom base URLs (#960) are read by provider. A hand-edited entry that isn't text, a key
+    /// spelled like a provider's, or a value that isn't a table is kept as written and refuses
+    /// its provider rather than leaving it at its default host; `[providers]` isn't reset, and
+    /// saving writes them back unchanged.
+    #[test]
+    fn custom_base_urls_are_read_leniently_refuse_when_unreadable_and_are_saved() {
+        use crate::custom_endpoints::{BaseUrlEntry, base_url};
+        let dir = tempfile::tempdir().unwrap();
+        write_config(
+            dir.path(),
+            "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nlitellm_url = \"http://127.0.0.1:4000\"\n[providers.base_urls]\nopenai = \"http://127.0.0.1:4000/v1\"\nanthropic = 3\nOpenAI_Images = \"https://x.example/v1\"\nreplicate = \"https://x.example\"\n",
+        );
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        let providers = store.get().providers.clone();
+        assert_eq!(providers.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
+        assert_eq!(providers.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))));
+        assert_eq!(providers.litellm_url.as_deref(), Some("http://127.0.0.1:4000"), "the rest of the section is kept");
+        assert!(base_url(&providers, "openai").unwrap().is_some());
+        assert!(base_url(&providers, "anthropic").is_err(), "a number refuses Anthropic, never its default host");
+        assert!(base_url(&providers, "openai-images").is_err(), "a misspelled key refuses the provider it reads as");
+        store.update(|settings| {
+            settings.providers.base_urls.insert("openai".into(), "https://proxy.example/v1".into());
+        });
+        store.flush().unwrap();
+        let (store, _) = open_in(dir.path());
+        let saved = &store.get().providers;
+        assert_eq!(saved.base_urls.get("openai").and_then(BaseUrlEntry::text), Some("https://proxy.example/v1"));
+        assert_eq!(saved.base_urls.get("anthropic"), Some(&BaseUrlEntry::Unreadable(serde_json::json!(3))), "kept as written");
+        assert_eq!(saved.base_urls.get("replicate").and_then(BaseUrlEntry::text), Some("https://x.example"), "unknown keys are kept");
+        // TOML `nan` and `inf` read as unreadable, never as unset, and are saved back readable.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\nopenai = nan\nanthropic = inf\n");
+        let (mut store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for provider in ["openai", "anthropic"] {
+            assert!(base_url(&store.get().providers, provider).is_err(), "{provider}");
+        }
+        store.update(|settings| settings.providers.install_salt = "t".into());
+        store.flush().unwrap();
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert_eq!(store.get().providers.install_salt, "t");
+        assert!(base_url(&store.get().providers, "openai").is_err(), "still refused after a save");
+        // More entries than are read refuse every provider, whichever were cut.
+        let dir = tempfile::tempdir().unwrap();
+        let many: String = (0..70).map(|n| format!("zz{n:02} = \"https://x.example\"\n")).collect();
+        write_config(dir.path(), &format!("schema_version = 2\n[providers]\ninstall_salt = \"s\"\n[providers.base_urls]\n{many}"));
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
+        }
+        // A value that isn't a table refuses every provider.
+        let dir = tempfile::tempdir().unwrap();
+        write_config(dir.path(), "schema_version = 2\n[providers]\ninstall_salt = \"s\"\nbase_urls = \"https://x.example\"\n");
+        let (store, report) = open_in(dir.path());
+        assert!(report.section_errors.is_empty(), "{report:?}");
+        assert_eq!(store.get().providers.install_salt, "s");
+        for entry in crate::custom_endpoints::PROVIDERS {
+            assert!(base_url(&store.get().providers, entry.provider).is_err(), "{}", entry.provider);
+        }
+    }
+
     /// A hand-edited job cap that's out of range or not a number never resets `[providers]`.
     #[test]
     fn a_bad_job_cap_is_clamped_or_dropped() {
@@ -829,6 +1012,20 @@ mod tests {
             assert!(report.section_errors.is_empty(), "{report:?}");
             let settings = store.get().providers.clone();
             assert_eq!(settings.azure_openai_url.as_deref(), Some("https://demo.openai.azure.com/openai/v1"));
+            let restored: ProviderSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
+            assert_eq!(restored, settings);
+        }
+    }
+
+    #[test]
+    fn bedrock_region_survives_settings_roundtrip_and_legacy_comfy_migration() {
+        for legacy in ["", "comfyui_url = 'http://localhost:8188'\n"] {
+            let dir = tempfile::tempdir().unwrap();
+            write_config(dir.path(), &format!("[providers]\n{legacy}bedrock_region = 'us-west-2'\n"));
+            let (store, report) = open_in(dir.path());
+            assert!(report.section_errors.is_empty(), "{report:?}");
+            let settings = store.get().providers.clone();
+            assert_eq!(settings.bedrock_region.as_deref(), Some("us-west-2"));
             let restored: ProviderSettings = serde_json::from_value(serde_json::to_value(&settings).unwrap()).unwrap();
             assert_eq!(restored, settings);
         }

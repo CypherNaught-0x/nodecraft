@@ -85,6 +85,10 @@ pub struct JobView {
     pub partial: Option<Arc<String>>,
     /// The attempt `partial` streamed from; text from an earlier attempt is dropped.
     pub(crate) partial_attempt: u32,
+    /// An earlier attempt reached the provider and then failed for a reason that isn't a
+    /// refusal (a timeout, a lost reply), so the job may have been charged whatever its last
+    /// attempt says (#163).
+    pub(crate) unrefused_attempt: bool,
     /// The latest preview of a sound still arriving (#875), while the job runs. View state, like
     /// `partial`: never recorded, saved or undone; dropped when the job ends or tries again.
     pub preview: Option<AudioPreview>,
@@ -177,12 +181,33 @@ impl JobView {
             JobState::Done if self.cancel_requested => "Finished before it could be cancelled".into(),
             JobState::Done => "Done".into(),
             JobState::Failed { .. } if self.cancel_requested => "Failed before it could be cancelled".into(),
-            JobState::Failed { cause: Some(cause), .. } => format!("Failed: {}", cause_label(*cause)),
+            JobState::Failed { cause: Some(cause), reason } => format!("Failed: {}", failure_label(*cause, reason)),
             JobState::Failed { .. } => "Failed".into(),
             JobState::Cancelled if self.sent => "Cancelled after it was sent (cost unresolved)".into(),
             JobState::Cancelled => "Cancelled before it was sent".into(),
         }
     }
+}
+
+impl JobView {
+    /// Whether this ended job may have been charged with no result kept for it: it reached the
+    /// provider and then ended for a reason that doesn't prove the provider refused it (a
+    /// timeout, a lost connection, a provider-side failure, an unreadable reply, a cancel after
+    /// it was sent). Running its row again sends new keys, so a bulk "retry failed" leaves such a
+    /// row for the person to decide (#163). A refusal (blocked content, unsupported input, busy,
+    /// rate limited, budget, API key) was not run, so it isn't.
+    pub fn may_have_been_charged(&self) -> bool {
+        match &self.state {
+            JobState::Failed { cause, .. } => self.sent && (self.unrefused_attempt || !refusal(*cause)),
+            JobState::Cancelled => self.sent,
+            _ => false,
+        }
+    }
+}
+
+/// A cause that means the provider refused the job before running it, so it wasn't charged.
+fn refusal(cause: Option<Cause>) -> bool {
+    matches!(cause, Some(Cause::BlockedContent | Cause::UnsupportedInput | Cause::Busy | Cause::RateLimited | Cause::Budget | Cause::Auth))
 }
 
 fn percent(fraction: f32) -> u32 {
@@ -225,6 +250,22 @@ pub fn fix_hint(cause: Cause) -> &'static str {
         Cause::JobFailed => "The model ran and failed. Change its inputs or settings before running it again.",
         _ => "Retry, or check the error.",
     }
+}
+
+/// What a context-window refusal (#84) is called where other failures show their cause.
+pub const CONTEXT_LIMIT_LABEL: &str = "too long for the model";
+/// What to do about a context-window refusal, in one sentence.
+pub const CONTEXT_LIMIT_HINT: &str = "Shorten the prompt, connect fewer or smaller inputs, or pick a model with a larger context.";
+
+/// [`cause_label`] for a failure whose text is known: a context-window refusal is named as one
+/// rather than as just another unsupported input.
+pub fn failure_label(cause: Cause, reason: &str) -> &'static str {
+    if cause == Cause::UnsupportedInput && nodecraft_providers::is_context_limit_text(reason) { CONTEXT_LIMIT_LABEL } else { cause_label(cause) }
+}
+
+/// [`fix_hint`] for a failure whose text is known, with the context-window refusal's own advice.
+pub fn failure_hint(cause: Cause, reason: &str) -> &'static str {
+    if cause == Cause::UnsupportedInput && nodecraft_providers::is_context_limit_text(reason) { CONTEXT_LIMIT_HINT } else { fix_hint(cause) }
 }
 
 /// The cause named by a job's failure reason: a provider error's own prefix, or a budget refusal.
@@ -383,6 +424,8 @@ impl RunJobs {
 
     pub(crate) fn retrying(&mut self, job: JobId, next_attempt: u32, reason: &str) {
         if let Some(view) = self.live.get_mut(&job) {
+            // The attempt that failed may have been run: a later refusal doesn't undo that.
+            view.unrefused_attempt |= view.sent && !refusal(cause_of(reason));
             view.state = JobState::Retrying { next_attempt, reason: bounded(reason) };
             view.preview = None;
             // The next attempt answers afresh, unless its text already arrived this pump.
@@ -491,6 +534,7 @@ mod tests {
             reported_sent: false,
             partial: None,
             partial_attempt: 0,
+            unrefused_attempt: false,
             preview: None,
             made: None,
         }
@@ -514,6 +558,45 @@ mod tests {
         let mut done = view(JobState::Done);
         done.cancel_requested = true;
         assert_eq!(done.status(), "Finished before it could be cancelled");
+    }
+
+    #[test]
+    fn only_a_job_that_reached_the_provider_and_wasnt_refused_may_have_been_charged() {
+        let failed = |cause: Option<Cause>, sent: bool| {
+            let mut v = view(JobState::Failed { reason: "x".into(), cause });
+            v.sent = sent;
+            v.may_have_been_charged()
+        };
+        for cause in [Some(Cause::Timeout), Some(Cause::Network), Some(Cause::Server), Some(Cause::Malformed), Some(Cause::JobFailed), None] {
+            assert!(failed(cause, true), "{cause:?}");
+            assert!(!failed(cause, false), "never sent: {cause:?}");
+        }
+        for cause in [Cause::BlockedContent, Cause::UnsupportedInput, Cause::Busy, Cause::RateLimited, Cause::Budget, Cause::Auth] {
+            assert!(!failed(Some(cause), true), "a refusal: {cause:?}");
+        }
+        let mut cancelled = view(JobState::Cancelled);
+        assert!(!cancelled.may_have_been_charged());
+        cancelled.sent = true;
+        assert!(cancelled.may_have_been_charged());
+        assert!(!view(JobState::Done).may_have_been_charged());
+    }
+
+    #[test]
+    fn an_attempt_that_may_have_run_keeps_the_job_possibly_charged_whatever_the_last_attempt_says() {
+        let running = |attempt| JobState::Running { attempt, waiting: false, position: None, fraction: None, message: None, reconnecting: false };
+        let refused = JobState::Failed { reason: "rate limited".into(), cause: Some(Cause::RateLimited) };
+        let ended = |first: Cause| {
+            let mut jobs = RunJobs::default();
+            jobs.live.insert(JobId(1), view(running(1)));
+            jobs.started(JobId(1), 1);
+            jobs.retrying(JobId(1), 2, &ProviderError::new(first, "first attempt").to_string());
+            jobs.started(JobId(1), 2);
+            jobs.end(JobId(1), refused.clone());
+            jobs.ended.remove(0)
+        };
+        assert!(ended(Cause::Timeout).may_have_been_charged(), "a timed-out attempt may have run");
+        assert!(ended(Cause::Network).may_have_been_charged());
+        assert!(!ended(Cause::Busy).may_have_been_charged(), "busy, then rate limited: never run");
     }
 
     #[test]

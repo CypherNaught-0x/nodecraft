@@ -37,6 +37,7 @@ fn a_random_seed_model_plans_without_a_seed_for_the_run_to_draw() {
                 audio: None,
                 edit: None,
                 document: None,
+                reads: None,
             }],
         }],
         [1; 32],

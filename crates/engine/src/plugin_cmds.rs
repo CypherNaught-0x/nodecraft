@@ -384,7 +384,7 @@ pub fn specs() -> Vec<CommandSpec> {
             "plugins.rights",
             "Show what a plugin package asks for",
             package_only_schema,
-            "{package_id}; what a grant of the active version would cover. Direct result: {package_id, digest, required: [capability], optional: [capability], origins: [origin], grant: {grant_id, epoch, capabilities, origins}|null}, or {error} in place of the lists when a provider template can't be used. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
+            "{package_id}; what a grant of the active version would cover. Direct result: {package_id, digest, required: [capability], optional: [capability], origins: [origin], key_origins: [origin] (those of origins that receive the key: each provider's API; the rest only serve results), claims: [{provider, prices: [{model, price: {currency, micros}}], idempotency_header: string|null}] (what each provider template says of its own service: publisher claims the host can't check, shown but never granted), grant: {grant_id, epoch, capabilities, origins}|null}, or {error} in place of the lists when a provider template can't be used. Native worker hosts return {pending: string}; poll plugins.result, then plugins.forget.",
             rights,
         ),
         spec(

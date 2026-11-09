@@ -3,11 +3,17 @@ use base64::Engine;
 use serde::Serialize;
 mod alibaba;
 mod grok;
+mod heygen;
 mod hunyuan;
 mod ideogram;
 mod ltx;
 mod luma;
+pub(super) mod minimax;
+mod pika;
+mod raster;
+mod recraft;
 mod rodin;
+mod topaz;
 #[derive(Serialize)]
 struct Size {
     width: u64,
@@ -192,6 +198,38 @@ fn choice<'a>(j: &'a ProviderJob, k: &str, d: &'a str, allowed: &[&str]) -> Resu
 pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), ProviderError> {
     let model = Model::read(&j.model)?;
     let l = l.for_model(model);
+    // Browser projects still use the classic 16 MiB asset store. Refuse before payment;
+    // a direct adapter caller has no engine AssetContext to enforce that boundary for it.
+    #[cfg(target_arch = "wasm32")]
+    if model == Model::Topaz || model.minimax() {
+        return Err(invalid("This model needs a desktop project so its large results can be saved"));
+    }
+    if model.minimax() {
+        return minimax::prepare(j, l, model);
+    }
+    #[cfg(target_arch = "wasm32")]
+    if model.pika() {
+        return Err(invalid("Pika 2.5 needs a desktop project so its large video results can be saved"));
+    }
+    #[cfg(target_arch = "wasm32")]
+    if model.heygen() {
+        return Err(invalid("HeyGen needs a desktop project so its large video results can be saved"));
+    }
+    if model.heygen() {
+        return heygen::prepare(j, l, model);
+    }
+    if model == Model::Pika {
+        return pika::prepare(j, l);
+    }
+    if model == Model::PikaFrames {
+        return pika::prepare_frames(j, l);
+    }
+    if model == Model::Topaz {
+        return topaz::prepare(j, l);
+    }
+    if model.recraft() {
+        return recraft::prepare(j, l, model);
+    }
     if model.rodin() {
         return rodin::prepare(j, l, model);
     }
@@ -270,7 +308,13 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             return Err(invalid("fal unsupported parameter value"));
         }
         let ok = match model {
-            Model::RodinText
+            Model::MiniMaxText
+            | Model::MiniMaxFrames
+            | Model::MiniMaxSpeech
+            | Model::MiniMaxMusic
+            | Model::RecraftImage
+            | Model::RecraftVector
+            | Model::RodinText
             | Model::RodinImages
             | Model::RodinFastText
             | Model::RodinFastImages
@@ -290,7 +334,13 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             | Model::Photon
             | Model::Ideogram
             | Model::LtxText
-            | Model::LtxFrames => false,
+            | Model::LtxFrames
+            | Model::HeygenAvatar
+            | Model::HeygenSpeed
+            | Model::HeygenPrecision
+            | Model::Pika
+            | Model::PikaFrames
+            | Model::Topaz => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Styled => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "guidance_scale" | "lora_scale" | "seed"),
             Model::Train => matches!(k.as_str(), "steps" | "trigger_word"),
@@ -346,12 +396,18 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     });
     let prompt = styled.as_deref().or(prompt);
     let mut body = Body { prompt, negative_prompt: negative, ..Default::default() };
-    let mut record = Record { model, requested: 1, width: 0, height: 0 };
+    let mut record = Record { model, requested: 1, width: 0, height: 0, duration_ms: 0 };
     if let Some(v) = j.params.get("seed") {
         body.seed = Some(v.as_u64().filter(|n| *n <= u32::MAX as u64).ok_or_else(|| invalid("fal seed must fit u32"))?);
     }
     match model {
-        Model::RodinText
+        Model::MiniMaxText
+        | Model::MiniMaxFrames
+        | Model::MiniMaxSpeech
+        | Model::MiniMaxMusic
+        | Model::RecraftImage
+        | Model::RecraftVector
+        | Model::RodinText
         | Model::RodinImages
         | Model::RodinFastText
         | Model::RodinFastImages
@@ -371,7 +427,13 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         | Model::Photon
         | Model::Ideogram
         | Model::LtxText
-        | Model::LtxFrames => {
+        | Model::LtxFrames
+        | Model::HeygenAvatar
+        | Model::HeygenSpeed
+        | Model::HeygenPrecision
+        | Model::Pika
+        | Model::PikaFrames
+        | Model::Topaz => {
             return Err(invalid("fal model requests require their own schema"));
         }
         Model::Image | Model::Styled => {

@@ -56,6 +56,22 @@ per reconciled charge. A charge a saved run still follows is refused, since that
 when it resumes. The desktop lists these charges below the quarantined groups. See
 [the decision](decisions/2026-10-20-charge-resolution.md).
 
+An ordinary charge can stay **unresolved** too: a 401/403/400 after the request left, a lost
+reply or a run given up on after its retries doesn't prove the provider didn't bill it, so its
+estimate keeps counting toward the caps. Nothing settles or releases it from an error kind,
+status or timer. A person checks their provider's records instead (#298): `usage.unresolved`
+lists these charges (unresolved, established, and not on the reconciled path above), each with
+a token over the charge as reviewed; `usage.resolve_unresolved` (human only) records it as
+`settled` at the billed amount or `released` because it was never billed, with an optional
+note of what was checked. A changed charge is refused as stale, a decided one is not offered
+again, and `dry_run: true` reports the totals afterwards. The run host refuses a decision while
+any run is waiting or going, while a restored job is followed, and for a charge a parked, kept or
+saved job still follows, since a retry under its key would settle it itself. The decision is
+saved in the run journal before the live log keeps it. The newest 10,000 decisions are kept as
+immutable `billing_resolutions` audit records; a log without any stays readable by older
+NodeCraft. In the desktop app the same review panel lists them under "Charges that may have
+been billed". See [the decision](decisions/2026-10-28-unresolved-charge-resolution.md).
+
 Unknown-price jobs reserve metadata capacity before invoking the provider. A non-cloneable
 permit captures a live ledger identity, exact provider/key, metadata and one serial. Its
 lifetime owns the admitted slot; ordinary mutations cannot steal it. Dropping a permit only

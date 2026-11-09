@@ -91,6 +91,8 @@ list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames t
 including collapsed-field headers for hidden cards, without changing the person's selection.
 Without `nodes` it frames the selection. These operations change only the view, without
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
+The four `view.ui_scale.*` commands (#1107) also run through the live host: they set the
+window's interface size, which the app applies on its next frame and saves with its settings.
 The five `canvas.search_*` commands use the app's existing scoped search host: open the bar,
 set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte bound and the
 incremental per-frame scanner; a response may report scanning before the match is framed.
@@ -109,6 +111,19 @@ separate asynchronous capture path.
 Project file commands run only inside the folders given with `--root` (save and open) and
 `--read-root` (open only) when the app started; see "Opening and saving projects" in
 `docs/mcp.md`. Without them, the file commands return `unsupported`.
+
+The window never writes a project file on its own thread for a client (#367): `file.save`,
+`file.save_as` and `file.open` run in the background whatever `background` says, and reply
+`{saving:true}` or `{opening:true}` at once. Until that operation has finished, another file
+command, and any command that would change the project, is refused as `busy` naming
+`file.cancel`; reads still answer. `file.status` (read-only) says whether a save, open or
+recovery is still running (`operation`: kind, phase, whether a cancel was asked) and how the last
+one ended (`last`: kind, `ok`, and the error when it failed, such as a full disk or a file that
+can't be read), plus `dirty`, `titled`, `read_only` and `recovery_required`. It names no path.
+Poll it after a save or open, or stop the operation with `file.cancel`. The same holds for MCP
+through the bridge. The in-canvas agent has no allowed folders, so it can't save or open at all;
+it can read `file.status`. `nodecraft-cli control` below has no save thread and answers saves as
+before.
 
 ## Headless stdio
 

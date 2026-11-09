@@ -40,6 +40,7 @@ fn the_reader_pages_with_keys_and_buttons_without_editing_the_document() {
     h.run();
     assert_eq!(page(&h), Some(0));
     assert!(h.query_by_label_contains("page 1 of 3").is_some());
+    crate::app::panel_check::check_open_panels(&h, "PDF reader");
     h.key_press(egui::Key::ArrowRight);
     h.run();
     assert_eq!(page(&h), Some(1));

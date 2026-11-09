@@ -552,7 +552,7 @@ fn sorter(ui: &mut egui::Ui, editor: &mut DeckEditor, deck: &Deck, thumbs: &[(Dr
                 draw_layer(&painter, stage, layer, art.get(&layer.id), t);
             }
             let picked = current.as_deref() == Some(entry.slide.id.as_str());
-            let outline = if picked { egui::Stroke::new(t.handle_stroke, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+            let outline = if picked { egui::Stroke::new(t.handle_stroke, t.accent) } else { egui::Stroke::new(t.stroke_hairline, t.panel_stroke) };
             ui.painter().rect_stroke(picture, 0.0, outline, egui::StrokeKind::Inside);
             ui.painter().text(
                 Pos2::new(rect.min.x, picture.max.y + label / 2.0),

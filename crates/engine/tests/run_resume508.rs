@@ -580,3 +580,46 @@ fn a_job_whose_provider_is_gone_is_given_up_and_charged_as_unresolved() {
     assert_eq!(saved.usage.entries().map(|e| e.status).collect::<Vec<_>>(), [Charge::Unresolved]);
     assert_eq!(mock.requests().len(), 1, "never sent again");
 }
+
+/// #174: a restored plugin job is followed only under the grant it was sent under. One sent
+/// under another grant (an update, a re-grant) or saved without one is given up as possibly
+/// charged; one sent under the grant that stands now stays waiting to be followed.
+#[test]
+fn a_restored_plugin_job_is_followed_only_under_the_grant_it_was_sent_under() {
+    use nodecraft_engine::run_journal::PluginGrant;
+    let now = PluginGrant { package: "io.example.acme".into(), digest: format!("blake3:{}", "1".repeat(64)), epoch: 7 };
+    for (saved, kept, why) in [
+        (Some(now.clone()), true, None),
+        (Some(PluginGrant { epoch: 6, ..now.clone() }), false, Some("its plugin was updated or granted again since it was sent; it may have been charged")),
+        (None, false, Some("it was saved without the grant its plugin ran under, so it isn't followed under today's; it may have been charged")),
+    ] {
+        let mock = slow_mock();
+        let journal = MemoryJournal::default();
+        let (mut first, _) = launch(&mock, &journal, None, 50);
+        start(&mut first);
+        pump_until(&mut first, "the job's handle was never saved", |_| journal.saved().is_some_and(|saved| !saved.submitted.is_empty()));
+        first.runtime.kill();
+        let project = first.session.document().clone();
+        drop(first);
+        let mut rewritten = journal.saved().unwrap();
+        for entry in &mut rewritten.submitted {
+            entry.plugin = saved.clone();
+        }
+        journal.save(&rewritten).unwrap();
+        let (mut second, opened) = launch(&mock, &journal, Some(project), 0);
+        opened.unwrap();
+        second.host.abandon_other_grants(PROJECT, "mock", &now);
+        assert_eq!(second.host.has_waiting(), kept, "{saved:?}");
+        let notices = second.host.pump(&mut second.session);
+        let failed: Vec<String> = notices.iter().filter_map(|n| if let RunNotice::Failed { reason, .. } = n { Some(reason.clone()) } else { None }).collect();
+        match why {
+            Some(why) => {
+                assert_eq!(failed, [format!("it couldn't be followed after a restart: {why}")]);
+                let rows: Vec<Charge> = second.budget.log.lock().unwrap().entries().map(|e| e.status).collect();
+                assert_eq!(rows, [Charge::Unresolved]);
+            }
+            None => assert!(failed.is_empty(), "{failed:?}"),
+        }
+        assert_eq!(mock.requests().len(), 1, "never sent again");
+    }
+}

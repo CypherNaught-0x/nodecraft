@@ -4,6 +4,7 @@
 //! blocked and `run.start` refuses it, before anything is sent or charged.
 
 use crate::generate::{MAX_MEDIA_INPUT_BYTES, MediaSource};
+use nodecraft_catalog::Catalog;
 use nodecraft_exec::planner::RunPlan;
 use nodecraft_nodes::JobSpec;
 use nodecraft_types::{NodeId, Value};
@@ -86,6 +87,74 @@ fn over(job: &JobSpec, source: &dyn MediaSource) -> Option<(String, u64)> {
     }
     let (role, _) = largest?;
     (total > MAX_MEDIA_INPUT_BYTES).then(|| (role.to_owned(), total))
+}
+
+/// A step whose videos are more than its model sends in one request (#84): the model's declared
+/// `reads.video_bytes`, a provider's inline-request limit. Found before the cost is accepted.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct TooMuchVideo {
+    pub node: NodeId,
+    pub bytes: u64,
+    pub cap: u64,
+}
+
+impl TooMuchVideo {
+    pub fn reason(&self, owner: NodeId) -> String {
+        format!(
+            "node {owner} [video_too_large]: its videos total {} bytes, more than the {} this model sends in one request; use shorter or smaller videos",
+            self.bytes, self.cap
+        )
+    }
+}
+
+/// The steps of `plan` whose jobs send more video than their model's mode declares it reads.
+/// A video whose size can't be found is left to the job's own admission and the adapter.
+pub(super) fn too_much_video(plan: &RunPlan, source: &dyn MediaSource, catalog: &Catalog) -> Vec<TooMuchVideo> {
+    let mut found = Vec::new();
+    for step in &plan.steps {
+        let Some(jobs) = &step.jobs else { continue };
+        for job in jobs {
+            let JobSpec::Generate { provider, model, inputs, .. } = job else { continue };
+            // The cap of every mode these inputs could be running, the smallest if several.
+            let cap = catalog
+                .models()
+                .filter(|m| m.provider == *provider && m.provider_model == *model)
+                .flat_map(|model| &model.modes)
+                .filter(|mode| inputs.iter().all(|input| mode.inputs.iter().any(|role| role.role == input.role)))
+                .filter_map(|mode| mode.reads.as_ref().and_then(|reads| reads.video_bytes))
+                .min();
+            let Some(cap) = cap else { continue };
+            if let Some(bytes) = video_bytes(job, source).filter(|bytes| *bytes > cap) {
+                found.push(TooMuchVideo { node: step.node, bytes, cap });
+                break;
+            }
+        }
+    }
+    found
+}
+
+/// The stored size of every video `job` sends, or `None` when one's size isn't known.
+fn video_bytes(job: &JobSpec, source: &dyn MediaSource) -> Option<u64> {
+    let JobSpec::Generate { inputs, .. } = job else { return None };
+    let mut total = 0u64;
+    let mut counted = 0usize;
+    for input in inputs {
+        let mut stack = vec![(&input.value, 0usize)];
+        while let Some((value, depth)) = stack.pop() {
+            match value {
+                Value::List(items) if depth < MAX_DEPTH => stack.extend(items.iter().map(|item| (item, depth + 1))),
+                Value::Media(asset) if asset.mime.essence().starts_with("video/") => {
+                    counted = counted.saturating_add(1);
+                    if counted > MAX_MEDIA_VALUES {
+                        return Some(total);
+                    }
+                    total = total.saturating_add(source.size(asset).ok()?);
+                }
+                _ => {}
+            }
+        }
+    }
+    Some(total)
 }
 
 #[cfg(test)]

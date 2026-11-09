@@ -971,3 +971,41 @@ fn decode_index(bytes: &[u8]) -> Result<Index, Error> {
     }
     Ok(index)
 }
+
+/// Whether a plugin may still reach out under the grant it was published with (#174), read from
+/// the store folder at `root` right before one of its requests: `digest` must be `package`'s
+/// active, enabled version, and the grant at `epoch` the live one for it. A disable, update,
+/// rollback, uninstall or revoke in any window sharing the folder ends it.
+///
+/// It takes no lock (the index and grants are replaced atomically, so each read sees an old or
+/// a new file whole), creates nothing, and reads each file only up to its own limit. A file
+/// missing means nothing stands; one that can't be read or decoded is an error, which callers
+/// treat as "can't tell" rather than as a revoke.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn standing_at(root: &std::path::Path, package: &PackageId, digest: &PackageDigest, epoch: u64) -> Result<bool, Error> {
+    let Some(index) = read_capped(&root.join("index.json"), INDEX_LIMITS.bytes)? else { return Ok(false) };
+    let enabled = decode_index(&index)?.active.get(package).is_some_and(|(active, state)| active == digest && *state == State::Enabled);
+    if !enabled {
+        return Ok(false);
+    }
+    let Some(grants) = read_capped(&root.join("grants.json"), grants::MAX_GRANTS_BYTES)? else { return Ok(false) };
+    Ok(grants::decode(&grants)?.holds(package, digest, epoch))
+}
+
+/// The file at `path`, refused past `limit` bytes without reading more than one byte beyond.
+#[cfg(not(target_arch = "wasm32"))]
+fn read_capped(path: &std::path::Path, limit: usize) -> Result<Option<Vec<u8>>, Error> {
+    use std::io::Read;
+    let file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err(Error::new(ErrorKind::Internal, "the plugin store can't be read")),
+    };
+    let cap = u64::try_from(limit).unwrap_or(u64::MAX).saturating_add(1);
+    let mut bytes = Vec::new();
+    file.take(cap).read_to_end(&mut bytes).map_err(|_| Error::new(ErrorKind::Internal, "the plugin store can't be read"))?;
+    if bytes.len() > limit {
+        return Err(Error::new(ErrorKind::InvalidInput, "a plugin store file is too large"));
+    }
+    Ok(Some(bytes))
+}
