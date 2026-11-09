@@ -1,7 +1,7 @@
 # Kimi K3 (Moonshot) through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://platform.moonshot.ai/docs/pricing/chat
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# Checked 2026-11-09: https://platform.kimi.ai/docs/pricing/chat exposes cache-write
+# pricing by TTL but its numeric K3 table was not available in the retrieved page.
+# Unknown usage pricing requires explicit admission; no rate is guessed.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
 id = "moonshot.kimi-k3"

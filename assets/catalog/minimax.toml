@@ -124,9 +124,9 @@ label="Fixed seed (optional, local u32 range)"
 control={type="unsigned",min="0",max="4294967295",step="1"}
 
 # MiniMax M3 through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://platform.minimax.io/docs/guides/pricing-paygo
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# Checked 2026-11-09: https://platform.minimax.io/docs/pricing/overview has M3 rates
+# that vary above 512K input tokens and by service tier. No flat token rate is assumed.
+# Unknown usage pricing requires explicit admission.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
 id = "minimax.m3"

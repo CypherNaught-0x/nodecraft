@@ -181,3 +181,19 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
 Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
 scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).
+
+Additional key-only chat model capabilities were checked on 2026-11-09. Perplexity retains
+its synchronous/streamed Sonar compatibility route, which the provider reformulates as Agent API
+requests; Hyperbolic uses its replacement `.ai/inference/v1` route. These entries expose text
+only even where the service can handle other modalities.
+
+| Model id | Primary capability source | Checked |
+| --- | --- | --- |
+| `together.gpt-oss-120b` | [Documentation](https://docs.together.ai/docs/serverless/models) | 2026-11-09 |
+| `moonshot.kimi-k3` | [Documentation](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) | 2026-11-09 |
+| `zai.glm-4.6` | [Documentation](https://docs.z.ai/guides/llm/glm-4.6) | 2026-11-09 |
+| `minimax.m3` | [Documentation](https://platform.minimax.io/docs/guides/models-intro) | 2026-11-09 |
+| `perplexity.sonar` | [Documentation](https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview) | 2026-11-09 |
+| `hyperbolic.glm-5.3-flash` | [Documentation](https://www.hyperbolic.ai/docs/inference/quickstart) | 2026-11-09 |
+| `mira.model` | [Documentation](https://docs.mira.network/network/get-started/introduction) | 2026-11-09 |
+| `cohere.command-a` | [Documentation](https://docs.cohere.com/docs/command-a) | 2026-11-09 |

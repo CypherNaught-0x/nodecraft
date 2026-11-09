@@ -1,17 +1,18 @@
-# Llama 3.3 70B (Together AI) through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://www.together.ai/pricing
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# GPT OSS 120B (Together AI) through rig-core 0.46's own dialect (#1152).
+# Checked 2026-11-09: https://www.together.ai/pricing and
+# https://docs.together.ai/docs/serverless/models list GPT OSS 120B at $0.15 input /
+# $0.60 output per 1M tokens. Reasoning makes an up-front bound uncertain.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
-id = "together.llama-3.3-70b"
+id = "together.gpt-oss-120b"
 provider = "together"
-provider_model = "meta-llama/Llama-3.3-70B-Instruct-Turbo"
-label = "Llama 3.3 70B (Together AI)"
-description = "Text chat. Price is unknown here; check your provider account before running."
+provider_model = "openai/gpt-oss-120b"
+label = "GPT OSS 120B (Together AI)"
+description = "Text chat with usage pricing. No up-front quote; token rates apply after the reply."
 latency_s = 20
 quality = 2
 pricing = { type = "by_usage", currency = "USD" }
+usage = { input = "0.00015 USD", output = "0.0006 USD" }
 
 [[model.modes]]
 id = "text-to-text"

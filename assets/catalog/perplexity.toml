@@ -1,7 +1,8 @@
 # Sonar (Perplexity) through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://docs.perplexity.ai/guides/pricing
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# Checked 2026-11-09: https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview
+# says synchronous and streamed Sonar requests are reformulated as Agent API requests.
+# https://docs.perplexity.ai/docs/getting-started/pricing does not provide one stable
+# all-in Sonar price here: unknown usage pricing requires explicit admission.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
 id = "perplexity.sonar"

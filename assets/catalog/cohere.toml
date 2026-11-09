@@ -1,7 +1,7 @@
 # Command A (Cohere) through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://cohere.com/pricing
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# Checked 2026-11-09: https://cohere.com/pricing lists Model Vault GPU pricing,
+# not a Command A per-token API table. No API rate is inferred from GPU prices.
+# Unknown usage pricing requires explicit admission.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
 id = "cohere.command-a"
@@ -22,5 +22,5 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 name = "max_tokens"
 label = "Max output tokens"
 description = "Requested completion limit. Your model may require a smaller limit; reasoning may count separately."
-control = { type = "unsigned", min = "1", max = "8192" }
+control = { type = "unsigned", min = "1", max = "8000" }
 default = { type = "unsigned", value = "1024" }

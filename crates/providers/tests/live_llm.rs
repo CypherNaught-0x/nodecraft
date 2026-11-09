@@ -234,7 +234,7 @@ async fn live_xai() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn live_together1152() {
-    live_vendor("TOGETHER", Endpoint::together, "meta-llama/Llama-3.3-70B-Instruct-Turbo").await;
+    live_vendor("TOGETHER", Endpoint::together, "openai/gpt-oss-120b").await;
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -259,7 +259,7 @@ async fn live_perplexity1152() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn live_hyperbolic1152() {
-    live_vendor("HYPERBOLIC", Endpoint::hyperbolic, "meta-llama/Llama-3.3-70B-Instruct").await;
+    live_vendor("HYPERBOLIC", Endpoint::hyperbolic, "glm-5.3-flash").await;
 }
 
 #[tokio::test(flavor = "current_thread")]
