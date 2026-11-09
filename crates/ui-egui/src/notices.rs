@@ -227,6 +227,8 @@ pub struct Notices {
     /// The notice whose button had the keyboard focus, or that the pointer was over, last frame.
     focused: Option<u64>,
     hovered: Option<u64>,
+    /// Passing notices outside the bounded stack's scroll viewport do not expire unseen.
+    hidden_by_scroll: Vec<u64>,
 }
 
 impl Notices {
@@ -390,6 +392,7 @@ impl Notices {
         if !running {
             self.focused = None;
             self.hovered = None;
+            self.hidden_by_scroll.clear();
         }
         let paused = [self.focused, self.hovered];
         // Only the drawn (newest) notices age; one pushed since the last tick starts next tick.
@@ -398,7 +401,7 @@ impl Notices {
             if std::mem::take(&mut notice.fresh) {
                 continue;
             }
-            if !notice.sticky && !paused.contains(&Some(notice.id)) {
+            if !notice.sticky && !paused.contains(&Some(notice.id)) && !self.hidden_by_scroll.contains(&notice.id) {
                 notice.shown += step;
             }
         }
@@ -424,6 +427,7 @@ impl Notices {
         }
         let mut shown = Shown::default();
         let mut dismissed = Vec::new();
+        let mut hidden_by_scroll = Vec::new();
         let (mut focused, mut hovered) = (None, None);
         let pointer = ui.input(|i| i.pointer.hover_pos());
         let stack_height = ui.ctx().content_rect().height() * 0.45;
@@ -431,6 +435,9 @@ impl Notices {
             for notice in self.queue.iter().rev().take(MAX_NOTICES) {
                 let id = ui.id().with(("notice", notice.id));
                 let response = show_one(ui, t, id, notice);
+                if !response.rect.intersect(ui.clip_rect()).is_positive() {
+                    hidden_by_scroll.push(notice.id);
+                }
                 if response.closed {
                     dismissed.push(notice.id);
                 }
@@ -463,6 +470,7 @@ impl Notices {
         }
         self.focused = focused;
         self.hovered = hovered;
+        self.hidden_by_scroll = hidden_by_scroll;
         shown
     }
 }

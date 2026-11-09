@@ -205,6 +205,18 @@ mod kittest {
     }
 
     #[test]
+    fn a_passing_notice_outside_the_stack_scroll_does_not_expire_unseen() {
+        let info = format!("Old information. {}", "Public diagnostic detail. ".repeat(90));
+        let warning = format!("Newer warning. {}", "Public diagnostic detail. ".repeat(90));
+        let error = format!("Newest error. {}", "Public diagnostic detail. ".repeat(90));
+        let mut h = stack(&[(NoticeKind::Info, &info), (NoticeKind::Warning, &warning), (NoticeKind::Error, &error)]);
+        // At most the first two notices intersect the bounded viewport. The oldest does
+        // not spend its timeout while it waits below them, even after the warning expires.
+        h.run_steps(30);
+        assert!(h.state().iter().any(|notice| notice.text == info));
+    }
+
+    #[test]
     fn the_close_button_dismisses_its_notice() {
         let mut h = stack(&[(NoticeKind::Info, "Older"), (NoticeKind::Error, "Newest")]);
         h.run();
