@@ -41,7 +41,8 @@ Binary STL results can be previewed, converted back to GLB/OBJ, saved, reopened 
 as new 3D sources. Their filename extension is `.stl` and media type is `model/stl`.
 
 This implements the STL portion of [#569](https://github.com/CypherNaught-0x/nodecraft/issues/569).
-Broader USD profiles, the browser decode worker and retained material/UV rendering remain separate work.
+Browser decoding and preparation use the [preview worker](#browser-previews). Broader USD
+profiles and retained material/UV rendering remain separate work.
 
 ## ASCII PLY
 
@@ -71,7 +72,8 @@ Coordinate values carry no physical unit label.
 PLY retains the RGBA **channel data**. The current viewer is opaque, and the GLB converter
 stores RGBA under an opaque material; neither promises visible transparency. OBJ conversion
 keeps RGB and drops alpha. Textures, UVs, material structures and transparent-material
-rendering remain separate #569 work, as does the existing texture-to-vertex-colour bake.
+rendering remain separate #569 work. Embedded base-colour textures currently bake into
+vertex colours when the source mesh is read.
 
 Before allocating geometry, the reader validates the entire header and body, counts, numeric
 values, indices and exact end of input. It permits at most 64 header lines / 16 KiB, 1024 bytes
@@ -103,9 +105,11 @@ large textures fall back to the material/vertex color under the existing decoder
 is a preview resource bound, not retained-texture or transparent-material rendering.
 
 A missing, incompatible or timed-out worker produces a named preview failure while the rest
-of the canvas remains editable. Reload retries the worker. Models no longer decode inline on
-the browser UI thread. Main-thread transfer/validation is chunked; the final admitted GPU
-upload still takes time proportional to model size. See the
+of the canvas remains editable. Timeout and unavailable-worker failures retry after a delay;
+incompatible worker versions still require a reload. A completed answer waiting while the
+page was in the background is adopted before checking its polling deadline. Models no longer
+decode inline on the browser UI thread. Main-thread transfer/validation is chunked; the final
+admitted GPU upload still takes time proportional to model size. See the
 [browser worker decision](decisions/2026-10-28-browser-mesh-worker.md) for ownership and resource
 accounting, deployment and conformance coverage.
 

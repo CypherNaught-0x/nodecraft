@@ -498,8 +498,10 @@ browser. HTTP via `reqwest` (works on both).
 - **Audio:** the native host uses FFmpeg for bounded PCM decode and `cpal` for sound card
   playback, with cached waveform thumbnails. Browser playback and native FFmpeg operations
   are unsupported. See [native media](media-video.md).
-- **3D:** `gltf` import/export (+ OBJ), wgpu viewer as an egui paint callback, offscreen render
-  for photo/turntable/sheet capture.
+- **3D:** bounded GLB/glTF/OBJ, binary STL, ASCII PLY and static USDA/USDZ readers, with
+  GLB/OBJ/STL/PLY/USDZ conversion. The wgpu viewer is an egui paint callback with offscreen
+  photo/turntable/sheet capture; browser previews decode and prepare buffers on a Rust/Wasm
+  worker. Retained UV/material rendering remains #569 work. See [format fidelity and bounds](3d-formats.md).
 - **PDF:** page rendering and text extraction through `craft-pdf` (pure Rust, from craft-libs;
   features `read`/`raster`), behind a `pdf` feature.
 - **Text layout in Layer Editor:** `parley`/`cosmic-text` with user-uploaded fonts.

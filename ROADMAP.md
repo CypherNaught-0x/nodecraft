@@ -18,7 +18,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker (#1011, #1019, #1013) | 13/16 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker implemented; retained materials (#569) and close-out (#379) open | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 17/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 26/29 |
@@ -252,8 +252,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
-  The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
-  between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
+  The browser's local-action pass uses the main thread: it takes a round a few jobs per frame,
+  so drawing goes on between them (#1072), though one heavy action still holds the frame it
+  runs in. Built-in image
   actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
   the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
