@@ -196,7 +196,7 @@ fn galley_width(galley: &std::sync::Arc<egui::Galley>) -> f32 {
 }
 
 /// Gives a glyph button a spoken name.
-fn named(response: egui::Response, name: &str) -> egui::Response {
+pub(crate) fn named(response: egui::Response, name: &str) -> egui::Response {
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, response.enabled(), name));
     response
 }
@@ -305,7 +305,7 @@ pub fn strip(ui: &mut egui::Ui, node: &Node, card_focused: bool, t: &Tokens) -> 
                             .on_disabled_hover_text(result.as_ref().err().map_or("Only media results export to a file.", |e| e.message.as_str()));
                     }
                     _ => {
-                        ui.menu_button("Export…", |ui| {
+                        ui.menu_button("Export", |ui| {
                             for (label, port, item, name) in targets {
                                 if ui.button(label).clicked() {
                                     intent = Some(HistoryIntent::Export { generation: generation.id, port: port.clone(), item: *item, name: name.clone() });

@@ -6,14 +6,30 @@ use egui_kittest::{
     kittest::{NodeT, Queryable},
 };
 
+/// The Search entry's name as the harness spells it: kittest reports Linux on every host, so the
+/// shortcut reads Ctrl+F even on macOS (`shortcut::format_shortcut` follows `ctx.os()`).
 fn search_label() -> &'static str {
-    if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" }
+    "Search (Ctrl+F)"
 }
 
 pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     if (matches!(
         label,
-        "API keys" | "Techniques" | "Elements" | "ComfyUI" | "Providers" | "Share" | "Queue" | "Budgets" | "Sheets" | "Comments" | "Open as app"
+        "File"
+            | "Tag filter"
+            | "API keys"
+            | "Techniques"
+            | "Elements"
+            | "ComfyUI"
+            | "Providers"
+            | "Automation"
+            | "Plugins"
+            | "Share"
+            | "Queue"
+            | "Budgets"
+            | "Sheets"
+            | "Comments"
+            | "Open as app"
     ) || label.starts_with("Search ("))
         && h.query_by_role_and_label(Role::Button, label).is_none()
         && h.query_by_role_and_label(Role::Button, "More").is_some()
@@ -32,6 +48,8 @@ pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
 fn expected() -> Vec<(topbar::Entry, &'static str)> {
     use topbar::Entry::*;
     vec![
+        (File, "File"),
+        (Tags, "Tag filter"),
         (Sheets, "Sheets"),
         (Techniques, "Techniques"),
         (Elements, "Elements"),
@@ -96,16 +114,26 @@ fn all_topbar_entries_are_labelled_and_ordered() {
     }
 }
 
+/// The entries the row shows itself, with More closed.
+fn in_row(h: &Harness<'static, NodeCraftApp>) -> Vec<&'static str> {
+    assert!(!egui::Popup::is_id_open(&h.ctx, topbar::popup_id()));
+    expected().into_iter().map(|(_, label)| label).filter(|label| h.query_by_role_and_label(Role::Button, label).is_some()).collect()
+}
+
 #[test]
 fn overflow_preserves_icons_order_disabled_states_and_escape() {
     for kind in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
         let mut h = harness(480.0, kind);
         let document = h.state().session.document().clone();
-        assert!(h.query_by_role_and_label(Role::Button, "Sheets").is_none());
+        let row = in_row(&h);
+        // Only what has no room moves into More, from the right; Search and Comments stay (#1115).
+        assert!(!row.contains(&"Plugins"), "{row:?}");
+        assert!(row.contains(&search_label()) && row.contains(&"Comments"), "{row:?}");
         assert!(h.state().viewport.contains_rect(h.get_by_role_and_label(Role::Button, "More").rect()));
-        reveal(&mut h, "Sheets");
+        h.get_by_role_and_label(Role::Button, "More").click();
+        h.run();
         let mut bottom = 0.0;
-        for (entry, label) in expected() {
+        for (entry, label) in expected().into_iter().filter(|(_, label)| !row.contains(label)) {
             let node = h.get_by_role_and_label(Role::Button, label);
             let rect = node.rect();
             assert!(rect.top() >= bottom, "{label} follows the previous menu row");
@@ -179,9 +207,11 @@ fn overflow_cannot_blur_an_uncommitted_editor() {
 #[test]
 fn overflow_keyboard_focus_follows_its_visible_row_order() {
     let mut h = harness(480.0, crate::theme::ThemeKind::Dark);
+    let row = in_row(&h);
     reveal(&mut h, "Sheets");
     let labels: Vec<_> = expected()
         .into_iter()
+        .filter(|(_, label)| !row.contains(label))
         .filter_map(|(_, label)| (!h.get_by_role_and_label(Role::Button, label).accesskit_node().is_disabled()).then_some(label))
         .collect();
     h.get_by_role_and_label(Role::Button, "Sheets").focus();

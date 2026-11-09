@@ -83,11 +83,21 @@ fn a_200_node_graph_saves_undoes_to_the_start_and_reopens_identical() {
     // The file still holds the whole graph. The project is single-writer, so close this window
     // first, as a user would before opening it elsewhere.
     drop(h);
-    let (_, _, _, open_error) = NodeCraftApp::storage_session(StorageSetup { recovery: scratch.0.join("recovery-check"), open: Some(file.clone()) }).unwrap();
-    assert!(open_error.is_none(), "the saved file reopens: {open_error:?}");
     let started = Instant::now();
-    let reopened = storage_harness(storage_app(&scratch.0, "recovery-reopen", Some(file.clone())));
+    let mut reopened = storage_harness(storage_app(&scratch.0, "recovery-reopen", Some(file.clone())));
+    // The startup open runs on the save thread from the first frame (#367).
+    let mut frames = 0;
+    loop {
+        reopened.step();
+        if reopened.state().session.file_status().operation.is_none() {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(1));
+        frames += 1;
+        assert!(frames <= 10_000, "the startup open never finishes");
+    }
     let open = started.elapsed();
+    assert!(reopened.state().notice.is_none(), "the saved file reopens: {:?}", reopened.state().notice);
     assert_eq!(reopened.state().session.document(), &saved, "the file holds the whole graph");
     eprintln!(
         "200 nodes, 180 wires: .ncraft {} bytes; save as {save_as:?}, Cmd+S frame {save:?} (written after {written:?}), open {open:?}",

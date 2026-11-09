@@ -11,7 +11,7 @@ pub const SAMPLES: usize = 24;
 /// Smallest horizontal pull of a control point, so short or backward noodles still curve.
 pub const MIN_PULL: f32 = 60.0;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Side {
     Input,
     Output,
@@ -117,6 +117,53 @@ pub fn compatible(output: PortType, input: PortType) -> bool {
     nodecraft_engine::turn_into_cmds::compatible(output, input)
 }
 
+/// A modality as a capitalised noun, for accessible names: "Image", "3D".
+pub fn modality_noun(modality: nodecraft_types::Modality) -> &'static str {
+    use nodecraft_types::Modality;
+    match modality {
+        Modality::Text => "Text",
+        Modality::Image => "Image",
+        Modality::Video => "Video",
+        Modality::Audio => "Audio",
+        Modality::Mesh => "3D",
+        Modality::Document => "Document",
+        Modality::Style => "Style",
+    }
+}
+
+/// A port's name as a person reads it: `reference_images` is "Reference images", and a port
+/// with a generic name (`out`, `in`) goes by its media type.
+pub fn port_phrase(port: &nodecraft_graph::Port) -> String {
+    let name = port.name.trim();
+    if name.is_empty() || matches!(name, "out" | "in" | "output" | "input") {
+        return modality_noun(port.port_type.modality).to_owned();
+    }
+    let spaced = name.replace(['_', '-', '.'], " ");
+    let mut chars = spaced.chars();
+    chars.next().map(|c| c.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// A port's accessible name (#1109): "Image output of Generate 1", or "Prompt input of Text 2,
+/// connected to Text 1" with the cards wired to it.
+pub fn port_label(side: Side, port: &nodecraft_graph::Port, owner: &str, peers: &[String]) -> String {
+    let side = match side {
+        Side::Input => "input",
+        Side::Output => "output",
+    };
+    let mut label = format!("{} {side} of {owner}", port_phrase(port));
+    if !peers.is_empty() {
+        label.push_str(", connected to ");
+        label.push_str(&peers.join(", "));
+    }
+    label
+}
+
+/// A connection's accessible name (#1109): "Image from A to B · reference", naming the input
+/// it lands on.
+pub fn edge_label(modality: nodecraft_types::Modality, from: &str, to: &str, input: &nodecraft_graph::Port) -> String {
+    format!("{} from {from} to {to} · {}", modality_noun(modality), port_phrase(input).to_lowercase())
+}
+
 /// Edges currently feeding `to`, in input order.
 pub fn into_port<'a>(canvas: &'a Canvas, to: &Endpoint) -> Vec<&'a nodecraft_graph::Edge> {
     let mut edges: Vec<_> = canvas.edges().values().filter(|e| e.to == *to).collect();
@@ -208,5 +255,18 @@ mod tests {
         let b = new_edge_id(&project, &end(1, "out"), &end(3, "list"), 1).unwrap();
         assert_ne!(a, b);
         assert!(!canvas.edges().contains_key(&a));
+    }
+
+    #[test]
+    fn ports_and_connections_read_as_sentences() {
+        let image = PortType { modality: Modality::Image, many: false };
+        let out = Port { name: "out".into(), port_type: image };
+        let reference = Port { name: "reference_images".into(), port_type: PortType { many: true, ..image } };
+        assert_eq!(port_phrase(&out), "Image");
+        assert_eq!(port_phrase(&reference), "Reference images");
+        assert_eq!(port_label(Side::Output, &out, "Generate 1", &[]), "Image output of Generate 1");
+        assert_eq!(port_label(Side::Input, &reference, "Edit", &["A".into(), "B".into()]), "Reference images input of Edit, connected to A, B");
+        assert_eq!(edge_label(Modality::Image, "A", "B", &reference), "Image from A to B · reference images");
+        assert_eq!(port_phrase(&Port { name: String::new(), port_type: PortType { modality: Modality::Mesh, many: false } }), "3D");
     }
 }

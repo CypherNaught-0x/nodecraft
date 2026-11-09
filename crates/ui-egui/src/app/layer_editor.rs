@@ -549,8 +549,8 @@ pub(super) fn colour_field(
         let swatch = value.and_then(|v| layers::parse_color(v).ok());
         let (rect, _) = ui.allocate_exact_size(Vec2::splat(t.body_size), Sense::hover());
         match swatch {
-            Some([r, g, b, _]) => ui.painter().rect_filled(rect, 2.0, Color32::from_rgb(r, g, b)),
-            None => ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, t.panel_stroke), egui::StrokeKind::Inside),
+            Some([r, g, b, _]) => ui.painter().rect_filled(rect, t.inset, Color32::from_rgb(r, g, b)),
+            None => ui.painter().rect_stroke(rect, t.inset, egui::Stroke::new(t.stroke_hairline, t.panel_stroke), egui::StrokeKind::Inside),
         };
         if let Some(text) = text_field(ui, draft, key, label, value.unwrap_or(""), false) {
             let text = text.trim().to_owned();
@@ -1319,7 +1319,7 @@ pub(super) fn draw_layer(painter: &egui::Painter, stage: Stage, layer: &Layer, a
         _ => {
             // Not drawable yet (an image still to run, or too large to preview): its box.
             let corners = quad(stage, layer, (0.0, 0.0), (w, h)).to_vec();
-            painter.add(egui::Shape::convex_polygon(corners, t.card_fill.gamma_multiply(0.6), egui::Stroke::new(1.0, t.panel_stroke)));
+            painter.add(egui::Shape::convex_polygon(corners, t.card_fill.gamma_multiply(t.dim), egui::Stroke::new(t.stroke_hairline, t.panel_stroke)));
         }
     }
 }
@@ -1440,11 +1440,11 @@ pub(super) fn stage(
     for layer in listing.layers.iter().filter(|l| l.visible).map(current) {
         draw_layer(&inside, stage, &layer, art.get(&layer.id), t);
     }
-    painter.rect_stroke(frame_rect, 0.0, egui::Stroke::new(1.0, t.panel_stroke), egui::StrokeKind::Outside);
+    painter.rect_stroke(frame_rect, 0.0, egui::Stroke::new(t.stroke_hairline, t.panel_stroke), egui::StrokeKind::Outside);
 
     // Guides, the selection, and the handles of a single unlocked layer.
     if let Some(drag) = &editor.drag {
-        let guide = egui::Stroke::new(1.0, t.accent);
+        let guide = egui::Stroke::new(t.stroke_hairline, t.accent);
         for g in &drag.guides {
             match *g {
                 Guide::X(x) => painter.vline(stage.screen((x, 0.0)).x, area.y_range(), guide),

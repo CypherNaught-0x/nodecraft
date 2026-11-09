@@ -177,7 +177,9 @@ pub fn summary(canvas: &Canvas) -> Json {
     let Some(info) = canvas.technique_info() else { return Json::Null };
     let names = |ports: &[nodecraft_graph::TechniquePort]| ports.iter().map(|port| port.name.clone()).collect::<Vec<_>>();
     json!({"technique": info.id, "version": info.version, "name": info.name, "description": info.description, "category": info.category,
-        "tags": info.tags, "inputs": names(&info.inputs), "outputs": names(&info.outputs), "nodes": canvas.nodes().len()})
+        "tags": info.tags, "inputs": names(&info.inputs), "outputs": names(&info.outputs), "nodes": canvas.nodes().len(),
+        // Cards naming a Soul ID keep it, but it runs only on the Higgsfield account that trained it.
+        "account_bound": crate::soul_ids::canvas_handles(canvas).uses})
 }
 
 /// Where a host keeps its library.

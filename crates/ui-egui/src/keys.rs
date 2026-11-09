@@ -11,11 +11,23 @@
 //! keychain read can show a prompt; "Check" reads one on request. The browser build also lists
 //! the accounts it finds in the site's storage at startup (names only; no key is read).
 //!
+//! A request the keychain hasn't answered within [`KEYCHAIN_TIMEOUT_S`] (an unlock prompt left
+//! open) makes its row say the outcome is unknown, and the row can be used again. The keychain call
+//! itself is not cancelled and may still succeed, so the panel keeps following the request (up to
+//! [`MAX_PENDING`] at once) and applies its answer when it comes: a late save is remembered, a late
+//! removal forgotten. A row shows only its newest request's answer; an older one still updates the
+//! remembered accounts, which stays right because the keychain worker answers in request order.
+//!
+//! At most [`KeySettings::MAX_ACCOUNTS`] accounts are remembered. Saving a key for a new account
+//! counts the new accounts with a save still in flight (or unknown) as taken, and is refused before
+//! anything is written when the list is full; replacing a listed account's key is always allowed.
+//! A save that fails releases its place.
+//!
 //! "Test" (desktop only) asks the provider whether it accepts the stored key, with a request that
 //! costs nothing (`keys.test`, #237): the row says it works, can't be verified (and why), or the
 //! error, such as the provider rejecting it.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use nodecraft_engine::Session;
 use nodecraft_engine::secrets::Account;
@@ -25,9 +37,16 @@ use serde_json::{Value, json};
 
 use crate::theme::Tokens;
 
+mod endpoints;
+pub use endpoints::EndpointChange;
+
 /// How long a request may wait for the keychain (an unanswered unlock prompt) before the row
-/// says so and can be used again. A late answer is then ignored.
+/// says its outcome is unknown and can be used again. A late answer is still applied.
 pub const KEYCHAIN_TIMEOUT_S: f64 = 120.0;
+
+/// Most keychain requests the panel follows at once, answered or timed out; more are refused
+/// until some are answered, so no answer is ever lost. The keychain worker itself holds far fewer.
+pub const MAX_PENDING: usize = 256;
 
 /// Where keys are kept, shown at the top of the panel.
 #[cfg(not(target_arch = "wasm32"))]
@@ -41,7 +60,18 @@ pub const STORED_WHERE: &str = "Keys are kept in this browser's storage for this
 const PRESETS: &[&str] = &[
     "openai",
     "azure-openai",
+    "bedrock",
+    // Standard AWS credentials for Bedrock, signed with SigV4 when no Bedrock API key is stored
+    // (#1163); the last two only for temporary credentials.
+    "bedrock:aws-access-key-id",
+    "bedrock:aws-secret-access-key",
+    "bedrock:aws-session-token",
+    "bedrock:aws-expiration",
     "anthropic",
+    "deepseek",
+    "mistral",
+    "groq",
+    "xai",
     "openrouter",
     "litellm",
     "fal",
@@ -73,6 +103,9 @@ pub enum KeyStatus {
     /// The key (its masked tail) can't be checked for free; why.
     Unverifiable(String, String),
     Failed(String),
+    /// The keychain didn't answer in time, so the request may still finish (its answer is applied
+    /// when it comes); what the user can do meanwhile.
+    Unknown(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -86,8 +119,25 @@ enum Op {
 /// A change to the remembered account list, for the host to save in settings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AccountChange {
+    /// A key was saved for the account.
     Remember(Account),
+    /// The account's key was removed.
     Forget(Account),
+    /// A check found a key stored for the account: list it (no key changed).
+    Found(Account),
+}
+
+/// A request the keychain hasn't answered yet.
+#[derive(Debug, Clone)]
+struct Request {
+    account: Account,
+    op: Op,
+    /// When it was sent, in egui seconds.
+    since: f64,
+    /// The panel's own order of requests, to tell newer from older answers.
+    seq: u64,
+    /// Past the timeout: the row says the outcome is unknown, but the answer is still awaited.
+    overdue: bool,
 }
 
 pub struct KeysPanel {
@@ -98,15 +148,19 @@ pub struct KeysPanel {
     loaded: bool,
     account: String,
     key: String,
-    /// Requests the keychain hasn't answered: id → (account, what was asked, when, in egui
-    /// seconds).
-    pending: BTreeMap<u64, (Account, Op, f64)>,
+    /// Requests the keychain hasn't answered, by `pending` id (at most [`MAX_PENDING`]).
+    pending: BTreeMap<u64, Request>,
+    /// Each listed account's newest request: only its answer may change the row.
+    latest: BTreeMap<Account, u64>,
+    next_seq: u64,
     /// egui time of the current frame.
     now: f64,
     /// Whether the panel was drawn last frame, to notice it closing.
     was_open: bool,
     confirm_remove: Option<Account>,
     pub notice: Option<String>,
+    /// The custom endpoint rows (#962), shown when the host gives settings.
+    endpoints: endpoints::Endpoints,
 }
 
 impl Default for KeysPanel {
@@ -119,18 +173,57 @@ impl Default for KeysPanel {
             account: String::new(),
             key: String::new(),
             pending: BTreeMap::new(),
+            latest: BTreeMap::new(),
+            next_seq: 1,
             now: 0.0,
             was_open: false,
             confirm_remove: None,
             notice: None,
+            endpoints: endpoints::Endpoints::default(),
         }
     }
 }
 
 impl KeysPanel {
-    /// Whether a request is waiting for the keychain.
+    /// Whether a request is waiting for the keychain within its timeout.
     pub fn is_waiting(&self) -> bool {
+        self.pending.values().any(|request| !request.overdue)
+    }
+
+    /// Whether any request is still awaited, including ones past the timeout whose outcome is
+    /// unknown (the host keeps polling for their answers, more slowly).
+    pub fn is_following(&self) -> bool {
         !self.pending.is_empty()
+    }
+
+    /// New accounts with a save in flight or of unknown outcome: they keep a place in the
+    /// remembered list until answered.
+    pub(crate) fn reserved(&self) -> Vec<Account> {
+        let accounts: BTreeSet<&Account> = self.pending.values().filter(|request| request.op == Op::Set).map(|request| &request.account).collect();
+        accounts.into_iter().cloned().collect()
+    }
+
+    /// Keeps the rows bounded: rows for accounts that are neither remembered nor awaiting an
+    /// answer (a failed save, a key the full list couldn't take) are dropped, oldest first, once
+    /// there are more than [`KeySettings::MAX_ACCOUNTS`] rows. Such a row known to have no key
+    /// (a late removal, then a check) has nothing left to show and goes at once.
+    fn prune(&mut self, settings: &KeySettings) {
+        let remembered = settings.accounts();
+        let busy: BTreeSet<Account> = self.pending.values().map(|request| request.account.clone()).collect();
+        self.rows.retain(|(account, status)| *status != KeyStatus::Missing || remembered.contains(account) || busy.contains(account));
+        let mut extra = self.rows.len().saturating_sub(KeySettings::MAX_ACCOUNTS);
+        if extra > 0 {
+            self.rows.retain(|(account, _)| {
+                if extra == 0 || remembered.contains(account) || busy.contains(account) {
+                    true
+                } else {
+                    extra -= 1;
+                    false
+                }
+            });
+        }
+        let rows = &self.rows;
+        self.latest.retain(|account, _| busy.contains(account) || rows.iter().any(|(a, _)| a == account));
     }
 
     /// The listed accounts and what is known about each.
@@ -161,17 +254,22 @@ impl KeysPanel {
             Op::Status => "keys.status",
             Op::Test => "keys.test",
         };
+        if self.pending.len() >= MAX_PENDING {
+            self.notice = Some("Too many keychain requests are still waiting for an answer. Try again once some have finished.".into());
+            return None;
+        }
         match session.dispatch(id, &params) {
             Ok(answer) => match answer.get("pending").and_then(Value::as_u64) {
                 Some(request) => {
                     self.notice = None;
-                    self.pending.insert(request, (account.clone(), op, self.now));
-                    self.set_status(account, if op == Op::Test { KeyStatus::Testing } else { KeyStatus::Waiting });
+                    self.track(request, account, op);
                     None
                 }
                 None => {
                     self.notice = None;
-                    self.apply(account, op, Ok(answer))
+                    let seq = self.next();
+                    self.latest.insert(account.clone(), seq);
+                    self.apply(account, op, seq, Ok(answer))
                 }
             },
             Err(e) => {
@@ -181,39 +279,86 @@ impl KeysPanel {
         }
     }
 
-    /// Applies a keychain answer to the rows.
-    fn apply(&mut self, account: &Account, op: Op, result: Result<Value, Error>) -> Option<AccountChange> {
+    fn next(&mut self) -> u64 {
+        let seq = self.next_seq;
+        self.next_seq = self.next_seq.saturating_add(1);
+        seq
+    }
+
+    /// Follows the keychain request `id` until it is answered; it is now the account's newest.
+    fn track(&mut self, id: u64, account: &Account, op: Op) {
+        let seq = self.next();
+        self.latest.insert(account.clone(), seq);
+        self.pending.insert(id, Request { account: account.clone(), op, since: self.now, seq, overdue: false });
+        self.set_status(account, if op == Op::Test { KeyStatus::Testing } else { KeyStatus::Waiting });
+    }
+
+    /// Applies the keychain's answer to request `seq`. The remembered accounts follow every
+    /// answer, in the order the keychain gave them; the row only follows the account's newest
+    /// request, so an older answer never overwrites what a newer one is doing or said.
+    fn apply(&mut self, account: &Account, op: Op, seq: u64, result: Result<Value, Error>) -> Option<AccountChange> {
+        let newest = self.latest.get(account) == Some(&seq);
         let answer = match result {
             Ok(answer) => answer,
             Err(e) => {
-                self.set_status(account, KeyStatus::Failed(e.message));
+                if newest {
+                    self.set_status(account, KeyStatus::Failed(e.message));
+                }
                 return None;
             }
         };
         let masked = || answer.get("masked").and_then(Value::as_str).unwrap_or("…").to_owned();
         match op {
             Op::Set => {
-                self.set_status(account, KeyStatus::Stored(masked()));
+                if newest {
+                    self.set_status(account, KeyStatus::Stored(masked()));
+                }
                 Some(AccountChange::Remember(account.clone()))
             }
             Op::Remove => {
-                self.rows.retain(|(a, _)| a != account);
+                if newest {
+                    self.rows.retain(|(a, _)| a != account);
+                }
                 Some(AccountChange::Forget(account.clone()))
             }
             Op::Status => {
                 let stored = answer.get("stored").and_then(Value::as_bool).unwrap_or(false);
-                self.set_status(account, if stored { KeyStatus::Stored(masked()) } else { KeyStatus::Missing });
-                None
+                if newest {
+                    self.set_status(account, if stored { KeyStatus::Stored(masked()) } else { KeyStatus::Missing });
+                }
+                // A key found for an account the list lost (or never got) is listed again.
+                stored.then(|| AccountChange::Found(account.clone()))
             }
             Op::Test => {
-                let status = match answer.get("result").and_then(Value::as_str) {
-                    Some("verified") => KeyStatus::Verified(masked()),
-                    _ => KeyStatus::Unverifiable(masked(), answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
-                };
-                self.set_status(account, status);
+                if newest {
+                    let status = match answer.get("result").and_then(Value::as_str) {
+                        Some("verified") => KeyStatus::Verified(masked()),
+                        _ => KeyStatus::Unverifiable(masked(), answer.get("reason").and_then(Value::as_str).unwrap_or("no free check").to_owned()),
+                    };
+                    self.set_status(account, status);
+                }
                 None
             }
         }
+    }
+
+    /// Saves `key` for the account named `name`, unless the remembered list (counting the new
+    /// accounts already being saved) has no room for it: then nothing is written and the notice
+    /// says why. Replacing a listed account's key is always allowed.
+    pub(crate) fn save(&mut self, session: &mut Session, settings: &KeySettings, name: &str, key: String) -> Option<AccountChange> {
+        let account = match Account::new(name.trim()) {
+            Ok(account) => account,
+            Err(e) => {
+                self.notice = Some(e.to_string());
+                return None;
+            }
+        };
+        if !settings.admits(&account, &self.reserved()) {
+            self.notice =
+                Some(format!("NodeCraft can keep keys for at most {} accounts. Remove one you no longer use, then save again.", KeySettings::MAX_ACCOUNTS));
+            return None;
+        }
+        self.send(session, Op::Set, &account, json!({"account": account.as_str(), "key": key}))
     }
 
     /// Takes the keychain's answers (from the host's `KeyResults`), matched to this panel's
@@ -225,11 +370,37 @@ impl KeysPanel {
         let mut others = Vec::new();
         for outcome in outcomes {
             match self.pending.remove(&outcome.id) {
-                Some((account, op, _)) => changes.extend(self.apply(&account, op, outcome.result)),
+                Some(request) => changes.extend(self.apply(&request.account, request.op, request.seq, outcome.result)),
                 None => others.push(outcome),
             }
         }
         (changes, others)
+    }
+
+    /// Shows the custom endpoints `settings` set (#962), with fields to change them. The host
+    /// calls it each frame the panel is open, where it can save them.
+    /// `None` when there are no settings to save them in: the rows aren't offered.
+    pub fn sync_endpoints(&mut self, settings: Option<&nodecraft_engine::settings::ProviderSettings>) {
+        match settings {
+            Some(settings) => self.endpoints.sync(settings),
+            None => self.endpoints.forget(),
+        }
+    }
+
+    /// Addresses the person saved or reset, already checked, for the host to save.
+    pub fn take_endpoint_changes(&mut self) -> Vec<EndpointChange> {
+        self.endpoints.take_changes()
+    }
+
+    /// What the endpoint rows say last went wrong.
+    #[cfg(test)]
+    pub(crate) fn endpoint_notice_text(&self) -> Option<&str> {
+        self.endpoints.notice.as_deref()
+    }
+
+    /// Says why saving an address failed, under the endpoint rows.
+    pub fn endpoint_notice(&mut self, notice: Option<String>) {
+        self.endpoints.notice = notice;
     }
 
     /// Draws the panel (when open) and returns account-list changes to save.
@@ -239,6 +410,7 @@ impl KeysPanel {
             // Closed some other way (the toolbar button): still forget anything typed.
             if self.was_open {
                 self.forget_typed(ctx);
+                self.endpoints.forget();
                 self.confirm_remove = None;
                 self.was_open = false;
             }
@@ -247,10 +419,9 @@ impl KeysPanel {
         self.was_open = true;
         self.tick(ctx.input(|i| i.time));
         self.load(settings);
+        self.prune(settings);
         let mut open = self.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("API keys").id(egui::Id::new("nodecraft.keys")).open(&mut open).collapsible(false).resizable(false).frame(frame).show(ctx, |ui| {
+        crate::floating::panel(ctx, "API keys", egui::Id::new("nodecraft.keys"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
             ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
             ui.add_space(t.control_gap);
             let rows = self.rows.clone();
@@ -266,9 +437,10 @@ impl KeysPanel {
                         KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
                         KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
                         KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
-                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent),
+                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent_text),
                         KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
                         KeyStatus::Failed(why) => (why.clone(), t.danger),
+                        KeyStatus::Unknown(what) => (what.clone(), t.text),
                     };
                     ui.label(egui::RichText::new(text).color(color));
                     ui.horizontal(|ui| {
@@ -281,6 +453,7 @@ impl KeysPanel {
                             && ui
                                 .add_enabled(!waiting, egui::Button::new("Test"))
                                 .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                .on_disabled_hover_text("Waiting for the keychain or the provider; try again once it answers")
                                 .clicked()
                         {
                             changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
@@ -301,15 +474,23 @@ impl KeysPanel {
             });
             ui.separator();
             ui.label(egui::RichText::new("Add or replace a key").color(t.text));
-            ui.horizontal_wrapped(|ui| {
-                for preset in PRESETS {
-                    if ui.selectable_label(self.account == *preset, *preset).clicked() {
-                        self.account = (*preset).to_owned();
+            // The quick picks wrap at a fixed width, not the panel's, so widening the panel never
+            // reflows them into fewer rows and shortens it under the pointer.
+            ui.scope(|ui| {
+                ui.set_max_width(ui.available_width().min(t.card_width * 1.25));
+                ui.horizontal_wrapped(|ui| {
+                    for preset in PRESETS {
+                        if ui.selectable_label(self.account == *preset, *preset).clicked() {
+                            self.account = (*preset).to_owned();
+                        }
                     }
-                }
+                });
             });
             if self.account == "runway" {
                 ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
+            }
+            if let Some(hint) = account_hint(&self.account) {
+                ui.label(egui::RichText::new(hint).color(t.text_muted));
             }
             egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
                 let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
@@ -326,10 +507,8 @@ impl KeysPanel {
                         // lives only in the keychain.
                         let key = std::mem::take(&mut self.key);
                         self.forget_typed(ui.ctx());
-                        match Account::new(self.account.trim()) {
-                            Ok(account) => changes.extend(self.send(session, Op::Set, &account, json!({"account": account.as_str(), "key": key}))),
-                            Err(e) => self.notice = Some(e.to_string()),
-                        }
+                        let name = self.account.clone();
+                        changes.extend(self.save(session, settings, &name, key));
                     }
                 });
                 ui.end_row();
@@ -337,10 +516,12 @@ impl KeysPanel {
             if let Some(notice) = &self.notice {
                 ui.label(egui::RichText::new(notice).color(t.danger));
             }
+            self.endpoints.show(ui, t);
         });
         if !open {
             // Closing forgets anything typed: the key lives only in the keychain.
             self.forget_typed(ctx);
+            self.endpoints.forget();
             self.confirm_remove = None;
         }
         self.open = open;
@@ -361,24 +542,59 @@ impl KeysPanel {
         }
     }
 
-    /// Advances the panel's clock to `now` (egui seconds) and fails requests the keychain never
-    /// answered, so they can be retried. The host calls it every frame, open or not.
+    /// Advances the panel's clock to `now` (egui seconds) and marks requests the keychain hasn't
+    /// answered in time as of unknown outcome, so the row can be used again. The host calls it
+    /// every frame, open or not.
     pub fn tick(&mut self, now: f64) {
         self.now = now;
         self.expire();
     }
 
-    /// Requests the keychain never answered become failures the user can retry.
+    /// Requests past the timeout stay followed (their answer is still applied), but their row
+    /// says the outcome is unknown and what to do.
     fn expire(&mut self) {
         let (now, limit) = (self.now, self.timeout_s);
-        let late: Vec<u64> = self.pending.iter().filter(|(_, (_, _, since))| now - since > limit).map(|(id, _)| *id).collect();
-        for id in late {
-            if let Some((account, _, _)) = self.pending.remove(&id) {
-                self.set_status(&account, KeyStatus::Failed("No answer from the keychain (is an unlock prompt open?). Try again.".into()));
+        let mut late = Vec::new();
+        for request in self.pending.values_mut() {
+            if !request.overdue && now - request.since > limit {
+                request.overdue = true;
+                late.push((request.account.clone(), request.op, request.seq));
+            }
+        }
+        for (account, op, seq) in late {
+            if self.latest.get(&account) == Some(&seq) {
+                self.set_status(&account, KeyStatus::Unknown(unknown_outcome(op).into()));
             }
         }
     }
 }
 
+/// What to store under an account whose key isn't simply an API key.
+fn account_hint(account: &str) -> Option<&'static str> {
+    Some(match account {
+        "bedrock" => "A Bedrock API key. To use AWS access keys instead, store them under the bedrock:aws-… accounts; the API key wins when both are stored.",
+        "bedrock:aws-access-key-id" => {
+            "The AWS access key ID (AKIA… or, for temporary credentials, ASIA…). Bedrock signs with it when no bedrock API key is stored."
+        }
+        "bedrock:aws-secret-access-key" => "The secret access key that belongs to bedrock:aws-access-key-id.",
+        "bedrock:aws-session-token" => "Temporary credentials only: the session token. Also store its expiry as bedrock:aws-expiration.",
+        "bedrock:aws-expiration" => "Temporary credentials only: when they expire, as an RFC 3339 time such as 2026-11-08T20:00:00Z.",
+        _ => return None,
+    })
+}
+
+/// What a row says when the keychain hasn't answered `op` in time.
+fn unknown_outcome(op: Op) -> &'static str {
+    match op {
+        Op::Set => "No answer from the keychain yet (is an unlock prompt open?). The key may still be saved; this updates when it answers, or Check later.",
+        Op::Remove => {
+            "No answer from the keychain yet (is an unlock prompt open?). The key may still be removed; this updates when it answers, or Check later."
+        }
+        Op::Status | Op::Test => "No answer from the keychain yet (is an unlock prompt open?). Try again.",
+    }
+}
+
+#[cfg(test)]
+pub(crate) mod fake;
 #[cfg(test)]
 mod tests;

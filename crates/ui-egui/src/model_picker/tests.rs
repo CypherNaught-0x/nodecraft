@@ -144,6 +144,27 @@ fn a_source_edit_says_what_it_does_to_the_source() {
     h.get_by_label("Object swap of source; sources of at least 4 s, only the first 30 s is used; sound not documented");
 }
 
+#[test]
+fn a_text_mode_shows_the_reading_capabilities_it_declares_and_no_others() {
+    let toml = model("w.watch", "w", "Watcher", "text").replace(
+        "inline = true\n",
+        "inline = true\n[[model.modes.inputs]]\nrole = \"clip\"\nmodality = \"video\"\nmin = 1\nmax = 1\n[model.modes.reads]\ncontext_tokens = 32000\nframes = { every_ms = 2000, max = 30 }\ntimestamps = true\n",
+    );
+    let catalog = Catalog::from_toml(&toml).unwrap();
+    let watcher = catalog.get("w.watch").unwrap().clone();
+    let mut h = Harness::builder().with_size(egui::vec2(900.0, 600.0)).build_ui(move |ui| model_details(ui, &watcher));
+    h.run();
+    h.get_by_label("Reads up to 32000 tokens; video: a frame every 2 seconds, at most 30 frames; timestamps");
+    let plain = catalog_of_text();
+    let mut h = Harness::builder().with_size(egui::vec2(900.0, 600.0)).build_ui(move |ui| model_details(ui, &plain));
+    h.run();
+    assert!(h.query_by_label_contains("tokens").is_none() && h.query_by_label_contains("speaker").is_none(), "nothing undeclared is promised");
+}
+
+fn catalog_of_text() -> ModelDescriptor {
+    Catalog::from_toml(&model("w.plain", "w", "Plain", "text")).unwrap().get("w.plain").unwrap().clone()
+}
+
 struct View {
     catalog: Catalog,
     picker: ModelPicker,
@@ -169,6 +190,50 @@ fn azure_deployment_is_selectable_with_an_unknown_usage_price() {
     h.get_by_label("Azure OpenAI deployment").click();
     h.run();
     assert_eq!(h.state().outcome, Outcome::Chosen("azure-openai.deployment".into()));
+}
+
+#[test]
+fn bedrock_models_are_selectable_with_an_unknown_usage_price() {
+    let catalog = Catalog::builtin().unwrap();
+    let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Text).with_inline_prompt(), |_| Ok(())).unwrap();
+    picker.set_query("Bedrock").unwrap();
+    let state = View { catalog, picker, outcome: Outcome::Open };
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 650.0)).build_ui_state(
+        |ui, state: &mut View| {
+            if state.outcome == Outcome::Open {
+                state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK);
+            }
+        },
+        state,
+    );
+    h.run();
+    for id in ["bedrock.gpt-oss-120b", "bedrock.gpt-oss-20b"] {
+        assert_eq!(price_label(h.state().catalog.get(id).unwrap()), "Usage based (USD)");
+    }
+    h.get_by_label("GPT OSS 20B (Bedrock)").click();
+    h.run();
+    assert_eq!(h.state().outcome, Outcome::Chosen("bedrock.gpt-oss-20b".into()));
+}
+
+#[test]
+#[ignore = "manual public-safe picker capture; BEDROCK46_RENDER_DIR"]
+fn bedrock46_picker_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BEDROCK46_RENDER_DIR").unwrap());
+    for before in [true, false] {
+        let builtin = Catalog::builtin().unwrap();
+        // The only picker change is the Bedrock catalog rows; the before omits exactly those.
+        let catalog = Catalog::from_models(builtin.models().filter(|model| !before || model.provider != "bedrock").cloned()).unwrap();
+        let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Text).with_inline_prompt(), |_| Ok(())).unwrap();
+        picker.set_query("GPT OSS").unwrap();
+        let state = View { catalog, picker, outcome: Outcome::Open };
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_size(egui::vec2(1000.0, 650.0))
+            .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+        crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+        h.run();
+        h.render().unwrap().save(dir.join(if before { "bedrock46-before.png" } else { "bedrock46-after.png" })).unwrap();
+    }
 }
 
 #[test]

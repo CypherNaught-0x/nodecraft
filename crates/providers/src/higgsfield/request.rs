@@ -47,7 +47,9 @@ fn text(value: &Value, what: &str, allowed: &[&'static str]) -> Result<&'static 
 fn count(value: &Value) -> Option<u64> {
     value.as_u64().or_else(|| value.as_str().and_then(|s| s.parse().ok()))
 }
-fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(u64, Option<String>), ProviderError> {
+/// SOUL 2's settings. Image to image always reworks its prompt from the scene image, so it takes
+/// no prompt-enhancement switch and none is sent.
+fn soul(job: &ProviderJob, fields: &mut Map<String, Value>, from_image: bool) -> Result<(u64, Option<String>), ProviderError> {
     // Sent explicitly: Higgsfield's pages disagree on some defaults.
     let mut aspect = "1:1";
     let mut resolution = "720p";
@@ -59,7 +61,7 @@ fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(u64, Opti
         match name.as_str() {
             "aspect_ratio" => aspect = text(value, "aspect ratio", &ASPECTS)?,
             "resolution" => resolution = text(value, "resolution", &RESOLUTIONS)?,
-            "enhance_prompt" => enhance = value.as_bool().ok_or_else(|| invalid("Higgsfield prompt enhancement is on or off"))?,
+            "enhance_prompt" if !from_image => enhance = value.as_bool().ok_or_else(|| invalid("Higgsfield prompt enhancement is on or off"))?,
             "batch_size" => batch = count(value).filter(|n| matches!(n, 1 | 4)).ok_or_else(|| invalid("Higgsfield SOUL makes 1 or 4 images"))?,
             "seed" => {
                 // An explicit null is refused by SOUL 2; no seed means a random one.
@@ -91,7 +93,9 @@ fn soul(job: &ProviderJob, fields: &mut Map<String, Value>) -> Result<(u64, Opti
     }
     fields.insert("aspect_ratio".into(), json!(aspect));
     fields.insert("resolution".into(), json!(resolution));
-    fields.insert("enhance_prompt".into(), json!(enhance));
+    if !from_image {
+        fields.insert("enhance_prompt".into(), json!(enhance));
+    }
     fields.insert("batch_size".into(), json!(batch));
     Ok((batch, reference))
 }
@@ -146,7 +150,7 @@ fn edit_images(model: &str) -> usize {
 }
 /// The endpoint of a model this version supports.
 pub(super) fn model(id: &str) -> Option<&'static str> {
-    [SOUL, KLING_I2V, MOTION_TRANSFER, OBJECT_SWAP, RESTYLE].into_iter().find(|model| *model == id)
+    [SOUL, SOUL_I2I, KLING_I2V, MOTION_TRANSFER, OBJECT_SWAP, RESTYLE].into_iter().find(|model| *model == id)
 }
 
 pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, ProviderError> {
@@ -185,7 +189,8 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
                 video = Some(Image { mime: "video/mp4", bytes });
             }
             JobInput::Media { role, mime: m, bytes }
-                if role == "image" && ((model == KLING_I2V && images.is_empty()) || (edits(model) && images.len() < edit_images(model))) =>
+                if role == "image"
+                    && (((model == KLING_I2V || model == SOUL_I2I) && images.is_empty()) || (edits(model) && images.len() < edit_images(model))) =>
             {
                 let mime = mime(m).ok_or_else(|| invalid("Higgsfield takes PNG, JPEG or WebP images"))?;
                 if bytes.is_empty() || bytes.len() > l.input_bytes {
@@ -213,8 +218,12 @@ pub(super) fn prepare(job: &ProviderJob, l: Limits) -> Result<Prepared<'_>, Prov
         }
         genjutsu(model, job, &mut fields)?;
         1
-    } else if model == SOUL {
-        let (count, id) = soul(job, &mut fields)?;
+    } else if model == SOUL || model == SOUL_I2I {
+        // The scene image is the request's own input: an identity never stands in for it.
+        if model == SOUL_I2I && images.len() != 1 {
+            return Err(invalid("Higgsfield SOUL 2 image to image needs one scene image"));
+        }
+        let (count, id) = soul(job, &mut fields, model == SOUL_I2I)?;
         reference = id;
         count
     } else {

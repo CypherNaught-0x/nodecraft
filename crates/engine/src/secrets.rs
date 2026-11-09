@@ -368,10 +368,24 @@ mod worker {
             return Err(Error::new(ErrorKind::NotFound, format!("no key is stored for {}", account.as_str())));
         };
         let masked = key.masked();
+        // A key set up for a custom base URL is checked there, where runs send it (#962), or not
+        // at all when there's no one place to check it.
+        let custom = crate::key_test::redirected_to(host, account);
+        if custom.is_none() && crate::key_test::redirected(host, account) {
+            let mut answer = crate::key_test::KeyCheck::Unverifiable(crate::key_test::REDIRECTED).to_json();
+            if let Some(fields) = answer.as_object_mut() {
+                fields.insert("masked".into(), json!(masked));
+            }
+            return Ok(answer);
+        }
         let (tx, rx) = sync_channel(1);
         let (account, http) = (account.clone(), Arc::clone(&host.http));
         host.runtime.spawn(Box::pin(async move {
-            let _ = tx.send(crate::key_test::check(&account, &key, http.as_ref()).await);
+            let checked = match custom {
+                Some(base) => crate::key_test::check_at(&account, &key, &base, http.as_ref()).await,
+                None => crate::key_test::check(&account, &key, http.as_ref()).await,
+            };
+            let _ = tx.send(checked);
         }));
         let wait = std::time::Duration::from_millis(crate::key_test::TEST_TIMEOUT_MS.saturating_add(5_000));
         match rx.recv_timeout(wait) {
@@ -685,7 +699,7 @@ mod tests {
 
         for (status, expected) in [(200, Ok(json!({"result": "verified", "masked": "…1234"}))), (401, Err(ErrorKind::Authentication))] {
             let http = Arc::new(Answer(status, Mutex::new(vec![])));
-            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone() };
+            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone(), providers: None };
             let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
             let mut services = Services::default();
             register_key_worker(&mut services, worker).unwrap();
@@ -698,6 +712,38 @@ mod tests {
             let missing = services.invoke(KEY_SERVICE, &json!({"op": "test", "account": "anthropic"})).unwrap()["pending"].as_u64().unwrap();
             assert_eq!(wait(&results, missing).result.unwrap_err().kind, ErrorKind::NotFound);
             assert_eq!(http.1.lock().unwrap().len(), 1);
+        }
+        // A key set up for a custom base URL (#960) is never sent to the provider's own API: it is
+        // checked at that server, where runs send it (#962).
+        let gateway = |url: &str| {
+            let mut custom = crate::settings::ProviderSettings::default();
+            custom.base_urls.insert("openai".into(), url.into());
+            custom
+        };
+        let tested = |views: Vec<crate::settings::ProviderSettings>| {
+            let http = Arc::new(Answer(200, Mutex::new(vec![])));
+            let host = crate::key_test::KeyTestHost { runtime: Arc::new(Pool), http: http.clone(), providers: Some(Arc::new(move || views.clone())) };
+            let (worker, results) = KeyWorker::spawn_with_tests(store.clone(), Some(host)).unwrap();
+            let mut services = Services::default();
+            register_key_worker(&mut services, worker).unwrap();
+            let id = services.invoke(KEY_SERVICE, &test).unwrap()["pending"].as_u64().unwrap();
+            let answer = wait(&results, id).result.unwrap();
+            let sent = http.1.lock().unwrap().clone();
+            (answer, sent)
+        };
+        let (answer, sent) = tested(vec![gateway("https://gateway.example/v1"), gateway("https://gateway.example/v1/")]);
+        assert_eq!(answer, json!({"result": "verified", "masked": "…1234"}));
+        assert_eq!(sent, ["Bearer sk-proj-abcdefghij1234"], "the stored key, to the custom server");
+        // Views naming different servers, or one naming none (runs may still use the provider's
+        // own API): no one place to check it, so nothing is sent, in either order.
+        for views in [
+            vec![gateway("https://one.example/v1"), gateway("https://two.example/v1")],
+            vec![crate::settings::ProviderSettings::default(), gateway("https://gateway.example/v1")],
+            vec![gateway("https://gateway.example/v1"), crate::settings::ProviderSettings::default()],
+        ] {
+            let (answer, sent) = tested(views);
+            assert_eq!(answer, json!({"result": "unverifiable", "reason": crate::key_test::REDIRECTED, "masked": "…1234"}));
+            assert!(sent.is_empty(), "nothing is sent");
         }
     }
 

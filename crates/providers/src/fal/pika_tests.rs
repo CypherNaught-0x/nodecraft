@@ -406,3 +406,113 @@ fn pika29_saved_handle_resume_keeps_current_lowered_output_caps() {
     assert!(requests.iter().all(|request| request.method == HttpMethod::Get));
     assert_eq!(original.requests.lock().unwrap().iter().filter(|request| request.method == HttpMethod::Post).count(), 1);
 }
+
+fn frames_job(frames: usize, seconds: Option<u64>) -> ProviderJob {
+    let mut inputs = vec![crate::JobInput::Text { role: "prompt".into(), text: "A paper kite crosses the meadow".into() }];
+    inputs.extend((0..frames).map(|i| crate::JobInput::Media {
+        role: "keyframes".into(),
+        mime: "image/png".into(),
+        bytes: png(2 + u32::try_from(i).unwrap(), 3).into(),
+    }));
+    let mut j = ProviderJob { model: PIKA_FRAMES.into(), params: Default::default(), inputs, idempotency_key: "original-pika1061-operation".into() };
+    if let Some(seconds) = seconds {
+        j.params.insert("duration_seconds".into(), json!(seconds));
+    }
+    j
+}
+
+/// Pika 2.5 keyframes (#1061): the exact Pikaframes body, its frames in order as data URIs, its
+/// length split in whole seconds across the transitions, fixed 720p.
+#[test]
+fn pika1061_keyframes_wire_schema_splits_the_length_across_transitions() {
+    use base64::Engine;
+    for (frames, seconds, split) in
+        [(2, None, vec![5]), (2, Some(25), vec![25]), (3, Some(7), vec![4, 3]), (5, Some(5), vec![2, 1, 1, 1]), (5, Some(25), vec![7, 6, 6, 6])]
+    {
+        let j = frames_job(frames, seconds);
+        let (record, body) = request::prepare(&j, Limits::default()).unwrap();
+        assert_eq!(record.model, Model::PikaFrames);
+        let urls: Vec<String> = j.inputs[1..]
+            .iter()
+            .map(|input| match input {
+                crate::JobInput::Media { bytes, .. } => format!("data:image/png;base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes)),
+                crate::JobInput::Text { .. } => panic!("only frames follow the prompt"),
+            })
+            .collect();
+        let transitions: Vec<Value> = split.iter().map(|d| json!({"duration": d})).collect();
+        assert_eq!(
+            serde_json::from_slice::<Value>(&body).unwrap(),
+            json!({"prompt":"A paper kite crosses the meadow","image_urls":urls,"transitions":transitions,"resolution":"720p"}),
+            "{frames} frames, {seconds:?} s"
+        );
+    }
+}
+
+/// What Pikaframes can't take is refused before any request: too few or too many frames, a
+/// frame under another role, a length past 5 to 25 seconds, other settings, no prompt.
+#[test]
+fn pika1061_keyframes_refuse_what_the_schema_cant_take_before_http() {
+    for frames in [0, 1, 6] {
+        assert!(request::prepare(&frames_job(frames, None), Limits::default()).is_err(), "{frames} frames");
+    }
+    for seconds in [0, 4, 26, 1000] {
+        assert!(request::prepare(&frames_job(3, Some(seconds)), Limits::default()).is_err(), "{seconds} s");
+    }
+    let mut j = frames_job(3, None);
+    j.inputs[2] = crate::JobInput::Media { role: "first_frame".into(), mime: "image/png".into(), bytes: png(2, 2).into() };
+    assert!(request::prepare(&j, Limits::default()).is_err(), "a frame under another role");
+    let mut j = frames_job(3, None);
+    j.params.insert("resolution".into(), json!("1080p"));
+    assert!(request::prepare(&j, Limits::default()).is_err(), "resolution is fixed so the quote is exact");
+    let mut j = frames_job(3, None);
+    j.inputs.remove(0);
+    assert!(request::prepare(&j, Limits::default()).is_err(), "a prompt is required");
+    let mut j = frames_job(2, None);
+    j.inputs[1] = crate::JobInput::Media { role: "keyframes".into(), mime: "image/gif".into(), bytes: png(2, 2).into() };
+    assert!(request::prepare(&j, Limits::default()).is_err(), "only PNG, JPEG or WebP");
+    let mut j = frames_job(2, None);
+    j.inputs[1] = crate::JobInput::Media { role: "keyframes".into(), mime: "image/png".into(), bytes: b"not a png".to_vec().into() };
+    assert!(request::prepare(&j, Limits::default()).is_err(), "a frame that doesn't decode");
+}
+
+/// A keyframes run goes through fal's queue under the Pika app, and its MP4 comes back.
+#[test]
+fn pika1061_keyframes_run_through_the_queue_and_bring_back_the_clip() {
+    let wire = Wire::new(vec![
+        reply(receipt(PIKA_FRAMES)),
+        reply(json!({"status":"COMPLETED"})),
+        reply(json!({"video":{"url":"https://storage.googleapis.com/falserverless/original/pika1061.mp4","content_type":"video/mp4","file_size":CLIP.len()}})),
+        Ok(HttpResponse { status: 200, headers: vec![], body: CLIP.to_vec() }),
+    ]);
+    let f = fal(&wire);
+    let Submission::Queued(h) = block_on(f.submit(&frames_job(3, Some(10)))).unwrap() else { panic!() };
+    let JobProgress::Done(done) = block_on(f.poll(&h)).unwrap() else { panic!() };
+    assert_eq!(done.outputs, vec![Output::Bytes { mime: "video/mp4".into(), bytes: CLIP.into() }]);
+    let requests = wire.requests.lock().unwrap();
+    assert_eq!(requests[0].url, format!("{ORIGIN}/{PIKA_FRAMES}"));
+    assert_eq!(requests[1].url, format!("{ORIGIN}/fal-ai/pika/requests/r_1/status"));
+    assert!(requests[3].headers.is_empty(), "the result is fetched without the key");
+}
+
+/// Five keyframes of nearly 1 MiB each, the most the catalog takes, fit one request (#1061).
+#[test]
+fn pika1061_five_full_size_keyframes_fit_one_request() {
+    // A noisy PNG near the 1 MiB frame cap.
+    let mut state = 7u32;
+    let pixels: Vec<u8> = (0..500 * 500 * 4)
+        .map(|_| {
+            state = state.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            (state >> 16) as u8
+        })
+        .collect();
+    let mut png = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageRgba8(image::RgbaImage::from_raw(500, 500, pixels).unwrap()).write_to(&mut png, image::ImageFormat::Png).unwrap();
+    let png = png.into_inner();
+    assert!(png.len() > 900 * 1024 && png.len() <= 1024 * 1024, "{}", png.len());
+    let mut j = frames_job(5, Some(25));
+    for input in &mut j.inputs[1..] {
+        *input = crate::JobInput::Media { role: "keyframes".into(), mime: "image/png".into(), bytes: png.clone().into() };
+    }
+    let (_, body) = request::prepare(&j, Limits::default().for_model(Model::PikaFrames)).unwrap();
+    assert!(body.len() > 5 * 900 * 1024);
+}

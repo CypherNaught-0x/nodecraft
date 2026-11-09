@@ -25,6 +25,7 @@ fn mode(id: &str, inputs: Vec<GenerationRole>, params: Option<&[&str]>, audio: O
         audio,
         edit: None,
         document: None,
+        reads: None,
     }
 }
 fn speech(longer: AudioOverrun) -> AudioUse {

@@ -67,6 +67,14 @@ pub const UI_CRATES: &[&str] = &["egui", "eframe", "winit", "egui_kittest", "egu
 /// The only layered crates that may use UI crates: the egui shell. Apps are exempt anyway.
 pub const UI_ALLOWED: &[&str] = &["ui-egui"];
 
+/// The LLM client crate (docs/decisions/2026-11-06-llm-layer-rig.md) and its companions: only
+/// nodecraft-providers may depend on them, and no other crate's source may name them.
+pub const RIG_ALLOWED: &str = "providers";
+
+fn is_rig_crate(name: &str) -> bool {
+    name == "rig" || name.starts_with("rig-") || name.starts_with("rig_")
+}
+
 pub fn short_name(pkg: &str) -> &str {
     pkg.strip_prefix("nodecraft-").unwrap_or(pkg)
 }
@@ -112,6 +120,7 @@ pub enum Violation {
     TestkitAsNormalDep { krate: String },
     UiOutsideShell { krate: String, dep: String },
     ProviderFacadeWorkspaceDep { dep: String, kind: DepKind },
+    RigOutsideProviders { krate: String, dep: String },
 }
 
 impl std::fmt::Display for Violation {
@@ -132,6 +141,9 @@ impl std::fmt::Display for Violation {
             Violation::UiOutsideShell { krate, dep } => {
                 write!(f, "{krate} depends on UI crate `{dep}`; UI toolkits are only allowed in ui-egui and the apps")
             }
+            Violation::RigOutsideProviders { krate, dep } => {
+                write!(f, "{krate} depends on `{dep}`; the LLM client crate stays inside nodecraft-providers")
+            }
             Violation::ProviderFacadeWorkspaceDep { dep, kind } => {
                 write!(f, "nodecraft-provider-testkit -> {dep} [{kind:?}]: workspace dependencies may only be nodecraft-providers or nodecraft-types")
             }
@@ -143,6 +155,12 @@ impl std::fmt::Display for Violation {
 pub fn check(crates: &[Crate]) -> Vec<Violation> {
     let mut out = Vec::new();
     for c in crates {
+        // Every crate, apps and tools included: rig-core types never leave the providers crate.
+        if short_name(&c.name) != RIG_ALLOWED {
+            for d in c.deps.iter().filter(|d| !d.workspace && is_rig_crate(&d.name)) {
+                out.push(Violation::RigOutsideProviders { krate: c.name.clone(), dep: d.name.clone() });
+            }
+        }
         let Some(class) = classify(&c.name) else {
             out.push(Violation::Unregistered { krate: c.name.clone() });
             continue;
@@ -222,6 +240,69 @@ pub fn from_metadata(meta: &Value) -> Result<Vec<Crate>, String> {
     }
     out.sort_by(|a, b| a.name.cmp(&b.name));
     Ok(out)
+}
+
+/// Every place outside nodecraft-providers whose source names the LLM client crate (`rig_core`,
+/// `rig::`), and every public item of nodecraft-providers that does, as `path:line`, so none of
+/// its types is used or exposed outside it.
+pub fn rig_mentions(root: &std::path::Path) -> Result<Vec<String>, String> {
+    // xtask itself is left out: it names the crate to look for it (its dependencies are checked).
+    let mut dirs = Vec::new();
+    for group in ["crates", "apps"] {
+        for entry in std::fs::read_dir(root.join(group)).map_err(|e| format!("{group}: {e}"))? {
+            let path = entry.map_err(|e| format!("{group}: {e}"))?.path();
+            if path.join("Cargo.toml").is_file() && path.file_name().and_then(|n| n.to_str()) != Some(RIG_ALLOWED) {
+                dirs.extend(["src", "tests", "benches", "examples"].map(|d| path.join(d)));
+            }
+        }
+    }
+    let mut found = Vec::new();
+    scan(root, dirs, names_rig, &mut found)?;
+    // Inside nodecraft-providers, no public item may name it: its types stay private there.
+    let providers = root.join("crates").join(RIG_ALLOWED);
+    scan(root, vec![providers.join("src")], |line| is_public(line) && names_rig(line), &mut found)?;
+    found.sort();
+    Ok(found)
+}
+
+/// Each line under `dirs` (Rust sources) that `hit` matches, as `path:line`.
+fn scan(root: &std::path::Path, mut dirs: Vec<std::path::PathBuf>, hit: impl Fn(&str) -> bool, found: &mut Vec<String>) -> Result<(), String> {
+    while let Some(dir) = dirs.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for entry in entries {
+            let path = entry.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+            if path.is_dir() {
+                dirs.push(path);
+            } else if path.extension().is_some_and(|e| e == "rs") {
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+                for (i, line) in text.lines().enumerate() {
+                    if hit(line) {
+                        let shown = path.strip_prefix(root).unwrap_or(&path).display().to_string().replace('\\', "/");
+                        found.push(format!("{shown}:{}", i + 1));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Whether `line` declares a public item (`pub use`, `pub fn`, a `pub` field, …): plain `pub`,
+/// not `pub(crate)`, `pub(super)` or `pub(in …)`.
+fn is_public(line: &str) -> bool {
+    let line = line.trim_start();
+    line.strip_prefix("pub").is_some_and(|rest| rest.starts_with(char::is_whitespace))
+}
+
+/// Whether `line` names the crate as a path (`rig_core::`, `rig::`, `use rig_core`), not as part
+/// of a longer identifier (`trig::`, `config_rig_core`).
+fn names_rig(line: &str) -> bool {
+    ["rig_core", "rig::"].iter().any(|needle| {
+        line.match_indices(needle).any(|(at, _)| {
+            let before = line.get(..at).and_then(|b| b.chars().next_back());
+            !before.is_some_and(|c| c.is_alphanumeric() || c == '_')
+        })
+    })
 }
 
 pub fn describe(class: Option<Class>) -> String {
@@ -418,5 +499,31 @@ mod tests {
         .unwrap();
         let v = check(&g);
         assert_eq!(v.len(), 2, "{v:?}");
+    }
+
+    #[test]
+    fn rig_stays_inside_providers() {
+        assert!(check(&[c("nodecraft-providers", &[("rig-core", Normal, false)])]).is_empty());
+        for krate in ["nodecraft-engine", "nodecraft-agent", "nodecraft-ui-egui", "nodecraft", "nodecraft-cli", "xtask"] {
+            for dep in ["rig-core", "rig-http"] {
+                for kind in [Normal, Dev] {
+                    assert!(matches!(check(&[c(krate, &[(dep, kind, false)])])[..], [Violation::RigOutsideProviders { .. }]), "{krate} -> {dep} {kind:?}");
+                }
+            }
+        }
+        assert!(check(&[c("nodecraft-engine", &[("trigger", Normal, false), ("rigid", Normal, false)])]).is_empty());
+        assert!(names_rig("use rig_core::Model;"));
+        assert!(names_rig("let m: rig::Model = x;"));
+        assert!(names_rig("(rig_core::ProviderError)"));
+        assert!(!names_rig("let trig::x = config_rig_core;"));
+        assert!(!names_rig("a rigorous rig"));
+        for public in ["pub use rig_core::Model;", "    pub fn model(&self) -> rig_core::Model {", "    pub field: rig::Thing,", "pub type T = rig_core::X;"] {
+            assert!(is_public(public) && names_rig(public), "{public}");
+        }
+        for private in
+            ["pub(crate) use rig_core::Model;", "    pub(super) fn f() -> rig_core::X {", "use rig_core::Model;", "pub(in crate::llm) type T = rig::X;"]
+        {
+            assert!(!is_public(private), "{private}");
+        }
     }
 }

@@ -10,7 +10,8 @@ struct View {
 fn huggingface48_model_is_selectable_with_an_unknown_usage_price() {
     let catalog = Catalog::builtin().unwrap();
     let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Text).with_inline_prompt(), |_| Ok(())).unwrap();
-    picker.set_query("GPT OSS").unwrap();
+    // Bedrock's (#46) and GroqCloud's (#1122) GPT OSS rows list too; name the service.
+    picker.set_query("huggingface").unwrap();
     let state = View { catalog, picker, outcome: Outcome::Open };
     let mut h = Harness::builder().with_size(egui::vec2(1000.0, 650.0)).build_ui_state(
         |ui, state: &mut View| {

@@ -2,7 +2,8 @@
 //! price. Catalog files are untrusted data and every descriptor is validated before use.
 use crate::pricing::{Pricing, TokenRates, Unit};
 use nodecraft_types::{
-    AudioDuration, AudioUse, Currency, DocumentUse, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, VideoEdit,
+    AudioDuration, AudioUse, Currency, DocumentUse, Error, ErrorKind, MAX_AUDIO_MS, Modality, Money, ParamControl, ParamSchema, ParamValues, ReadingUse,
+    VideoEdit,
 };
 use serde::Deserialize;
 
@@ -64,6 +65,10 @@ pub struct ModeSpec {
     /// How it reads wired PDFs, when it takes them (#591).
     #[serde(default)]
     pub document: Option<DocumentUse>,
+    /// What a text mode promises about reading its inputs (#84): context window, longest
+    /// answer, video frame sampling, timestamps and speaker labels. Undeclared is not offered.
+    #[serde(default)]
+    pub reads: Option<ReadingUse>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Deserialize)]
@@ -111,6 +116,33 @@ fn offered() -> bool {
 }
 
 impl ModelDescriptor {
+    /// A text mode's reading capabilities (#84) are explicit: a mode that reads video says how
+    /// it samples frames, and each promise needs the inputs it is about.
+    fn validate_reads(&self, mode: &ModeSpec) -> Result<(), Error> {
+        let id = self.id.as_str();
+        let takes = |modality: Modality| mode.inputs.iter().any(|role| role.modality == modality);
+        let Some(reads) = &mode.reads else {
+            if mode.output == Modality::Text && takes(Modality::Video) {
+                return Err(invalid(id, &format!("mode `{}` reads video, so it says how it samples frames in `reads.frames`", mode.id)));
+            }
+            return Ok(());
+        };
+        if mode.output != Modality::Text {
+            return Err(invalid(id, &format!("mode `{}`: `reads` describes a text answer, and this mode doesn't write one", mode.id)));
+        }
+        reads.validate().map_err(|why| invalid(id, &format!("mode `{}`: {}", mode.id, why.message)))?;
+        if reads.frames.is_some() != takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: `reads.frames` is set exactly when the mode takes a video", mode.id)));
+        }
+        if (reads.timestamps || reads.speakers) && !takes(Modality::Audio) && !takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: timestamps and speaker labels need an audio or video input", mode.id)));
+        }
+        if (!reads.video_types.is_empty() || reads.video_bytes.is_some()) && !takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: `video_types` and `video_bytes` need a video input", mode.id)));
+        }
+        Ok(())
+    }
+
     pub fn validate(&self) -> Result<(), Error> {
         let id = if is_id(&self.id) { self.id.as_str() } else { "?" };
         if !is_id(&self.id) {
@@ -189,6 +221,7 @@ impl ModelDescriptor {
                 None if documents > 0 => return Err(invalid(id, &format!("mode `{}` takes PDFs, so it says how it reads them in `document`", mode.id))),
                 None => {}
             }
+            self.validate_reads(mode)?;
         }
         let styled = self.modes.iter().any(|mode| mode.output == Modality::Style || mode.inputs.iter().any(|role| role.modality == Modality::Style));
         match &self.style_family {
@@ -227,6 +260,24 @@ impl ModelDescriptor {
                 return Err(invalid(id, "pricing per source second needs every mode to edit the same source"));
             }
             self.validate_choice_prices(param, prices)?;
+        }
+        if let Pricing::PerOutputMegapixel { width, height, first, additional } = &self.pricing {
+            // Two distinct, always-shown unsigned settings with defaults, which every mode sends:
+            // otherwise a quote would be refused, or count the wrong area.
+            let usable = |name: &str| {
+                self.params.params.iter().any(|spec| {
+                    spec.name == name && matches!(spec.control, ParamControl::Unsigned { .. }) && spec.default.is_some() && spec.visible_if.is_none()
+                }) && self.modes.iter().all(|mode| mode.params.as_ref().is_none_or(|names| names.iter().any(|sent| sent == name)))
+            };
+            if width == height || !usable(width) || !usable(height) {
+                return Err(invalid(
+                    id,
+                    "pricing by output megapixels reads its width and height from two unsigned settings with defaults, always shown and sent by every mode",
+                ));
+            }
+            if first.0.micros == 0 || first.0.currency != additional.0.currency {
+                return Err(invalid(id, "the first megapixel's price is above zero, and both prices are in one currency"));
+            }
         }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
             self.validate_count(*unit, count.as_deref(), *default_count)?;

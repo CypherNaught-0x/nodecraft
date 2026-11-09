@@ -7,6 +7,7 @@ use crate::{
 use nodecraft_format::{
     ArchivePlan, AssetStore, CheckpointPlan, ProjectAccess, ProjectStorage, RecordedAssets, Snapshot, StorageCapability, StorageLocation,
     asset_source::{StreamMetrics, TransferCancel},
+    space::SpaceInventory,
 };
 use nodecraft_graph::Project;
 use nodecraft_types::{Blake3, Error, ErrorKind};
@@ -43,6 +44,13 @@ impl Store {
             Self::Lent => Err(Error::new(ErrorKind::Internal, "project storage was lost when a save stopped; restart NodeCraft to recover your work")),
         }
     }
+}
+/// A first checkpoint written by [`Persistence::open_in`], for [`Persistence::assemble`] (#367).
+pub(crate) struct Opening {
+    capability: StorageCapability,
+    epoch: u64,
+    adopted: CheckpointState,
+    metrics: StreamMetrics,
 }
 /// What a save published: the destination's access, and the new checkpoint unless writing it
 /// failed after the destination was already replaced.
@@ -86,12 +94,16 @@ impl Control {
 fn write(
     storage: &mut dyn ProjectStorage,
     snapshot: &Snapshot,
+    retained: &BTreeSet<Blake3>,
     capability: StorageCapability,
     location: &StorageLocation,
     control: &Control,
     metrics: &StreamMetrics,
 ) -> Result<Published, Error> {
     let cancel = &control.cancel;
+    // Spill history-only roots before replacing any base or output destination (#367: here, on
+    // the job's thread and under its cancel, not on the caller's).
+    snapshot.assets.verify_retained(retained, cancel, metrics)?;
     let archive = ArchivePlan::prepare(snapshot, capability, cancel, metrics)?;
     let checkpoint = CheckpointPlan::new(archive)?;
     let adopted = CheckpointState::prepare(&checkpoint)?;
@@ -127,6 +139,10 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
         let document = project_identity::prepare(snapshot, scope)?;
         let checkpoint = if document.migration.is_some() {
             let capability = guard(|| Ok(storage.capability()))?;
+            // Rewriting under the new identity is known only now: check it fits first (#367).
+            let probe = guard(|| Ok(storage.space_probe(location)))?;
+            let journal = guard(|| Ok(storage.journal_bytes()))?;
+            nodecraft_format::space::check_rewrite(&document.snapshot, capability, &probe, journal)?;
             CheckpointPlan::new(ArchivePlan::prepare(&document.snapshot, capability, cancel, metrics)?)?
         } else {
             checkpoint
@@ -156,9 +172,46 @@ fn read(storage: &mut dyn ProjectStorage, location: &StorageLocation, control: &
     .map_err(|error| OpenFailure { error, latch: true })?;
     Ok(opened)
 }
+/// What a recovery restored, ready to adopt.
+pub(crate) struct Restored {
+    document: OpenedDocument,
+    adopted: CheckpointState,
+}
+/// A recovery's file work, inline or on the runner (#367): bring the recovered media into this
+/// session's workspace, seal them, and publish the checkpoint, which is the point of no return.
+/// Cancelling stops it before that, and nothing it did is adopted: the copies drop with the
+/// store they were made in, and the journal still holds the current project.
+fn restore(
+    storage: &mut dyn ProjectStorage,
+    snapshot: Snapshot,
+    location: Option<&StorageLocation>,
+    context: nodecraft_format::AssetContext,
+    capability: StorageCapability,
+    control: &Control,
+    metrics: &StreamMetrics,
+) -> Result<Restored, Error> {
+    let cancel = &control.cancel;
+    // A legacy identity is migrated to the file's scope, as an open would. The original drive or
+    // folder may be gone after a crash: then the pooled identity is kept rather than blocking
+    // recovery.
+    let scope = match location {
+        Some(location) if snapshot.project.id() == project_identity::LEGACY => guard(|| storage.project_identity_scope(location)).ok(),
+        _ => None,
+    };
+    let OpenedDocument { mut snapshot, migration } = project_identity::prepare(snapshot, scope)?;
+    snapshot.assets = snapshot.assets.in_context(context, cancel, metrics)?;
+    let archive = ArchivePlan::prepare(&snapshot, capability, cancel, metrics)?;
+    let checkpoint = CheckpointPlan::new(archive)?;
+    let adopted = CheckpointState::prepare(&checkpoint)?;
+    control.progress.set(FilePhase::Checkpointing);
+    cancel.check()?;
+    guard(|| storage.checkpoint_plan(&checkpoint, cancel, metrics))?;
+    Ok(Restored { document: OpenedDocument { snapshot, migration }, adopted })
+}
 enum Outcome {
     Saved { location: StorageLocation, epoch: u64, state: u64, result: Result<Published, Error> },
     Opened { location: StorageLocation, state: u64, result: Result<Opened, OpenFailure> },
+    Recovered { location: Option<StorageLocation>, result: Result<Restored, Error> },
 }
 /// A file operation's work: `Send` where it can run on the runner, and on the web (whose asset
 /// sources aren't `Send`) anything, since it always runs inline there.
@@ -185,10 +238,12 @@ pub(crate) enum Started<T> {
     Done(T),
     Started,
 }
-/// What [`Persistence::settle`] finished: a save (`true` when recovery is ready) or an open.
+/// What [`Persistence::settle`] finished: a save (`true` when recovery is ready), an open or a
+/// recovery.
 pub(crate) enum Settled {
     Saved(bool),
     Opened(Box<OpenedDocument>),
+    Recovered(Box<OpenedDocument>),
 }
 pub(crate) struct Persistence {
     store: Store,
@@ -206,11 +261,20 @@ pub(crate) struct Persistence {
     closed: bool,
     read_only: bool,
     metrics: StreamMetrics,
+    /// How the last file operation ended, for `file.status` (#367).
+    last: Option<crate::file_cmds::FileOutcome>,
 }
 impl Persistence {
     pub fn new(mut store: Store, snapshot: Snapshot, origin: Option<StorageLocation>) -> Result<(Self, OpenedDocument), Error> {
+        let (opening, document) = Self::open_in(store.get()?, snapshot, origin)?;
+        Ok((Self::assemble(store, opening), document))
+    }
+    /// [`Self::new`]'s disk work, on `storage` alone (#367): prepares the document and its
+    /// assets and writes the first checkpoint. Run where the storage is, so a host can do it off
+    /// the UI thread and [`Self::assemble`] the result there.
+    pub(crate) fn open_in(storage: &mut dyn ProjectStorage, snapshot: Snapshot, origin: Option<StorageLocation>) -> Result<(Opening, OpenedDocument), Error> {
         let scope = if snapshot.project.id() == project_identity::LEGACY {
-            origin.as_ref().map(|location| guard(|| store.get()?.project_identity_scope(location))).transpose()?
+            origin.as_ref().map(|location| guard(|| storage.project_identity_scope(location))).transpose()?
         } else {
             None
         };
@@ -218,7 +282,6 @@ impl Persistence {
         let snapshot = &mut document.snapshot;
         let cancel = TransferCancel::default();
         let metrics = StreamMetrics::default();
-        let storage = store.get()?;
         let capability = guard(|| Ok(storage.capability()))?;
         if capability == StorageCapability::StreamingV2 {
             let context = guard(|| Ok(storage.asset_context()))?
@@ -228,13 +291,19 @@ impl Persistence {
         let archive = ArchivePlan::prepare(snapshot, capability, &cancel, &metrics)?;
         let checkpoint = CheckpointPlan::new(archive)?;
         let adopted = CheckpointState::prepare(&checkpoint)?;
+        guard(|| storage.checkpoint_plan(&checkpoint, &cancel, &metrics))?;
+        Ok((Opening { capability, epoch: snapshot.epoch, adopted, metrics }, document))
+    }
+    /// The persistence over `store` once [`Self::open_in`] checkpointed it: no disk work.
+    pub(crate) fn assemble(store: Store, opening: Opening) -> Self {
+        let Opening { capability, epoch, adopted, metrics } = opening;
         let mut state = Self {
             store,
             pending: None,
             capability,
             location: None,
             saved_state: None,
-            epoch: snapshot.epoch,
+            epoch,
             checkpoint: adopted.identity,
             assets: RecordedAssets::default(),
             sequence: 0,
@@ -244,10 +313,10 @@ impl Persistence {
             closed: false,
             read_only: false,
             metrics,
+            last: None,
         };
-        guard(|| state.store.get()?.checkpoint_plan(&checkpoint, &cancel, &state.metrics))?;
         state.adopt(adopted);
-        Ok((state, document))
+        state
     }
     fn adopt(&mut self, checkpoint: CheckpointState) {
         self.checkpoint = checkpoint.identity;
@@ -259,9 +328,6 @@ impl Persistence {
     }
     pub(crate) fn capability(&self) -> StorageCapability {
         self.capability
-    }
-    pub(crate) fn project_identity_scope(&mut self, location: &StorageLocation) -> Result<Blake3, Error> {
-        guard(|| self.store.get()?.project_identity_scope(location))
     }
     pub(crate) fn metrics(&self) -> StreamMetrics {
         self.metrics.clone()
@@ -283,6 +349,10 @@ impl Persistence {
                 cancel_requested: pending.control.cancelled(),
             }),
         }
+    }
+    /// How the last save, open or recovery that ran in this session ended (#367).
+    pub(crate) fn last(&self) -> Option<crate::file_cmds::FileOutcome> {
+        self.last.clone()
     }
     pub fn append(&mut self, admission: crate::session::PersistentAdmission) -> Result<(), Error> {
         if self.closed {
@@ -334,29 +404,108 @@ impl Persistence {
         }
         let location = location.or_else(|| self.location.clone()).ok_or_else(|| Error::new(ErrorKind::Conflict, "save_as needs an explicit location"))?;
         let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
-        // Spill history-only roots before replacing any base or output destination.
-        assets.verify_retained(retained, &TransferCancel::default(), &self.metrics)?;
+        // Before anything is written, history spills included (#367).
+        self.preflight_save(document, assets, retained, epoch, &location)?;
         let snapshot = Snapshot { project: document.clone(), assets: assets.clone(), epoch };
+        let retained = retained.clone();
         let control = Control::new(FilePhase::Preparing);
         let (capability, metrics) = (self.capability, self.metrics.clone());
         let work = {
             let control = control.clone();
             move |storage: &mut dyn ProjectStorage| {
-                let result = guard(|| write(storage, &snapshot, capability, &location, &control, &metrics));
+                let result = guard(|| write(storage, &snapshot, &retained, capability, &location, &control, &metrics));
                 Outcome::Saved { location, epoch, state, result }
             }
         };
         match self.run(FileOperationKind::Save, control, runner, work)? {
             Started::Started => Ok(Started::Started),
             Started::Done(Settled::Saved(ready)) => Ok(Started::Done(ready)),
-            Started::Done(Settled::Opened(_)) => Err(Error::new(ErrorKind::Internal, "a save finished as an open")),
+            Started::Done(Settled::Opened(_) | Settled::Recovered(_)) => Err(Error::new(ErrorKind::Internal, "a save finished as an open")),
         }
+    }
+    /// The advisory disk-space check before a save (#367): refuses only when the platform
+    /// reports less free space than the save's inventory needs, and stays out of the way when it
+    /// can't tell. The inventory adds what the save writes in the private workspace before the
+    /// archive: copies of media not yet verified there (history roots included) and the pack
+    /// compaction writes. A save that passes can still run out of room; that write error is
+    /// handled where it happens, before the destination is replaced.
+    fn preflight_save(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        epoch: u64,
+        location: &StorageLocation,
+    ) -> Result<(), Error> {
+        match self.save_inventory(document, assets, retained, epoch, location)? {
+            Some((inventory, probe)) => inventory.check(&probe),
+            None => Ok(()),
+        }
+    }
+    /// [`Self::save_inventory`] for the next save, to `location` or the current file.
+    pub(crate) fn next_save_inventory(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        location: Option<StorageLocation>,
+    ) -> Result<Option<(SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
+        let Some(location) = location.or_else(|| self.location.clone()) else { return Ok(None) };
+        let epoch = self.epoch.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "checkpoint epoch overflow"))?;
+        self.save_inventory(document, assets, retained, epoch, &location)
+    }
+    /// What a save of `document` to `location` would write, and the free space reported for it:
+    /// the inventory [`Self::preflight_save`] checks. `None` when nothing is checked (not native
+    /// storage, no free space reported, or an estimate that can't be made).
+    pub(crate) fn save_inventory(
+        &mut self,
+        document: &Project,
+        assets: &AssetStore,
+        retained: &BTreeSet<Blake3>,
+        epoch: u64,
+        location: &StorageLocation,
+    ) -> Result<Option<(SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
+        if self.capability != StorageCapability::StreamingV2 {
+            return Ok(None);
+        }
+        let probe = guard(|| Ok(self.store.get()?.space_probe(location)))?;
+        if probe.destination_free.is_none() && probe.recovery_free.is_none() {
+            return Ok(None);
+        }
+        // An estimate that can't be made leaves the real error to the save itself.
+        let Ok(bytes) = ArchivePlan::estimate_bytes(document, assets, epoch, self.capability) else { return Ok(None) };
+        // Unknown housekeeping (the store is busy verifying, say) adds nothing rather than a guess.
+        let output = assets.output_space(document, retained).ok().flatten().unwrap_or_default();
+        // Saving over an existing file frees it at publication, before the checkpoint.
+        let mut inventory = SpaceInventory::save(bytes, probe.existing_bytes)?
+            .with_verified_copies(output.verified_copies)
+            // The journal file as it is on disk; unknown counts as none (the larger charge).
+            .with_journal_replaced(guard(|| Ok(self.store.get()?.journal_bytes()))?.unwrap_or(0))
+            .with_cleanup_debt(output.cleanup_debt);
+        if let Some(pack) = output.compaction {
+            inventory = inventory.with_compaction(pack);
+        }
+        Ok(Some((inventory, probe)))
+    }
+    /// [`Self::preflight_save`] for an open: the file's private copy and its checkpoint. An
+    /// older-format file's rewrite is checked inside the open, once it is known.
+    fn preflight_open(&mut self, location: &StorageLocation) -> Result<(), Error> {
+        if self.capability != StorageCapability::StreamingV2 {
+            return Ok(());
+        }
+        let storage = self.store.get()?;
+        let probe = guard(|| Ok(storage.space_probe(location)))?;
+        let Some(bytes) = probe.existing_bytes else { return Ok(()) };
+        let debt = guard(|| Ok(storage.asset_context()))?.and_then(|context| context.cleanup_debt().ok()).unwrap_or(0);
+        let journal = guard(|| Ok(storage.journal_bytes()))?.unwrap_or(0);
+        SpaceInventory::open(bytes)?.with_journal_replaced(journal).with_cleanup_debt(debt).check(&probe)
     }
     fn idle(&self) -> Result<(), Error> {
         match self.pending.as_ref().map(|pending| pending.kind) {
             None => Ok(()),
             Some(FileOperationKind::Save) => Err(Error::new(ErrorKind::Busy, "a save is already in progress")),
             Some(FileOperationKind::Open) => Err(Error::new(ErrorKind::Busy, "a project is still opening")),
+            Some(FileOperationKind::Recover) => Err(Error::new(ErrorKind::Busy, "recovered work is still being restored")),
         }
     }
     /// Runs `work` on `runner` when there is one and the storage is `Send`, else inline. Either
@@ -423,8 +572,11 @@ impl Persistence {
             let what = match pending.kind {
                 FileOperationKind::Save => "the save",
                 FileOperationKind::Open => "opening the project",
+                FileOperationKind::Recover => "recovering the work",
             };
-            return Some(Err(Error::new(ErrorKind::Internal, format!("{what} stopped before it finished; restart NodeCraft to recover your work"))));
+            let error = Error::new(ErrorKind::Internal, format!("{what} stopped before it finished; restart NodeCraft to recover your work"));
+            self.last = Some(crate::file_cmds::FileOutcome { kind: pending.kind, error: Some(error.clone()) });
+            return Some(Err(error));
         };
         self.store = Store::Sendable(done.storage);
         Some(self.finish(done.outcome, &pending.control))
@@ -433,6 +585,16 @@ impl Persistence {
     /// nothing was published, so what was there before still is. Any other failure keeps its
     /// own error, even when a cancel was asked for after it.
     fn finish(&mut self, outcome: Outcome, control: &Control) -> Result<Settled, Error> {
+        let kind = match &outcome {
+            Outcome::Saved { .. } => FileOperationKind::Save,
+            Outcome::Opened { .. } => FileOperationKind::Open,
+            Outcome::Recovered { .. } => FileOperationKind::Recover,
+        };
+        let result = self.finish_outcome(outcome, control);
+        self.last = Some(crate::file_cmds::FileOutcome { kind, error: result.as_ref().err().cloned() });
+        result
+    }
+    fn finish_outcome(&mut self, outcome: Outcome, control: &Control) -> Result<Settled, Error> {
         let cancelled = |error: &Error| control.cancelled() && TransferCancel::is_cancellation(error);
         match outcome {
             Outcome::Saved { location, epoch, state, result } => match result {
@@ -455,7 +617,20 @@ impl Persistence {
                     Err(failure.error)
                 }
             },
+            Outcome::Recovered { location, result } => match result {
+                Ok(restored) => Ok(Settled::Recovered(Box::new(self.recovered(location, restored)))),
+                Err(error) if cancelled(&error) => Err(Error::new(ErrorKind::Conflict, "recovering was cancelled; the current project is unchanged")),
+                Err(error) => Err(error),
+            },
         }
+    }
+    fn recovered(&mut self, location: Option<StorageLocation>, restored: Restored) -> OpenedDocument {
+        self.adopt(restored.adopted);
+        self.location = location;
+        self.read_only = false;
+        self.saved_state = None;
+        self.epoch = restored.document.snapshot.epoch;
+        restored.document
     }
     fn opened(&mut self, location: StorageLocation, state: u64, opened: Opened) -> OpenedDocument {
         self.adopt(opened.adopted);
@@ -470,6 +645,7 @@ impl Persistence {
     /// it. Otherwise it runs inline.
     pub fn open(&mut self, location: StorageLocation, state: u64, runner: Option<&dyn SaveRunner>) -> Result<Started<OpenedDocument>, Error> {
         self.idle()?;
+        self.preflight_open(&location)?;
         let control = Control::new(FilePhase::Reading);
         let metrics = self.metrics.clone();
         let work = {
@@ -482,11 +658,58 @@ impl Persistence {
         match self.run(FileOperationKind::Open, control, runner, work)? {
             Started::Started => Ok(Started::Started),
             Started::Done(Settled::Opened(snapshot)) => Ok(Started::Done(*snapshot)),
-            Started::Done(Settled::Saved(_)) => Err(Error::new(ErrorKind::Internal, "an open finished as a save")),
+            Started::Done(Settled::Saved(_) | Settled::Recovered(_)) => Err(Error::new(ErrorKind::Internal, "an open finished as a save")),
         }
     }
     /// Adopts `snapshot` (work recovered from an earlier session's journal) as the session's new
-    /// checkpoint, at `location` (the file the earlier session had, if any) and unsaved.
+    /// checkpoint, at `location` (the file the earlier session had, if any) and unsaved (#408,
+    /// #367). Its media are copied into `context` (this session's workspace) first. With a
+    /// `runner` and a `Send` storage the work runs there and this returns [`Started::Started`];
+    /// [`Self::settle`] finishes it. Otherwise it runs inline. Either way nothing is adopted
+    /// until the checkpoint is published, so a failure or a cancel before that keeps the
+    /// current project and its journal.
+    pub fn recover(
+        &mut self,
+        snapshot: Snapshot,
+        location: Option<StorageLocation>,
+        context: nodecraft_format::AssetContext,
+        runner: Option<&dyn SaveRunner>,
+    ) -> Result<Started<OpenedDocument>, Error> {
+        self.idle()?;
+        self.preflight_recover(&snapshot, &context)?;
+        let control = Control::new(FilePhase::Preparing);
+        let (capability, metrics) = (self.capability, self.metrics.clone());
+        let work = {
+            let control = control.clone();
+            move |storage: &mut dyn ProjectStorage| {
+                let result = guard(|| restore(storage, snapshot, location.as_ref(), context, capability, &control, &metrics));
+                Outcome::Recovered { location, result }
+            }
+        };
+        match self.run(FileOperationKind::Recover, control, runner, work)? {
+            Started::Started => Ok(Started::Started),
+            Started::Done(Settled::Recovered(document)) => Ok(Started::Done(*document)),
+            Started::Done(Settled::Saved(_) | Settled::Opened(_)) => Err(Error::new(ErrorKind::Internal, "a recovery finished as another operation")),
+        }
+    }
+    /// [`Self::preflight_save`] for a recovery: the media copied into this workspace and the new
+    /// checkpoint, on the recovery drive, which is all it writes (titled or not).
+    fn preflight_recover(&mut self, snapshot: &Snapshot, context: &nodecraft_format::AssetContext) -> Result<(), Error> {
+        if self.capability != StorageCapability::StreamingV2 {
+            return Ok(());
+        }
+        let storage = self.store.get()?;
+        let Some(free) = guard(|| Ok(storage.recovery_free()))? else { return Ok(()) };
+        let Ok(bytes) = ArchivePlan::estimate_bytes(&snapshot.project, &snapshot.assets, snapshot.epoch, self.capability) else { return Ok(()) };
+        // Every byte held outside this workspace is copied in; already here, nothing is.
+        let copies = if snapshot.assets.context().same(context) { 0 } else { snapshot.assets.total_logical_bytes() };
+        let debt = context.cleanup_debt().unwrap_or(0);
+        let journal = guard(|| Ok(storage.journal_bytes()))?.unwrap_or(0);
+        let probe = nodecraft_format::space::SpaceProbe { recovery_free: Some(free), ..Default::default() };
+        SpaceInventory::recover(bytes, copies)?.with_journal_replaced(journal).with_cleanup_debt(debt).check(&probe)
+    }
+    /// Adopts `snapshot` as the session's new checkpoint inline, at `location` and unsaved: a
+    /// joiner's shared project (#698, #714), whose media are already in this workspace.
     pub fn adopt_recovered(&mut self, snapshot: &Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
         let cancel = TransferCancel::default();
         let archive = ArchivePlan::prepare(snapshot, self.capability, &cancel, &self.metrics)?;

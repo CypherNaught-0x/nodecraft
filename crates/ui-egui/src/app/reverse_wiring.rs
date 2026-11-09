@@ -15,28 +15,8 @@ impl NodeCraftApp {
         let Some((index, input)) = inputs.iter().enumerate().find(|(_, input)| input.name == wiring.anchor.port) else { return (None, None, None) };
         let rect = card_geometry(&self.painted, self.session.kinds(), target, t);
         let end = noodle::anchor(rect, Side::Input, index, inputs.len());
-        let downstream = selection::downstream(canvas, &[target.id].into_iter().collect());
-        let fed: BTreeSet<_> = canvas.edges().values().filter(|edge| edge.to == wiring.anchor).map(|edge| (edge.from.node, edge.from.port.as_str())).collect();
-        let mut routing = nodecraft_exec::routing::OutputResolver::new(canvas, self.session.kinds());
-        let mut accepts = |node: &Node, output: &nodecraft_graph::Port| -> Result<(), String> {
-            let from = Endpoint { node: node.id, port: output.name.clone() };
-            let output_type = routing.output_type(&from).map_err(|error| error.message)?;
-            if node.id == target.id {
-                Err("A node can't connect to itself.".into())
-            } else if !noodle::compatible(output_type, input.port_type) {
-                Err(if output_type.modality == input.port_type.modality {
-                    "A list output needs a list input.".into()
-                } else {
-                    "That output has the wrong media type for this input.".into()
-                })
-            } else if downstream.contains(&node.id) {
-                Err("That connection would create a loop.".into())
-            } else if fed.contains(&(node.id, output.name.as_str())) {
-                Err("These ports are already connected.".into())
-            } else {
-                Ok(())
-            }
-        };
+        let mut rules = wire_rules::FromOutputs::new(canvas, self.session.kinds(), wiring, input.port_type);
+        let mut accepts = |node: &Node, output: &nodecraft_graph::Port| rules.accepts(node, output);
         let origin = self.viewport.min;
         let world = self.view.to_world(origin, pointer);
         let reach = card::PORT_HIT / self.view.zoom + t.handle_radius;
@@ -79,22 +59,9 @@ impl NodeCraftApp {
         if let Err(message) = accepts(node, output) {
             return (None, Some(message), None);
         }
-        let order = if input.port_type.many {
-            match noodle::next_order(canvas, &wiring.anchor, None) {
-                Some(order) => order,
-                None => return (None, Some("This input can't take more connections.".into()), None),
-            }
-        } else {
-            if !fed.is_empty() {
-                return (None, Some("The input is already connected.".into()), None);
-            }
-            0
-        };
-        let from = Endpoint { node: node.id, port: output.name.clone() };
-        let Some(id) = noodle::new_edge_id(self.session.document(), &from, &wiring.anchor, self.session.revision()) else {
-            return (None, Some("Couldn't allocate a connection id; try again.".into()), None);
-        };
-        let edge = json!({"id":id,"from":from,"to":wiring.anchor,"order":order});
-        (Some(("edge.connect", json!({"canvas":self.canvas,"edge":edge}))), None, None)
+        match self.connect_from(canvas, wiring, &rules, node, output) {
+            Ok(command) => (command, None, None),
+            Err(message) => (None, Some(message), None),
+        }
     }
 }

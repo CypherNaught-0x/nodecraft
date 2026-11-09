@@ -7,6 +7,8 @@
 //! `inventory` prints the canonical inventory and digest a package of the folder would have.
 //! `lint` checks a package file the way installing, granting and enabling it would. None of them
 //! runs anything from the package or the folder, and none touches the app's plugin store.
+//! `try` runs one registration with no key and no network (#866):
+//! [`nodecraft_engine::plugin_try`].
 use std::path::{Path, PathBuf};
 
 use nodecraft_engine::plugin_cmds::{PluginHost, host_ids, lint};
@@ -210,6 +212,55 @@ pub fn lint_file(file: &Path, trust: Option<PathBuf>) -> Result<Value, Error> {
     lint(&bytes, &PluginHost { trust, taken: host_ids()?, bindings: Default::default() })
 }
 
+/// Most bytes of a replies file read.
+const MAX_REPLIES_FILE: u64 = 16 * 1024 * 1024;
+
+/// `plugin try`: reads the package and the scripted replies, and runs the registration.
+pub fn try_file(file: &Path, what: &mut nodecraft_engine::plugin_try::Try, replies: Option<&Path>) -> Result<Value, Error> {
+    let limit = u64::try_from(ArchiveLimits::DEFAULT.archive_bytes).unwrap_or(u64::MAX);
+    let bytes = read_capped(file, limit).map_err(|e| Error::new(e.kind, format!("{}: {}", file.display(), e.message)))?;
+    if let Some(path) = replies {
+        let text = read_capped(path, MAX_REPLIES_FILE).map_err(|e| Error::new(e.kind, format!("{}: {}", path.display(), e.message)))?;
+        what.replies = parse_replies(&text)?;
+    }
+    let runtime = tokio::runtime::Builder::new_current_thread().build().map_err(|e| Error::new(ErrorKind::Internal, format!("can't start: {e}")))?;
+    runtime.block_on(nodecraft_engine::plugin_try::try_package(&bytes, what))
+}
+
+/// A replies file: `[{status, json | text, headers?: {name: value}}]`, in the order the requests
+/// come.
+fn parse_replies(text: &[u8]) -> Result<Vec<nodecraft_engine::plugin_try::Reply>, Error> {
+    let bad = |why: &str| invalid(format!("the replies file {why}"));
+    let list: Vec<Value> = serde_json::from_slice(text).map_err(|_| bad("isn't a JSON list"))?;
+    if list.len() > nodecraft_engine::plugin_try::MAX_REPLIES {
+        return Err(bad(&format!("has more than {} replies", nodecraft_engine::plugin_try::MAX_REPLIES)));
+    }
+    list.iter()
+        .map(|reply| {
+            let status = reply["status"]
+                .as_u64()
+                .and_then(|s| u16::try_from(s).ok())
+                .filter(|s| (100..600).contains(s))
+                .ok_or_else(|| bad("has a reply without an HTTP status"))?;
+            let body = match (reply.get("json"), reply.get("text").and_then(Value::as_str)) {
+                (Some(json), None) => serde_json::to_vec(json).map_err(|_| bad("has a reply that can't be written"))?,
+                (None, Some(text)) => text.as_bytes().to_vec(),
+                (None, None) => Vec::new(),
+                (Some(_), Some(_)) => return Err(bad("has a reply with both json and text")),
+            };
+            let headers = match reply.get("headers") {
+                None => Vec::new(),
+                Some(Value::Object(map)) => map
+                    .iter()
+                    .map(|(name, value)| value.as_str().map(|v| (name.to_ascii_lowercase(), v.to_owned())).ok_or_else(|| bad("has a header that isn't text")))
+                    .collect::<Result<_, _>>()?,
+                Some(_) => return Err(bad("has headers that aren't an object")),
+            };
+            Ok(nodecraft_engine::plugin_try::Reply { status, headers, body })
+        })
+        .collect()
+}
+
 /// What `lint` found, for a person.
 pub fn lint_text(report: &Value) -> String {
     let s = |key: &str| report[key].as_str().unwrap_or_default().to_owned();
@@ -233,7 +284,10 @@ pub fn lint_text(report: &Value) -> String {
 
 /// `plugin <pack|inventory|lint> …`: parses the arguments and prints the result, or the error.
 pub fn command(args: &[String]) -> Result<String, String> {
-    let (sub, rest) = args.split_first().ok_or("`plugin` needs pack, inventory, lint or key")?;
+    let (sub, rest) = args.split_first().ok_or("`plugin` needs pack, inventory, lint, try or key")?;
+    if sub == "try" {
+        return try_command(rest);
+    }
     let (sub, rest) = match (sub.as_str(), rest.split_first()) {
         ("key", Some((action, rest))) if action == "new" || action == "trust" => (format!("key {action}"), rest),
         ("key", _) => return Err("`plugin key` needs new or trust".to_owned()),
@@ -312,6 +366,43 @@ pub fn command(args: &[String]) -> Result<String, String> {
             let report = lint_file(path, trust).map_err(|e| format!("{} doesn't pass: {}", path.display(), e.message))?;
             if json_out { shown(&report) } else { Ok(lint_text(&report)) }
         }
-        other => Err(format!("unknown `plugin` command `{other}`; use pack, inventory, lint or key")),
+        other => Err(format!("unknown `plugin` command `{other}`; use pack, inventory, lint, try or key")),
     }
+}
+
+/// `plugin try <file> <registration> [--input n=v]… [--model id] [--param n=json]… [--replies f]`.
+fn try_command(args: &[String]) -> Result<String, String> {
+    let mut what = nodecraft_engine::plugin_try::Try::default();
+    let mut replies = None;
+    let mut positional = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--json" => {}
+            "--input" => {
+                let pair = it.next().ok_or("--input needs <name>=<text>")?;
+                let (name, text) = pair.split_once('=').filter(|(name, _)| !name.is_empty()).ok_or("--input needs <name>=<text>")?;
+                if what.inputs.insert(name.to_owned(), text.to_owned()).is_some() {
+                    return Err(format!("--input {name} is given twice"));
+                }
+            }
+            "--param" => {
+                let pair = it.next().ok_or("--param needs <name>=<json>")?;
+                let (name, json) = pair.split_once('=').filter(|(name, _)| !name.is_empty()).ok_or("--param needs <name>=<json>")?;
+                let value = serde_json::from_str(json).map_err(|_| format!("--param {name} isn't JSON (quote text as \"…\")"))?;
+                what.params.insert(name.to_owned(), value);
+            }
+            "--model" if what.model.is_none() => what.model = Some(it.next().ok_or("--model needs a template model id")?.clone()),
+            "--model" => return Err("--model is given twice".to_owned()),
+            "--replies" => replies = Some(PathBuf::from(it.next().ok_or("--replies needs a file")?)),
+            flag if flag.starts_with("--") => return Err(format!("`plugin try` doesn't take {flag}")),
+            other => positional.push(other.to_owned()),
+        }
+    }
+    let [file, registration] = positional.as_slice() else { return Err("`plugin try` takes a package file and a registration".to_owned()) };
+    what.registration = registration.clone();
+    let report = try_file(Path::new(file), &mut what, replies.as_deref()).map_err(|e| e.message)?;
+    let text = serde_json::to_string_pretty(&report).map(|s| s + "\n").map_err(|_| "the result couldn't be written".to_owned())?;
+    // A run that failed fails the command, so CI notices; the report still says what was sent.
+    if report["outcome"]["error"].is_string() { Err(text) } else { Ok(text) }
 }

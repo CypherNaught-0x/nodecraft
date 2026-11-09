@@ -14,6 +14,7 @@ mod csv;
 mod estimates;
 mod inputs;
 mod inspect;
+mod mcp_http;
 mod plugin;
 mod project;
 mod providers;
@@ -41,6 +42,10 @@ commands:
   mcp --bridge [token-file]
                   serve the running app instead (started with `nodecraft --control`); the
                   token file defaults to control/control.json in the app's settings folder
+  mcp [--bridge [token-file]] --listen [address]
+                  serve over MCP Streamable HTTP at http://<address>/mcp instead of stdio, on
+                  this computer only (default 127.0.0.1:41117). Clients send
+                  `Authorization: Bearer <token>`: NODECRAFT_MCP_TOKEN, or a new token shown once
   commands [--full]
                   list the engine's commands; --full adds their parameters
   inspect <project.ncraft>
@@ -81,11 +86,19 @@ commands:
                   (default 3600 seconds). A run may name a webhook under a
                   --webhook-allow URL, called when it ends and signed with the webhook secret;
                   private addresses need --webhook-allow-private. The project file is not changed
-  relay [--listen <addr>]
+  relay [--listen <addr>] [--store <folder> [--keep-days <n>] [--store-max-gib <n>]]
+        [--tls-cert <pem file> --tls-key <pem file> [--tls-listen <addr>]]
                   pass projects shared live between the people working on them (default
-                  127.0.0.1:7342). Each project gets a room whose random id is its key; the
-                  relay keeps nothing on disk. It speaks plain ws://, so put it behind a TLS
-                  proxy before people reach it over the internet
+                  127.0.0.1:7342). Each project gets a room whose random id is its key.
+                  Without --store the relay keeps nothing on disk and a restart ends every
+                  room; with it, each room, its share links and its media are kept in the
+                  folder (named by a hash of the room id, never the id) and come back after a
+                  restart. A room nobody used for --keep-days (default 30) is forgotten, and
+                  past --store-max-gib (default 8) or 256 rooms the rooms used longest ago go
+                  first. It speaks plain ws://, which the desktop app uses. Given a
+                  certificate chain and its private key (PEM) it also serves wss:// on
+                  --tls-listen (default: the next port), which a browser on an HTTPS page
+                  needs; both reach the same rooms
   webhook-secret [--delete]
                   keep the secret `serve` signs webhooks with in the keychain, read from stdin
                   (at least 32 characters; `whsec_<base64>` is decoded); --delete removes it
@@ -102,6 +115,11 @@ commands:
   plugin lint <file> [--trust <trust.json>]
                   check a package as installing, granting and enabling it would; only keys in
                   the trust file are trusted. Nothing is installed or run
+  plugin try <file> <registration> [--input <name>=<text>]... [--model <id>]
+             [--param <name>=<json>]... [--replies <replies.json>]
+                  run one registration as the app would, with no key and no network: a text
+                  action on the inputs, or a provider template through the real broker, each
+                  request answered by the next scripted reply ([{status, json|text, headers?}])
   providers [list]
                   list the model providers and whether each can run (reads the keychain)
   providers test [all|provider-id]
@@ -153,7 +171,37 @@ fn default_token_file() -> Option<std::path::PathBuf> {
     nodecraft_engine::settings::settings_dir().map(|dir| dir.join("control").join("control.json"))
 }
 
-fn bridge(token_file: Option<&str>) -> ExitCode {
+/// Serves `server` over stdio, or over HTTP when `listen` names an address.
+fn serve_mcp(server: &mut McpServer, listen: Option<std::net::SocketAddr>) -> ExitCode {
+    match listen {
+        Some(addr) => mcp_http::serve(server, addr),
+        None => serve_stdio(server),
+    }
+}
+
+/// `mcp`'s options: `--bridge [token-file]` and `--listen [address]`, in either order.
+#[derive(Debug, Default, PartialEq)]
+struct McpArgs {
+    bridge: Option<Option<String>>,
+    listen: Option<std::net::SocketAddr>,
+}
+
+fn mcp_args(args: &[String]) -> Result<McpArgs, String> {
+    let mut out = McpArgs::default();
+    let mut rest = args.iter().peekable();
+    while let Some(arg) = rest.next() {
+        let value = rest.next_if(|next| !next.starts_with("--")).cloned();
+        match arg.as_str() {
+            "--bridge" if out.bridge.is_none() => out.bridge = Some(value),
+            "--listen" if out.listen.is_none() => out.listen = Some(mcp_http::listen_addr(value.as_deref())?),
+            "--bridge" | "--listen" => return Err(format!("`{arg}` is given twice")),
+            _ => return Err("`mcp` takes only `--bridge [token-file]` and `--listen [address]`".into()),
+        }
+    }
+    Ok(out)
+}
+
+fn bridge(token_file: Option<&str>, listen: Option<std::net::SocketAddr>) -> ExitCode {
     let Some(path) = token_file.map(std::path::PathBuf::from).or_else(default_token_file) else {
         eprintln!("error: no settings folder to find the app's control token in; pass the token file");
         return ExitCode::FAILURE;
@@ -165,10 +213,10 @@ fn bridge(token_file: Option<&str>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    serve_stdio(&mut McpServer::bridge(client, Box::new(random_bytes())))
+    serve_mcp(&mut McpServer::bridge(client, Box::new(random_bytes())), listen)
 }
 
-fn mcp() -> ExitCode {
+fn mcp(listen: Option<std::net::SocketAddr>) -> ExitCode {
     let mut new_id = random_bytes();
     let session = nodecraft_automation::blank_session(ProjectId::from_bytes(new_id()), CanvasId::from_bytes(new_id()));
     let mut services = Services::default();
@@ -193,6 +241,10 @@ fn mcp() -> ExitCode {
     if let Some(dir) = nodecraft_engine::settings::settings_dir() {
         nodecraft_engine::element_library::install(&mut session, std::rc::Rc::new(nodecraft_engine::element_library::FileElements::new(dir.join("elements"))));
     }
+    // The app's My library (#96), for agents to list and place from; only a person saves to it.
+    if let Some(dir) = nodecraft_engine::settings::settings_dir() {
+        nodecraft_engine::asset_library::install(&mut session, std::rc::Rc::new(nodecraft_engine::asset_library::FileAssetLibrary::new(dir.join("assets"))));
+    }
     // The app's shader library (#90), for agents to list and place from.
     if let Some(dir) = nodecraft_engine::settings::settings_dir()
         && let Err(e) = nodecraft_engine::shader_library::install(&mut session, Box::new(nodecraft_engine::shader_library::file_store(dir.join("shaders"))))
@@ -206,8 +258,8 @@ fn mcp() -> ExitCode {
         eprintln!("warning: your skills are unavailable: {}", e.message);
     }
     match estimates {
-        Some((runner, maker)) => serve_stdio(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id))),
-        None => serve_stdio(&mut McpServer::new(session, Box::new(new_id))),
+        Some((runner, maker)) => serve_mcp(&mut McpServer::with_host(estimates::Host::new(session, runner, maker), Box::new(new_id)), listen),
+        None => serve_mcp(&mut McpServer::new(session, Box::new(new_id)), listen),
     }
 }
 
@@ -430,25 +482,103 @@ fn serve_command(args: &[String]) -> ExitCode {
     }
 }
 
-/// `relay [--listen <addr>]`: passes shared projects between peers until the process is stopped.
+/// `relay [--listen <addr>] [--store <folder> …]`: passes shared projects between peers until the
+/// process is stopped, keeping its rooms in the folder when given one (#1068).
 fn relay_command(args: &[String]) -> ExitCode {
-    let listen = match args {
-        [] => Ok(std::net::SocketAddr::from(([127, 0, 0, 1], 7342))),
-        [flag, addr] if flag == "--listen" => addr.parse().map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7342, not `{addr}`")),
-        _ => Err("`relay` takes only `--listen <addr>`".into()),
-    };
-    let listen = match listen {
-        Ok(listen) => listen,
+    let parsed = relay_args(args);
+    let (listen, keeping, tls) = match parsed {
+        Ok(parsed) => parsed,
         Err(message) => return fail(&format!("{message}\n\n{USAGE}")),
     };
-    match relay::start(listen) {
+    let tls = match tls.map(|(cert, key, at)| relay::tls::Tls::load(&cert, &key).map(|tls| (tls, at))).transpose() {
+        Ok(tls) => tls,
+        Err(message) => return fail(&message),
+    };
+    match relay::start(listen, keeping, tls) {
         Ok(relay) => {
-            let _ = writeln!(std::io::stderr(), "Relaying on ws://{}/. Stop with Ctrl-C.", relay.addr);
+            match relay.secure {
+                Some(secure) => {
+                    let _ = writeln!(std::io::stderr(), "Relaying on ws://{}/ and wss://{secure}/. Stop with Ctrl-C.", relay.addr);
+                }
+                None => {
+                    let _ = writeln!(std::io::stderr(), "Relaying on ws://{}/. Stop with Ctrl-C.", relay.addr);
+                }
+            }
             relay.wait();
             ExitCode::SUCCESS
         }
         Err(error) => fail(&error.message),
     }
+}
+
+/// The most days a relay keeps a room nobody uses, and the most GiB its store may take.
+const MAX_KEEP_DAYS: u64 = 3650;
+const MAX_STORE_GIB: u64 = 1 << 20;
+
+/// A relay's certificate chain and key files, and where it serves `wss://` (#1067).
+type TlsFiles = (std::path::PathBuf, std::path::PathBuf, std::net::SocketAddr);
+
+fn relay_args(args: &[String]) -> Result<(std::net::SocketAddr, Option<relay::Keeping>, Option<TlsFiles>), String> {
+    let mut listen = std::net::SocketAddr::from(([127, 0, 0, 1], 7342));
+    let (mut dir, mut keep_days, mut max_gib) = (None, None, None);
+    let (mut cert, mut key, mut tls_listen) = (None, None, None);
+    let mut rest = args.iter();
+    while let Some(flag) = rest.next() {
+        let Some(value) = rest.next() else { return Err(format!("`{flag}` needs a value")) };
+        let number = |most: u64| match value.parse::<u64>() {
+            Ok(n) if (1..=most).contains(&n) => Ok(n),
+            _ => Err(format!("`{flag}` takes a whole number from 1 to {most}, not `{value}`")),
+        };
+        match flag.as_str() {
+            "--listen" => listen = value.parse().map_err(|_| format!("`--listen` takes an address like 127.0.0.1:7342, not `{value}`"))?,
+            "--store" if !value.is_empty() => dir = Some(std::path::PathBuf::from(value)),
+            "--keep-days" => keep_days = Some(number(MAX_KEEP_DAYS)?),
+            "--store-max-gib" => max_gib = Some(number(MAX_STORE_GIB)?),
+            "--tls-cert" if !value.is_empty() => cert = Some(std::path::PathBuf::from(value)),
+            "--tls-key" if !value.is_empty() => key = Some(std::path::PathBuf::from(value)),
+            "--tls-listen" => {
+                tls_listen =
+                    Some(value.parse::<std::net::SocketAddr>().map_err(|_| format!("`--tls-listen` takes an address like 127.0.0.1:7343, not `{value}`"))?);
+            }
+            _ => {
+                return Err(
+                    "`relay` takes `--listen <addr>`, `--store <folder>`, `--keep-days <n>`, `--store-max-gib <n>`, `--tls-cert <file>`, `--tls-key <file>` and `--tls-listen <addr>`"
+                        .into(),
+                );
+            }
+        }
+    }
+    let tls = match (cert, key) {
+        // The secure address is the plain one's next port unless given; port 0 picks a free one.
+        (Some(cert), Some(key)) => {
+            let next = match listen.port() {
+                0 => Some(0),
+                port => port.checked_add(1),
+            };
+            let at = match (tls_listen, next) {
+                (Some(at), _) => at,
+                (None, Some(port)) => std::net::SocketAddr::new(listen.ip(), port),
+                (None, None) => return Err("`--listen` is on the last port: give `--tls-listen <addr>` for wss://".into()),
+            };
+            if at == listen && listen.port() != 0 {
+                return Err("`--tls-listen` must be another address than `--listen`".into());
+            }
+            Some((cert, key, at))
+        }
+        (None, None) if tls_listen.is_none() => None,
+        (None, None) => return Err("`--tls-listen` needs `--tls-cert` and `--tls-key`".into()),
+        _ => return Err("`--tls-cert` and `--tls-key` go together".into()),
+    };
+    let Some(dir) = dir else {
+        return if keep_days.is_some() || max_gib.is_some() {
+            Err("`--keep-days` and `--store-max-gib` need `--store <folder>`".into())
+        } else {
+            Ok((listen, None, tls))
+        };
+    };
+    let keep = keep_days.unwrap_or(30).saturating_mul(24 * 3600);
+    let max_bytes = max_gib.unwrap_or(8).saturating_mul(1 << 30);
+    Ok((listen, Some(relay::Keeping { dir, keep, max_bytes }), tls))
 }
 
 /// `webhook-secret [--delete]`: keeps `serve`'s webhook signing secret, read from stdin, in the
@@ -503,7 +633,11 @@ fn run(path: &std::path::Path, options: &Options) -> ExitCode {
     let mut new_id = random_bytes();
     let mut services = Services::default();
     let session_id: String = new_id().iter().take(8).map(|b| format!("{b:02x}")).collect();
-    let mut runner = match run::Runner::new(&mut services, session_id) {
+    // A sound that streams says how much has arrived (#1070), on stderr: stdout is the report.
+    let progress: run::Progress = Box::new(|line| {
+        let _ = writeln!(std::io::stderr(), "{line}");
+    });
+    let mut runner = match run::Runner::with_progress(&mut services, session_id, progress) {
         Ok(runner) => runner,
         Err(error) => return fail(&error.message),
     };
@@ -587,12 +721,11 @@ fn main() -> ExitCode {
             let _ = writeln!(std::io::stderr(), "error: `control` takes no options\n\n{USAGE}");
             ExitCode::FAILURE
         }
-        Some("mcp") => match args.get(1..).unwrap_or_default() {
-            [] => mcp(),
-            [flag] if flag == "--bridge" => bridge(None),
-            [flag, path] if flag == "--bridge" => bridge(Some(path)),
-            _ => {
-                eprintln!("error: `mcp` takes only `--bridge [token-file]`\n\n{USAGE}");
+        Some("mcp") => match mcp_args(args.get(1..).unwrap_or_default()) {
+            Ok(McpArgs { bridge: None, listen }) => mcp(listen),
+            Ok(McpArgs { bridge: Some(path), listen }) => bridge(path.as_deref(), listen),
+            Err(e) => {
+                eprintln!("error: {e}\n\n{USAGE}");
                 ExitCode::FAILURE
             }
         },

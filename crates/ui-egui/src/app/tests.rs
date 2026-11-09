@@ -10,10 +10,10 @@ pub(super) fn harness() -> Harness<'static, NodeCraftApp> {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap())
 }
-fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
+pub(super) fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
     app.session.document().canvases().get(&app.canvas).unwrap().nodes().values().next().unwrap()
 }
-fn screen(app: &NodeCraftApp) -> Rect {
+pub(super) fn screen(app: &NodeCraftApp) -> Rect {
     app.view.rect_to_screen(app.viewport.min, payload_rect(&app.session, node(app), app.theme.tokens()))
 }
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
@@ -181,10 +181,10 @@ impl NodeKind for TestKind {
         Err(Error::new(ErrorKind::Unsupported, "test-only kind"))
     }
 }
-fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
+pub(super) fn spec(name: &str, control: ParamControl, default: Value) -> ParamSpec {
     ParamSpec { name: name.into(), label: name.into(), description: None, control, required: false, default: Some(default), visible_if: None }
 }
-fn schema_harness(params: Vec<ParamSpec>) -> Harness<'static, NodeCraftApp> {
+pub(super) fn schema_harness(params: Vec<ParamSpec>) -> Harness<'static, NodeCraftApp> {
     let descriptor = NodeDescriptor {
         id: "test.controls".into(),
         label: "Controls".into(),
@@ -394,7 +394,8 @@ fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
         spec("enabled", ParamControl::Toggle, Value::Bool(false)),
     ]);
     enter_text(&mut h, "count", "9");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // Empty canvas below the top bar (#1123 put File at the row's left end).
+    click(&mut h, Pos2::new(50.0, 300.0));
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
@@ -1702,7 +1703,8 @@ fn palette_keys_and_wheel_never_reach_the_canvas() {
     h.run();
     // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
     h.state_mut().selection.only(id);
-    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // The popup may open upward from where it was double-clicked (#1121): use its real corner.
+    let corner = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).unwrap().rect().min;
     // A click on the popup's padding takes focus off the query, but the palette stays open...
     click(&mut h, corner + Vec2::splat(3.0));
     assert!(h.state().palette.is_some());
@@ -1749,7 +1751,7 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
     assert!(h.state().palette.is_some());
     h.event(egui::Event::Text("vid".into()));
     h.run();
-    h.get_by_label_contains("Video    V").click();
+    h.get_by_label_contains("Video (V)").click();
     h.run();
     assert_eq!(nodes_of(&h, "source.video").len(), 1);
     assert!(h.state().palette.is_none());
@@ -2065,7 +2067,8 @@ fn first_frame_hover_captured(was_tall: bool, capture: Option<&std::path::Path>)
         modifiers: egui::Modifiers::NONE,
     });
     h.step(); // Deliberately the first frame: running to quiescence hides stale hover ownership.
-    assert_eq!(h.state().view.pan != pan, was_tall, "shrunk card permits canvas pan; grown card owns scroll");
+    // Neither body has anything to scroll, so the canvas pans over the grown card too (#413).
+    assert_ne!(h.state().view.pan, pan, "a card with nothing to scroll never swallows the wheel");
     if let Some(root) = capture {
         h.render().unwrap().save(root.join(if was_tall { "after-shrink.png" } else { "after-growth.png" })).unwrap();
     }
@@ -2085,7 +2088,7 @@ fn first_frame_hover_after_shrink() {
 }
 
 #[test]
-fn unavailable_instance_placeholder_owns_wheel_hover_but_not_surrounding_canvas() {
+fn unavailable_instance_placeholder_lets_the_wheel_pan_over_and_around_it() {
     for inside in [true, false] {
         let mut h = changing_height_harness(true);
         h.run();
@@ -2113,7 +2116,7 @@ fn unavailable_instance_placeholder_owns_wheel_hover_but_not_surrounding_canvas(
             modifiers: egui::Modifiers::NONE,
         });
         h.step();
-        assert_eq!(h.state().view.pan == pan, inside, "painted placeholder owns wheel; surrounding canvas permits pan");
+        assert_ne!(h.state().view.pan, pan, "a placeholder has nothing to scroll, so the canvas pans over it and around it (#413)");
         assert_eq!(h.state().session.document(), &before);
         assert_eq!(h.state().session.revision(), revision);
     }
@@ -3524,11 +3527,11 @@ fn bulk71_unavailable_models_use_shared_repair_picker_and_one_exact_undo() {
     assert!(!apply_node.accesskit_node().is_disabled(), "{apply_node:?}");
     let apply_rect = apply_node.rect();
     assert!(h.ctx.content_rect().contains_rect(apply_rect), "Apply {apply_rect:?} outside {:?}", h.ctx.content_rect());
-    let window_rect = h.get_by_role_and_label(Role::Window, "Review model change").rect();
+    let window_rect = h.get_by_role_and_label(Role::Dialog, "Review model change").rect();
     assert!(window_rect.contains_rect(apply_rect), "Apply {apply_rect:?} outside review {window_rect:?}");
     let apply = apply_rect.center();
     bulk71_model_click(&mut h, apply);
-    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Window, "Review model change"));
+    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Dialog, "Review model change"));
     for id in ids {
         assert_eq!(
             h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("model"),
@@ -3611,7 +3614,7 @@ fn bulk71_real_catalog_media() {
         assert!(h.query_by_label_contains("Drop quality").is_some());
         let apply = h.get_by_label("Apply model change");
         assert!(!apply.accesskit_node().is_disabled());
-        assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Review model change").rect().contains_rect(apply.rect()));
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change").rect().contains_rect(apply.rect()));
         h.render().unwrap().save(out.join("review.png")).unwrap();
     }
     assert_eq!(h.state().session.document(), &project);
@@ -4322,3 +4325,17 @@ fn palette_same_frame_row_choice_and_metadata_key_create_only_chosen_kind() {
 mod clipboard_native273;
 
 mod clipboard_capture273;
+
+/// How many nodes other than port buttons and connections carry `text` in their name. Ports and
+/// noodles repeat their cards' titles (#1109), so a card's own element is the only other match.
+pub(super) fn named_outside_wiring(h: &Harness<'_, NodeCraftApp>, text: &str) -> usize {
+    h.query_all_by_label_contains(text)
+        .filter(|node| {
+            let node = node.accesskit_node();
+            let name = node.label().or_else(|| node.value()).unwrap_or_default();
+            let port = node.role() == Role::Button && (name.contains(" input of ") || name.contains(" output of "));
+            let edge = node.role() == Role::Label && name.contains(" from ") && name.contains(" · ");
+            !port && !edge
+        })
+        .count()
+}

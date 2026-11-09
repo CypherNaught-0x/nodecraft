@@ -27,7 +27,12 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const BUILTIN: &[(&str, &str)] = &[
     ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("bedrock.toml", include_str!("../../../assets/catalog/bedrock.toml")),
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
+    ("deepseek.toml", include_str!("../../../assets/catalog/deepseek.toml")),
+    ("mistral.toml", include_str!("../../../assets/catalog/mistral.toml")),
+    ("groq.toml", include_str!("../../../assets/catalog/groq.toml")),
+    ("xai.toml", include_str!("../../../assets/catalog/xai.toml")),
     ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("heygen.toml", include_str!("../../../assets/catalog/heygen.toml")),

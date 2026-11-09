@@ -6,7 +6,7 @@
 //! put on the canvas, or discard. None of these calls the provider again.
 use super::*;
 use nodecraft_engine::run_host::{HeldAction, HeldView, MAX_HELD};
-use nodecraft_engine::run_jobs::{JobState, JobView, cause_label, cause_of, fix_hint};
+use nodecraft_engine::run_jobs::{JobState, JobView, cause_of, failure_hint, failure_label};
 
 /// What a click in the panel asked for, applied after it is drawn.
 enum Action {
@@ -40,40 +40,29 @@ impl NodeCraftApp {
         let held: Vec<HeldView> = runs.held().to_vec();
         let mut open = true;
         let mut action = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Queue")
-            .id(egui::Id::new("nodecraft.queue"))
-            .open(&mut open)
-            // Under its toggle and search; notices own the bottom-left corner, the map the bottom-right.
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
-                if !held.is_empty() {
-                    self.held_section(ui, &held, t, &mut action);
-                }
-                if jobs.is_empty() && held.is_empty() {
-                    ui.label(egui::RichText::new("Nothing has run yet. Jobs appear here while they run.").color(t.text_muted));
-                    return;
-                }
-                if jobs.is_empty() {
-                    return;
-                }
-                egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
-                    egui::Grid::new("queue_rows").num_columns(5).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
-                        for view in &jobs {
-                            self.queue_row(ui, view, t, &mut action);
-                            ui.end_row();
-                        }
-                    });
+        crate::floating::panel(ctx, "Queue", egui::Id::new("nodecraft.queue"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+            if !held.is_empty() {
+                self.held_section(ui, &held, t, &mut action);
+            }
+            if jobs.is_empty() && held.is_empty() {
+                ui.label(egui::RichText::new("Nothing has run yet. Jobs appear here while they run.").color(t.text_muted));
+                return;
+            }
+            if jobs.is_empty() {
+                return;
+            }
+            egui::ScrollArea::vertical().max_height(t.minimap_height * 2.0).show(ui, |ui| {
+                egui::Grid::new("queue_rows").num_columns(5).spacing([t.control_gap * 2.0, t.control_gap]).striped(true).show(ui, |ui| {
+                    for view in &jobs {
+                        self.queue_row(ui, view, t, &mut action);
+                        ui.end_row();
+                    }
                 });
-                if jobs.iter().any(|view| view.state.is_final()) && ui.button("Clear finished").clicked() {
-                    action = Some(Action::Clear);
-                }
             });
+            if jobs.iter().any(|view| view.state.is_final()) && ui.button("Clear finished").clicked() {
+                action = Some(Action::Clear);
+            }
+        });
         self.queue_open = open;
         let result = match action {
             Some(Action::Cancel(key)) => self.runs.as_mut().map_or(Ok(()), |runs| runs.cancel(key)),
@@ -142,10 +131,20 @@ impl NodeCraftApp {
                     if retry.clicked() {
                         *action = Some(Action::Held("run.held_retry", view.id));
                     }
-                    if ui.add_enabled(idle, egui::Button::new("Put on canvas")).on_hover_text("Add its outputs as source nodes beside its card").clicked() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Put on canvas"))
+                        .on_hover_text("Add its outputs as source nodes beside its card")
+                        .on_disabled_hover_text("Wait for its pending request to finish")
+                        .clicked()
+                    {
                         *action = Some(Action::Held("run.held_place", view.id));
                     }
-                    if ui.add_enabled(idle, egui::Button::new("Discard")).on_hover_text("Let it go; its charge stands").clicked() {
+                    if ui
+                        .add_enabled(idle, egui::Button::new("Discard"))
+                        .on_hover_text("Let it go; its charge stands")
+                        .on_disabled_hover_text("Wait for its pending request to finish")
+                        .clicked()
+                    {
                         *action = Some(Action::Held("run.held_discard", view.id));
                     }
                     if let Some(pending) = view.pending {
@@ -173,21 +172,31 @@ impl NodeCraftApp {
         let color = match &view.state {
             JobState::Failed { .. } => t.danger,
             JobState::Done | JobState::Cancelled => t.text_muted,
-            _ => t.accent,
+            _ => t.accent_text,
         };
         let status = ui.label(egui::RichText::new(view.status()).color(color));
         if let JobState::Failed { reason, cause } = &view.state {
-            let hint = cause.or_else(|| cause_of(reason)).map(fix_hint);
+            let hint = cause.or_else(|| cause_of(reason)).map(|cause| failure_hint(cause, reason));
             status.on_hover_text(hint.map_or_else(|| reason.clone(), |hint| format!("{reason}\n\n{hint}")));
         }
         ui.label(price(view));
         if !view.state.is_final() {
-            if ui.add_enabled(!view.cancel_requested, egui::Button::new("Cancel")).on_hover_text("Stop this job").clicked() {
+            if ui
+                .add_enabled(!view.cancel_requested, egui::Button::new("Cancel"))
+                .on_hover_text("Stop this job")
+                .on_disabled_hover_text("It is already stopping")
+                .clicked()
+            {
                 *action = Some(Action::Cancel(view.key));
             }
         } else if matches!(view.state, JobState::Failed { .. } | JobState::Cancelled) && view.provider.is_some() {
             let can = view.canvas == self.canvas && node.is_some() && self.runs.as_ref().is_some_and(|runs| !runs.is_running(view.canvas, view.node));
-            if ui.add_enabled(can, egui::Button::new("Retry")).on_hover_text("Quote this card again and run it").clicked() {
+            if ui
+                .add_enabled(can, egui::Button::new("Retry"))
+                .on_hover_text("Quote this card again and run it")
+                .on_disabled_hover_text("Open its canvas, and wait for its card to finish running, to retry it")
+                .clicked()
+            {
                 *action = Some(Action::Retry(view.node));
             }
         } else {
@@ -215,11 +224,11 @@ fn price(view: &JobView) -> String {
 /// The run status a card shows under itself: what its job is doing, or why its last run failed.
 pub(super) fn card_status(runs: &super::runs::Runs, canvas: CanvasId, node: NodeId, t: &Tokens) -> Option<(String, egui::Color32, Option<String>)> {
     if let Some(status) = runs.card_status(canvas, node) {
-        return Some((status, t.accent, None));
+        return Some((status, t.accent_text, None));
     }
     let why = runs.failure(canvas, node)?;
     let cause = cause_of(why);
-    let label = cause.map_or_else(|| "Run failed".to_owned(), |cause| format!("Run failed: {}", cause_label(cause)));
-    let hover = cause.map_or_else(|| why.to_owned(), |cause| format!("{why}\n\n{}", fix_hint(cause)));
+    let label = cause.map_or_else(|| "Run failed".to_owned(), |cause| format!("Run failed: {}", failure_label(cause, why)));
+    let hover = cause.map_or_else(|| why.to_owned(), |cause| format!("{why}\n\n{}", failure_hint(cause, why)));
     Some((label, t.danger, Some(hover)))
 }
