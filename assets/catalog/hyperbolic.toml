@@ -1,13 +1,13 @@
-# Llama 3.3 70B (Hyperbolic) through rig-core 0.46's own dialect (#1152).
-# Pricing reference: https://www.hyperbolic.xyz/pricing
-# 2026-11-09: current vendor prices could not be verified in this environment. Unknown
-# usage pricing requires explicit admission; no zero price or token rate is invented.
+# GLM 5.3 Flash (Hyperbolic) through rig-core 0.46's own dialect (#1152).
+# Checked 2026-11-09: https://www.hyperbolic.ai/docs/inference/quickstart documents
+# glm-5.3-flash at https://api.hyperbolic.ai/inference/v1. The previous xyz API was
+# decommissioned. No verified fixed inference rate: unknown usage pricing requires admission.
 # Latency and selection tier below are generic discovery hints, not measurements.
 [[model]]
-id = "hyperbolic.llama-3.3-70b"
+id = "hyperbolic.glm-5.3-flash"
 provider = "hyperbolic"
-provider_model = "meta-llama/Llama-3.3-70B-Instruct"
-label = "Llama 3.3 70B (Hyperbolic)"
+provider_model = "glm-5.3-flash"
+label = "GLM 5.3 Flash (Hyperbolic)"
 description = "Text chat. Price is unknown here; check your provider account before running."
 latency_s = 20
 quality = 2

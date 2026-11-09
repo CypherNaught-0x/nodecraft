@@ -30,9 +30,10 @@ impl Endpoint {
         Self::openai_compatible("perplexity", "https://api.perplexity.ai", Some(key))
     }
 
-    /// Hyperbolic's text route; tools are refused before sending.
+    /// Hyperbolic's current text route; tools are refused before sending.
+    /// The old api.hyperbolic.xyz route in rig 0.46 has been decommissioned.
     pub fn hyperbolic(key: ApiKey) -> Self {
-        Self::openai_compatible("hyperbolic", "https://api.hyperbolic.xyz/v1", Some(key))
+        Self::openai_compatible("hyperbolic", "https://api.hyperbolic.ai/inference/v1", Some(key))
     }
 
     /// Mira's gateway. Choose a model from the account's model list.

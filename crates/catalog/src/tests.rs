@@ -377,6 +377,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("bedrock.gpt-oss-20b", false),
             ("bfl.flux-kontext-max", false),
             ("bfl.flux-kontext-pro", false),
+            ("cohere.command-a", false),
             ("deepgram.nova-3", false),
             ("deepseek.v4-pro", false),
             ("deepseek.flash", false),
@@ -445,6 +446,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("huggingface.gpt-oss-120b-groq", false),
+            ("hyperbolic.glm-5.3-flash", false),
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
@@ -455,13 +457,17 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("meshy.retexture", false),
             ("meshy.retexture-image", false),
             ("meshy.text-to-3d", false),
+            ("minimax.m3", false),
+            ("mira.model", false),
             ("mistral.large-4", false),
             ("mistral.small-4", false),
+            ("moonshot.kimi-k3", false),
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
             ("openai-audio.transcribe", false),
             ("openai-audio.mini-tts", false),
+            ("perplexity.sonar", false),
             ("replicate.hello", false),
             ("runway.gen4-5", false),
             ("runway.gen4-turbo", false),
@@ -472,11 +478,13 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("stability.audio3", false),
             ("stability.fast-3d", false),
             ("test.video", false),
+            ("together.gpt-oss-120b", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
             ("tripo.text-to-3d", false),
             ("xai.grok-4.7", false),
-            ("xai.grok-4.3", false)
+            ("xai.grok-4.3", false),
+            ("zai.glm-4.6", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.
@@ -1336,22 +1344,31 @@ default = { type = "unsigned", value = "1024" }"#;
 }
 
 #[test]
-fn additional_key_only_chat_models_keep_unverified_prices_unknown() {
+fn additional_key_only_chat_models_keep_upfront_quotes_unknown() {
     let catalog = Catalog::builtin().unwrap();
     for id in [
-        "together.llama-3.3-70b",
+        "together.gpt-oss-120b",
         "moonshot.kimi-k3",
         "zai.glm-4.6",
         "minimax.m3",
         "perplexity.sonar",
-        "hyperbolic.llama-3.3-70b",
+        "hyperbolic.glm-5.3-flash",
         "mira.model",
         "cohere.command-a",
     ] {
         let model = catalog.get(id).unwrap();
         assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD }, "{id}");
         assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{id}");
-        assert!(model.usage.is_none(), "{id}: no invented token rate");
+        if let Some(rates) = &model.usage {
+            let (input, output) = match id {
+                "together.gpt-oss-120b" => (150, 600),
+                "zai.glm-4.6" => (600, 2200),
+                _ => panic!("{id}: unverified rate"),
+            };
+            assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, input), Money::new(Currency::USD, output)));
+        } else {
+            assert!(!matches!(id, "together.gpt-oss-120b" | "zai.glm-4.6"));
+        }
         assert_eq!(model.modes.len(), 1);
         assert_eq!(model.modes[0].output, Modality::Text);
         assert!(model.modes[0].inputs.iter().all(|input| input.modality == Modality::Text));

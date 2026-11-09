@@ -16,7 +16,7 @@ fn vendors() -> [Vendor; 8] {
         (Endpoint::mistral, "https://api.mistral.ai/v1/chat/completions", "mistral-small-2603"),
         (Endpoint::groq, "https://api.groq.com/openai/v1/chat/completions", "openai/gpt-oss-20b"),
         (Endpoint::xai, "https://api.x.ai/v1/chat/completions", "grok-4.3"),
-        (Endpoint::together, "https://api.together.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+        (Endpoint::together, "https://api.together.xyz/v1/chat/completions", "openai/gpt-oss-120b"),
         (Endpoint::moonshot, "https://api.moonshot.ai/v1/chat/completions", "kimi-k3"),
         (Endpoint::zai, "https://api.z.ai/api/paas/v4/chat/completions", "glm-4.6"),
         (Endpoint::minimax, "https://api.minimax.io/v1/chat/completions", "MiniMax-M3"),
@@ -264,7 +264,7 @@ fn reasoning_tokens_are_settled_with_the_reply() {
 fn text_only_vendors_preserve_text_and_refuse_tools_before_sending() {
     for (endpoint, url, model) in [
         (Endpoint::perplexity as fn(ApiKey) -> Endpoint, "https://api.perplexity.ai/chat/completions", "sonar"),
-        (Endpoint::hyperbolic, "https://api.hyperbolic.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct"),
+        (Endpoint::hyperbolic, "https://api.hyperbolic.ai/inference/v1/chat/completions", "glm-5.3-flash"),
         (Endpoint::mira, "https://api.mira.network/v1/chat/completions", "account-model"),
     ] {
         let http = Canned::new(200, REPLY);
@@ -283,7 +283,7 @@ fn text_only_vendors_preserve_text_and_refuse_tools_before_sending() {
         let reply = block_on(client.chat_stream(&ask(model), &mut |_| {})).unwrap();
         assert_eq!(reply.text, "pong");
         let sent: Value = serde_json::from_slice(&streamed.seen.lock().unwrap()[0].body).unwrap();
-        if model != "meta-llama/Llama-3.3-70B-Instruct" {
+        if model != "glm-5.3-flash" {
             assert!(sent.get("stream_options").is_none(), "{url}: vendor rejects usage options");
         }
         let before = streamed.seen.lock().unwrap().len();

@@ -30,12 +30,12 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Mistral** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `mistral` | text → text, tools, streaming | rig's Mistral dialect (#1122), its own content chunks. Catalog `assets/catalog/mistral.toml`: `mistral-large-4` and `mistral-small-2603`, text only for now, quoted at the output rate on `max_tokens` (prices from each model's docs page; mistral.ai/pricing draws its table in the browser). |
 | **Groq** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `groq` | text → text, tools, streaming | rig's Groq dialect (#1122). Catalog `assets/catalog/groq.toml`: `openai/gpt-oss-120b` and `openai/gpt-oss-20b`, usage pricing with no up-front quote (they reason, and Groq's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. |
 | **xAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `xai` | text → text, tools, streaming | rig's xAI dialect on its Chat Completions route (#1122; xAI calls it legacy, the Responses API is not used). Catalog `assets/catalog/xai.toml`: `grok-4.7` and `grok-4.3`, usage pricing with no up-front quote (xAI's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. xAI counts reasoning apart from `completion_tokens`; settlement counts it as reply tokens (as every OpenAI-dialect endpoint does: the larger of `completion_tokens` and `total_tokens` less `prompt_tokens`). |
-| **Together AI** | `llm` | Bearer key, account `together` | text → text, tools, streaming | Public `/v1/chat/completions`, rig's Together dialect. Llama 3.3 70B Turbo. Unknown usage price. |
+| **Together AI** | `llm` | Bearer key, account `together` | text → text, tools, streaming | Public `/v1/chat/completions`, rig's Together dialect. GPT OSS 120B. No up-front quote; verified usage rates. |
 | **Moonshot** | `llm` | Global bearer key, account `moonshot` | text → text, tools, streaming | Global Chat Completions, rig's Moonshot dialect. Kimi K3. China and Anthropic routes are not used. Unknown usage price. |
-| **Z.AI** | `llm` | General API bearer key, account `zai` | text → text, tools, streaming | General `/api/paas/v4` route, not a coding-plan key. GLM 4.6. Unknown usage price. |
+| **Z.AI** | `llm` | General API bearer key, account `zai` | text → text, tools, streaming | General `/api/paas/v4` route, not a coding-plan key. GLM 4.6. No up-front quote; verified usage rates. |
 | **MiniMax text** | `llm` | Global bearer key, account `minimax` | text → text, tools, streaming | Global Chat Completions, MiniMax M3. The fal media models keep using the separate `fal` account. Unknown usage price. |
 | **Perplexity** | `llm` | Bearer key, account `perplexity` | text → text, streaming | Sonar, rig's Perplexity dialect. Tools are refused before sending. No usage-stream option is sent. Unknown usage price, including any search fees. |
-| **Hyperbolic** | `llm` | Bearer key, account `hyperbolic` | text → text, streaming | Llama 3.3 70B, rig's Hyperbolic dialect. Tools are refused before sending. Unknown usage price. |
+| **Hyperbolic** | `llm` | Bearer key, account `hyperbolic` | text → text, streaming | GLM 5.3 Flash, rig's Hyperbolic dialect. Tools are refused before sending. Unknown usage price. |
 | **Mira** | `llm` | Bearer key, account `mira` | text → text, streaming | Enter a model id from your account's model list on the generic Mira card. Tools are refused; the dialect omits unsupported stream options and accepts bare-string replies. Unknown usage price. |
 | **Cohere** | `llm` | Bearer key, account `cohere` | text → text, tools, streaming | Native `POST /v2/chat` through rig's Cohere wire, Command A. Per-tool strict schemas, images and PDFs are refused. Unknown usage price. |
 
@@ -2676,10 +2676,12 @@ cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in o
 
 Together, Moonshot, Z.AI, MiniMax text, Perplexity, Hyperbolic, Mira and Cohere use the same
 bounded transport, secret-header handling and uncertain-submit policy as the other chat adapters.
-They never retry a request that may have reached the provider. Their catalog entries deliberately
-use unknown usage pricing: current vendor rates could not be independently checked on 2026-11-09.
-A run requires explicit unknown-price admission; token counts do not become an invented dollar
-charge. The pricing references are recorded in each catalog file.
+They never retry a request that may have reached the provider. All entries use usage pricing
+with no up-front quote. Together GPT OSS 120B and Z.AI GLM 4.6 settle at rates checked on the
+vendors' pricing pages on 2026-11-09; the other entries retain unknown prices because their
+current rate tables were unavailable or vary in ways this adapter does not price. A run requires
+explicit unknown-price admission; unpriced token counts do not become an invented dollar charge.
+The pricing references and limitations are recorded in each catalog file.
 
 These additions support text conversations only. Image and document requests are refused before
 sending. Perplexity, Hyperbolic and Mira also refuse tools and tool history instead of silently
@@ -2694,3 +2696,8 @@ The fixture tests make no network requests. To opt into a paid smoke test, set
 `MOONSHOT`, `ZAI`, `MINIMAX`, `PERPLEXITY`, `HYPERBOLIC`, `MIRA`, and `COHERE`.
 Mira requires `NODECRAFT_LIVE_MIRA_MODEL` because its model names come from the account.
 Each enabled test sends one streamed and one whole request. No live tests run by default.
+
+Hyperbolic requires a current `sk_live_` key and uses `api.hyperbolic.ai/inference/v1`; its old
+`api.hyperbolic.xyz` API is decommissioned. Perplexity says Sonar support ended on 2026-09-27,
+but synchronous and streamed requests continue through reformulation as Agent API requests.
+The adapter keeps the requested Chat Completions compatibility route and its unknown all-in cost.
