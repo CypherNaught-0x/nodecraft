@@ -233,7 +233,7 @@ provider not listed here is tracked as a GitHub issue labelled `area:providers` 
 | **Comfy Cloud** | Hosted ComfyUI | Same Workflow node and ComfyUI-backed catalog models, run without a local GPU | Separate backend profile (auth, upload, queue differences); the exact API surface is confirmed in its issue | 5 |
 | **Aggregators: fal.ai, Replicate** | Hundreds of hosted image, video, audio, 3D and upscale models | Every mode; models added as catalog entries pointing at the aggregator's model id | Broadest coverage with one key each; queue/webhook-style async APIs | 3 |
 | **OpenAI Images** | GPT Image family | text→image, image(s)→image edit, mask inpaint | Sizes, quality, background transparency, N | 3 |
-| **Google** (Gemini API, Vertex AI later) | **Imagen** (generate, edit), **Gemini image** models, **Veo** (video) | text→image, image(s)→image; text→video, image→video (first/last frame), audio on/off | Long-running operations polled | 3 (Veo: 7) |
+| **Google** (Gemini API and Google Cloud) | Gemini image models, Gemini Omni Flash video, Cloud Veo and Cloud Gemini images | Scoped text/image generation, reference editing and video modes | Credentials, pricing and supported hosts differ between the Developer API and Google Cloud; see `docs/providers.md` | 3 (Veo: 7) |
 | **Google TTS** | Cloud Text-to-Speech (Neural2/Chirp voices) and Gemini TTS | text→speech; voice, language, speaking rate, pitch, SSML; multi-speaker on Gemini TTS | Same Google credentials as above | 7 |
 | **ElevenLabs** | Text-to-speech, sound effects, music, voice changer | text→speech, text→SFX, text→music, audio→audio | Voice picker loaded from the account; streaming previews | 7 |
 | **ByteDance** (BytePlus ModelArk) | **Seedream** (image), **Seedance** (video) | text→image, multi-reference image edit; text/image→video, reference mode | Async task API | 3 (Seedance: 7) |
@@ -283,8 +283,11 @@ ComfyUI is the main local engine, not just one more HTTP endpoint:
 
 #### 2.5.2 Future providers (tracked as issues)
 
-These are worth adding once the adapter pattern has settled. Each one gets a GitHub issue
-(`area:providers`, `future`) so contributors can `/claim` it:
+This originally separate batch has resolved its feature issues as of the 2026-11-09 tracker
+snapshot; its documentation close-out (#382) is prepared locally. The list records the scoped
+service families, not a promise that every vendor mode works in every host. Several use fal
+routes rather than a separate native adapter; see [the close-out evidence](reviews/2026-11-09-future-provider-closeout.md)
+and [provider availability](providers.md). New follow-ups remain separate issues:
 
 - **Video:** Runway, Luma (Ray), MiniMax Hailuo, Pika, Lightricks LTX, xAI Grok
   Imagine, Alibaba Wan (DashScope)
@@ -758,8 +761,8 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   renders full size on release. Video actions and the Timeline run only when asked.
 - [x] Split into grid: an image cut into tiles as new Image cards, one undo step (#86).
 - [x] GPU path (#89): a wgpu executor for the image actions, checked against the CPU reference
-  within a tolerance. It is a tested library; the app still runs built-in image actions on the
-  CPU.
+  within a tolerance. Desktop built-in image actions use it when available, with CPU fallback
+  (#1058); the CLI and browser use the CPU reference.
 - [x] Custom WGSL actions (#90): a shader card with declared sliders, validated before dispatch
   and run on the GPU; a text model writes or fixes it through an ordinary priced text card, and
   a versioned shader library keeps it across projects.
@@ -828,6 +831,29 @@ M7's feature and exit-criterion checklist:
   run host. See the [four-clip render check](media-video.md#m7-four-clip-render-check).
 - [x] M7 documentation close-out (#378).
 
+### Future providers batch
+
+The feature issues in milestone 12 are resolved. The 2026-11-09 tracker snapshot has 31
+completed issues, one retired-service decline (#28), and documentation close-out #382 open.
+This local refresh does not close the issue or milestone.
+
+- [x] Direct Runway, BFL (including Kontext editing and output-megapixel quotes), Stability,
+  Magnific, OpenAI Audio and Deepgram adapters (#25, #33, #36, #38–#40, #1060, #1062).
+- [x] Scoped fal routes for Luma, MiniMax media, Pika, LTX, Grok Imagine, Alibaba, Ideogram,
+  Recraft, Topaz, Rodin, Hunyuan3D and HeyGen (#26–#27, #29–#32, #34–#35, #37, #41–#43).
+  Pika keyframes are implemented; its removed text-to-video route is not offered (#1061).
+- [x] Gemini API text, Azure deployment cards, Bedrock's OpenAI route, Google Cloud Gemini
+  images and Hugging Face text (#44–#48); separate Bedrock Converse and Vertex chat follow-ups
+  have their own scope and evidence. The maintained LLM-layer decision is recorded (#489).
+- [x] Several ComfyUI servers with a default and per-server concurrency, plus hosted Comfy Cloud
+  profiles (#864–#865); partner/API nodes are refused by the Comfy Cloud route.
+- [x] Speech previews reach desktop, browser playback and CLI partial-progress reporting (#1070).
+- [x] Quote uncertainty remains explicit: BFL has verified scoped quotes; HeyGen and Magnific
+  keep unknown-price admission where published data cannot establish a monetary bound (#1062).
+- [x] Retired Sora is excluded, with the decline recorded separately from completed work (#28).
+- [ ] Publish the documentation refresh and reconcile #382's GitHub state. No new release or
+  paid live verification follows from this checklist.
+
 ### M10 sharing and collaboration
 
 M10's feature and exit-criterion checklist (#381 closes the documentation follow-up):
@@ -852,7 +878,8 @@ M10's feature and exit-criterion checklist (#381 closes the documentation follow
 ## 8. First steps (M0 checklist and M1 hand-off)
 
 M0 is complete; the M1 checklist and exit evidence are in §7 above. These were the initial
-workspace steps, not an outstanding list of canvas features.
+workspace steps, not an outstanding list of canvas features. Provider-batch implementation and
+remaining follow-ups are recorded in §7 and the current [roadmap](../ROADMAP.md).
 
 - [x] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
       `.cargo/config.toml`, `.config/nextest.toml`

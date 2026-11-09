@@ -4,6 +4,12 @@ Models are data. Each file in `assets/catalog/` lists models for one provider an
 in the build (`nodecraft_catalog::Catalog::builtin`). Adding a model on an existing provider is
 a data change; run `cargo xtask catalog-check` (also part of `cargo xtask ci`) before committing.
 
+A catalog entry is not proof that its adapter is configured or usable in every host. The
+engine's `provider_setup::make` constructs supported adapters and reports missing keys or setup;
+[provider limits](providers.md) describe native storage, browser transport and mode restrictions.
+The [Future providers close-out](reviews/2026-11-09-future-provider-closeout.md) distinguishes
+resolved feature issues, unknown prices, local continuations and tagged releases.
+
 ```toml
 [[model]]
 id = "fal.flux-dev"              # NodeCraft's id: lowercase letters, digits, . - _ /

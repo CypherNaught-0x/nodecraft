@@ -5,7 +5,8 @@ The table tracks completed issues and remaining work across NodeCraft's mileston
 [GitHub milestones](https://github.com/CypherNaught-0x/nodecraft/milestones) for current work.
 
 **Done** counts issues closed as completed. The denominator includes open and declined issues.
-Counts use the GitHub snapshot taken for these close-outs and include close-outs marked complete below.
+Counts use the [2026-11-09 GitHub snapshot](docs/reviews/2026-11-09-future-provider-closeout.md#tracker-snapshot);
+local work has not changed GitHub issue or milestone state.
 M1 and Future providers each have one declined issue (#135 and #28).
 
 | M | Name | Status | Done |
@@ -13,15 +14,15 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948) and close-out (#374) open | 47/49 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948), live model catalogs (#1075) and close-out (#374) open | 48/51 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 34/36 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ✅ features complete; documentation refreshed locally, #377 remains open | 13/14 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 34/34 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker implemented; retained materials (#569) and close-out (#379) open | 10/16 |
-| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 17/17 |
-| — | **Future providers** — separately tracked adapters | 🟡 partial | 26/29 |
+| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with paid automation consent (#1079) and close-out (#380) open | 9/11 |
+| 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 20/20 |
+| — | **Future providers** — scoped direct adapters and aggregator routes | ✅ feature batch complete; [close-out evidence](docs/reviews/2026-11-09-future-provider-closeout.md) (#382) | 31/33 |
 
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
 **Edit workflow fields…** dialog saves custom field visibility, names and order without
@@ -182,7 +183,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   `.ncraft-plugin` package, installs it disabled and, once granted and enabled, a text-action
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
-  run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+  use wgpu on desktop when available and the CPU reference otherwise (#1058); CLI and browser
+  actions use the CPU.
 - **Black Forest Labs**: desktop Generate image and the CLI use BFL directly (#33, #1060): FLUX.2
   klein 4B and 9B, pro, max and flex text-to-image, quoted by output megapixels from BFL's
   published rates (#1062), and FLUX.1 Kontext pro and max image editing at a published price per
@@ -264,8 +266,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install, as a final decision for this plugin
-  contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
-  whose tracker (#174) is still open. This is not evidence that all paid provider operations or
+  contract (#1071); the follow-up Rust sandbox runtime (#1156) remains open. Provider-operation
+  packages use the scoped broker and explicit grants (#174); this does not make arbitrary module
+  code runnable. This is not evidence that all paid provider operations or
   video/audio actions work in every host.
 - **Media-editor host limits are specific.** Desktop Layer Editor, Mask/Inpaint and Element
   workflows are implemented. Custom-font picking and persistent cross-project Elements libraries
@@ -315,7 +318,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   service account (#742), as do Google TTS's classic and Gemini voices (#21) and the Gemini
   image models (#47); Seedance 2.5 and
   2.0 make video on BytePlus ModelArk (#18); Kling's own task API makes video and images with a
-  Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
+  Kling key (#19). The [Future providers batch](docs/reviews/2026-11-09-future-provider-closeout.md)
+  has resolved its feature issues within documented mode and host limits; retired Sora (#28) is
+  not an available adapter. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672), account voice choices (#670), and streaming speech playback on desktop
   and in the browser (#671, #875, #1070); the CLI requests streaming previews too and reports
@@ -328,15 +333,18 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: ComfyUI workflow field mappings (#948) and the M3 close-out of the
-   README, ROADMAP and docs (#374); do not mistake a tested adapter for a working mode in every host.
-2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
-   including provider plugins (#174).
-   M4's open follow-ups sit outside a milestone: the Generate confirmation should say which nodes
-   reuse a cached result (#811), and a superseded live action should be cancelled and its work
-   bounded (#596). Using the wgpu path (#89) for built-in image actions, and a button for result
-   caching on model cards, have no issue yet.
-   For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
+1. **Finish M3 generation**: ComfyUI workflow field mappings (#948), live OpenRouter/LiteLLM
+   model catalogs (#1075), and the M3 documentation close-out (#374). Local continuations do not
+   change the tracker snapshot until published; keep supported modes and hosts explicit.
+2. **Finish reusable delivery**: the remaining M5 items are its documentation close-out (#376)
+   and the first signed release (#100). The scoped provider broker (#174), cache-reuse feedback
+   (#811), bounded cancellation of superseded actions (#596), desktop GPU actions (#1058), and
+   the model-card caching switch (#1059) are completed issues, not outstanding prerequisites.
+3. **Complete the remaining milestone evidence**: retained-material 3D work and M8 close-out
+   (#569, #379), and paid-automation consent and M9 close-out (#1079, #380).
+   Follow the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones)
+   for changing priorities. The Future providers feature batch is complete; #382's documentation
+   is prepared locally and no issue or milestone has been closed by this refresh.
 
 ## Milestone log
 
@@ -346,6 +354,13 @@ The near-term order follows the remaining open issues, not an already-finished w
   implementation evidence in the [M6 checklist](docs/plan.md#m6-media-editors). GitHub still has
   #377 open: the completed-only count is 13/14, excluding the unrelated pull request in the
   milestone; no remote closure is implied.
+
+- **2026-11-09** — Future providers feature work is complete within the shipped adapters' scoped
+  modes and hosts. The fresh tracker snapshot has 31 completed issues, retired Sora declined,
+  and only documentation close-out #382 open (31/33). BFL editing and megapixel quotes, Pika
+  keyframes, and speech preview delivery on the browser/CLI are documented; HeyGen and Magnific
+  keep unknown-price consent where the rate cannot be established. This local documentation
+  refresh changes no GitHub state and makes no new release or live-provider verification claim.
 
 - **2026-11-06** — a batch inside a technique's own graph fans its technique node out (#1073),
   within the same bounds as a batch on the canvas (1,000 items and 16 batches per chain), every
