@@ -4,6 +4,17 @@ use nodecraft_graph::{Canvas, Project};
 use nodecraft_types::{EdgeId, GenerationId, ProjectId};
 const C: CanvasId = CanvasId::from_bytes([1; 16]);
 const N: NodeId = NodeId::from_bytes([2; 16]);
+
+#[test]
+fn mapping948_file_port_suggestions_follow_targets_and_avoid_existing_names() {
+    let a = suggested_port("2", "image", &mut BTreeSet::new());
+    assert_eq!(a, suggested_port("2", "image", &mut BTreeSet::from(["input_3".into()])));
+    assert_ne!(a, suggested_port("3", "image", &mut BTreeSet::new()));
+    let mut used = BTreeSet::from([a.clone()]);
+    let b = suggested_port("2", "image", &mut used);
+    assert_ne!(a, b);
+    assert!(b.len() <= 128 && b.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_'));
+}
 const INFO: &str = r#"{
  "LoadImage":{"input":{"required":{"image":[["front.png"],{"image_upload":true}]}},"output":["IMAGE"]},
  "FourViewModel":{"input":{"required":{"front":["IMAGE",{}],"back":["IMAGE",{}],"prompt":["STRING",{}],"reference_data":["STRING",{}],"seed":["INT",{"min":0,"max":18446744073709551615}],"steps":["INT",{"min":1,"max":100,"default":20}],"cfg":["FLOAT",{"min":0.0,"max":20.0}]}},"output":["MESH","IMAGE"]},

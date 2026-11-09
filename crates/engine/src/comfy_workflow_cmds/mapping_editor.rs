@@ -102,11 +102,11 @@ fn list(c: &Context<'_>, json: &Value) -> Result<Effect, Error> {
     let node = source(c, p.canvas, p.id)?;
     let old = card::mapping(node)?;
     let (_, exposed) = discover(c, node)?;
+    let mut used_ports: BTreeSet<String> = old.inputs.iter().map(|input| input.port.clone()).collect();
     let fields = exposed
         .inputs
         .into_iter()
-        .enumerate()
-        .map(|(index, input)| {
+        .map(|input| {
             let port = old.inputs.iter().find(|i| i.node == input.node && i.input == input.input);
             let parameter = old.params.iter().find(|i| i.node == input.node && i.input == input.input);
             let (kind, media) = match input.kind {
@@ -120,7 +120,7 @@ fn list(c: &Context<'_>, json: &Value) -> Result<Effect, Error> {
             let name = port
                 .map(|i| i.port.clone())
                 .or_else(|| parameter.map(|i| i.spec.label.clone()))
-                .unwrap_or_else(|| if media.is_some() { format!("input_{index}") } else { bounded(&input.label, 256) });
+                .unwrap_or_else(|| if media.is_some() { suggested_port(&input.node, &input.input, &mut used_ports) } else { bounded(&input.label, 256) });
             Choice {
                 node: input.node,
                 input: input.input,
@@ -139,6 +139,26 @@ fn list(c: &Context<'_>, json: &Value) -> Result<Effect, Error> {
     let result = json!({"binding":binding(c,p.canvas,node)?,"inputs":fields,"outputs":outputs,"input_order":old.inputs.iter().map(|i|json!([i.node,i.input])).chain(old.params.iter().map(|i|json!([i.node,i.input]))).collect::<Vec<_>>(),"output_order":old.outputs.iter().map(|o|&o.node).collect::<Vec<_>>(),"output_names":old.output_names,"ports":node.outputs,"history":node.history.len()});
     crate::commands::validate_json(&result)?;
     Ok(Effect::None { result })
+}
+
+fn suggested_port(node: &str, input: &str, used: &mut BTreeSet<String>) -> String {
+    let mut hash = blake3::Hasher::new_derive_key("NodeCraft ComfyUI file port suggestion v1");
+    hash.update(&(node.len() as u64).to_le_bytes());
+    hash.update(node.as_bytes());
+    hash.update(input.as_bytes());
+    let part = |value: &str| value.chars().take(24).map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '_' }).collect::<String>();
+    let digest = hash.finalize().to_hex();
+    let base = format!("input_{}_{}_{}", part(node), part(input), digest.get(..12).unwrap_or_default());
+    let mut candidate = base.clone();
+    // Existing ports plus discovered choices are bounded. One more candidate than occupied
+    // names guarantees a free identifier, without depending on discovery order.
+    for suffix in 0..=used.len() {
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+        candidate = format!("{base}_{suffix}");
+    }
+    candidate
 }
 fn media_modality(media: nodecraft_comfy::Media) -> Modality {
     match media {

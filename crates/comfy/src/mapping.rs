@@ -319,6 +319,9 @@ fn role_of(name: &str, kind: &ExposedKind, negative: bool) -> InputRole {
         ("lora_name", _) => Lora,
         ("strength_model" | "strength_clip", _) => LoraStrength,
         ("unet_name" | "vae_name" | "clip_name" | "control_net_name" | "model_name", _) => Model,
+        ("system_prompt" | "reference_data", ExposedKind::Text { .. }) => Other,
+        (_, ExposedKind::Text { multiline: true }) if negative => NegativePrompt,
+        (_, ExposedKind::Text { multiline: true }) => Prompt,
         _ => Other,
     }
 }
@@ -467,6 +470,17 @@ mod tests {
 mod templates948_tests {
     use super::*;
     use serde_json::json;
+    #[test]
+    fn templates948_preserves_multiline_prompts_with_custom_names() {
+        let multiline = ExposedKind::Text { multiline: true };
+        for name in ["text_g", "text_l", "wildcard_text", "nested.user_description"] {
+            assert_eq!(role_of(name, &multiline, false), InputRole::Prompt);
+            assert_eq!(role_of(name, &multiline, true), InputRole::NegativePrompt);
+        }
+        for name in ["system_prompt", "reference_data", "nested.system_prompt"] {
+            assert_eq!(role_of(name, &multiline, false), InputRole::Other);
+        }
+    }
     #[test]
     fn templates948_video_audio_and_api_sizes_are_default_fields_but_internal_strings_are_not() {
         let catalog = NodeCatalog::parse(

@@ -195,7 +195,12 @@ fn shape(root: &Value) -> Result<Value, ComfyError> {
 }
 
 pub(crate) fn matching(root: &Value) -> Result<Option<&'static str>, ComfyError> {
-    let data = manifest()?;
+    matching_with_manifest(root, manifest().ok())
+}
+
+fn matching_with_manifest(root: &Value, data: Option<&'static Manifest>) -> Result<Option<&'static str>, ComfyError> {
+    // Curation is optional. A broken bundled manifest must not prevent generic imports.
+    let Some(data) = data else { return Ok(None) };
     // Avoid projecting API exports, and avoid work when no bundled profile has this node count.
     let Some(nodes) = root.get("nodes").and_then(Value::as_array) else { return Ok(None) };
     let candidates =

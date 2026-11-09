@@ -61,6 +61,28 @@ nor proof that a particular installed version has the same descriptor: current d
 and the pinned templates can differ. Remaining mismatches must stay explicit. These fixtures
 cannot clear the live-instance merge blocker.
 
+The retained `documentation_sha256` and `source_fingerprint` values are historical collector
+metadata. The original collector did not record its exact byte-level hashing recipe in this
+repository, so they must not be used as independently reproducible integrity proofs. In
+particular, a `source_fingerprint` is not evidence that NodeCraft read or hashed the ComfyUI
+implementation. This follow-up read no ComfyUI implementation source, GPL or otherwise; the
+projection's existing provenance states that only public interface documentation was used.
+Pinned MIT workflow Git blob IDs, unlike those opaque metadata fields, can be independently
+checked by the opt-in `templates948_original_pinned_git_blobs_match` test below.
+
+To re-check the ten profiles against the original MIT files without committing their creative
+content, obtain a local Git checkout of `Comfy-Org/workflow_templates` containing the pinned
+commit above, then run:
+
+```sh
+NODECRAFT_COMFY_TEMPLATE_SOURCE=/path/to/workflow_templates \
+  cargo test -p nodecraft-comfy templates948_original_pinned_git_blobs_match -- --ignored
+```
+
+The test reads only those template JSON blobs, verifies each blob ID against the pinned commit,
+and compares its structural contract with the bundled mapping. It makes no network request,
+reads no ComfyUI implementation, and submits no generation.
+
 `pinned-selector-facts.json` is a separate, **partial** two-branch projection for the resize
 node in the pinned LTX graph. Current docs name these selectors `SCALE_DIMENSIONS` and
 `SCALE_LONGER_DIMENSION`, while the verified MIT graph saves `scale dimensions` and

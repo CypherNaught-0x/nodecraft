@@ -1,5 +1,32 @@
 use super::*;
 
+#[test]
+fn templates948_unavailable_manifest_keeps_generic_import_available() {
+    let workflow: Value = serde_json::from_str(fixtures()[0].1).unwrap();
+    assert_eq!(matching_with_manifest(&workflow, None).unwrap(), None);
+}
+
+#[test]
+#[cfg(not(target_arch = "wasm32"))]
+#[ignore = "requires a local MIT workflow_templates Git checkout at NODECRAFT_COMFY_TEMPLATE_SOURCE"]
+fn templates948_original_pinned_git_blobs_match() {
+    use std::process::Command;
+    let source = std::env::var_os("NODECRAFT_COMFY_TEMPLATE_SOURCE").expect("set the local workflow_templates checkout");
+    let manifest = manifest().unwrap();
+    for profile in &manifest.profiles {
+        let spec = format!("{}:templates/{}.json", manifest.commit, profile.id);
+        let blob = Command::new("git").arg("-C").arg(&source).args(["rev-parse", &spec]).output().unwrap();
+        assert!(blob.status.success(), "missing pinned template {}", profile.id);
+        assert_eq!(String::from_utf8(blob.stdout).unwrap().trim(), profile.source_blob, "{} blob differs", profile.id);
+        let bytes = Command::new("git").arg("-C").arg(&source).args(["cat-file", "blob", &profile.source_blob]).output().unwrap();
+        assert!(bytes.status.success());
+        assert!(bytes.stdout.len() <= 8 * 1024 * 1024, "template exceeds the verification limit");
+        let root: Value = serde_json::from_slice(&bytes.stdout).unwrap();
+        assert_eq!(shape(&root).unwrap(), profile.shape, "{} contract differs", profile.id);
+        assert_eq!(matching(&root).unwrap(), Some(profile.id.as_str()), "{} no longer matches", profile.id);
+    }
+}
+
 fn catalog() -> crate::NodeCatalog {
     let mut catalog = crate::NodeCatalog::parse(include_bytes!("fixtures/catalog-facts.json")).unwrap().0;
     catalog.extend(crate::NodeCatalog::parse(include_bytes!("fixtures/mock-core-nodes.json")).unwrap().0);
