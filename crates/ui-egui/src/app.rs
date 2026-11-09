@@ -1863,8 +1863,11 @@ impl NodeCraftApp {
         let home = if ui.input(|i| i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         // Menus draw later in the frame. Leave their wheel input untouched and keep their world
         // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
-        let scroll_navigation =
-            if self.palette.is_some() || self.turn_into.is_some() { canvas::ScrollNavigation::Disabled } else { canvas::ScrollNavigation::Enabled };
+        let scroll_navigation = if self.palette.is_some() || self.turn_into.is_some() || self.notice_owns_scroll(ui) {
+            canvas::ScrollNavigation::Disabled
+        } else {
+            canvas::ScrollNavigation::Enabled
+        };
         if !canvas_blocks {
             canvas::navigate(ui, &background, &mut self.view, home, &self.canvas_prefs, scroll_navigation, self.marquee.is_none());
         }

@@ -117,6 +117,15 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
+    /// Notices draw after the canvas. Reserve their wheel input before canvas navigation
+    /// runs, so scrolling their details does not first move the graph underneath them.
+    pub(super) fn notice_owns_scroll(&self, ui: &egui::Ui) -> bool {
+        !self.notices.is_empty()
+            && !self.drop_pending()
+            && ui
+                .input(|input| input.pointer.hover_pos())
+                .is_some_and(|pointer| egui::AreaState::load(ui.ctx(), ui.id().with("notice")).is_some_and(|area| area.rect().contains(pointer)))
+    }
     /// Run changed (Command+Enter) or Run workflow (#965), from the shortcut or the palette:
     /// quotes the run and shows its confirmation, or says there is nothing to run.
     /// Whether it ran: false when it was refused (and the notice says why).

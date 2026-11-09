@@ -32,6 +32,7 @@ fn long_notices1110_keep_details_and_controls_inside_small_windows() {
             assert!(label.accesskit_node().is_live_atomic());
             // Scroll within the details. Reading a long error neither discards it nor runs its action.
             let at = label.rect().min + egui::vec2(5.0, 5.0);
+            let before = h.state().view;
             h.hover_at(at);
             h.event(egui::Event::MouseWheel {
                 unit: egui::MouseWheelUnit::Point,
@@ -40,6 +41,7 @@ fn long_notices1110_keep_details_and_controls_inside_small_windows() {
                 modifiers: egui::Modifiers::NONE,
             });
             h.run_steps(5);
+            assert_eq!(h.state().view, before, "scrolling notice details must not move the canvas");
             assert_eq!(h.state().notice(), Some(text.as_str()));
             if let Some(folder) = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE") {
                 let folder = std::path::PathBuf::from(folder);
