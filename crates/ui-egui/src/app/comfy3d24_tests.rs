@@ -57,19 +57,36 @@ fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
     let theme = app.theme;
     let mut h = Harness::builder().with_size(Vec2::new(1180., 850.)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     crate::theme::apply(&h.ctx, theme);
-    h.run();
+    // Mesh decoding repaints while its worker is pending; global UI idleness is not readiness.
+    h.step();
     h
 }
 fn wait(h: &mut Harness<'static, NodeCraftApp>, label: &str) -> bool {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while std::time::Instant::now() < deadline {
-        h.run();
+        h.step();
         if h.query_by_label(label).is_some() {
             return true;
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     false
+}
+
+#[test]
+fn comfy3d24_mesh_readiness_does_not_require_global_repaint_idleness() {
+    let app = app("comfyui.hunyuan3d-2.1", "model/gltf+json", GLTF, crate::theme::ThemeKind::Dark);
+    let mut h = Harness::builder().with_size(Vec2::new(1180., 850.)).build_ui_state(
+        |ui, app: &mut NodeCraftApp| {
+            app.show(ui);
+            // Deterministically reproduce the ongoing repaint that exhausted Harness::run
+            // on Windows before the asynchronous mesh could reach the readiness assertion.
+            ui.ctx().request_repaint();
+        },
+        app,
+    );
+    assert!(wait(&mut h, "3D model, 1 triangles, shaded view"));
+    assert!(h.state().meshes.bytes() > 0, "readiness still requires the real decode");
 }
 #[test]
 fn comfy3d24_each_local_generation_card_shows_real_mesh_and_capture_pointer_adds_one_wired_photo() {
