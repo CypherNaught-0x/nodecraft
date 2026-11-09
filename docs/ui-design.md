@@ -82,6 +82,19 @@ and sideways only, never into the card above it, `theme::badge_hit`), at any zoo
 the canvas: refusing clicks below a zoom would break editing at overview zoom, so that part of
 #1114 is left open.
 
+The remaining scope is the controls inside a card: toggles and choices, slider tracks and their
+exact-value entries, text previews/editors, model and asset actions, and the media controls. They
+share the transformed card layer (`card.rs`); their row reservations come from `card/layout.rs`
+and must not depend on the camera. Increasing `interact_size.y` alone cannot enlarge explicitly
+sized text/slider rows, and expanding adjacent targets separately can make the slider and its
+entry compete or cross the parameter viewport and ports. Disabling the entire body below a zoom
+would also remove the scrolling that `scroll413_a_body_near_its_limit_takes_the_rest_of_its_room_and_the_canvas_the_remainder`
+checks at 60 %. The existing slider/entry and text-edit tests explicitly retain editing at 75 %.
+A complete follow-up therefore needs either disjoint screen-space hit cells for each generated
+control (clipped to the body, with ports retaining priority), or a deliberate pointer-only
+"Zoom in to edit" mode that preserves scrolling, existing drafts, keyboard editing and gestures
+already in progress. Neither behavior is established by the badge/noodle fixes.
+
 A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
 disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
 as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own
