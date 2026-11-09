@@ -8,7 +8,7 @@ use std::process::Command;
 
 /// The test targets that run in a browser, and how many tests each holds: a target whose tests
 /// stopped compiling in (a `cfg` that no longer matches) would otherwise pass with none run.
-const TESTS: &[(&str, &str, usize)] = &[("nodecraft-engine", "browser_plugins_wasm", 2)];
+const TESTS: &[(&str, &[&str], usize)] = &[("nodecraft-engine", &["--test", "browser_plugins_wasm"], 2), ("nodecraft-mesh-preview", &["--lib"], 3)];
 
 pub fn run(root: &Path) -> Result<(), String> {
     let wanted = locked(root, "wasm-bindgen")?;
@@ -20,11 +20,12 @@ pub fn run(root: &Path) -> Result<(), String> {
     if found != wanted {
         return Err(format!("{} is version {found:?}, but Cargo.lock has wasm-bindgen {wanted}; {install}", runner.display()));
     }
-    for (package, test, count) in TESTS {
+    for (package, target, count) in TESTS {
         let mut c = crate::cargo(root);
-        c.args(["test", "-p", package, "--target", "wasm32-unknown-unknown", "--test", test]);
+        c.args(["test", "-p", package, "--target", "wasm32-unknown-unknown"]);
+        c.args(*target);
         c.env("CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUNNER", &runner);
-        let what = format!("cargo test -p {package} --target wasm32-unknown-unknown --test {test} (in a headless browser)");
+        let what = format!("cargo test -p {package} --target wasm32-unknown-unknown {} (in a headless browser)", target.join(" "));
         eprintln!("$ {what}");
         let output = c.output().map_err(|e| format!("{what}: failed to spawn: {e}"))?;
         let stdout = String::from_utf8_lossy(&output.stdout);

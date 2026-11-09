@@ -214,7 +214,11 @@ impl AssetContext {
         cache.insert(identity.hash, CacheRecord { identity: Arc::downgrade(identity), data });
         Ok(())
     }
-    /// Whether both are the one workspace (so adopting between them copies nothing).
+    /// Whether two handles belong to the same ownership and verification context. No reads,
+    /// inventory work or authority transfer occur; preview services use this to discard stale jobs.
+    pub fn same_instance(&self, other: &Self) -> bool {
+        self.same(other)
+    }
     pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }

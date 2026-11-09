@@ -21,6 +21,7 @@ every CI run, and fails on an unregistered crate.
 | L0 | `types` | ids, `Modality`, `PortType`, `Value`, hashes, money, the error base (pure data, serde) | — |
 | L0 standalone | `media` | sniffing, decode/encode, thumbnails, metadata; image first, video/audio probes behind features | none allowed |
 | L0 standalone | `plugin` | the plugin package and wire contract: IDs, canonical JSON, manifest, inventory digest, signatures, frames and messages, locks, preservation ([spec](plugin-wire.md)) | none allowed |
+| L1 | `mesh-preview` | bounded CPU-packed mesh bytes and trusted browser preview-worker protocol | media |
 | L1 | `comfy` | ComfyUI client: servers, `/object_info`, workflow import, uploads, prompt queue, WebSocket progress | types |
 | L1 | `plugin-store` | verifying `.ncraft-plugin` data packages and the local package store: install disabled, enable all-or-nothing, update, rollback, uninstall ([decision](decisions/2026-10-19-plugin-data-package-store.md)) | plugin, types |
 | L1 | `graph` | the document: Project, Canvas, Node, Edge, Field, Comment, Tag, Element, Generation, TechniqueDef; `Changeset` apply/invert/validate | types, media |
@@ -30,7 +31,7 @@ every CI run, and fails on an unregistered crate.
 | L2 | `sync` | live sharing: the yrs mirror of a project, sync frames, relay rooms ([decision](decisions/2026-10-22-crdt-sync.md)) | graph, types |
 | L3 | `exec` | planner (routers, batches, techniques → job DAG), run executor, scheduler, queue, cancellation, staleness, quotes, budgets | nodes, catalog, actions |
 | L3 | `providers` | `Provider` trait and adapters, one Cargo feature each | catalog, comfy |
-| L3 | `gpu` | wgpu image actions (a tested library the app doesn't call yet), custom WGSL shader actions, 3D preview renderer and capture | actions |
+| L3 | `gpu` | wgpu image actions (a tested library the app doesn't call yet), custom WGSL shader actions, 3D preview renderer and capture | actions, mesh-preview |
 | L3 | `format` | `.ncraft` files, content-addressed asset store, atomic saves, migrations | graph |
 | L4 | `engine` | `Session`, command registry, undo stack, event bus, settings, library, skills; `build_info` | exec, providers, gpu, format |
 | L5 | `agent` | in-canvas agent: sans-IO LLM tool loop over engine commands, assist and auto modes | engine, providers, types |

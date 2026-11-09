@@ -18,7 +18,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
 | 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker (#1011, #1019, #1013) | 13/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
 | 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 17/17 |
 | — | **Future providers** — separately tracked adapters | 🟡 partial | 26/29 |
@@ -96,10 +96,15 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL, ASCII PLY, static USDZ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
   writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
-  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
+  or bounded ASCII PLY with RGBA channel data (#1011), or a self-contained static USDA/USDZ
+  triangle profile with linear RGBA and bounded read/reopen support (#1019; parts of #569;
+  see `docs/3d-formats.md`). General USD scenes and retained materials remain separate work.
+  Browser 3D previews decode and prepare models in a dedicated Rust/Wasm worker within
+  the existing 16 MiB per-original storage limit and separate geometry bounds (#1013).
+  Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced

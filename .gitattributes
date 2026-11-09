@@ -3,5 +3,9 @@ crates/testkit/tests/golden/*.json text eol=lf
 crates/plugin/fixtures/** -text
 # Example plugin packages are packed in tests with frozen digests (#175): never convert line endings.
 examples/plugins/** -text
+# PLY's golden layout is byte-exact; tests create CRLF/bare-CR variants explicitly.
+crates/media/src/mesh/fixtures/original-rgba.ply -text
+# Original USDA and its independent USDZ package have frozen byte digests (#1019).
+crates/media/src/mesh/fixtures/original-indexed.usda -text
 # AWS SigV4 test vectors are signed byte for byte (#1163): never convert line endings.
 crates/providers/src/aws/fixtures/** -text

@@ -54,7 +54,7 @@ mod native {
     use crate::action_exec::timeline::native::{message, service, wait};
     use crate::action_exec::video_frames::native::{push, renderer};
     use crate::action_exec::{capture_state, mesh_capture};
-    use nodecraft_gpu::mesh::capture::{MeshCapture, TIMEOUT};
+    use nodecraft_gpu::mesh::capture::{MeshCapture, TIMEOUT, validate_view};
     use nodecraft_gpu::mesh::{MeshData, Orbit, Style, View};
     use nodecraft_media::video::RenderSpec;
     use nodecraft_media::{MeshLimits, decode_mesh};
@@ -82,10 +82,18 @@ mod native {
                 let started = Instant::now();
                 let stopping = || closing() || started.elapsed() >= TIMEOUT;
                 let result = (|| {
-                    let service = service(tools, &stopping)?;
                     let bytes = self.model_bytes(inputs.first())?;
                     let mesh = decode_mesh(&bytes, &MeshLimits::default()).map_err(|e| format!("the input model can't be read: {e}"))?;
                     let bounds = mesh.bounds().ok_or("the input model has nothing to draw")?;
+                    let center = bounds.center();
+                    let radius = bounds.radius();
+                    // The bounded sequence is checked before opening tools, allocating edge
+                    // buffers or requesting a GPU; all command surfaces use this executor.
+                    frames(sequence, &stopping, |_, yaw| {
+                        let orbit = Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 }.turned(yaw, pitch.to_radians() as f32).zoomed(zoom as f32);
+                        validate_view(&View { orbit, style, center, radius, background, line }, sequence.size()).map_err(mesh_capture::message)
+                    })?;
+                    let service = service(tools, &stopping)?;
                     let edges = if style == Style::Wireframe { mesh.edges(mesh_capture::MAX_EDGES) } else { None };
                     if stopping() {
                         return Err("the 3D capture was cancelled".into());
@@ -113,7 +121,7 @@ mod native {
                     let (mut sender, mut render) = renderer(&service, spec, &stopping)?;
                     frames(sequence, &stopping, |index, yaw| {
                         let orbit = Orbit { yaw: 0.0, pitch: 0.0, zoom: 1.0 }.turned(yaw, pitch.to_radians() as f32).zoomed(zoom as f32);
-                        let view = View { orbit, style, center: bounds.center(), radius: bounds.radius(), background, line };
+                        let view = View { orbit, style, center, radius, background, line };
                         let pixels = capture.render(&gpu, &target, &view, TIMEOUT.saturating_sub(started.elapsed())).map_err(mesh_capture::message)?;
                         push(&mut sender, &mut render, index, pixels, &stopping)
                     })?;

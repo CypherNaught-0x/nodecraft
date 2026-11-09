@@ -8,7 +8,7 @@
 # Usage: packaging/web/package.sh [--skip-build] [--serve]
 #
 # Needs: the wasm32-unknown-unknown target, trunk and wasm-bindgen-cli at the version in
-# Cargo.lock (trunk runs offline, so it never downloads tools), zip. Optional: wasm-opt
+# Cargo.lock (trunk runs offline, so it never downloads tools), zip and openssl (icon SRI). Optional: wasm-opt
 # (binaryen) shrinks the .wasm further; without it the script warns and ships it as built.
 # --serve instead runs `trunk serve` on http://127.0.0.1:8080: a debug-profile development
 # build (no wasm-opt, no zip) that rebuilds on change; --skip-build does not apply to it.
@@ -58,23 +58,19 @@ if [ ! -f "$SITE/index.html" ]; then
   exit 1
 fi
 
-shopt -s nullglob
-wasm=("$SITE"/*.wasm)
-shopt -u nullglob
-if [ "${#wasm[@]}" -ne 1 ]; then
-  echo "error: expected one .wasm in $SITE, found ${#wasm[@]}" >&2
-  exit 1
-fi
+. "$ROOT/packaging/web/inventory.sh"
 if [ "$SKIP_BUILD" = 1 ]; then
   echo "wasm-opt: skipped (--skip-build reuses the already optimised site)"
 elif command -v wasm-opt >/dev/null; then
-  before="$(wc -c <"${wasm[0]}" | tr -d ' ')"
+  for module in "${wasm[@]}"; do
+  before="$(wc -c <"$module" | tr -d ' ')"
   # The features rustc enables by default for wasm32, so wasm-opt accepts the module.
   wasm-opt -Oz --enable-bulk-memory --enable-mutable-globals --enable-nontrapping-float-to-int \
     --enable-sign-ext --enable-reference-types --enable-multivalue \
-    -o "${wasm[0]}.opt" "${wasm[0]}"
-  mv "${wasm[0]}.opt" "${wasm[0]}"
-  echo "wasm-opt: $before -> $(wc -c <"${wasm[0]}" | tr -d ' ') bytes"
+    -o "$module.opt" "$module"
+  mv "$module.opt" "$module"
+  echo "wasm-opt: ${module##*/}: $before -> $(wc -c <"$module" | tr -d ' ') bytes"
+  done
 else
   warn "wasm-opt (binaryen) not found: the .wasm ships unoptimised by it"
 fi
@@ -96,6 +92,6 @@ done < <(find "$SITE" -type f -print0)
 if [ "$too_big" = 1 ]; then exit 1; fi
 
 ZIP="$DIST/$BASENAME.zip"
-(cd "$(dirname "$SITE")" && zip -q -r -X "$ZIP" "$BASENAME")
+(cd "$(dirname "$SITE")" && zip -q -r -X -D "$ZIP" "$BASENAME")
 echo "==> $ZIP ($(wc -c <"$ZIP" | tr -d ' ') bytes)"
 find "$SITE" -type f -exec wc -c {} + | sort -n

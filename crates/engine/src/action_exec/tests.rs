@@ -404,7 +404,19 @@ fn convert_3d_writes_each_format_and_chains_from_staged_results() {
     assert_eq!((stl_asset.mime.essence(), stl_asset.meta.vertices, stl_asset.meta.triangles), ("model/stl", Some(6), Some(2)));
     let returned = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), std::slice::from_ref(&stl)).unwrap();
     let Value::Media(returned_asset) = &returned else { panic!("a model") };
+    let ply = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("ply"), std::slice::from_ref(&model)).unwrap();
+    let Value::Media(ply_asset) = &ply else { panic!("a PLY model") };
+    assert_eq!((ply_asset.mime.essence(), ply_asset.meta.vertices, ply_asset.meta.triangles), ("model/ply", Some(4), Some(2)));
+    let ply_glb = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), std::slice::from_ref(&ply)).unwrap();
+    let ply_obj = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("obj"), std::slice::from_ref(&ply)).unwrap();
     let staged = actions.take_staged();
+    let ply_mesh = nodecraft_media::decode_mesh(staged.get(&ply_asset.hash).unwrap(), &Default::default()).unwrap();
+    for chained in [ply_glb, ply_obj] {
+        let Value::Media(asset) = chained else { panic!("chained model") };
+        let result = nodecraft_media::decode_mesh(staged.get(&asset.hash).unwrap(), &Default::default()).unwrap();
+        assert_eq!(result.positions, ply_mesh.positions);
+        assert_eq!(result.indices, ply_mesh.indices);
+    }
     let written = nodecraft_media::decode_mesh(staged.get(&obj_asset.hash).unwrap(), &Default::default()).unwrap();
     assert_eq!(written.triangle_count(), 2);
     let stl_geometry = nodecraft_media::decode_mesh(staged.get(&stl_asset.hash).unwrap(), &Default::default()).unwrap();
@@ -412,12 +424,25 @@ fn convert_3d_writes_each_format_and_chains_from_staged_results() {
     let returned_geometry = nodecraft_media::decode_mesh(staged.get(&returned_asset.hash).unwrap(), &Default::default()).unwrap();
     assert_eq!(returned_geometry.positions, stl_geometry.positions);
     assert_eq!(actions.assets.get(&hash).unwrap(), OBJ, "STL conversion retains the original source");
-    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("ply"), std::slice::from_ref(&model)).unwrap_err().contains("ply"));
+    let usdz = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("usdz"), std::slice::from_ref(&model)).unwrap();
+    let Value::Media(usdz_asset) = &usdz else { panic!("a USDZ model") };
+    assert_eq!((usdz_asset.mime.essence(), usdz_asset.meta.vertices, usdz_asset.meta.triangles), ("model/vnd.usdz+zip", Some(4), Some(2)));
+    let returned = actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), std::slice::from_ref(&usdz)).unwrap();
+    let Value::Media(returned_asset) = returned else { panic!("a chained model") };
+    let staged = actions.take_staged();
+    let usdz_geometry = nodecraft_media::decode_mesh(staged.get(&usdz_asset.hash).unwrap(), &Default::default()).unwrap();
+    assert_eq!((usdz_geometry.vertex_count(), usdz_geometry.triangle_count()), (4, 2));
+    assert_eq!(nodecraft_media::decode_mesh(staged.get(&returned_asset.hash).unwrap(), &Default::default()).unwrap(), usdz_geometry);
+    assert_eq!(actions.assets.get(&hash).unwrap(), OBJ, "USDZ conversion retains the original source");
+    assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("fbx"), std::slice::from_ref(&model)).unwrap_err().contains("fbx"));
     assert!(actions.execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[Value::Text("x".into())]).unwrap_err().contains("connect a 3D model"));
     let mut broken = AssetStore::default();
     let junk = Value::Media(AssetRef { hash: broken.insert(b"v 0 0\n").unwrap(), mime: "model/obj".parse().unwrap(), meta: MediaMeta::default() });
     assert!(LocalActions::new(broken).execute(nodecraft_nodes::mesh::CONVERT, &format("glb"), &[junk]).unwrap_err().contains("can't be read"));
 }
+
+#[path = "tests_usdz1019.rs"]
+mod usdz1019;
 
 /// A capture's result, or `None` on a machine with no GPU.
 fn capture(actions: &LocalActions, action: &str, params: &ParamValues, model: &Value) -> Option<AssetRef> {
