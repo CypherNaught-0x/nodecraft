@@ -249,10 +249,7 @@ impl NodeCraftApp {
         let mut open = true;
         let (mut apply, mut reload, mut read, mut cancel) = (false, false, false, false);
         // A tool the person works in beside the canvas: a floating panel (#1116). Escape closes
-        // it; the shell takes that key before the canvas reads it (`tool_escape`).
-        if std::mem::take(&mut self.tool_escape) == Some(super::ToolEscape::Mapping) {
-            return;
-        }
+        // it through the same close lifecycle as its header button.
         crate::floating::panel(ctx, "Workflow fields", mapping_panel_id(editor.canvas, editor.node), crate::floating::Home::CenterTop, t)
             .open(&mut open)
             .default_width(t.dialog_width * 1.5)

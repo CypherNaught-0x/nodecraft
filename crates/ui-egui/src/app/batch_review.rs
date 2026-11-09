@@ -255,10 +255,6 @@ impl NodeCraftApp {
     /// The batch items review window, while open.
     pub(super) fn batch_review_window(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(mut open_review) = self.batch_review.take() else { return };
-        // Escape closes it; the shell takes the key before the canvas reads it (`tool_escape`).
-        if std::mem::take(&mut self.tool_escape) == Some(super::ToolEscape::Batch) {
-            return;
-        }
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         let Some(node) = canvas.nodes().get(&open_review.node) else { return };
         let title = crate::card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor()));

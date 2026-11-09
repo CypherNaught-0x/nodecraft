@@ -943,10 +943,16 @@ its shape, so the panel fits (`floating::body_room`).
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
 Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
-states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
-The dialogs migrated in #1116 consume their Escape (each test checks the canvas selection
-survives it); the remaining top-bar panels still close only by their button, since several canvas
-handlers read Escape without consuming it.
+states, tokens) and before-and-after screenshots remain tracked in the audit below.
+
+**Escape closes the frontmost eligible floating tool** ([decision](decisions/2026-11-09-frontmost-tool-escape.md)).
+The shell consumes the key before canvas or sheet handlers, after all earlier keyboard owners
+and focused notices have had priority. Only an open, recently drawn tool in the explicit
+inventory participates; pinned selection panels, questions, model picker and Tag keep their own
+lifecycles. The shared panel clears the same `open` flag as its close button, preserving caller
+cleanup without a document change, selection change, undo entry or paid action. The
+`tool_escape959_tests` exercise tool closure, frontmost ordering and priority alongside each
+surface's own tests.
 
 The [9 November 2026 audit](reviews/2026-11-09-ui-ux-audit.md) extends this index to the native
 Agent sidebar and every direct modal, records new narrow-window and AccessKit findings, and

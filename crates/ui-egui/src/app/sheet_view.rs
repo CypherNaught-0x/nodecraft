@@ -402,10 +402,9 @@ impl NodeCraftApp {
     /// A frame on a sheet: the table and the floating controls, without the node graph's input.
     pub(super) fn sheet_frame(&mut self, ui: &mut egui::Ui, viewport: Rect, blocked: bool) {
         let t = self.theme.tokens();
-        // A focused notice's Escape, before the table's editors and popups could read it (#1110).
-        if !blocked && !self.text_focused && !canvas::text_input_focused(ui.ctx()) && !egui::Popup::is_any_open(ui.ctx()) {
-            self.take_notice_escape(ui.ctx());
-        }
+        // Floating tools arbitrate before table handlers, with the same owner and notice
+        // priority as the ordinary canvas. Row settings retain their selection lifecycle.
+        self.close_tool_on_escape(ui.ctx(), blocked);
         if !blocked {
             self.sheet_keys(ui);
         }
