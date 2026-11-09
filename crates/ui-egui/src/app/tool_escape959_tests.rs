@@ -2,10 +2,14 @@
 //! every earlier owner declines. These exercise actual application frames and key events.
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 type Toggle = fn(&mut NodeCraftApp, bool);
-const SIMPLE_TOOLS: &[(&str, Toggle, fn(&NodeCraftApp) -> bool)] = &[
+type IsOpen = fn(&NodeCraftApp) -> bool;
+const SIMPLE_TOOLS: &[(&str, Toggle, IsOpen)] = &[
     ("Sheets", |app, open| app.sheet.open = open, |app| app.sheet.open),
     ("Techniques", |app, open| app.library.open = open, |app| app.library.open),
     ("Elements", |app, open| app.element_library.open = open, |app| app.element_library.open),
@@ -110,12 +114,13 @@ fn other_escape_owners_keep_a_generic_tool_open() {
             "search" => h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F),
             "discussions" => h.state_mut().comments.open = true,
             "popup" => {
-                super::topbar_tests::reveal(&mut h, "API keys");
                 h.get_by_role_and_label(Role::Button, "More").click();
             }
             _ => {
                 let from = Pos2::new(150.0, 600.0);
                 h.hover_at(from);
+                h.run();
+                h.event(egui::Event::ModifiersChanged(egui::Modifiers::SHIFT));
                 h.event(egui::Event::PointerButton { pos: from, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::SHIFT });
                 h.run();
                 h.hover_at(from + Vec2::new(60.0, 40.0));
@@ -131,4 +136,89 @@ fn other_escape_owners_keep_a_generic_tool_open() {
         h.run();
         assert!(h.state().keys.open, "{owner} owns the press before API keys");
     }
+}
+
+#[test]
+fn a_question_cancels_before_a_tool_can_close() {
+    let mut h = super::tests::harness();
+    h.state_mut().keys.open = true;
+    h.run();
+    h.state_mut().fields.rename = Some((nodecraft_types::FieldId::from_bytes([81; 16]), "A public example".into()));
+    h.run();
+    h.get_by_role_and_label(Role::Dialog, "Rename field");
+    let document = h.state().session.document().clone();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().fields.rename.is_none(), "the question consumes Escape to cancel");
+    assert!(h.state().keys.open, "the tool behind the question stays open");
+    assert_eq!(h.state().session.document(), &document);
+}
+
+#[test]
+fn escape_closing_api_keys_forgets_typed_input_and_its_undo_history() {
+    let mut h = super::tests::harness();
+    h.state_mut().keys.open = true;
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").scroll_to_me();
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").focus();
+    h.run();
+    h.event(egui::Event::Text("public-test-key-never-save".into()));
+    h.run();
+    assert!(!h.get_by_role_and_label(Role::Button, "Save").accesskit_node().is_disabled());
+    leave_text(&mut h);
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().keys.open);
+    h.state_mut().keys.open = true;
+    h.run();
+    h.get_by_role_and_label(Role::PasswordInput, "Key").scroll_to_me();
+    h.run();
+    assert!(h.get_by_role_and_label(Role::Button, "Save").accesskit_node().is_disabled(), "the close-button cleanup forgot the typed key");
+    h.get_by_role_and_label(Role::PasswordInput, "Key").focus();
+    h.run();
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
+    h.run();
+    assert!(h.get_by_role_and_label(Role::Button, "Save").accesskit_node().is_disabled(), "text undo cannot recover the discarded key");
+}
+
+#[test]
+fn tools_close_on_sheet_canvases_without_changing_the_sheet() {
+    let mut h = super::tests::harness();
+    let id = CanvasId::from_bytes([82; 16]);
+    h.state_mut().session.dispatch("sheet.create", &json!({"canvas":id,"title":"Public example sheet"})).unwrap();
+    h.state_mut().open_canvas(id);
+    h.state_mut().keys.open = true;
+    h.run();
+    leave_text(&mut h);
+    assert!(h.state().on_sheet());
+    let document = h.state().session.document().clone();
+    let revision = h.state().session.revision();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(!h.state().keys.open);
+    assert!(h.state().on_sheet());
+    assert_eq!(h.state().session.document(), &document);
+    assert_eq!(h.state().session.revision(), revision);
+}
+
+#[test]
+fn shared_close_requests_expire_and_never_execute_the_tool_body() {
+    let ctx = egui::Context::default();
+    let id = egui::Id::new("test.closable.tool");
+    let t = crate::theme::ThemeKind::Dark.tokens();
+    let mut open = true;
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        crate::floating::request_close(ctx, id);
+        crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t)
+            .open(&mut open)
+            .show(ctx, |_| panic!("a close request cannot run a tool action"));
+    });
+    assert!(!open, "the caller receives its ordinary closed flag");
+    let _ = ctx.run(egui::RawInput::default(), |ctx| crate::floating::request_close(ctx, id));
+    open = true;
+    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+        crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |_| ());
+    });
+    assert!(open, "an unrendered close request cannot close a later reopening");
 }

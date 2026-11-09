@@ -3122,6 +3122,7 @@ impl NodeCraftApp {
         }
         // Only the tool inventory participates: pinned selection panels, operation modals,
         // Tag, the model picker and unregistered host windows keep their own lifecycles.
+        let canvas_tools = !self.on_sheet();
         let mut open = vec![
             (self.sheet.open, egui::Id::new("nodecraft.sheets")),
             (self.library.open, egui::Id::new("nodecraft.techniques")),
@@ -3131,17 +3132,17 @@ impl NodeCraftApp {
             (self.budgets.open, egui::Id::new("nodecraft.budgets")),
             (self.keys.open, egui::Id::new("nodecraft.keys")),
             (self.plugin_panel.open, egui::Id::new("nodecraft.plugins")),
-            (self.automation.open, egui::Id::new("nodecraft.automation")),
-            (self.reader.is_some(), egui::Id::new("pdf_reader")),
-            (self.viewer.is_some(), egui::Id::new("image_viewer")),
-            (self.shader_editor.is_some(), egui::Id::new("nodecraft.shader_editor")),
-            (self.batch_review.is_some(), egui::Id::new(batch_review::BATCH_REVIEW_ID)),
+            (canvas_tools && self.automation.open, egui::Id::new("nodecraft.automation")),
+            (canvas_tools && self.reader.is_some(), egui::Id::new("pdf_reader")),
+            (canvas_tools && self.viewer.is_some(), egui::Id::new("image_viewer")),
+            (canvas_tools && self.shader_editor.is_some(), egui::Id::new("nodecraft.shader_editor")),
+            (canvas_tools && self.batch_review.is_some(), egui::Id::new(batch_review::BATCH_REVIEW_ID)),
         ];
         #[cfg(not(target_arch = "wasm32"))]
         open.extend([(self.comfy_server.open, egui::Id::new("nodecraft.comfy_server")), (self.ownership.is_some(), egui::Id::new("nodecraft.ownership"))]);
         #[cfg(any(test, target_arch = "wasm32"))]
         open.push((self.browser_providers.as_ref().is_some_and(|panel| panel.open), egui::Id::new("nodecraft.browser_providers")));
-        if let Some(editor) = &self.comfy_mapping {
+        if canvas_tools && let Some(editor) = &self.comfy_mapping {
             open.push((true, editor.panel_id()));
         }
         let open: Vec<egui::Id> = open.into_iter().filter(|(open, id)| *open && crate::floating::recently_shown(ctx, *id)).map(|(_, id)| id).collect();
