@@ -61,7 +61,7 @@ The local inventory packet now contains 153 actual matched PNG file pairs: 108 e
 fixture pairs, 23 native gallery pairs and 22 additional fixture pairs. These are file pairs,
 not 153 unique surfaces. Of those, 152 share a viewport; the legacy Tag-filter Undo comparison
 is explicitly a semantic state pair with different sizes, with separate same-size #958 footer
-evidence retained. The fresh baseline uses exact `caecbb32` product source and a test-only
+evidence retained. The fresh baseline fixture captures use exact `caecbb32` product source and a test-only
 capture patch. Browser question fixtures apply the selected theme to both app tokens and egui;
 earlier mixed-theme Light diagnostics are preserved as invalid evidence, not counted as the
 final Light-theme pictures. Source, patch, image hashes and actual fixture results remain in
