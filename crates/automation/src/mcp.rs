@@ -14,6 +14,8 @@
 //! [`LIVE_ONLY`] agent commands act on the running window's view and run only through it.
 //! An unclassified command stays hidden, and a test fails until it is classified.
 
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;
 mod overview;
 
 use std::collections::BTreeMap;
@@ -63,10 +65,27 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.tag_filter_set",
     "canvas.tag_filter_next",
     "canvas.tag_filter_previous",
+    // The window's interface size (#1107): session-local view state, remembered per installation.
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
 ];
 const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
-const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled"];
+const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled", "usage.unresolved"];
+const NEEDS_LIVE_RUNS: &str =
+    "needs the running app's runs: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` runs no jobs";
+/// The run host's job commands (#167), which only a host that runs jobs can answer.
+const RUN_JOB_COMMANDS: &[&str] = &["run.jobs", "run.cancel"];
+
+/// `error`, made actionable when it says the host has no run jobs to show or cancel.
+fn no_runs(id: &str, error: Error) -> Error {
+    if RUN_JOB_COMMANDS.contains(&id) && error.kind == ErrorKind::Unsupported && error.message == "this host runs no jobs" {
+        return Error::new(ErrorKind::Unsupported, format!("{id} {NEEDS_LIVE_RUNS}"));
+    }
+    error
+}
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
@@ -75,6 +94,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "file.save",
     "file.save_as",
     "file.cancel",
+    // Read-only, names no path: how a background save or open the agent asked for went (#367).
+    "file.status",
     "node.add",
     "node.create",
     "node.create_connected",
@@ -104,6 +125,9 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "sheet.row_move",
     "sheet.reference_wire",
     "sheet.reference_unwire",
+    "sheet.expand",
+    "sheet.place",
+    "sheet.rename",
     "technique.check",
     "technique.publish",
     "technique.list",
@@ -115,12 +139,27 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.form",
     "app.input_set",
     "library.list",
+    // The Library's browsers only read the open project.
+    "library.assets",
+    "library.history",
+    "library.styles",
+    // Places library entries as source cards: one ordinary undoable edit.
+    "library.attach",
+    // My library (#96): listing reads it, including the titles of the person's other projects
+    // its entries came from; placing copies its files into this project as one undoable edit.
+    // Saving, removing and repairing are a person's (HUMAN_ONLY).
+    "library.saved",
+    "library.place_saved",
     "library.place",
     // Shipped data adds canvases/assets through the ordinary undoable project mutation path.
     "template.list",
     "template.add",
     "template.refresh",
     "template.retrieve",
+    // Explicit bounded template updates and their status (#954); never edit the project.
+    "templates.update",
+    "templates.status",
+    "templates.clear_cache",
     "node.describe",
     "node.options",
     "options.refresh",
@@ -131,9 +170,22 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comfy.workflow.mapping",
     "comfy.workflow.mapping_set",
     "comfy.server.use",
+    // The server's own models (#970): a read, a read-only preview, and two undoable edits; nothing runs.
+    "comfy.models.list",
+    "comfy.models.preview",
+    "comfy.models.use",
+    "comfy.models.add",
     "providers.settings_get",
     "app.check_updates",
     "app.update_status",
+    // Where the desktop app's built-in server listens; never its token (#116).
+    "automation.mcp_server_status",
+    // The window's interface size (#1107): view state of this installation, never the document
+    // (LIVE_ONLY: they run only where a window is).
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
     "history.select",
     "history.previous",
     "history.next",
@@ -177,12 +229,19 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "comment.remove",
     "keys.status",
     "run.quote",
+    // Quotes of the whole canvas (#965): read-only, started through run.start.
+    "run.changed",
+    "run.workflow",
     // Free, and refused by a host that can't ask (the CLI's).
     "run.estimate",
     "run.start",
     "run.held",
     "run.held_retry",
     "run.held_place",
+    // Seeing and stopping jobs never spends money (#167): an agent that can start a paid run can
+    // stop it. A cancel is no refund, and run.jobs says when a job may still be billed.
+    "run.jobs",
+    "run.cancel",
     "share.links",
     "share.link_revoke",
     "share.stop",
@@ -194,6 +253,7 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "perf.report",
     "usage.ownership",
     "usage.unsettled",
+    "usage.unresolved",
     "run.reuse",
     "node.cache_set",
     "node.variations_set",
@@ -290,6 +350,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     // export is `HUMAN_ONLY`: writing files into a folder is a person's decision.
     "export.local_plan",
     "export.results_plan",
+    // An Export to folder card's preview (#746): the same read-only plan, from the card.
+    "export.node_plan",
 ];
 /// Commands only a person (or the host itself) may run: `keys.set` takes a secret, which must not
 /// pass through an agent's context, and `keys.remove` deletes a key with no undo. (The file
@@ -297,7 +359,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
 /// [`crate::roots`].) `run.record` writes the results of a run the host executed: an agent must not
 /// fabricate them. `usage.reconcile_ownership` records a person's judgement about historical
 /// charges against their own provider records (#325), and `usage.resolve_charge` what those records
-/// show a reconciled charge cost (#332). `plugins.*` changes read package files and
+/// show a reconciled charge cost (#332), and `usage.resolve_unresolved` what they show an ordinary
+/// unresolved charge cost, or that it was never billed (#298). `plugins.*` changes read package files and
 /// decide what extends the app (#172): a person's decision, like installing software.
 pub const HUMAN_ONLY: &[&str] = &[
     // Moving OS focus belongs to the person; the narrow desktop owner channel uses dispatch.
@@ -307,6 +370,10 @@ pub const HUMAN_ONLY: &[&str] = &[
     "library.remove",
     "element.save",
     "library.remove_element",
+    // What leaves a project for My library, and what is deleted from it, is the person's (#96).
+    "library.save_assets",
+    "library.unsave_assets",
+    "library.repair_saved",
     "library.rename_element",
     "library.share_element",
     // Writing or reading a bundle file on this machine is the person's call (#765).
@@ -329,6 +396,8 @@ pub const HUMAN_ONLY: &[&str] = &[
     "plugins.grant",
     "plugins.revoke",
     "plugins.prune",
+    // Opening the app to local MCP clients, or closing it to them, is the person's call (#116).
+    "automation.mcp_server_set",
     // Replacing the app and restarting it stays the person's choice (#540).
     "app.install_update",
     "app.restart_to_update",
@@ -351,9 +420,13 @@ pub const HUMAN_ONLY: &[&str] = &[
     // is: the destination is outside the project and outside undo (#98).
     "export.local_run",
     "export.results_start",
+    // Performing an Export to folder card writes files, exactly as export.local_run does (#746).
+    "export.node_run",
     "run.record",
     "usage.reconcile_ownership",
     "usage.resolve_charge",
+    // Only a person who checked their provider's records may settle or release it (#298).
+    "usage.resolve_unresolved",
     // Letting a paid result go can't be undone (#369).
     "run.held_discard",
     // A share link lets someone into the project: whom is the person's call (#121).
@@ -386,9 +459,10 @@ pub struct McpServer {
 enum Backend {
     /// A headless session of its own.
     Local(Box<dyn crate::commands::CommandHost>),
-    /// The running app's session, through its control channel (`nodecraft --control`).
+    /// The running app's session, through its control channel (`nodecraft --control`) or, for
+    /// the app's own server, straight to its UI thread.
     #[cfg(not(target_arch = "wasm32"))]
-    Bridge(crate::control::Client),
+    Bridge(crate::control::Bridge),
 }
 
 /// Whether automation may see and run the command `id`.
@@ -534,6 +608,8 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
                     entry["not_ready_because"] =
                         if USAGE_READ_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "required host capability is unavailable" {
                             json!(NEEDS_USAGE_LOG)
+                        } else if RUN_JOB_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "this host runs no jobs" {
+                            json!(NEEDS_LIVE_RUNS)
                         } else {
                             json!(e.message)
                         };
@@ -547,7 +623,7 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
 
 pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, args: Map<String, Value>) -> Result<Value, Error> {
     let (id, params) = admitted(host, args)?;
-    let result = host.dispatch(&id, &params)?;
+    let result = host.dispatch(&id, &params).map_err(|e| no_runs(&id, e))?;
     Ok(json!({"result": result, "revision": host.session().revision()}))
 }
 
@@ -680,7 +756,14 @@ impl McpServer {
     /// agent edits the canvas the user sees, and can take screenshots of it.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn bridge(client: crate::control::Client, new_id: IdSource) -> Self {
-        Self { backend: Backend::Bridge(client), new_id }
+        Self { backend: Backend::Bridge(crate::control::Bridge::Remote(client)), new_id }
+    }
+
+    /// The app's own server (Settings › Automation, #116): the same tools as [`Self::bridge`],
+    /// answered on the app's UI thread through `client` instead of a control connection.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn in_app(client: crate::control::LocalClient, new_id: IdSource) -> Self {
+        Self { backend: Backend::Bridge(crate::control::Bridge::Local(client)), new_id }
     }
 
     /// The local session (`None` when bridged to the app).
@@ -706,10 +789,11 @@ impl McpServer {
             Ok(v) => v,
             Err(_) => return Some(rpc_error(Value::Null, PARSE_ERROR, "not valid JSON").to_string()),
         };
-        self.handle_value(parsed).map(|v| v.to_string())
+        self.handle_message(parsed).map(|v| v.to_string())
     }
 
-    fn handle_value(&mut self, message: Value) -> Option<Value> {
+    /// [`Self::handle`] for a message already parsed (the HTTP transport parses it to route it).
+    pub fn handle_message(&mut self, message: Value) -> Option<Value> {
         let Value::Object(mut obj) = message else {
             // JSON-RPC batches were removed from MCP in 2025-06-18.
             return Some(rpc_error(Value::Null, INVALID_REQUEST, "expected a single JSON-RPC message object"));
@@ -819,6 +903,26 @@ impl McpServer {
         }
         list
     }
+}
+
+/// Fresh ids from the operating system's random source, for native hosts. Should that source
+/// fail, ids come from the standard library's per-process random hasher keys and a counter.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn os_ids() -> IdSource {
+    use std::hash::{BuildHasher, RandomState};
+    let state = RandomState::new();
+    let mut counter = 0u64;
+    Box::new(move || {
+        let mut bytes = [0u8; 16];
+        if getrandom::fill(&mut bytes).is_err() {
+            counter = counter.wrapping_add(1);
+            let (a, b) = (state.hash_one((counter, 0u8)), state.hash_one((counter, 1u8)));
+            let (lo, hi) = bytes.split_at_mut(8);
+            lo.copy_from_slice(&a.to_le_bytes());
+            hi.copy_from_slice(&b.to_le_bytes());
+        }
+        bytes
+    })
 }
 
 /// Marks random bytes as a version-4 UUID.

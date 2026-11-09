@@ -5,8 +5,9 @@
 //! more and doesn't hold up the next one.
 use nodecraft_agent::Ticket;
 use nodecraft_engine::secrets::{Account, SecretStore};
-use nodecraft_engine::settings::{AgentEndpoint, AgentSettings};
+use nodecraft_engine::settings::{AgentEndpoint, AgentSettings, ProviderSettings};
 use nodecraft_providers::ProviderError;
+use nodecraft_providers::base_url::BaseUrl;
 use nodecraft_providers::llm::{ApiKey, ChatRequest, ChatResponse, Endpoint, LlmClient};
 use nodecraft_types::{Error, ErrorKind};
 use std::sync::mpsc::{Receiver, SyncSender, TrySendError, sync_channel};
@@ -69,7 +70,9 @@ impl Worker {
     }
 
     /// The thread the app uses: its own runtime and HTTP client, keys from the OS keychain.
-    pub fn live(wake: Arc<dyn Fn() + Send + Sync>) -> Result<Self, Error> {
+    /// `loaded` is the provider settings the app started with; each request also reads the file
+    /// as it is now, and both must allow a custom base URL's routing (#960).
+    pub fn live(wake: Arc<dyn Fn() + Send + Sync>, loaded: ProviderSettings) -> Result<Self, Error> {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -79,7 +82,14 @@ impl Worker {
         let keys = nodecraft_engine::secrets::KeyringStore;
         Self::spawn(
             Box::new(move |settings, request, still| {
-                let client = LlmClient::new(endpoint(settings, &keys)?, http.clone());
+                // The file as it is now, beside the settings loaded at startup: an unreadable file
+                // never lowers protection below what was loaded (#960).
+                let providers = [loaded.clone(), nodecraft_engine::settings::peek().providers];
+                // A custom base URL gets the custom-endpoint client: no spend header, no resend.
+                let client = match routed(settings, &providers, &keys)? {
+                    (endpoint, Some(base)) => LlmClient::with_base_url(endpoint, &base, http.clone()),
+                    (endpoint, None) => LlmClient::new(endpoint, http.clone()),
+                };
                 runtime.block_on(async {
                     let chat = std::pin::pin!(client.chat(request));
                     let abandoned = std::pin::pin!(async {
@@ -121,8 +131,44 @@ impl Worker {
     }
 }
 
-/// Where the settings say to send requests, with the endpoint's key from `keys`.
-pub fn endpoint(settings: &AgentSettings, keys: &dyn SecretStore) -> Result<Endpoint, ProviderError> {
+/// Where the settings say to send requests, with the endpoint's key from `keys`. See
+/// [`routed`]; a custom base URL is applied to the endpoint's address (tests read it).
+#[cfg(test)]
+pub fn endpoint(settings: &AgentSettings, providers: &[ProviderSettings], keys: &dyn SecretStore) -> Result<Endpoint, ProviderError> {
+    let (mut endpoint, base) = routed(settings, providers, keys)?;
+    if let Some(base) = base {
+        endpoint.base_url = base.as_str().to_owned();
+    }
+    Ok(endpoint)
+}
+
+/// The endpoint the settings name, with its key, and the custom base URL it is served from, if
+/// any. OpenAI and Anthropic follow a custom base URL set for them (#960), so their key goes to
+/// that host only. Every view in `providers` (the settings loaded at startup and the file as it
+/// is now) must agree: an unusable entry in any, a key set up for another provider's custom base
+/// URL in any, or views that name different addresses refuse rather than reaching the
+/// provider's own API.
+pub fn routed(settings: &AgentSettings, providers: &[ProviderSettings], keys: &dyn SecretStore) -> Result<(Endpoint, Option<BaseUrl>), ProviderError> {
+    let refused = |message: String| ProviderError::new(nodecraft_providers::ErrorKind::UnsupportedInput, message);
+    // Checked before the key is read, so a refused setting never opens the keychain.
+    let base = |provider: &str| -> Result<Option<BaseUrl>, ProviderError> {
+        let mut agreed: Option<Option<BaseUrl>> = None;
+        for view in providers {
+            if let Some(conflict) = nodecraft_engine::custom_endpoints::shared_key_conflict(view, provider) {
+                return Err(refused(conflict.message));
+            }
+            let base = nodecraft_engine::custom_endpoints::base_url(view, provider)
+                .map_err(|error| refused(format!("the {provider} custom base URL in settings can't be used: {}", error.message)))?;
+            match &agreed {
+                Some(before) if *before != base => {
+                    return Err(refused(format!("the {provider} custom base URL changed since NodeCraft started; restart it to use the new one")));
+                }
+                Some(_) => {}
+                None => agreed = Some(base),
+            }
+        }
+        Ok(agreed.flatten())
+    };
     let key = |name: &str| -> Result<ApiKey, ProviderError> {
         let account = Account::new(name).map_err(|_| ProviderError::new(nodecraft_providers::ErrorKind::Auth, "the key's account name is invalid"))?;
         match keys.get(&account) {
@@ -132,11 +178,17 @@ pub fn endpoint(settings: &AgentSettings, keys: &dyn SecretStore) -> Result<Endp
         }
     };
     Ok(match settings.endpoint {
-        AgentEndpoint::Anthropic => Endpoint::anthropic(key("anthropic")?),
-        AgentEndpoint::Openai => Endpoint::openai(key("openai")?),
-        AgentEndpoint::Openrouter => Endpoint::openrouter(key("openrouter")?),
-        AgentEndpoint::Ollama => Endpoint::ollama(settings.base_url()),
-        AgentEndpoint::LmStudio => Endpoint::lm_studio(settings.base_url()),
+        AgentEndpoint::Anthropic => {
+            let base = base("anthropic")?;
+            (Endpoint::anthropic(key("anthropic")?), base)
+        }
+        AgentEndpoint::Openai => {
+            let base = base("openai")?;
+            (Endpoint::openai(key("openai")?), base)
+        }
+        AgentEndpoint::Openrouter => (Endpoint::openrouter(key("openrouter")?), None),
+        AgentEndpoint::Ollama => (Endpoint::ollama(settings.base_url()), None),
+        AgentEndpoint::LmStudio => (Endpoint::lm_studio(settings.base_url()), None),
     })
 }
 

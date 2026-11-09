@@ -173,12 +173,18 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     }
     let mut meta = MediaMeta::default();
     if sniffed.kind == MediaKind::Image {
-        match probe_image(file.bytes, &Limits::default()) {
-            // Everything the header proves travels with the asset (#393), and is checked again
-            // whenever the reference is written.
-            Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
-            Err(_) if decodes_later(&sniffed) => {}
-            Err(_) => return Err("the image can't be read".into()),
+        if sniffed.mime == nodecraft_media::svg::MIME {
+            let info = nodecraft_media::svg::probe(file.bytes, &Limits::default()).map_err(|_| "the SVG is unsafe or exceeds its limits".to_owned())?;
+            meta.width = Some(info.width);
+            meta.height = Some(info.height);
+        } else {
+            match probe_image(file.bytes, &Limits::default()) {
+                // Everything the header proves travels with the asset (#393), and is checked again
+                // whenever the reference is written.
+                Ok(probed) => meta = nodecraft_format::image_header_meta(&probed),
+                Err(_) if decodes_later(&sniffed) => {}
+                Err(_) => return Err("the image can't be read".into()),
+            }
         }
     }
     if matches!(sniffed.kind, MediaKind::Video | MediaKind::Audio) {
@@ -201,6 +207,16 @@ fn plan<'a>(file: &Incoming<'a>, text_left: usize) -> Result<Plan<'a>, String> {
     }
     let mime = sniffed.mime.parse().map_err(|_| "the file type isn't supported".to_owned())?;
     Ok(Plan::Media { kind, mime, meta, bytes: file.bytes })
+}
+
+/// The type and header facts of a media file, recognised from its bytes as a dropped file is;
+/// why not, for text and what a source card can't hold. My library uses it to rebuild a
+/// damaged index from the files it kept (#96).
+pub(crate) fn describe_media(bytes: &[u8]) -> Result<(Mime, MediaMeta), String> {
+    match plan(&Incoming { name: "", bytes }, 0)? {
+        Plan::Media { mime, meta, .. } => Ok((mime, meta)),
+        Plan::Text(_) | Plan::Card(_) => Err("it is text, not media".into()),
+    }
 }
 
 /// One media file stored on its own, for a caller that references it in its next edit (App
@@ -261,7 +277,25 @@ pub fn import_files_positioned(
     movies: &[ProbedMovie],
     position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
 ) -> Result<Imported, Error> {
-    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position));
+    import_titled(session, canvas, at, step, files, ids, movies, position, &[], &[])
+}
+
+/// As [`import_files_positioned`], titling each media card with the matching entry of `titles`
+/// and using `hashes[i]` as file `i`'s BLAKE3 when given (the store verifies it before publishing).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn import_titled(
+    session: &mut Session,
+    canvas: CanvasId,
+    at: Position,
+    step: f32,
+    files: &[Incoming<'_>],
+    ids: &[NodeId],
+    movies: &[ProbedMovie],
+    position: &dyn Fn(&nodecraft_graph::Node, &nodecraft_nodes::Registry) -> Position,
+    titles: &[String],
+    hashes: &[nodecraft_types::Blake3],
+) -> Result<Imported, Error> {
+    let result = crate::session::guard(|| staged::run(session, canvas, at, step, files, ids, movies, position, titles, hashes));
     match result {
         Ok(imported) => Ok(imported),
         Err(mut error) => {
@@ -276,7 +310,9 @@ pub fn import_files_positioned(
 }
 
 mod folder;
+mod library;
 mod staged;
 pub use folder::{FolderImported, FolderTarget, import_folder};
+pub use library::{FileState, LibraryFile, LibraryImported, MAX_NAME_CHARS, import_library, public_name};
 #[cfg(test)]
 mod tests;

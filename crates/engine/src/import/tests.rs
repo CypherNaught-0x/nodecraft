@@ -393,3 +393,80 @@ fn positioned_import_measures_complete_payloads_and_rejects_before_publication()
     assert_eq!(s.revision(), 0);
     assert!(!s.can_undo());
 }
+
+/// A partial library import (#96): one outcome per file in order, duplicates and files the project
+/// already holds add nothing, failures say why, and retrying only the failed ones finishes it.
+#[test]
+fn a_partial_library_import_reports_each_file_and_retries_only_the_failed_ones() {
+    let mut s = session();
+    let photo = png();
+    let other = nodecraft_media::encode_png(2, 2, &[9; 16], &Limits::default()).unwrap();
+    let broken = b"\x89PNG\r\n\x1a\nnot really a png".to_vec();
+    let files = [
+        Incoming { name: "/home/someone/private/holiday.png", bytes: &photo },
+        Incoming { name: "notes.txt", bytes: b"Plain notes" },
+        Incoming { name: "C:\\Users\\someone\\copy.png", bytes: &photo },
+        Incoming { name: "/home/someone/broken.png", bytes: &broken },
+        Incoming { name: "empty.bin", bytes: b"" },
+        Incoming { name: "other.png", bytes: &other },
+    ];
+    let before = s.document().clone();
+    let place = |node: &Node, _: &nodecraft_nodes::Registry| node.pos;
+    let imported = import_library(&mut s, C, AT, 300.0, &files, &ids(6), &[], &place).unwrap();
+    let states: Vec<&FileState> = imported.files.iter().map(|(_, state)| state).collect();
+    let hash = nodecraft_types::Blake3::from_bytes(*blake3::hash(&photo).as_bytes());
+    assert_eq!(states[0], &FileState::Added { node: ids(6)[0], hash });
+    assert!(matches!(states[1], FileState::Failed { reason } if reason.contains("text")), "{states:?}");
+    assert_eq!(states[2], &FileState::Duplicate { of: 0, hash }, "the same bytes again add nothing");
+    assert!(matches!(states[3], FileState::Failed { reason } if reason.contains("image")), "{states:?}");
+    assert!(matches!(states[4], FileState::Failed { reason } if reason.contains("empty")), "{states:?}");
+    assert!(matches!(states[5], FileState::Added { .. }));
+    assert_eq!(imported.failed(), [1, 3, 4]);
+    assert_eq!(imported.summary(), "2 added · 1 duplicate · 3 failed");
+    // Only the file's name is kept, never its folder.
+    let names: Vec<&str> = imported.files.iter().map(|(name, _)| name.as_str()).collect();
+    assert_eq!(names, ["holiday.png", "notes.txt", "copy.png", "broken.png", "empty.bin", "other.png"]);
+    assert_eq!(node(&s, ids(6)[0]).title, "holiday.png");
+    assert!(imported.files.iter().all(|(_, state)| !matches!(state, FileState::Failed { reason } if reason.contains("someone"))), "no reason quotes a folder");
+    let saved = serde_json::to_string(s.document()).unwrap();
+    assert!(!saved.contains("someone") && !saved.contains("private"), "no private path in the document");
+    // One undo step for the whole import.
+    let after = s.document().clone();
+    s.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(s.document(), &before);
+    s.dispatch("edit.redo", &json!({})).unwrap();
+    assert_eq!(s.document(), &after);
+
+    // Retry the failed ones with the broken file fixed: it imports, the photo is already held.
+    let fixed = nodecraft_media::encode_png(1, 1, &[1; 4], &Limits::default()).unwrap();
+    let retry = [Incoming { name: "broken.png", bytes: &fixed }, Incoming { name: "holiday.png", bytes: &photo }];
+    let fresh: Vec<NodeId> = (20..22).map(|i| NodeId::from_bytes([i; 16])).collect();
+    let again = import_library(&mut s, C, AT, 300.0, &retry, &fresh, &[], &place).unwrap();
+    assert!(matches!(again.files[0].1, FileState::Added { node, .. } if node == fresh[0]));
+    assert_eq!(again.files[1].1, FileState::InLibrary { hash }, "already in the library: no second copy, no card");
+    assert!(again.failed().is_empty());
+    assert_eq!(s.document().canvases()[&C].nodes().len(), 3);
+}
+
+#[test]
+fn a_library_import_is_bounded_and_refuses_a_malformed_request() {
+    let mut s = session();
+    let photo = png();
+    let place = |node: &Node, _: &nodecraft_nodes::Registry| node.pos;
+    // More files than one import takes: the rest fail, to be imported next.
+    let files: Vec<Incoming<'_>> = (0..MAX_FILES + 2).map(|_| Incoming { name: "same.png", bytes: &photo }).collect();
+    let many: Vec<NodeId> = (0..MAX_FILES + 2).map(|i| NodeId::from_bytes([u8::try_from(i).unwrap().wrapping_add(1); 16])).collect();
+    let imported = import_library(&mut s, C, AT, 300.0, &files, &many, &[], &place).unwrap();
+    assert_eq!(imported.nodes().len(), 1, "identical bytes make one card");
+    assert_eq!(imported.failed(), [MAX_FILES, MAX_FILES + 1]);
+    // A file over the per-file cap fails without being hashed or stored.
+    let huge = vec![0u8; MAX_ASSET_BYTES + 1];
+    let one = import_library(&mut s, C, AT, 300.0, &[Incoming { name: "huge.png", bytes: &huge }], &ids(1), &[], &place).unwrap();
+    assert!(matches!(&one.files[0].1, FileState::Failed { reason } if reason.contains("MiB")));
+    assert_eq!(import_library(&mut s, C, AT, 300.0, &files, &[], &[], &place).unwrap_err().kind, nodecraft_types::ErrorKind::InvalidInput);
+    let elsewhere = CanvasId::from_bytes([9; 16]);
+    assert_eq!(import_library(&mut s, elsewhere, AT, 300.0, &files[..1], &ids(1), &[], &place).unwrap_err().kind, nodecraft_types::ErrorKind::NotFound);
+    assert_eq!(public_name("a/b\\c\u{7}d.png"), "cd.png");
+    assert_eq!(public_name("/"), "Imported file");
+    assert_eq!(public_name(&"é".repeat(200)).chars().count(), MAX_NAME_CHARS);
+}

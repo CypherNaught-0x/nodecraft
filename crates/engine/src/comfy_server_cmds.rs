@@ -43,6 +43,9 @@ pub fn finish(session: &mut Session, id: u64, server: &str, is_default: bool, fe
         crate::comfy_partner_quotes::keep(session, Some(instance), &fetched.nodes);
     }
     let report = if is_default {
+        if fetched.is_ok() {
+            session.swap_resource(Some(crate::comfy_models::ListedServer(server.to_owned())));
+        }
         comfy_workflow_cmds::finish(session, id, fetched)
     } else {
         match fetched {

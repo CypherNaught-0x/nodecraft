@@ -3,3 +3,5 @@ crates/testkit/tests/golden/*.json text eol=lf
 crates/plugin/fixtures/** -text
 # Example plugin packages are packed in tests with frozen digests (#175): never convert line endings.
 examples/plugins/** -text
+# AWS SigV4 test vectors are signed byte for byte (#1163): never convert line endings.
+crates/providers/src/aws/fixtures/** -text

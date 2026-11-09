@@ -205,7 +205,7 @@ fn cache_eviction_bounds_retained_versions_and_keeps_the_original_bundle() {
         catalog.install_archive(entry, bytes).unwrap();
     }
     let listing = catalog.listing().unwrap();
-    assert_eq!(listing.available.len(), 72 + 128);
+    assert_eq!(listing.available.len(), templates::entries().unwrap().len() + 128);
     assert!(catalog.cached_bytes() <= templates::catalog::MAX_CACHE_BYTES);
     assert!(catalog.resolve("generate-text", Some(2), None).is_err());
     assert!(catalog.resolve("generate-text", Some(149), None).is_ok());
@@ -343,7 +343,7 @@ fn imported_graph_and_assets_survive_save_reload_without_any_catalog_cache() {
     assert_eq!(fresh.document(), session.document());
     fresh.assets().validate_project(fresh.document()).unwrap();
     assert_eq!(templates::catalog::stamp(&fresh), 0);
-    assert_eq!(fresh.dispatch("template.list", &serde_json::json!({})).unwrap()["templates"].as_array().unwrap().len(), 72);
+    assert_eq!(fresh.dispatch("template.list", &serde_json::json!({})).unwrap()["templates"].as_array().unwrap().len(), templates::entries().unwrap().len());
     assert!(fresh.dispatch("template.add", &serde_json::json!({"id":"edit-image"})).is_err());
 }
 

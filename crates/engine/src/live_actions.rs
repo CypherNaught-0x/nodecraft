@@ -374,79 +374,188 @@ fn local_step(step: &Step, live: &Canvas, kinds: &Registry) -> bool {
 
 /// Runs `job` (any thread): sources emit their values, actions run on [`LocalActions`].
 pub fn compute(job: LiveJob) -> Result<LiveOutcome, Error> {
-    let check_cancel = || {
-        if job.cancel.is_cancelled() { Err(Error::new(ErrorKind::Conflict, "live recompute was cancelled")) } else { Ok(()) }
-    };
-    check_cancel()?;
-    let kinds = &*job.kinds;
-    let Some(plan) = &job.plan else {
-        return Ok(LiveOutcome {
+    let mut round = LiveRound::new(job);
+    loop {
+        if let Some(outcome) = round.step() {
+            return outcome;
+        }
+    }
+}
+
+/// A live round taken one job at a time (#1072). [`compute`] runs it to the end on a worker
+/// thread; the browser, which has no worker threads, takes a few jobs in each frame so a long
+/// round never holds one frame for all its work. Cancelling (its [`LiveRound::cancel_handle`],
+/// as for [`compute`]) ends it at the next step with the same error. One job is never split: an
+/// action on a large image still runs whole in the step that takes it, under the action's own
+/// work limits.
+pub struct LiveRound {
+    job: LiveJob,
+    state: Stage,
+}
+
+enum Stage {
+    Start,
+    Running(Box<Stepping>),
+    Done,
+}
+
+/// What a started round carries from job to job.
+struct Stepping {
+    run: Run,
+    local: Arc<LocalActions>,
+    actions: Routed,
+    ran: Vec<Arc<PluginAction>>,
+    queue: VecDeque<nodecraft_exec::scheduler::JobSpec>,
+    finished: BTreeMap<NodeId, Generation>,
+    failed: Vec<(NodeId, String)>,
+}
+
+impl LiveRound {
+    pub fn new(job: LiveJob) -> Self {
+        Self { job, state: Stage::Start }
+    }
+
+    /// Cancels this round at its next step, as [`LiveJob::cancel_handle`] does.
+    pub fn cancel_handle(&self) -> LiveCancel {
+        self.job.cancel.clone()
+    }
+
+    /// Whether this is a drag preview.
+    pub fn is_preview(&self) -> bool {
+        self.job.is_preview()
+    }
+
+    /// Takes the next job: `None` while work remains, the outcome once the round has ended. A
+    /// round that has ended gives an error if stepped again.
+    pub fn step(&mut self) -> Option<Result<LiveOutcome, Error>> {
+        let result = self.advance();
+        if result.is_some() {
+            self.state = Stage::Done;
+        }
+        result
+    }
+
+    fn cancelled(&self) -> Result<(), Error> {
+        if self.job.cancel.is_cancelled() { Err(Error::new(ErrorKind::Conflict, "live recompute was cancelled")) } else { Ok(()) }
+    }
+
+    fn advance(&mut self) -> Option<Result<LiveOutcome, Error>> {
+        if let Err(error) = self.cancelled() {
+            return Some(Err(error));
+        }
+        match std::mem::replace(&mut self.state, Stage::Done) {
+            Stage::Done => Some(Err(Error::new(ErrorKind::Conflict, "this live round has already ended"))),
+            Stage::Start => match self.start() {
+                Ok(Some(stepping)) => {
+                    self.state = Stage::Running(stepping);
+                    None
+                }
+                Ok(None) => Some(Ok(self.nothing_to_run())),
+                Err(error) => Some(Err(error)),
+            },
+            Stage::Running(mut stepping) => {
+                let Some(scheduled) = stepping.queue.pop_front() else { return Some(self.finish(*stepping)) };
+                if let Err(error) = self.one(&mut stepping, scheduled) {
+                    return Some(Err(error));
+                }
+                self.state = Stage::Running(stepping);
+                None
+            }
+        }
+    }
+
+    /// The outcome of a round with nothing to compute: only its cached results.
+    fn nothing_to_run(&mut self) -> LiveOutcome {
+        let job = &mut self.job;
+        LiveOutcome {
             canvas: job.canvas,
             base: job.base,
             results: Vec::new(),
             failed: Vec::new(),
-            hits: job.hits,
+            hits: std::mem::take(&mut job.hits),
             staged: AssetStore::default(),
             preview: job.preview.is_some(),
             cancel: job.cancel.clone(),
             lineage: job.lineage.clone(),
             ran: Vec::new(),
-        });
-    };
-    let options = RunOptions { id: job.id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
-    let (mut run, first) = Run::start(plan, job.canvas, &job.live, kinds, options)?;
-    let local = Arc::new(
-        (match job.preview {
-            Some(edge) => LocalActions::new(job.assets).with_preview_edge(edge),
-            None => LocalActions::new(job.assets),
-        })
-        .with_live_control(Arc::clone(&job.cancel.0), crate::action_exec::control::LIVE_WORK_UNITS),
-    );
-    let actions = Routed { local: local.clone(), plugins: job.plugins.clone() };
-    let mut ran = Vec::new();
-    let mut queue: VecDeque<_> = first.jobs.into_iter().collect();
-    let mut finished: BTreeMap<NodeId, Generation> = first.finished.into_iter().map(|r| (r.node, r.generation)).collect();
-    let mut failed: Vec<(NodeId, String)> = first.failed.into_iter().map(|f| (f.node, f.reason)).collect();
-    let hash = |id: &NodeId| nodecraft_exec::staleness::input_hash(&job.live, kinds, *id).ok();
-    while let Some(scheduled) = queue.pop_front() {
-        check_cancel()?;
-        let progress = match run.work(scheduled.id).cloned() {
-            Some(JobSpec::Source { output, value, .. }) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
+        }
+    }
+
+    fn start(&mut self) -> Result<Option<Box<Stepping>>, Error> {
+        let job = &mut self.job;
+        let Some(plan) = &job.plan else { return Ok(None) };
+        let kinds = &*job.kinds;
+        let options = RunOptions { id: job.id, first_job: 1, limits: Default::default(), retry: RetryPolicy::NEVER };
+        let (run, first) = Run::start(plan, job.canvas, &job.live, kinds, options)?;
+        let assets = std::mem::take(&mut job.assets);
+        let local = Arc::new(
+            (match job.preview {
+                Some(edge) => LocalActions::new(assets).with_preview_edge(edge),
+                None => LocalActions::new(assets),
+            })
+            .with_live_control(Arc::clone(&job.cancel.0), crate::action_exec::control::LIVE_WORK_UNITS),
+        );
+        let actions = Routed { local: local.clone(), plugins: job.plugins.clone() };
+        Ok(Some(Box::new(Stepping {
+            run,
+            local,
+            actions,
+            ran: Vec::new(),
+            queue: first.jobs.into_iter().collect(),
+            finished: first.finished.into_iter().map(|r| (r.node, r.generation)).collect(),
+            failed: first.failed.into_iter().map(|f| (f.node, f.reason)).collect(),
+        })))
+    }
+
+    /// Runs one scheduled job and queues what it lets start.
+    fn one(&self, s: &mut Stepping, scheduled: nodecraft_exec::scheduler::JobSpec) -> Result<(), Error> {
+        let job = &self.job;
+        let kinds = &*job.kinds;
+        let progress = match s.run.work(scheduled.id).cloned() {
+            Some(JobSpec::Source { output, value, .. }) => s.run.job_done(kinds, scheduled.id, vec![(output, value)]),
             Some(JobSpec::Action { action, params, inputs, output, .. }) => {
-                ran.extend(job.plugins.as_ref().and_then(|p| p.get(&action)).cloned());
-                let result = local
-                    .admit_live_action(&params, &inputs)
-                    .and_then(|()| nodecraft_exec::run::ActionExecutor::execute_cancellable(&actions, &action, &params, &inputs, &|| local.live_interrupted()));
-                check_cancel()?;
+                s.ran.extend(job.plugins.as_ref().and_then(|p| p.get(&action)).cloned());
+                let local = &s.local;
+                let result = local.admit_live_action(&params, &inputs).and_then(|()| {
+                    nodecraft_exec::run::ActionExecutor::execute_cancellable(&s.actions, &action, &params, &inputs, &|| local.live_interrupted())
+                });
+                self.cancelled()?;
                 match result {
-                    Ok(value) => run.job_done(kinds, scheduled.id, vec![(output, value)]),
-                    Err(reason) => run.job_failed(kinds, scheduled.id, &local.control_error(reason)),
+                    Ok(value) => s.run.job_done(kinds, scheduled.id, vec![(output, value)]),
+                    Err(reason) => s.run.job_failed(kinds, scheduled.id, &local.control_error(reason)),
                 }
             }
-            _ => run.job_failed(kinds, scheduled.id, "live recompute runs only local work"),
+            _ => s.run.job_failed(kinds, scheduled.id, "live recompute runs only local work"),
         };
-        queue.extend(progress.jobs);
-        finished.extend(progress.finished.into_iter().map(|r| (r.node, r.generation)));
-        failed.extend(progress.failed.into_iter().map(|f| (f.node, f.reason)));
+        s.queue.extend(progress.jobs);
+        s.finished.extend(progress.finished.into_iter().map(|r| (r.node, r.generation)));
+        s.failed.extend(progress.failed.into_iter().map(|f| (f.node, f.reason)));
+        Ok(())
     }
-    check_cancel()?;
-    // Sources re-emit their values: record only the action and technique nodes' results (the run
-    // keeps inlined nodes' results to itself).
-    let refreshed = |id: &NodeId| job.live.nodes().get(id).is_some_and(|n| refreshes(&n.kind, kinds));
-    let results = finished.into_iter().filter(|(id, _)| refreshed(id)).collect();
-    let failed = failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
-    Ok(LiveOutcome {
-        canvas: job.canvas,
-        base: job.base,
-        results,
-        failed,
-        hits: Vec::new(),
-        staged: local.take_staged(),
-        preview: job.preview.is_some(),
-        cancel: job.cancel.clone(),
-        lineage: job.lineage.clone(),
-        ran,
-    })
+
+    fn finish(&self, s: Stepping) -> Result<LiveOutcome, Error> {
+        self.cancelled()?;
+        let job = &self.job;
+        let kinds = &*job.kinds;
+        let hash = |id: &NodeId| nodecraft_exec::staleness::input_hash(&job.live, kinds, *id).ok();
+        // Sources re-emit their values: record only the action and technique nodes' results (the
+        // run keeps inlined nodes' results to itself).
+        let refreshed = |id: &NodeId| job.live.nodes().get(id).is_some_and(|n| refreshes(&n.kind, kinds));
+        let results = s.finished.into_iter().filter(|(id, _)| refreshed(id)).collect();
+        let failed = s.failed.into_iter().map(|(id, reason)| (id, reason, hash(&id))).collect();
+        Ok(LiveOutcome {
+            canvas: job.canvas,
+            base: job.base,
+            results,
+            failed,
+            hits: Vec::new(),
+            staged: s.local.take_staged(),
+            preview: job.preview.is_some(),
+            cancel: job.cancel.clone(),
+            lineage: job.lineage.clone(),
+            ran: s.ran,
+        })
+    }
 }
 
 /// Records `outcome` if the document is still the one it was computed from. `Ok(false)` when

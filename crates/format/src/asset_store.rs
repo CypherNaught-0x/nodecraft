@@ -47,6 +47,20 @@ impl PartialEq for AssetStore {
     }
 }
 impl Eq for AssetStore {}
+/// [`AssetStore::output_space`]: what an output writes in the private workspace before the
+/// archive itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct OutputSpace {
+    /// Bytes of indexed assets that are copied and verified first.
+    pub verified_copies: u64,
+    /// The pack compaction writes, when it will run: every verified backing, copies included.
+    pub compaction: Option<u64>,
+    /// Bytes of private files earlier cleanup couldn't delete; already on disk.
+    pub cleanup_debt: u64,
+}
+/// The backing-file count at which output compacts the workspace first.
+#[cfg(not(target_arch = "wasm32"))]
+const COMPACT_BEFORE_OUTPUT: u64 = 24;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AssetDescriptor {
     pub hash: Blake3,
@@ -129,6 +143,58 @@ impl AssetStore {
     }
     pub fn hashes(&self) -> impl Iterator<Item = &Blake3> {
         self.assets.keys()
+    }
+    /// What writing an archive of `project` (with history roots `retained`) would first write in
+    /// the private workspace (#367):
+    /// copies of indexed assets not yet verified there, and the pack that compaction would
+    /// write, plus the bytes earlier failed cleanup still holds. Reads no asset. `None` when it
+    /// can't be told: no private workspace, or another verification holds the store.
+    pub fn output_space(&self, project: &nodecraft_graph::Project, retained: &BTreeSet<Blake3>) -> Result<Option<OutputSpace>, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        {
+            let mut hashes = crate::assets::project_hashes(project);
+            hashes.extend(retained.iter().copied());
+            let Some(workspace) = self.context.0.workspace.as_ref() else { return Ok(None) };
+            if hashes.len() > crate::MAX_ASSETS {
+                return Ok(None);
+            }
+            let Ok(_operation) = self.context.operation() else { return Ok(None) };
+            self.context.prune_cache()?;
+            let overflow = || invalid("output space estimate overflow");
+            let cache = self.context.0.cache.lock().map_err(|_| unavailable())?;
+            let mut unverified = Vec::new();
+            for hash in &hashes {
+                // A missing asset fails the save itself, with its own error.
+                let Some(entry) = self.assets.get(hash) else { continue };
+                let verified = cache.get(hash).and_then(|record| record.identity.upgrade()).is_some_and(|owner| Arc::ptr_eq(&owner, &entry.identity));
+                if entry.memory.is_none() && !verified {
+                    unverified.try_reserve(1).map_err(|_| invalid("cannot allocate bounded output estimate"))?;
+                    unverified.push(Arc::clone(entry));
+                }
+            }
+            let cached = cache
+                .values()
+                .filter(|record| record.identity.strong_count() != 0)
+                .try_fold(0u64, |total, record| total.checked_add(record.data.range.byte_len()).ok_or_else(overflow))?;
+            // An entry's source is locked after the cache is released, as verification does.
+            drop(cache);
+            let (mut copies, mut count) = (0u64, 0u64);
+            for entry in unverified {
+                if entry._origin.lock().map_err(|_| unavailable())?.is_some() {
+                    copies = copies.checked_add(entry.identity.bytes).ok_or_else(overflow)?;
+                    count = count.saturating_add(1);
+                }
+            }
+            // Each copy is a backing file of its own; output packs them all once there are many.
+            let backings = workspace.quota().backing_count()?.saturating_add(count);
+            let compaction = if backings >= COMPACT_BEFORE_OUTPUT { Some(cached.checked_add(copies).ok_or_else(overflow)?) } else { None };
+            Ok(Some(OutputSpace { verified_copies: copies, compaction, cleanup_debt: self.context.cleanup_debt()? }))
+        }
+        #[cfg(target_arch = "wasm32")]
+        {
+            let _ = (project, retained);
+            Ok(None)
+        }
     }
     /// The frozen bounded resident convenience view. Indexed/imported disk bytes are NEVER
     /// implicitly materialized by this method; use open_verified and an explicit reader/cap.
@@ -429,6 +495,19 @@ impl AssetStore {
         Ok(VerifiedAsset { identity: entry.identity.clone(), data })
     }
     fn check_reference(&self, asset: &AssetRef, data: &mut VerifiedData, metrics: &StreamMetrics) -> Result<(), Error> {
+        if asset.mime.essence() == nodecraft_media::svg::MIME {
+            let info = match data.svg {
+                Some(info) => info,
+                None => {
+                    let maximum = usize::try_from(nodecraft_media::svg::MAX_BYTES).map_err(|_| invalid("SVG byte limit is unavailable on this platform"))?;
+                    let bytes = data.range.read_small(maximum, metrics)?;
+                    nodecraft_media::svg::probe(&bytes, &Default::default()).map_err(|_| invalid("SVG asset is unsafe or exceeds its limits"))?
+                }
+            };
+            crate::assets::check_svg_header(&asset.meta, info)?;
+            data.svg = Some(info);
+            return Ok(());
+        }
         if let Some(sniffed) = data.sniffed {
             let actual = sniffed.mime.split(';').next().unwrap_or_default();
             let expected = asset.mime.essence();
@@ -539,7 +618,7 @@ impl AssetStore {
         let _operation = self.context.operation()?;
         stage.check(self.context.0.workspace.as_ref().ok_or_else(unavailable)?.quota())?;
         self.context.prune_cache()?;
-        self.pack_if_needed_with(cancel, metrics, 24, Some(stage))
+        self.pack_if_needed_with(cancel, metrics, COMPACT_BEFORE_OUTPUT, Some(stage))
     }
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn recovery_ranges(&self, ranges: &[(Blake3, AssetRange, u32)], cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<Self, Error> {
@@ -596,7 +675,7 @@ impl AssetStore {
     pub(crate) fn compact_before_output(&self, cancel: &TransferCancel, metrics: &StreamMetrics) -> Result<(), Error> {
         let _operation = self.context.operation()?;
         self.context.prune_cache()?;
-        self.pack_if_needed(cancel, metrics, 24)
+        self.pack_if_needed(cancel, metrics, COMPACT_BEFORE_OUTPUT)
     }
     #[cfg(not(target_arch = "wasm32"))]
     fn pack_if_needed(&self, cancel: &TransferCancel, metrics: &StreamMetrics, threshold: u64) -> Result<(), Error> {
@@ -683,7 +762,7 @@ fn facts(range: AssetRange, crc32: u32, metrics: &StreamMetrics) -> Result<Verif
     let prefix = range.slice(0, range.byte_len().min(64 * 1024))?.read_small(64 * 1024, metrics)?;
     #[cfg(any(test, feature = "validation-metrics"))]
     crate::validation_metrics::record(|m| m.sniffs = m.sniffs.saturating_add(1));
-    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None })
+    Ok(VerifiedData { range, crc32, sniffed: nodecraft_media::sniff(&prefix), image: None, svg: None })
 }
 
 #[cfg(test)]

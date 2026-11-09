@@ -35,6 +35,12 @@ pub enum RunMode {
     Field(FieldId),
     /// Every stale node on the canvas, with the ancestors it needs (as [`RunMode::WithUpstream`]).
     AllStale,
+    /// Every node with work to do (#965): a generation, action or technique node whose result is
+    /// stale, part-made or missing, with the ancestors it needs. What a global Run changed covers.
+    Pending,
+    /// The whole workflow (#965): every generation and technique node on the canvas, fresh or
+    /// not, plus everything [`RunMode::Pending`] runs. Fresh actions keep their results.
+    Workflow,
 }
 
 /// Where one value for an input comes from.
@@ -241,6 +247,9 @@ pub const MAX_STEP_INPUT_BYTES: usize = 64 * 1024 * 1024;
 pub const MAX_PLAN_INPUT_BYTES: usize = 256 * 1024 * 1024;
 /// Most blockers reported for one request; the first ones are what the user acts on.
 pub const MAX_BLOCKERS: usize = 256;
+/// Most batches one chain of batches collecting batches holds (#92), counting the last one.
+/// Staleness hashes deeper chains, so this is what bounds them.
+pub const MAX_BATCH_CHAIN: usize = 16;
 
 /// Plan a run. `requested` is used by [`RunMode::Selected`] and [`RunMode::WithUpstream`] and
 /// ignored otherwise. `stale` holds the nodes whose results no longer match their inputs (#75);
@@ -248,8 +257,8 @@ pub const MAX_BLOCKERS: usize = 256;
 /// the upstream walk.
 ///
 /// Errors are for malformed requests (unknown node ids, nothing requested, a cyclic canvas); a
-/// well-formed request that can't run yet is [`Planned::Blocked`]. A field or "all stale" run
-/// with nothing in it is an empty plan.
+/// well-formed request that can't run yet is [`Planned::Blocked`]. A field, "all stale",
+/// pending or workflow run with nothing in it is an empty plan.
 ///
 /// Kinds' [`NodeKind::mode`](nodecraft_nodes::NodeKind::mode) is asked with the node's own
 /// connected input port types, in `node.inputs` order (list ports with `many: true`).
@@ -322,8 +331,27 @@ pub fn plan_settled(
     targets: &nodecraft_types::TargetSelection,
     options: &dyn nodecraft_types::OptionLookup,
 ) -> Result<Planned, Error> {
+    plan_waiting(expanded, kinds, mode, requested, settled, stale, targets, options).map(|(planned, _)| planned)
+}
+
+/// [`plan_settled`], with the nodes a [`RunMode::Pending`] or [`RunMode::Workflow`] run leaves
+/// for a later run (#965): everything after a batch that collects a result this run makes. A
+/// batch collects existing results only (#92), so what follows it runs once those exist; it is
+/// then stale or missing, and the next Run changed picks it up. Other modes leave nothing.
+#[allow(clippy::too_many_arguments)]
+pub fn plan_waiting(
+    expanded: &Expanded<'_>,
+    kinds: &Registry,
+    mode: &RunMode,
+    requested: &BTreeSet<NodeId>,
+    settled: &BTreeSet<NodeId>,
+    stale: &BTreeSet<NodeId>,
+    targets: &nodecraft_types::TargetSelection,
+    options: &dyn nodecraft_types::OptionLookup,
+) -> Result<(Planned, BTreeSet<NodeId>), Error> {
     let canvas: &Canvas = &expanded.canvas;
     let graph = Graph::new(canvas, kinds, targets, &expanded.collects, &expanded.inner, options)?;
+    let mut waiting = BTreeSet::new();
     let run: BTreeSet<NodeId> = match mode {
         RunMode::Selected | RunMode::WithUpstream => {
             if let Some(missing) = requested.iter().find(|id| !canvas.nodes().contains_key(id) || expanded.inner.contains_key(id)) {
@@ -336,14 +364,25 @@ pub fn plan_settled(
         }
         RunMode::Field(field) => canvas.nodes().values().filter(|n| n.field == Some(*field)).map(|n| n.id).collect(),
         RunMode::AllStale => graph.with_upstream(&stale.iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect(), stale),
+        RunMode::Pending | RunMode::Workflow => {
+            let (run, after) = graph.whole(*mode == RunMode::Workflow, stale);
+            waiting = after;
+            run
+        }
     };
-    // Routers and batches never run: they are resolved into their consumers' inputs.
-    let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id);
+    // Routers and batches never run: they are resolved into their consumers' inputs. Export cards
+    // (#746) never run either: writing files is the explicit `export.node_run` host command, so no
+    // run, recompute or replay can write one.
+    let resolved_away = |id: &NodeId| crate::routing::is_router(canvas, *id) || is_batch(canvas, *id) || is_export(canvas, *id);
     // Decided before settled nodes are left out: a request whose other nodes all reuse a result
     // is a run with nothing left to do, not a request for routers alone.
     let requested_only_routers = matches!(mode, RunMode::Selected | RunMode::WithUpstream) && !run.is_empty() && run.iter().all(resolved_away);
+    let requested_only_exports = requested_only_routers && run.iter().any(|id| is_export(canvas, *id));
     let run = graph.with_inlined(run.into_iter().filter(|id| !settled.contains(id)).collect(), stale, &expanded.inner);
     let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !resolved_away(id)).collect();
+    if requested_only_exports {
+        return Err(Error::new(ErrorKind::InvalidInput, "an Export to folder card has nothing to run; choose a folder on it and press Export"));
+    }
     if requested_only_routers {
         return Err(Error::new(ErrorKind::InvalidInput, "routers and batches pass inputs through and have nothing to run"));
     }
@@ -380,12 +419,12 @@ pub fn plan_settled(
         }
     }
     if !blockers.is_empty() {
-        return Ok(Planned::Blocked(blockers.into_iter().map(|blocker| owned(blocker, expanded)).collect()));
+        return Ok((Planned::Blocked(blockers.into_iter().map(|blocker| owned(blocker, expanded)).collect()), waiting));
     }
     crate::partial::resume_partials(canvas, kinds, &mut steps);
     let inner = steps.iter().filter_map(|step| Some((step.node, *expanded.inner.get(&step.node)?))).collect();
     crate::partial::resume_techniques(canvas, kinds, &mut steps, &inner);
-    Ok(Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }))
+    Ok((Planned::Ready(RunPlan { steps, edges: edges.into_iter().collect(), inner }), waiting))
 }
 
 /// The `requested` nodes that would each plan [`Planned::Ready`] on their own with
@@ -428,7 +467,8 @@ pub fn ready_alone_expanded(
     let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &expanded.collects, &expanded.inner, &nodecraft_types::NoOptions)?;
     let requested: BTreeSet<NodeId> = requested.iter().copied().filter(|id| canvas.nodes().contains_key(id) && !expanded.inner.contains_key(id)).collect();
     let run = graph.with_inlined(graph.with_upstream(&requested, stale), stale, &expanded.inner);
-    let run: BTreeSet<NodeId> = run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id)).collect();
+    let run: BTreeSet<NodeId> =
+        run.into_iter().filter(|id| !crate::routing::is_router(canvas, *id) && !is_batch(canvas, *id) && !is_export(canvas, *id)).collect();
     let not_inlined: BTreeSet<NodeId> = expanded.blockers.iter().map(|b| b.node).collect();
     let mut state = State::default();
     let mut passed = BTreeSet::new();
@@ -491,9 +531,31 @@ struct State {
     plan_bytes: usize,
 }
 
+/// Whether `id` is an Export to folder card (#746): a sink that never runs.
+pub fn is_export(canvas: &Canvas, id: NodeId) -> bool {
+    canvas.nodes().get(&id).is_some_and(|node| node.kind == nodecraft_nodes::export::ID)
+}
+
 /// Whether `id` is a batch.
 pub fn is_batch(canvas: &Canvas, id: NodeId) -> bool {
     canvas.nodes().get(&id).is_some_and(|node| node.kind == batch::ID)
+}
+
+/// A batch's current items (#92), each with its id, as a run would fan them out: what review
+/// views label a fanned result's items with. Nothing counts as part of a run, so a batch fed by
+/// a node without a result gives the reason it can't resolve.
+pub fn batch_items(canvas: &Canvas, kinds: &Registry, batch: NodeId) -> Result<Vec<(nodecraft_types::ItemId, Value)>, Reason> {
+    let node = canvas.nodes().get(&batch).ok_or(Reason::NoResult)?;
+    // A folder's items are labelled by their names; they share the files' ids.
+    let port = if node.kind == folder::ID { folder::NAME.to_owned() } else { node.outputs.first().map(|port| port.name.clone()).ok_or(Reason::NoResult)? };
+    if !gives_items(node, &port) {
+        return Err(Reason::PublicInvalid("not a batch".into()));
+    }
+    let (collects, inner) = (BTreeMap::new(), BTreeMap::new());
+    let graph = Graph::new(canvas, kinds, &nodecraft_types::EMPTY_TARGET_SELECTION, &collects, &inner, &nodecraft_types::NoOptions)
+        .map_err(|error| Reason::Invalid(error.message))?;
+    let (values, tags, _) = graph.batch_items(batch, &port, &BTreeSet::new())?;
+    Ok(tags.into_iter().zip(values).filter_map(|(tag, value)| Some((tag.first()?.item, value))).collect())
 }
 
 /// Whether `node`'s output `port` gives items, one per run of what it feeds: a batch's, or a
@@ -589,6 +651,121 @@ impl<'a> Graph<'a> {
 
     fn is_source(&self, node: &Node) -> bool {
         self.kinds.get(&node.kind).is_ok_and(|kind| kind.descriptor().category == Category::Source)
+    }
+
+    /// Whether `node` has work of its own (#965): a generation, action or technique node, or one
+    /// of a kind not installed (which blocks a run it is in). Notes, decks, routers, batches and
+    /// sources have none.
+    fn has_work(&self, node: &Node) -> bool {
+        node.kind == technique::ID
+            || matches!(self.kinds.get(&node.kind).map(|kind| kind.descriptor().category), Ok(Category::Generation | Category::Action) | Err(_))
+    }
+
+    /// Whether `node` makes model work regenerated by a [`RunMode::Workflow`] run even when
+    /// fresh: a generation or technique node.
+    fn generative(&self, node: &Node) -> bool {
+        node.kind == technique::ID || matches!(self.kinds.get(&node.kind).map(|kind| kind.descriptor().category), Ok(Category::Generation))
+    }
+
+    /// The nodes of the real canvas a [`RunMode::Pending`] run starts from (#965): nodes with
+    /// work that need a run. With `generative`, also every fresh generation and technique node,
+    /// for [`RunMode::Workflow`].
+    fn work(&self, generative: bool, stale: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        self.canvas
+            .nodes()
+            .values()
+            .filter(|node| !self.inner.contains_key(&node.id) && self.has_work(node))
+            .filter(|node| (generative && self.generative(node)) || self.needs_run(node, stale))
+            .map(|node| node.id)
+            .collect()
+    }
+
+    /// Every node of the real canvas reached from `from` along noodles, upstream or downstream
+    /// (`from` itself only if it is reached again). The walk goes through techniques' inlined
+    /// nodes and the outputs their technique nodes collect; an inlined node reached stands for
+    /// its technique node. The canvas may hold cycles: a seen-set ends the walk.
+    fn reach(&self, from: &BTreeSet<NodeId>, down: bool) -> BTreeSet<NodeId> {
+        let mut next: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+        let collected = self.collects.iter().flat_map(|(owner, collects)| collects.iter().map(move |collect| (collect.node, *owner)));
+        let edges = self.into.iter().flat_map(|(to, feeds)| feeds.iter().map(move |(_, up, _, _)| (*up, *to))).chain(collected);
+        for (from, to) in edges {
+            if down {
+                next.entry(from).or_default().push(to);
+            } else {
+                next.entry(to).or_default().push(from);
+            }
+        }
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<NodeId> = from.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for to in next.get(&id).into_iter().flatten() {
+                if seen.insert(*to) {
+                    stack.push(*to);
+                }
+            }
+        }
+        let owners: Vec<NodeId> = seen.iter().filter_map(|id| self.inner.get(id).copied()).collect();
+        seen.extend(owners);
+        seen.retain(|id| !self.inner.contains_key(id));
+        seen
+    }
+
+    /// A [`RunMode::Pending`] or [`RunMode::Workflow`] run (#965) and the nodes it leaves for a
+    /// later run. A node with work between two nodes of the run runs too, in order: a fresh
+    /// action between two generators would otherwise feed the later one a result made from the
+    /// earlier one's old result. Everything after a batch fed by the run waits, since a batch
+    /// collects existing results only (#92).
+    fn whole(&self, generative: bool, stale: &BTreeSet<NodeId>) -> (BTreeSet<NodeId>, BTreeSet<NodeId>) {
+        // What the run is asked for: the starting nodes, then the nodes between them.
+        let mut wanted = self.work(generative, stale);
+        // Every node found waiting so far. It never joins the run again, so each node enters
+        // `wanted` at most once and leaves it at most once: the loop ends.
+        let mut waiting: BTreeSet<NodeId> = BTreeSet::new();
+        loop {
+            let mut run = self.with_upstream(&wanted, stale);
+            waiting.extend(self.after_batches(&run));
+            // A technique node's inlined nodes wait with it (`inner` maps to the top-level owner).
+            let waits = |id: &NodeId| waiting.contains(id) || self.inner.get(id).is_some_and(|owner| waiting.contains(owner));
+            if wanted.iter().any(waits) {
+                // Asked for what waits: plan again without it, so nothing joins the run only to
+                // feed a node that waits.
+                wanted.retain(|id| !waits(id));
+                continue;
+            }
+            run.retain(|id| !waits(id));
+            let after = self.reach(&run, true);
+            let between: BTreeSet<NodeId> = self
+                .reach(&run, false)
+                .into_iter()
+                .filter(|id| after.contains(id) && !run.contains(id) && !waits(id))
+                .filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node)))
+                .collect();
+            if between.is_empty() {
+                let waiting = waiting.into_iter().filter(|id| self.canvas.nodes().get(id).is_some_and(|node| self.has_work(node))).collect();
+                return (run, waiting);
+            }
+            wanted.extend(between);
+        }
+    }
+
+    /// Everything after a batch that `run` feeds (#965), on the real canvas: a batch collects
+    /// existing results only (#92), so it waits for this run to make them.
+    fn after_batches(&self, run: &BTreeSet<NodeId>) -> BTreeSet<NodeId> {
+        let batches: BTreeSet<NodeId> = self
+            .canvas
+            .nodes()
+            .values()
+            .filter(|node| node.kind == batch::ID)
+            .filter(|node| {
+                self.into
+                    .get(&node.id)
+                    .into_iter()
+                    .flatten()
+                    .any(|(_, up, _, _)| run.contains(up) && !self.canvas.nodes().get(up).is_some_and(|u| self.is_source(u)))
+            })
+            .map(|node| node.id)
+            .collect();
+        if batches.is_empty() { BTreeSet::new() } else { self.reach(&batches, true) }
     }
 
     /// The requested nodes plus ancestors that need a run, walking through ancestors that have
@@ -892,13 +1069,9 @@ impl<'a> Graph<'a> {
             for collect in collects {
                 let (collected, port_type) =
                     self.collect(collect, run, state, &mut bytes, &mut after).map_err(|(upstream, reason)| vec![blocker(None, Some(upstream), reason)])?;
-                // A batch inside the version stays unsupported (#93); only one on the canvas
-                // fans a technique node.
-                if let Collected::Fanned(tags, _) = &collected
-                    && tags.iter().flatten().any(|key| self.inner.contains_key(&key.batch))
-                {
-                    return Err(vec![blocker(None, Some(collect.node), Reason::PublicInvalid("a batch inside its technique can't fan it out yet".into()))]);
-                }
+                // A batch inside the version fans the technique node as one on the canvas does
+                // (#1073): its items are tagged by the batch's inlined id, which is derived from
+                // the instance and stays the same from run to run.
                 let from = match collected {
                     Collected::Plain(from) => from,
                     Collected::Fanned(tags, source) => {
@@ -1067,7 +1240,18 @@ impl<'a> Graph<'a> {
     /// A batch's items (#92): what is wired into it, which must already exist, then its own.
     /// A folder's looping output gives its selected files or their names; both outputs share
     /// the files' item ids, so a node fed by a file and its name runs once per file.
+    ///
+    /// A batch wired into a batch is flattened: its items join the collecting batch's at that
+    /// wire's place, as a list input collects any batch, and take new ids under it. Chains are
+    /// bounded by [`MAX_BATCH_CHAIN`], loops are refused, and each batch in the chain is resolved
+    /// once however many wires reach it.
     fn batch_items(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>) -> Items {
+        self.batch_items_in(id, port, run, &mut vec![id], &mut Resolved::default())
+    }
+
+    /// [`Self::batch_items`] with the batches collecting this one (`chain`, ending with `id`) and
+    /// the batches already resolved under the first one.
+    fn batch_items_in(&self, id: NodeId, port: &str, run: &BTreeSet<NodeId>, chain: &mut Vec<NodeId>, resolved: &mut Resolved) -> Items {
         let node = self.canvas.nodes().get(&id).ok_or(Reason::NoResult)?;
         let kind = self.kinds.get(&node.kind).map_err(|_| Reason::UnknownKind)?;
         kind.validate_instance(node, true).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
@@ -1083,13 +1267,50 @@ impl<'a> Graph<'a> {
             return Err(Reason::PublicInvalid(reason.into()));
         }
         let mut wired = Vec::new();
+        // The longest chain of batches ending here, this one included.
+        let mut height = 1usize;
         for (_, up, up_port, _) in self.into.get(&id).into_iter().flatten() {
             let upstream = self.canvas.nodes().get(up);
-            if upstream.is_some_and(|u| u.kind == batch::ID) {
-                return Err(Reason::PublicInvalid("a batch can't collect another batch yet".into()));
+            if let Some(inner) = upstream.filter(|u| u.kind == batch::ID) {
+                if !resolved.items.contains_key(up) {
+                    if chain.contains(up) {
+                        return Err(Reason::PublicInvalid("these batches collect each other in a loop; remove one of the wires between them".into()));
+                    }
+                    if chain.len() >= MAX_BATCH_CHAIN {
+                        return Err(too_long_chain());
+                    }
+                    chain.push(*up);
+                    let items = self.batch_items_in(*up, up_port, run, chain, resolved);
+                    chain.pop();
+                    resolved.items.insert(*up, items);
+                }
+                let values = match resolved.items.get(up) {
+                    Some(Ok((values, _, _))) => values,
+                    Some(Err(reason)) => return Err(in_collected(inner, reason)),
+                    None => return Err(Reason::NoResult),
+                };
+                // A batch resolved before, through another wire, still counts its whole chain
+                // from here.
+                let below = resolved.heights.get(up).copied().unwrap_or(1);
+                if chain.len().saturating_add(below) > MAX_BATCH_CHAIN {
+                    return Err(too_long_chain());
+                }
+                height = height.max(below.saturating_add(1));
+                wired.extend(values.iter().cloned());
+                if wired.len() > batch::MAX_ITEMS {
+                    return Err(Reason::PublicInvalid(too_many_items()));
+                }
+                continue;
             }
             if upstream.is_some_and(|u| folder::loops_over(u, up_port)) {
                 return Err(Reason::PublicInvalid("a batch collects a folder's Files or Names output, not its looping File or Name".into()));
+            }
+            // Inside a technique every node but its inputs runs with it and has no result of its
+            // own, so nothing can be run first (#1073): say what can feed the batch instead.
+            if self.inner.contains_key(&id) && self.inner.contains_key(up) && !upstream.is_some_and(|u| self.is_source(u)) {
+                return Err(Reason::PublicInvalid(
+                    "a batch inside a technique collects only its inputs and source cards; publish the technique with what feeds the batch outside it, wired to an input".into(),
+                ));
             }
             if run.contains(up) && !upstream.is_some_and(|u| self.is_source(u)) {
                 return Err(Reason::PublicInvalid("a batch collects existing results; run the nodes feeding it first".into()));
@@ -1101,12 +1322,13 @@ impl<'a> Graph<'a> {
                 value => wired.push(value),
             }
             if wired.len() > batch::MAX_ITEMS {
-                return Err(Reason::PublicInvalid(format!("a batch holds at most {} items", batch::MAX_ITEMS)));
+                return Err(Reason::PublicInvalid(too_many_items()));
             }
         }
         let values = batch::items(node, wired).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
         let tags = crate::fanout::batch_tags(id, &values);
         let size = values.iter().map(value_bytes).fold(0usize, usize::saturating_add);
+        resolved.heights.insert(id, height);
         Ok((values, tags, size))
     }
 
@@ -1125,17 +1347,8 @@ impl<'a> Graph<'a> {
             if folder::loops_over(node, port) {
                 return Err(Reason::PublicInvalid("a folder's looping File and Name outputs can't be used here; wire its Files or Names output".into()));
             }
-            let jobs = kind.plan(&PlanCtx { targets: self.targets, node, inputs: &[] }).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
-            let mut values = jobs.into_iter().filter_map(|job| match job {
-                JobSpec::Source { output, value, .. } if output == port => Some(value),
-                JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
-            });
-            // A list output gives one job per item, so its value is the list of them.
-            return if list {
-                Ok((Value::List(values.collect()), list, Vec::new()))
-            } else {
-                values.next().map(|value| (value, list, Vec::new())).ok_or(Reason::NoResult)
-            };
+            let value = source_value(kind, node, port, list, self.targets).map_err(|error| invalid_kind(self.kinds, &node.kind, error.message))?;
+            return value.map(|value| (value, list, Vec::new())).ok_or(Reason::NoResult);
         }
         let generation = usable_generation(node).ok_or(Reason::NoResult)?;
         let value = generation.outputs.get(index).cloned().ok_or(Reason::NoResult)?;
@@ -1160,6 +1373,37 @@ fn flatten(lists: &[Value]) -> impl Iterator<Item = &Value> {
     })
 }
 
+/// The batches resolved while resolving one batch (#92): their items, and the longest chain of
+/// batches ending at each that resolved.
+#[derive(Default)]
+struct Resolved {
+    items: BTreeMap<NodeId, Items>,
+    heights: BTreeMap<NodeId, usize>,
+}
+
+fn too_long_chain() -> Reason {
+    Reason::PublicInvalid(format!("at most {MAX_BATCH_CHAIN} batches can collect one another in a chain; wire the first ones' items into one batch"))
+}
+
+/// A collected batch's problem, naming that batch, once: a problem deeper in the chain keeps the
+/// name of the batch it is about.
+fn in_collected(inner: &Node, reason: &Reason) -> Reason {
+    const PREFIX: &str = "in the batch it collects";
+    match reason {
+        Reason::PublicInvalid(message) if !message.starts_with(PREFIX) => {
+            let name = inner.title.trim();
+            let name = if name.is_empty() { "untitled".to_owned() } else { name.chars().take(64).collect() };
+            Reason::PublicInvalid(format!("{PREFIX} ({name}): {message}"))
+        }
+        other => other.clone(),
+    }
+}
+
+/// Why a batch, with what is wired into it, holds too many items: before any is copied further.
+fn too_many_items() -> String {
+    format!("a batch holds at most {} items; remove some, or split them across batches", batch::MAX_ITEMS)
+}
+
 fn fanned_list(port: &str) -> String {
     format!("its {port} input would receive a list for every batch item, which isn't supported yet")
 }
@@ -1171,6 +1415,42 @@ fn fanned_list(port: &str) -> String {
 fn usable_generation(node: &Node) -> Option<&nodecraft_graph::Generation> {
     let active = node.active?;
     node.history.iter().find(|g| g.id == active).filter(|g| g.outputs.len() == node.outputs.len() && !g.is_partial())
+}
+
+/// A source card's value on `port`: what its own plan gives from its current settings, never
+/// its history. A list output gives one job per item, so its value is the list of them.
+fn source_value(
+    kind: &dyn nodecraft_nodes::NodeKind,
+    node: &Node,
+    port: &str,
+    list: bool,
+    targets: &nodecraft_types::TargetSelection,
+) -> Result<Option<Value>, Error> {
+    let jobs = kind.plan(&PlanCtx { targets, node, inputs: &[] })?;
+    let mut values = jobs.into_iter().filter_map(|job| match job {
+        JobSpec::Source { output, value, .. } if output == port => Some(value),
+        JobSpec::Source { .. } | JobSpec::Generate { .. } | JobSpec::Action { .. } => None,
+    });
+    Ok(if list { Some(Value::List(values.collect())) } else { values.next() })
+}
+
+/// The value `node` gives on `port` without running, as a run would read it (#84): a source
+/// kind's own value from its current settings (an Element's content included), else the node's
+/// usable active result. `None` when it has none yet, for a folder's looping outputs (only a
+/// fan-out reads those), and for a source whose settings don't plan. For views such as a text
+/// card's connected media; planning itself also checks items and sizes.
+pub fn value_without_running(kinds: &Registry, node: &Node, port: &str) -> Option<Value> {
+    let index = node.outputs.iter().position(|p| p.name == port)?;
+    if let Ok(kind) = kinds.get(&node.kind)
+        && kind.descriptor().category == Category::Source
+    {
+        if folder::loops_over(node, port) {
+            return None;
+        }
+        let list = node.outputs.get(index).is_some_and(|p| p.port_type.many);
+        return source_value(kind, node, port, list, &nodecraft_types::EMPTY_TARGET_SELECTION).ok().flatten();
+    }
+    usable_generation(node)?.outputs.get(index).cloned()
 }
 
 #[cfg(test)]
@@ -1230,3 +1510,5 @@ mod contract_tests;
 mod options_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod value_tests;

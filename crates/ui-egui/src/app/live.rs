@@ -1,6 +1,6 @@
 //! Live recompute in the app (#88): after an edit, stale action nodes on the shown canvas are
-//! recomputed on a worker thread (in the frame, in the browser) and their results recorded into
-//! the edit's undo step (`engine::live_actions`). At most one recompute runs at a time; a round
+//! recomputed on a worker thread (in the browser, which has none, a few jobs in each frame,
+//! #1072) and their results recorded into the edit's undo step (`engine::live_actions`). At most one recompute runs at a time; a round
 //! that finishes already out of date is dropped and the next one starts from the current
 //! document, so cards follow edits at the speed the work allows.
 //!
@@ -14,8 +14,18 @@ use nodecraft_engine::session::DocumentLineage;
 use nodecraft_types::{CanvasId, Error, NodeId};
 use std::collections::BTreeMap;
 use std::sync::mpsc::{Receiver, TryRecvError, channel};
+use std::time::Duration;
 #[cfg(not(target_arch = "wasm32"))]
-use std::time::{Duration, Instant};
+use std::time::Instant;
+#[cfg(not(target_arch = "wasm32"))]
+use std::time::Instant as FrameClock;
+/// The clock a round taken in the frame is timed by: `std`'s isn't in the browser.
+#[cfg(target_arch = "wasm32")]
+use web_time::Instant as FrameClock;
+
+/// The most of a frame a round taken in the frame (the browser's, #1072) uses before it yields to
+/// drawing. A job is never split, so one that runs longer holds that frame alone.
+const FRAME_BUDGET: Duration = Duration::from_millis(8);
 
 /// Longest the app waits, when it closes, for a recompute still running (#594).
 #[cfg(not(target_arch = "wasm32"))]
@@ -38,7 +48,6 @@ impl LiveScope {
     }
 }
 
-#[derive(Default)]
 pub(super) struct Live {
     running: Option<Receiver<Result<LiveOutcome, Error>>>,
     scope: Option<LiveScope>,
@@ -47,6 +56,14 @@ pub(super) struct Live {
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<std::thread::JoinHandle<()>>,
     cancel: Option<live_actions::LiveCancel>,
+    /// A round taken a few jobs at a time in the frame, and where its outcome goes (`running`
+    /// waits on it): the browser's way, which has no worker threads (#1072).
+    stepping: Option<(live_actions::LiveRound, std::sync::mpsc::Sender<Result<LiveOutcome, Error>>)>,
+    /// How much of a frame a round taken in the frame may use.
+    budget: Duration,
+    /// Takes rounds in the frame even where threads exist, as the browser does (tests).
+    #[cfg(test)]
+    pub(super) in_frame: bool,
     /// The canvas and revision last looked at.
     checked: Option<(CanvasId, u64)>,
     /// Nodes that failed, with the input hash they failed with: not retried (or reported
@@ -67,7 +84,72 @@ pub(super) struct Live {
     pub(super) pending_looks: usize,
 }
 
+impl Default for Live {
+    fn default() -> Self {
+        Self {
+            running: None,
+            scope: None,
+            owner: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            worker: None,
+            cancel: None,
+            stepping: None,
+            budget: FRAME_BUDGET,
+            #[cfg(test)]
+            in_frame: false,
+            checked: None,
+            failed: BTreeMap::new(),
+            errors: Default::default(),
+            settled: None,
+            preview: None,
+            previewed: None,
+            held: BTreeMap::new(),
+            #[cfg(test)]
+            pending_looks: 0,
+        }
+    }
+}
+
 impl Live {
+    /// Takes the round being stepped in the frame further, for at most the frame's budget and at
+    /// least one job. Whether it is still going (the frame should repaint).
+    fn step_in_frame(&mut self) -> bool {
+        let Some((mut round, send)) = self.stepping.take() else { return false };
+        let started = FrameClock::now();
+        loop {
+            if let Some(outcome) = round.step() {
+                // `running` takes it from here, as from a worker.
+                let _ = send.send(outcome);
+                return false;
+            }
+            if started.elapsed() >= self.budget {
+                self.stepping = Some((round, send));
+                return true;
+            }
+        }
+    }
+
+    /// Whether rounds run in the frame rather than on a worker.
+    fn in_frame(&self) -> bool {
+        #[cfg(test)]
+        if self.in_frame {
+            return true;
+        }
+        cfg!(target_arch = "wasm32")
+    }
+
+    /// The budget a round taken in the frame has each frame (tests).
+    #[cfg(test)]
+    pub(super) fn set_budget(&mut self, budget: Duration) {
+        self.budget = budget;
+    }
+
+    /// Whether a round is being taken in the frame (tests).
+    #[cfg(test)]
+    pub(super) fn stepping(&self) -> bool {
+        self.stepping.is_some()
+    }
+
     pub(super) fn cancel(&self) {
         if let Some(cancel) = &self.cancel {
             cancel.cancel();
@@ -144,6 +226,12 @@ impl NodeCraftApp {
     /// Every frame: records a finished recompute, and starts the next one if the document
     /// changed. Repaints while work is running so its result shows as soon as it lands.
     pub(super) fn live_recompute(&mut self, ctx: &egui::Context) {
+        // Recording a result while a background save writes would wait for the disk on this
+        // thread (#367): a finished round stays in its channel until the save settles, and a
+        // round taken in the frame waits too, going on once the save repaints.
+        if self.session.file_status().saving {
+            return;
+        }
         let owner = self.session.document_lineage();
         if self.live.owner.as_ref().is_some_and(|old| !self.session.is_current_document(old)) {
             self.live.cancel();
@@ -159,6 +247,11 @@ impl NodeCraftApp {
         if obsolete {
             // Signal before polling: an empty channel must not leave superseded work running.
             self.live.cancel();
+        }
+        // A round taken in the frame goes on here; cancelled, it ends at its next step and its
+        // error reaches `running` as a worker's would.
+        if self.live.step_in_frame() {
+            ctx.request_repaint();
         }
         if let Some(receiver) = &self.live.running {
             match receiver.try_recv() {
@@ -270,7 +363,9 @@ impl NodeCraftApp {
         self.live_spawn(ctx, job);
     }
 
-    /// Computes `job` on a worker thread (in this frame in the browser, which has none).
+    /// Computes `job` on a worker thread; in the browser, which has none, a few jobs in each of
+    /// the frames that follow.
+    #[cfg_attr(target_arch = "wasm32", allow(clippy::needless_return))]
     fn live_spawn(&mut self, ctx: &egui::Context, job: LiveJob) {
         let owner = self.session.document_lineage();
         self.live.owner = Some(owner.clone());
@@ -283,13 +378,13 @@ impl NodeCraftApp {
         });
         self.live.cancel = Some(job.cancel_handle());
         let (send, receive) = channel();
-        // The browser has no worker threads: there the round runs in this frame. A drag's
-        // previews are small; a full-size render holds the frame once, as a click's work would.
-        #[cfg(target_arch = "wasm32")]
-        {
-            let _ = send.send(live_actions::compute(job));
+        // The browser has no worker threads: there the round is taken a few jobs at a time in the
+        // frames that follow, so drawing goes on between them (#1072).
+        if self.live.in_frame() {
+            self.live.stepping = Some((live_actions::LiveRound::new(job), send));
             self.live.running = Some(receive);
             ctx.request_repaint();
+            return;
         }
         #[cfg(not(target_arch = "wasm32"))]
         {

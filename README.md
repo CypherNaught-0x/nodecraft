@@ -14,7 +14,7 @@
   <img alt="100% Rust" src="https://img.shields.io/badge/100%25-Rust-b7410e?style=flat-square&logo=rust">
   <img alt="macOS · Windows · Linux" src="https://img.shields.io/badge/macOS%20%C2%B7%20Windows%20%C2%B7%20Linux-native-2f7bf5?style=flat-square">
   <img alt="License: MIT OR Apache-2.0" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-3a3a3a?style=flat-square">
-  <img alt="Status: M4 Actions done, other milestones in progress" src="https://img.shields.io/badge/status-M4%20done%20%C2%B7%20other%20milestones%20in%20progress-d69e2e?style=flat-square">
+  <a href="ROADMAP.md"><img alt="Milestone status in the roadmap" src="https://img.shields.io/badge/status-see%20roadmap-d69e2e?style=flat-square"></a>
 </p>
 
 <p align="center">
@@ -24,13 +24,9 @@
 ---
 
 > [!NOTE]
-> NodeCraft is being built in the open. The M1 canvas core, the M2 organisation tools
-> (fields, tags, comments, search, auto-format, bulk editing, routers) and the M4 local actions
-> (image and text actions that recompute as you edit, result reuse, custom shaders, text-action
-> plugins) are complete. The desktop saves and opens `.ncraft` projects and can run supported
-> generation cards through its wired host. That does **not** mean every catalog model or provider works on every
-> platform. See
-> [`ROADMAP.md`](ROADMAP.md) for current limitations and next steps.
+> NodeCraft is being built in the open. The desktop saves and opens `.ncraft` projects and
+> runs supported generation cards. Provider and mode availability varies by platform. See
+> [the roadmap](ROADMAP.md) for milestone status, current capabilities and limitations.
 
 ## Build a creative pipeline, not a pile of prompts
 
@@ -62,12 +58,15 @@ the inputs, settings and connections beside the work instead of hiding them in a
   and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
 - **Compose and finish**: a Layer Editor combines wired images, text and shapes; Mask/Inpaint
   paints masks and prepares inpaint/outpaint cards. Image tools add wired action cards in one
-  undo step. Elements keep named image references reusable across projects. A Timeline arranges
-  picture, sound and captions; desktop video playback and rendering need your own FFmpeg.
+  undo step. Elements keep named image references reusable across projects.
+- **Work with video and sound**: scrub video cards, play sound cards and render a Timeline with
+  picture tracks, fades, crossfades, mixed audio and captions. The Timeline can export its edit
+  and source media as FCPXML in a ZIP. Native playback and rendering use installed
+  [FFmpeg and ffprobe](docs/install.md#optional-ffmpeg-tools).
 - **Present and share**: turn a selection into a Deck, edit its slides and export PDF or PNG.
-  Live sessions carry edits, images, discussions, pointers and selections between desktop and
-  browser clients through a relay; internet deployment needs the transport setup described in
-  [`ROADMAP.md`](ROADMAP.md#what-does-not-work-yet).
+  Use **Share** on desktop or in the browser to work on a canvas together. A relay carries edits,
+  images, discussions and named pointers. Links grant view, comment or edit access, and private
+  canvases stay out of the room. See [the relay setup](docs/install.md#live-sharing-in-the-browser).
 - **Never lose work**: every edit is an invertible changeset, so undo/redo covers everything, and
   command dispatch runs under a panic guard. No `unsafe` and no `unwrap` outside tests.
 - **Keep your keys yours**: an API keys panel over the OS keychain.
@@ -82,9 +81,12 @@ the inputs, settings and connections beside the work instead of hiding them in a
 - A model in the catalog is not proof that its adapter, mode and credentials are usable in every
   host. Browser provider options and some local endpoints differ from desktop; see
   [`docs/providers.md`](docs/providers.md) and [`ROADMAP.md`](ROADMAP.md).
-- The text card's chat-style turn UI (#84) and first signed release (#100) are still open.
-  `nodecraft-cli serve` exists on current `main` even though its tracking issue #117 remains open;
-  see [`docs/serve.md`](docs/serve.md). The published release candidates predate current `main`.
+- The first signed release (#100) is still open.
+  See [HTTP serve](docs/serve.md) for running Techniques through `nodecraft-cli serve` with signed
+  completion webhooks.
+- Video cards play silently. Audio plays on sound cards and is included in Timeline renders.
+  Playback and FFmpeg-backed renders run on desktop. Import checks for exported timelines in
+  Final Cut Pro and DaVinci Resolve are tracked in [#643](../../issues/643).
 - Presented-frame P1–P3 passed on one 120 Hz Apple M3 Pro/Metal setup (#65, #634), not a 60 Hz
   display or Windows/Linux hardware; the older headless CPU timings are commit-bound historical
   results, not current universal frame guarantees. See [`docs/performance.md`](docs/performance.md).
@@ -142,7 +144,7 @@ node kind, and the CLI and the MCP server create the same card with the same `no
 
 ### Tags, and a filter that highlights what matches
 
-![The tag filter panel highlights the Look-tagged dawn treatment cards inside their coloured field.](assets/readme/tags.png)
+![The tag filter panel lists the canvas tags and highlights the Look-tagged cards across the coloured fields.](assets/readme/tags.png)
 
 Named colour tags per canvas, a bounded highlight filter, and a small colour marker on every
 tagged card.
@@ -255,14 +257,13 @@ orientation for contributors and coding agents.
 
 ## Downloads
 
-Two pre-releases exist. [`v0.2.0-rc.1`](../../releases/tag/v0.2.0-rc.1) is the current build:
-installers for macOS, Windows and Linux of that pre-release snapshot. Build `main` for the latest
-canvas features: this pre-release predates much of the current desktop storage and generation wiring. [`v0.1.0-rc.1`](../../releases/tag/v0.1.0-rc.1) is the
-M0-era build that proved the release pipeline. Signed installers arrive with the first real
-release ([#100](../../issues/100)); macOS and Windows builds are unsigned for now, so the first
-launch shows a warning — [`docs/install.md`](docs/install.md) shows how to open them anyway.
-Release builds ship `nodecraft-cli` with the integrated MCP server, bundled in the Linux and
-Windows packages and also as a separate macOS download.
+[NodeCraft v0.6.0](../../releases/tag/v0.6.0) provides desktop builds for macOS, Windows
+and Linux, the CLI with its integrated MCP server, and a browser preview ZIP. The CLI is
+included in the Linux and Windows packages and is a separate download on macOS. The release
+lists per-platform downloads and SHA-256 checksums.
+
+macOS and Windows packages are unsigned ([#100](../../issues/100)). See
+[installation instructions](docs/install.md) for first launch, checksums and browser hosting.
 
 ## Contributing
 
@@ -279,8 +280,11 @@ and checklists for adding commands, node kinds and providers.
 | M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
 | M4 | Actions, live recompute, custom shaders | done: local actions, result reuse, shader cards and text-action plugins work |
 | M5 | Batch, Techniques, CLI, first release | partial; reuse surfaces shipped in part, first signed release open |
-| M6–M8 | Layer/Timeline/Mask editors, video, audio, 3D, PDF | partial, with working desktop surfaces and open gaps |
-| M9–M10 | Agent, MCP, browser build, collaboration | agent, control and sync work on desktop; other surfaces partial |
+| M6 | Layer and mask editors, Elements | partial |
+| M7 | Video and audio playback, Timeline, providers | done. Four clips with fades and sound render through the Timeline |
+| M8 | 3D viewer, capture, PDF, providers | partial |
+| M9 | Agent, MCP, control, serve | desktop agent and command-line automation available with follow-up work open |
+| M10 | Browser, live collaboration and decks | done |
 
 Full detail, including what does not work yet: [`ROADMAP.md`](ROADMAP.md).
 

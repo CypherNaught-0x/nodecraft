@@ -50,6 +50,7 @@ are checked by the production planner/executor; CSV/list/Cross/Zip additionally 
 | Feature(s) | Template file | Expected behavior |
 | --- | --- | --- |
 | text-generation | [generate-text.ncraft](https://github.com/CypherNaught-0x/nodecraft-templates/blob/c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9/templates/generate-text/1/f7683d0272c11f8be693f16eeaab6a746497eeb78468631818ddc0b7b86832d2.ncraft) | Change the source prompt, choose a compatible model, review the cost and run the connected generation card. |
+| image.rasterize, svg-original | [action-image-rasterize.ncraft](https://github.com/CypherNaught-0x/nodecraft-templates/blob/5e7ed638fa75d4615701832184e5141cfe7cc293/templates/action-image-rasterize/1/976d22e12fca16a03c886a59df951c445a7de698ee8bd0e89329fb73d06dab5b.ncraft) | Keep an original SVG source, choose a longest edge and run Rasterize SVG to produce a PNG for raster tools. |
 | image-generation | [generate-image.ncraft](https://github.com/CypherNaught-0x/nodecraft-templates/blob/c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9/templates/generate-image/1/f533269f6a24b61bd2c4e114d71f0cad2e2d95a084d8edb2791f1cfda3604f4b.ncraft) | Change the source prompt, choose a compatible model, review the cost and run the connected generation card. |
 | video-generation | [generate-video.ncraft](https://github.com/CypherNaught-0x/nodecraft-templates/blob/c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9/templates/generate-video/1/ef2adeece459e506d5d2df17d3ff391dd3a930289b93a49afc9b5af2cc564b79.ncraft) | Change the source prompt, choose a compatible model, review the cost and run the connected generation card. |
 | audio-generation | [generate-audio.ncraft](https://github.com/CypherNaught-0x/nodecraft-templates/blob/c5e4f50d61de3e5f4f57b24c8e5c2fb131b5a3d9/templates/generate-audio/1/d80ca9f52a2040d6c526e5389b9038aab2c8bb1ac44d52ec21366d302ead3b42.ncraft) | Change the source prompt, choose a compatible model, review the cost and run the connected generation card. |
@@ -160,22 +161,46 @@ A fresh native or browser installation embeds the complete pinned set from the d
 Git revision and lockfile; there is no build script or build-time HTTP refresh. Normal dependency
 prefetch permits offline builds.
 
-**Refresh templates** dispatches `template.refresh {}` and retrieves only the public official index.
-The list shows bundled and previously retrieved versions alongside indexed versions. **Retrieve
-template** dispatches `template.retrieve {id,version,blake3}` for only that selected archive; it verifies
-the exact digest, ordinary graph, embedded assets and node kinds before making **Add template**
-available. Retrieval never adds a canvas automatically. A new index advertising v2 leaves usable
-bundled v1 available when v2 has not been retrieved or the repository is unreachable. Unknown schemas,
-invalid content or failed updates retain the last good catalog and all bundled examples.
+**Update templates** (Techniques → Starter templates) dispatches `templates.update {}` (#954). It reads
+the configured templates repository's index over HTTPS, then downloads at most 16 listed versions this
+window doesn't already have. Each archive is checked against the BLAKE3 digest its index entry names
+before it is stored or listed, then its graph, embedded assets and node kinds are validated. A mismatch
+or damaged archive is rejected and reported in the status line; the last good copy (downloaded earlier,
+or bundled) stays available. An index that changes the content of an already-published version is
+refused as a whole. More than 16 changed templates are left for the next update. The status line under
+the buttons, and `templates.status {}`, say what the last update downloaded, rejected or skipped, and
+whether one is running. Nothing is downloaded at startup or in the background: updating is always an
+explicit action.
 
-Downloads use a bounded in-memory cache (64 MiB, at most 128 archives) for the current project
-Session on both platforms. They are not a persistent personal library: closing/replacing the Session
-removes them. Once added, a template's graph and assets are ordinary project data and survive saving
-and reloading without that cache. One request runs at a time; each index is at most 128 KiB and each
-archive at most 2 MiB. Decode/import temporaries are separately bounded by those stored-archive
-limits. Requests use a fixed public origin without provider credentials; native requests refuse
-redirects, while browser Fetch owns its redirect policy. Late results from a replaced Session are
-discarded. Neither refresh nor retrieval changes project history or starts a paid request.
+`template.refresh {}` and `template.retrieve {id,version,blake3}` remain as single steps: the first
+reads only the index, the second one selected archive with the same checks. Neither adds a canvas.
+A new index advertising v2 leaves usable bundled v1 available when v2 has not been downloaded or the
+repository is unreachable. Unknown schemas, invalid content or failed updates retain the last good
+catalog and all bundled examples.
+
+On the desktop, verified downloads and the last good index are kept in the app data folder (the
+settings folder) under `templates/v1/`: `index.json`, and per template `<blake3>.ncraft` with its
+index record `<blake3>.json`. The template worker reads them back and verifies them again at
+startup, off the UI thread and without the network (at most 128 archives, 64 MiB); **Update
+templates** waits until that read is done. A damaged, renamed or oversize file, or a cached copy
+that contradicts the cached index, is skipped and reported in the status line and
+`templates.status`; it is never trusted. A half-written pair left by a crash is removed quietly at
+the next start. **Clear downloaded** (`templates.clear_cache {}`) removes the `v1` folder (the status
+line says when the removal has finished, or why it failed); deleting it by hand is also safe. Other open NodeCraft windows keep the templates
+they already loaded until they restart, and may write their own downloads back; clear again after
+closing them if you want the folder empty. The browser keeps downloads in memory for the page's
+session. Cached templates are read-only: **Add template** copies the graph and assets into your
+project as one undoable edit, after which they are ordinary project data and survive saving and
+reloading without the cache.
+
+One request runs at a time; each index is at most 128 KiB, each archive at most 2 MiB, and each
+request times out after 10 seconds. Requests carry only the generic `NodeCraft/<version>`
+User-Agent: no credentials, cookies or identifiers. Native requests refuse redirects, while browser
+Fetch owns its redirect policy. Late results from a replaced Session are discarded. Updating never
+changes project history or starts a paid request. Debug builds can point the desktop at a local
+fixture server with `NODECRAFT_TEMPLATES_FEED=http://127.0.0.1:<port>/`; release builds read only the
+official repository. See the [decision](decisions/2026-11-03-template-updates-verified-cache.md) for
+the trust model and the optional index signature.
 
 The external repository CI pins an exact NodeCraft validator source commit and invokes the same
 production parser, digest, archive/asset and kind validation used by the client. Its

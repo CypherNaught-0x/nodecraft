@@ -689,11 +689,13 @@ mod tests {
         assert!(!h.state().session.can_undo());
     }
     #[test]
-    fn small_viewport_can_hide_map_and_fit_enabled_matches_dispatch_padding() {
+    fn small_viewport_hides_its_map_and_fit_enabled_matches_dispatch_padding() {
         let mut h = Harness::builder().with_size(Vec2::new(1000.0, 240.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
         let ctx = h.ctx.clone();
-        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_err());
-        assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).is_err());
+        // Too short for the map (#1115): it hides itself, so Fit has the canvas above the toolbar.
+        assert!(h.state().navigation.visible);
+        assert!(!crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map_shown);
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_ok());
         h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
         assert!(!h.state().navigation.visible);
         assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_ok());

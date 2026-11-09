@@ -137,6 +137,22 @@ impl ExportHost {
         &self.cancel
     }
 
+    /// The first folder this grant covers, resolved: what an Export to folder card (#746) writes
+    /// into. It is never echoed in a command result.
+    pub(crate) fn primary(&self) -> Option<&Path> {
+        self.roots.first().map(PathBuf::as_path)
+    }
+
+    /// The last component of the granted folder's name, bounded, for the card to show which folder
+    /// a person chose. The full path stays in the host.
+    pub fn label(&self) -> String {
+        self.roots
+            .first()
+            .and_then(|root| root.file_name())
+            .map(|name| name.to_string_lossy().chars().filter(|c| !c.is_control()).take(48).collect())
+            .unwrap_or_else(|| "Chosen folder".into())
+    }
+
     /// Whether the destination's spelling lies under a granted root. This is only a preliminary
     /// check: native writes open every component under the root's pinned descriptor, refuse links,
     /// and compare parent identities before publication.
@@ -209,7 +225,7 @@ impl ExportHost {
 /// never becomes document data; cancellation of a dialog/preview need not leave authority
 /// installed. An accepted background job retains its own typed grant until cleanup finishes.
 pub fn dispatch_with_host(session: &mut crate::Session, host: &ExportHost, command: &str, parameters: &Value) -> Result<Value, Error> {
-    if !matches!(command, "export.local_plan" | "export.local_run" | "export.results_plan" | "export.results_start") {
+    if !matches!(command, "export.local_plan" | "export.local_run" | "export.results_plan" | "export.results_start" | "export.node_plan" | "export.node_run") {
         return Err(unsupported("folder authority is only available to explicit export commands"));
     }
     let previous = session.swap_resource(Some(host.clone()));
@@ -224,25 +240,31 @@ fn unsupported(reason: &'static str) -> Error {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Source {
-    node: NodeId,
-    port: String,
+pub(crate) struct Source {
+    pub(crate) node: NodeId,
+    pub(crate) port: String,
     #[serde(default)]
-    item: Option<u32>,
+    pub(crate) item: Option<u32>,
 }
 
+/// One `export.local_*` request. `export.node_*` (#746) builds exactly this from a card, so a
+/// card's export can never mean anything a direct request could not.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct Request {
-    canvas: CanvasId,
-    sources: Vec<Source>,
-    destination: String,
+pub(crate) struct Request {
+    pub(crate) canvas: CanvasId,
+    pub(crate) sources: Vec<Source>,
+    pub(crate) destination: String,
     #[serde(default)]
-    template: Option<String>,
+    pub(crate) template: Option<String>,
     #[serde(default)]
-    on_collision: Option<Collision>,
+    pub(crate) on_collision: Option<Collision>,
     #[serde(default)]
-    format: Option<nodecraft_format::export::FormatRequest>,
+    pub(crate) format: Option<nodecraft_format::export::FormatRequest>,
+    /// Write on the shared export worker (`export.status` / `export.cancel`); the UI opts in,
+    /// headless callers keep the synchronous result.
+    #[serde(default)]
+    pub(crate) background: bool,
 }
 
 /// The title a `{title}` token uses: the person's own title, or the kind's last part.
@@ -252,7 +274,7 @@ fn title_of(kind: &str, title: &str) -> String {
     value.chars().take(MAX_NAME_BYTES).collect()
 }
 
-fn host<'a>(c: &Context<'a>) -> Result<&'a ExportHost, Error> {
+pub(crate) fn host<'a>(c: &Context<'a>) -> Result<&'a ExportHost, Error> {
     c.resources.get::<ExportHost>().ok_or_else(|| unsupported(if cfg!(target_arch = "wasm32") { reasons::WASM_HOST } else { reasons::NO_HOST }))
 }
 
@@ -260,6 +282,11 @@ fn host<'a>(c: &Context<'a>) -> Result<&'a ExportHost, Error> {
 /// directory descriptor to verify the grant but writes no file; `Session` publishes the plan.
 fn build(c: &Context<'_>, parameters: &Value, for_write: bool) -> Result<ExportPlan, Error> {
     let request: Request = params(parameters)?;
+    build_request(c, &request, for_write)
+}
+
+/// [`build`] for an already-typed request.
+pub(crate) fn build_request(c: &Context<'_>, request: &Request, for_write: bool) -> Result<ExportPlan, Error> {
     if request.sources.is_empty() {
         return Err(Error::new(ErrorKind::InvalidInput, "export needs at least one result to write"));
     }
@@ -331,6 +358,10 @@ fn resolve(
         Ok((value, _)) => value,
         Err(error) => return refused(held.clone(), &error.message),
     };
+    // A Soul ID's descriptor names one account's identity; it isn't a file to hand on (#180).
+    if crate::soul_ids::bound_value(selected) {
+        return refused(held, crate::soul_ids::ACCOUNT_BOUND);
+    }
     let (asset, mime, bytes, hash) = match media_for(c.assets, selected) {
         Ok(resolved) => resolved,
         Err(reason) => return refused(held.clone(), reason),
@@ -360,7 +391,7 @@ fn resolve(
 /// The `export.local_plan` result: what would be written, and why anything would not be. The
 /// destination is not echoed back: the caller named it, and a project's folder path has no reason
 /// to travel through a command result.
-fn planned_json(plan: &ExportPlan) -> Value {
+pub(crate) fn planned_json(plan: &ExportPlan) -> Value {
     // The folder is not read here, so each name is predicted from the batch alone: a repeated name
     // follows the collision policy exactly as `run` applies it, but whether a file already exists
     // on disk is only known when the export runs.
@@ -468,14 +499,16 @@ fn request_schema() -> Value {
             "mode":{"enum":["original","convert","vectorise"],"default":"original",
                 "description":"original writes the stored bytes unchanged. convert and vectorise exist so a form can state what is unavailable; both are refused in this build."},
             "mime":{"type":"string","maxLength":MAX_MIME_BYTES,"description":"Required by convert and vectorise; a lowercase type/subtype."}},
-            "required":["mode"],"additionalProperties":false}},
+            "required":["mode"],"additionalProperties":false},
+        "background":{"type":"boolean","default":false,
+            "description":"Write on the background export worker and return {pending:id}; poll export.status and stop with export.cancel."}},
         "required":["canvas","sources","destination"],"additionalProperties":false})
 }
 
 const PLAN_DOC: &str = "Preview a batch local export without writing anything. Params: {canvas:uuid, sources:[{node:uuid, \
     port:string, item?:int}], destination:string, template?:string, on_collision?:skip|overwrite|numbered, \
     format?:{mode:original|convert|vectorise, mime?:string}}. A source's active generation is its payload; history \
-    is never exported, and a text result is refused exactly as history.export refuses it. Returns each file's name \
+    is never exported, and a text result or a Soul ID (bound to the account that trained it) is refused exactly as history.export refuses it. Returns each file's name \
     with the node and generation it came from, and why any source cannot be written. Names are predicted from the \
     batch alone: whether a file already exists in the folder is only checked when the export runs. Pass-through \
     only: no conversion is performed or implied.";
@@ -507,7 +540,10 @@ pub fn specs() -> Vec<CommandSpec> {
             input_schema: request_schema,
             params_doc: RUN_DOC,
             enabled: |c, v| build(c, v, true).map(|_| ()),
-            run: |c, v| build(c, v, true).map(|plan| Effect::LocalExport { plan }),
+            run: |c, v| {
+                let request: Request = params(v)?;
+                build_request(c, &request, true).map(|plan| Effect::LocalExport { plan, background: request.background })
+            },
         },
     ]
 }
@@ -522,7 +558,7 @@ pub fn specs() -> Vec<CommandSpec> {
 pub(crate) fn run(assets: &nodecraft_format::AssetStore, plan: &ExportPlan, host: &ExportHost) -> Result<ExportOutcome, Error> {
     #[cfg(unix)]
     {
-        let outcome = host.pinned_destination(&plan.destination).and_then(|destination| run_pinned(assets, plan, host.cancel(), &destination));
+        let outcome = host.pinned_destination(&plan.destination).and_then(|destination| run_pinned(assets, plan, host.cancel(), &destination, &|_| {}));
         // A cancel stops the export it was pressed for, and must not stop the next one, even when
         // this one was refused before it began.
         host.cancel().reset();
@@ -535,12 +571,34 @@ pub(crate) fn run(assets: &nodecraft_format::AssetStore, plan: &ExportPlan, host
     }
 }
 
+/// [`run`] on the shared background export worker (#746): the worker's own cancel token stops it
+/// between files, and each finished entry is reported as progress. The host's grant (and its
+/// pinned descriptor) is retained by the job until it ends.
+#[cfg(all(unix, not(target_arch = "wasm32")))]
+pub(crate) fn run_background(
+    assets: &nodecraft_format::AssetStore,
+    plan: &ExportPlan,
+    host: &ExportHost,
+    control: &crate::export_job::Control,
+) -> Result<ExportOutcome, Error> {
+    let destination = host.pinned_destination(&plan.destination)?;
+    let total = u32::try_from(plan.entries.len()).unwrap_or(u32::MAX);
+    let report = |outcome: &ExportOutcome| {
+        let count = |state| u32::try_from(outcome.count(state)).unwrap_or(u32::MAX);
+        let done = u32::try_from(outcome.entries.len()).unwrap_or(u32::MAX);
+        control.progress(done, total, count(EntryState::Written), count(EntryState::Failed));
+    };
+    report(&ExportOutcome::default());
+    run_pinned(assets, plan, &control.cancel, &destination, &report)
+}
+
 #[cfg(unix)]
 fn run_pinned(
     assets: &nodecraft_format::AssetStore,
     plan: &ExportPlan,
     cancel: &TransferCancel,
     destination: &secure::Destination<'_>,
+    progress: &dyn Fn(&ExportOutcome),
 ) -> Result<ExportOutcome, Error> {
     let mut outcome = ExportOutcome::default();
     // Cancelled before the first file: nothing is written, and nothing is left behind to find.
@@ -552,6 +610,12 @@ fn run_pinned(
     let mut assigned = assign_names(&ready, plan.collision, &taken).into_iter();
 
     for entry in &plan.entries {
+        progress(&outcome);
+        // Checked before every entry, including ones that are skipped or refused without a write.
+        if !stopped && cancel.check().is_err() {
+            stopped = true;
+            outcome.cancelled = true;
+        }
         if stopped {
             outcome.entries.push(not_started(entry));
             continue;
@@ -587,6 +651,7 @@ fn run_pinned(
             outcome.cancelled = true;
         }
     }
+    progress(&outcome);
     Ok(outcome)
 }
 
@@ -603,6 +668,28 @@ fn not_started(entry: &PlannedEntry) -> EntryOutcome {
         PlannedEntry::Ready { source, name, .. } => (source, Some(name.file_name())),
     };
     outcome_of(source, file, EntryState::NotStarted, Some(reasons::NOT_STARTED), 0, None)
+}
+
+/// How many of `plan`'s intended file names already exist in its folder: what `overwrite` would
+/// replace (and `skip` keep). A read of the pinned folder's metadata only; `None` where the secure
+/// folder reader is unavailable or a name cannot be checked.
+pub(crate) fn existing_files(host: &ExportHost, plan: &ExportPlan) -> Option<usize> {
+    #[cfg(unix)]
+    {
+        let destination = host.pinned_destination(&plan.destination).ok()?;
+        let mut existing = 0usize;
+        for name in ready_names(plan) {
+            if destination.taken(&name.file_name()).ok()? {
+                existing = existing.saturating_add(1);
+            }
+        }
+        Some(existing)
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (host, plan);
+        None
+    }
 }
 
 /// The names of the entries that can become files, in request order.

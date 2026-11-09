@@ -1,5 +1,6 @@
 use super::*;
 use nodecraft_engine::settings::AgentEndpoint;
+use nodecraft_engine::settings::ProviderSettings;
 use nodecraft_providers::llm::{ChatResponse, Message, Part, Role, StopReason};
 use nodecraft_providers::{ProviderError, Usage};
 use serde_json::{Value, json};
@@ -171,15 +172,50 @@ fn an_endpoint_without_a_model_or_a_worker_says_so_instead_of_asking() {
 #[test]
 fn the_endpoint_needs_its_key_and_local_servers_none() {
     let keys = nodecraft_engine::secrets::MemoryStore::default();
-    let missing = worker::endpoint(&AgentSettings::default(), &keys).unwrap_err();
+    let missing = worker::endpoint(&AgentSettings::default(), &[ProviderSettings::default()], &keys).unwrap_err();
     assert!(missing.message.contains("anthropic"), "{missing:?}");
     let account = nodecraft_engine::secrets::Account::new("anthropic").unwrap();
     nodecraft_engine::secrets::SecretStore::set(&keys, &account, &nodecraft_engine::secrets::Secret::new("sk-test").unwrap()).unwrap();
-    let endpoint = worker::endpoint(&AgentSettings::default(), &keys).unwrap();
+    let endpoint = worker::endpoint(&AgentSettings::default(), &[ProviderSettings::default()], &keys).unwrap();
     assert_eq!(endpoint.id, "anthropic");
     let local = AgentSettings { endpoint: AgentEndpoint::LmStudio, base_url: Some("http://10.0.0.2:1234".into()), ..AgentSettings::default() };
-    let endpoint = worker::endpoint(&local, &keys).unwrap();
+    let endpoint = worker::endpoint(&local, &[ProviderSettings::default()], &keys).unwrap();
     assert_eq!((endpoint.base_url.as_str(), endpoint.key.is_none()), ("http://10.0.0.2:1234/v1", true));
+}
+
+#[test]
+fn the_agent_follows_a_custom_base_url_or_refuses() {
+    let keys = nodecraft_engine::secrets::MemoryStore::default();
+    for name in ["anthropic", "openai"] {
+        let account = nodecraft_engine::secrets::Account::new(name).unwrap();
+        nodecraft_engine::secrets::SecretStore::set(&keys, &account, &nodecraft_engine::secrets::Secret::new("sk-test").unwrap()).unwrap();
+    }
+    let openai = AgentSettings { endpoint: AgentEndpoint::Openai, ..AgentSettings::default() };
+    assert_eq!(worker::endpoint(&openai, &[ProviderSettings::default()], &keys).unwrap().base_url, "https://api.openai.com/v1", "nothing set: unchanged");
+    let mut providers = ProviderSettings::default();
+    providers.base_urls.insert("openai".into(), "http://127.0.0.1:4000/v1".into());
+    providers.base_urls.insert("anthropic".into(), "ftp://gateway.example/v1".into());
+    assert_eq!(worker::endpoint(&openai, std::slice::from_ref(&providers), &keys).unwrap().base_url, "http://127.0.0.1:4000/v1");
+    let refused = worker::endpoint(&AgentSettings::default(), std::slice::from_ref(&providers), &keys).unwrap_err();
+    assert!(refused.message.contains("custom base URL") && !refused.message.contains("gateway.example"), "{refused:?}");
+    // A key set up for OpenAI Images' custom base URL doesn't go to OpenAI's own API either.
+    let mut images = ProviderSettings::default();
+    images.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(worker::endpoint(&openai, std::slice::from_ref(&images), &keys).is_err());
+    // A custom base gets the custom-endpoint client's base; the views must agree.
+    let mut local = ProviderSettings::default();
+    local.base_urls.insert("openai".into(), "http://127.0.0.1:4000/v1".into());
+    let (_, base) = worker::routed(&openai, &[local.clone(), local.clone()], &keys).unwrap();
+    assert_eq!(base.unwrap().as_str(), "http://127.0.0.1:4000/v1");
+    // The file now unreadable (defaults) never undoes what was loaded at startup, nor the reverse.
+    let defaults = ProviderSettings::default();
+    for views in [[local.clone(), defaults.clone()], [defaults.clone(), local.clone()]] {
+        let refused = worker::endpoint(&openai, &views, &keys).unwrap_err();
+        assert!(refused.message.contains("restart"), "{refused:?}");
+    }
+    let mut images_now = ProviderSettings::default();
+    images_now.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(worker::endpoint(&openai, &[defaults, images_now], &keys).is_err(), "either view's shared-key rule refuses");
 }
 
 #[test]
@@ -210,7 +246,7 @@ fn costs_show_rounded_up_to_the_cent() {
 }
 
 fn shell(panel: AgentPanel) -> crate::shell::Shell {
-    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None, storage_window: None }
+    crate::shell::Shell { app: NodeCraftApp::headless().unwrap(), agent: panel, channel: None, storage_window: None, storage_window_pending: None, mcp: None }
 }
 
 /// A frame of the real window: the sidebar's logic before the app's, then `Shell::show`.
@@ -383,4 +419,203 @@ fn a_card_under_the_sidebar_neither_shows_over_it_nor_takes_its_clicks() {
     let title = h.state().app.session.document().canvases().get(&canvas).unwrap().nodes().get(&node).unwrap().title.clone();
     assert_eq!(title, "Sea", "the click reached Approve, not the card");
     assert!(h.state().app.selection.is_empty(), "the card wasn't selected");
+}
+
+/// While the person's save is still writing (#367), the agent's next step waits in the worker
+/// instead of being run and refused as busy, which the model would retry as paid turns; once
+/// the save has settled it runs, and the conversation goes on with one request per step.
+#[test]
+fn a_reply_waits_for_a_background_save_instead_of_spending_turns_on_busy() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(base.path().join("settings")));
+    let storage = nodecraft_ui_egui::app::storage::StorageSetup { recovery: base.path().join("settings/recovery/session.journal"), open: None };
+    let mut app = NodeCraftApp::with_settings_and_storage(&ctx, store, Some(storage)).unwrap();
+    let node = first_node(&app);
+    let (mut panel, script) = panel(AgentSettings::default());
+    panel.apply(vec![Intent::Mode(Mode::Auto)], &mut app, &ctx);
+    let gate = Arc::new(Gate::default());
+    app.session.set_save_runner(gate.clone());
+    let file = base.path().join("agent.ncraft");
+    assert_eq!(app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    panel.input = "Call it Sea".into();
+    panel.apply(vec![Intent::Ask], &mut app, &ctx);
+    let rename = json!({"id": "node.title", "params": {"canvas": app.canvas, "id": node, "title": "Sea"}});
+    script.release.send(tool("command_run", rename)).unwrap();
+    let title = |app: &NodeCraftApp| app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&node).unwrap().title.clone();
+    // The reply has come back to the worker; frames go on and nothing runs or is asked again.
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(300) {
+        panel.logic(&mut app, &ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_ne!(title(&app), "Sea");
+    assert_eq!(panel.agent().status(), Status::Thinking, "the step is still to come");
+    assert_eq!(script.sent.lock().unwrap().len(), 1, "no turn was spent on a busy refusal");
+    // The save finishes; the step runs on the saved project and the model is asked once more.
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(app.session.poll_file().unwrap().unwrap()["saved"], true);
+    script.release.send(say("Renamed.")).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| said(p, "Renamed."));
+    assert_eq!(title(&app), "Sea");
+    assert_eq!(script.sent.lock().unwrap().len(), 2);
+}
+
+/// During a background open (or recovery) every change is refused too (#367): the agent's
+/// replies wait in the worker, and Approve waits until the open has finished rather than
+/// running the approved steps into busy refusals.
+#[test]
+fn approval_and_replies_wait_for_a_background_open() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let base = tempfile::tempdir().unwrap();
+    let ctx = egui::Context::default();
+    let (store, _) = nodecraft_engine::settings::open(nodecraft_engine::settings::Location::Dir(base.path().join("settings")));
+    let storage = nodecraft_ui_egui::app::storage::StorageSetup { recovery: base.path().join("settings/recovery/session.journal"), open: None };
+    let mut app = NodeCraftApp::with_settings_and_storage(&ctx, store, Some(storage)).unwrap();
+    let node = first_node(&app);
+    let file = base.path().join("agent-open.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+    let (mut panel, script) = panel(AgentSettings::default());
+    panel.input = "Call it Sea".into();
+    panel.apply(vec![Intent::Ask], &mut app, &ctx);
+    let rename = json!({"id": "node.title", "params": {"canvas": app.canvas, "id": node, "title": "Sea"}});
+    script.release.send(tool("command_run", rename)).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| p.agent().status() == Status::Waiting);
+    // The same file opens again in the background, its job held.
+    let gate = Arc::new(Gate::default());
+    app.session.set_save_runner(gate.clone());
+    assert_eq!(
+        app.session.dispatch("file.open", &json!({"location": file.to_str().unwrap(), "discard_dirty": true, "background": true})).unwrap()["opening"],
+        true
+    );
+    let title = |app: &NodeCraftApp| app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&node).unwrap().title.clone();
+    panel.apply(vec![Intent::Approve], &mut app, &ctx);
+    for _ in 0..20 {
+        panel.logic(&mut app, &ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert_eq!(panel.agent().status(), Status::Waiting, "the approval is still to be given");
+    assert_ne!(title(&app), "Sea");
+    assert_eq!(script.sent.lock().unwrap().len(), 1, "no turn was spent on a busy refusal");
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(app.session.poll_file().unwrap().unwrap()["opened"], true);
+    panel.apply(vec![Intent::Approve], &mut app, &ctx);
+    assert_eq!(title(&app), "Sea", "approved on the opened project");
+    script.release.send(say("Renamed.")).unwrap();
+    pump_until(&mut panel, &mut app, &ctx, |p| said(p, "Renamed."));
+    assert_eq!(script.sent.lock().unwrap().len(), 2);
+}
+
+/// The agent's settings screen (#1063): choosing an endpoint and a model is saved as one settings
+/// write when Save is pressed, used for the next message, and kept in the settings file. A bad
+/// address or a missing model is refused with a reason and nothing is saved; Cancel drops the form.
+#[test]
+fn the_settings_screen_chooses_the_endpoint_and_model_and_refuses_what_wont_work() {
+    use egui_kittest::{Harness, kittest::Queryable};
+    let dir = tempfile::tempdir().unwrap();
+    let location = nodecraft_engine::settings::Location::Dir(dir.path().to_path_buf());
+    let (store, _) = nodecraft_engine::settings::open(location.clone());
+    let (panel, script) = panel(AgentSettings::default());
+    let ctx = egui::Context::default();
+    let app = NodeCraftApp::with_settings(&ctx, store).unwrap();
+    let shell = crate::shell::Shell { app, agent: panel, channel: None, storage_window: None, storage_window_pending: None, mcp: None };
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(frame, shell);
+    h.run_steps(2);
+    let click = |h: &mut Harness<'_, crate::shell::Shell>, label: &str| {
+        h.get_by_label(label).click();
+        h.run_steps(2);
+    };
+    click(&mut h, "Settings");
+    assert!(h.state().agent.draft.is_some(), "the form opens");
+    // Ollama with no model: refused, nothing saved.
+    h.state_mut().agent.draft.as_mut().unwrap().endpoint = AgentEndpoint::Ollama;
+    h.run_steps(2);
+    assert!(h.query_by_label("Server address").is_some(), "a local server's address can be set");
+    click(&mut h, "Save");
+    assert!(h.query_by_label_contains("Choose a model for Ollama").is_some());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Anthropic, "nothing saved");
+    // A model, but an address that isn't http(s): refused too.
+    assert!(h.query_by_label("Model").is_some());
+    let draft = h.state_mut().agent.draft.as_mut().unwrap();
+    draft.model = "llama3.2".into();
+    draft.base_url = "file:///etc/passwd".into();
+    h.run_steps(2);
+    click(&mut h, "Save");
+    assert!(h.query_by_label_contains("must start with http:// or https://").is_some());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Anthropic, "still nothing saved");
+    // A good address: saved at once, the form closes, and the agent asks that model.
+    h.state_mut().agent.draft.as_mut().unwrap().base_url = "http://127.0.0.1:11434".into();
+    h.run_steps(1);
+    click(&mut h, "Save");
+    assert!(h.state().agent.draft.is_none(), "saved, the form closes");
+    let saved = h.state().app.agent_settings();
+    assert_eq!((saved.endpoint, saved.model(), saved.base_url()), (AgentEndpoint::Ollama, Some("llama3.2"), Some("http://127.0.0.1:11434")));
+    assert_eq!(h.state().agent.agent().config().model, "llama3.2");
+    // Cancel drops a changed form.
+    click(&mut h, "Settings");
+    h.state_mut().agent.draft.as_mut().unwrap().endpoint = AgentEndpoint::Openai;
+    // The form loses its address field: lay it out again before pressing.
+    h.run_steps(2);
+    click(&mut h, "Cancel");
+    assert!(h.state().agent.draft.is_none());
+    assert_eq!(h.state().app.agent_settings().endpoint, AgentEndpoint::Ollama, "Cancel saves nothing");
+    // The next message goes to the saved endpoint and model.
+    h.state_mut().agent.input = "Hello".into();
+    let mut shell = h.into_state();
+    let ctx = egui::Context::default();
+    shell.agent.apply(vec![Intent::Ask], &mut shell.app, &ctx);
+    let start = Instant::now();
+    while script.sent.lock().unwrap().is_empty() {
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    let (settings, request) = script.sent.lock().unwrap().first().cloned().unwrap();
+    assert_eq!((settings.endpoint, request.model.as_str()), (AgentEndpoint::Ollama, "llama3.2"));
+    // And it is in the settings file already: Save wrote it.
+    let (reopened, _) = nodecraft_engine::settings::open(location);
+    assert_eq!(reopened.get().agent.endpoint, AgentEndpoint::Ollama);
+    assert_eq!(reopened.get().agent.model(), Some("llama3.2"));
+}
+
+#[test]
+fn the_sidebar_leaves_a_small_window_half_its_canvas_and_keeps_its_bounds() {
+    use egui_kittest::Harness;
+    let tokens = nodecraft_ui_egui::theme::ThemeKind::Dark.tokens();
+    for (size, opens) in [(egui::vec2(640.0, 400.0), None), (egui::vec2(1200.0, 800.0), Some(tokens.agent_width))] {
+        let (mut panel, _script) = panel(AgentSettings::default());
+        panel.open = false;
+        let mut h = Harness::builder().with_size(size).build_ui_state(frame, shell(panel));
+        h.run_steps(2);
+        let full = canvas_width(h.state());
+        h.state_mut().agent.open = true;
+        h.run_steps(2);
+        let sidebar = full - canvas_width(h.state());
+        // A small window gives it half of the window's space; a large one its usual width.
+        let expected = opens.unwrap_or(full * tokens.agent_max_fraction);
+        // At most half the window (#1115), and never narrower than its controls need.
+        assert!(sidebar <= size.x * tokens.agent_max_fraction + 1.0, "{size:?}: {sidebar}");
+        assert!(sidebar >= tokens.agent_min_width - 1.0, "{size:?}: {sidebar}");
+        assert!((sidebar - expected).abs() < 1.0, "{size:?}: {sidebar} vs {expected}");
+    }
+    // The bounds themselves, for windows from tiny to hostile.
+    for width in [0.0, 300.0, 640.0, 1440.0, f32::NAN, f32::INFINITY] {
+        let (default, range) = sidebar_width(width, tokens);
+        assert!(range.min <= range.max && range.min == tokens.agent_min_width, "{width}");
+        assert!(range.contains(default), "{width}: {default} outside {range:?}");
+    }
 }

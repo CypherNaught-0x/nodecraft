@@ -190,17 +190,9 @@ impl NodeCraftApp {
         self.element_library_listed();
         let mut action = None;
         let mut open = self.element_library.open;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Elements")
-            .id(egui::Id::new("nodecraft.element_library"))
-            .open(&mut open)
-            .constrain_to(self.viewport)
-            .anchor(egui::Align2::RIGHT_TOP, [-t.navigation_margin, self.search_rect().max.y - self.viewport.min.y + t.navigation_gap])
-            .collapsible(false)
-            .resizable(false)
-            .frame(frame)
-            .show(ctx, |ui| {
+        crate::floating::panel(ctx, "Elements", egui::Id::new("nodecraft.element_library"), crate::floating::Home::RightTop, t).open(&mut open).show(
+            ctx,
+            |ui| {
                 let view = &self.element_library;
                 if let Some(path) = &view.clashing {
                     ui.horizontal_wrapped(|ui| {
@@ -265,7 +257,7 @@ impl NodeCraftApp {
                                 if ui.checkbox(&mut shared, "Shared").on_hover_text("Mark it meant for others; Elements are private until you do").changed() {
                                     action = Some(Action::Share { name: entry.name.clone(), shared });
                                 }
-                                ui.menu_button("…", |ui| {
+                                let more = ui.menu_button("…", |ui| {
                                     if ui
                                         .button("Rename")
                                         .on_hover_text("Elements already on a canvas update from it only if they carry its new name")
@@ -287,6 +279,10 @@ impl NodeCraftApp {
                                         ui.close();
                                     }
                                 });
+                                // The glyph alone isn't a name (#1118).
+                                let more_name = format!("More for {}", sheet_view::line(&entry.name));
+                                more.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &more_name));
+                                more.response.on_hover_text("Rename, export or remove it");
                             });
                         }
                         if !listing.damaged.is_empty() {
@@ -330,7 +326,8 @@ impl NodeCraftApp {
                 if ui.button("Import…").on_hover_text("Add an Element someone sent you (.ncelement)").clicked() {
                     action = Some(Action::Import);
                 }
-            });
+            },
+        );
         self.element_library.open = open;
         self.element_library.focus_rename = false;
         if let Some(action) = action {

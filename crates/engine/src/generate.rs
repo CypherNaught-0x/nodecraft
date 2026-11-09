@@ -32,7 +32,9 @@ pub trait MediaSource {
 }
 impl MediaSource for AssetStore {
     fn size(&self, asset: &AssetRef) -> Result<u64, Error> {
-        self.descriptor(&asset.hash).map(|d| d.bytes).ok_or_else(|| invalid("a media input names an asset this project doesn't have"))
+        self.descriptor(&asset.hash)
+            .map(|d| d.bytes)
+            .ok_or_else(|| invalid("a media input names an asset this project doesn't have; run or re-import its source, or connect another"))
     }
     fn read(&self, asset: &AssetRef, limit: u64) -> Result<Arc<[u8]>, Error> {
         if self.size(asset)? > limit {
@@ -484,7 +486,15 @@ fn classify<'a>(item: &'a Output, routes: &Routes<'a>, limits: Limits, raw_text:
     match item {
         Output::Text(text) => Ok(BorrowedOutput::Text { port: routes.port(Modality::Text)?, text }),
         Output::Bytes { mime: claimed, bytes } => {
+            // A typed SVG is not an arbitrary XML/text payload; validate its complete static
+            // original before generic sniffing or any output/history publication.
+            if claimed.split(';').next().is_some_and(|m| m.trim().eq_ignore_ascii_case(nodecraft_media::svg::MIME)) {
+                nodecraft_media::svg::probe(bytes, &Default::default()).map_err(|_| invalid("the provider returned an unsafe or over-limit SVG"))?;
+            }
             let mut sniffed = nodecraft_media::sniff(bytes).ok_or_else(|| invalid("the provider returned an output that isn't a known media type"))?;
+            if sniffed.mime == nodecraft_media::svg::MIME {
+                nodecraft_media::svg::probe(bytes, &Default::default()).map_err(|_| invalid("the provider returned an unsafe or over-limit SVG"))?;
+            }
             // Text that merely starts like a style descriptor stays text where no style is expected.
             if sniffed.kind == MediaKind::Style && routes.0.get(index(Modality::Style)).copied().flatten().is_none() {
                 sniffed = nodecraft_media::Sniffed { mime: "text/plain", kind: MediaKind::Text };
@@ -639,7 +649,12 @@ fn outputs_with_work(
                 let hash = Blake3::from_bytes(ContentHash::of(bytes).0);
                 // A generated sound or movie records the length its headers state (#608), so a
                 // speech-to-video mode can check it against its limit before the next run.
-                let meta = crate::import::timed_meta(&mime, bytes);
+                let meta = if mime == nodecraft_media::svg::MIME {
+                    let info = nodecraft_media::svg::probe(bytes, &Default::default()).map_err(|_| invalid("the provider returned an unsafe SVG"))?;
+                    nodecraft_types::MediaMeta { width: Some(info.width), height: Some(info.height), ..Default::default() }
+                } else {
+                    crate::import::timed_meta(&mime, bytes)
+                };
                 let mime = mime.parse().map_err(|_| Error::new(ErrorKind::Internal, "a sniffed media type didn't parse"))?;
                 produced.assets.push((hash, Arc::clone(bytes)));
                 (conversion.string(port), Value::Media(AssetRef { hash, mime, meta }))

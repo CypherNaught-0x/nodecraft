@@ -15,11 +15,13 @@ use super::generate::RunKind;
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
+    plugin_providers::GrantCheck,
     plugin_runtime::{PluginSnapshot, is_plugin},
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
+    run_journal::PluginGrant,
     secrets::SecretStore,
     settings::ProviderSettings,
 };
@@ -43,6 +45,19 @@ mod browser;
 /// Adapters the provider thread may be asked for before it answers; more fail as busy.
 #[cfg(not(target_arch = "wasm32"))]
 const ASKS: usize = 16;
+
+/// What a card's jobs say, for views that ask about many cards each frame (#163).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct CardJobs {
+    /// A job of it is queued or running.
+    pub(super) live: bool,
+    /// Its latest job was cancelled.
+    pub(super) cancelled: bool,
+    /// Its latest job may have been charged with no result kept (`JobView::may_have_been_charged`).
+    pub(super) maybe_charged: bool,
+    /// A paid result of it is held for a decision (#369).
+    pub(super) held: bool,
+}
 
 /// The engine's runtime over a tokio runtime the app owns.
 #[cfg(not(target_arch = "wasm32"))]
@@ -97,14 +112,17 @@ pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Pro
 /// can't aim a request at the person's own network.
 struct PluginMaker {
     board: Board,
+    /// Asks the plugin store whether a broker's grant still holds before it sends anything.
+    grants: Grants,
     #[cfg(not(target_arch = "wasm32"))]
     http: Result<Arc<dyn Http>, String>,
 }
 
 impl PluginMaker {
-    fn new(board: Board) -> Self {
+    fn new(board: Board, grants: Grants) -> Self {
         Self {
             board,
+            grants,
             #[cfg(not(target_arch = "wasm32"))]
             http: nodecraft_providers::http::ReqwestHttp::public_only().map(|h| Arc::new(h) as Arc<dyn Http>).map_err(|e| e.message),
         }
@@ -115,13 +133,14 @@ impl PluginMaker {
         let provider = self.board.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(adapter).cloned();
         let provider = provider.ok_or_else(|| Readiness::NotSetUp("that plugin isn't enabled".into()))?;
         let http = self.http.clone().map_err(Readiness::Failed)?;
-        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http)
+        let grants = self.grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http, grants)
     }
 
     /// The browser can't keep a request to public addresses, so plugin providers don't run there.
     #[cfg(target_arch = "wasm32")]
     fn make(&self, _: &str, _: &dyn SecretStore) -> Result<Arc<dyn Provider>, Readiness> {
-        let _ = &self.board;
+        let _ = (&self.board, &self.grants);
         Err(Readiness::NotSetUp("plugin providers run in the desktop app only".into()))
     }
 }
@@ -264,6 +283,11 @@ pub(super) struct Runs {
     jobs: Vec<JobView>,
     /// Paid results the host couldn't keep, waiting for a decision (#369).
     held: Vec<HeldView>,
+    /// What each card's jobs and held results say, rebuilt whenever they are read: a sheet asks
+    /// for every row each frame, which must not scan every job per row (#163).
+    cards: BTreeMap<(CanvasId, NodeId), CardJobs>,
+    /// The host's cards possibly charged with no result kept, which outlive their job views.
+    charged: BTreeSet<(CanvasId, NodeId)>,
     /// Runs the host's tasks; shut down without waiting when the app closes.
     #[cfg(not(target_arch = "wasm32"))]
     tokio: Option<tokio::runtime::Runtime>,
@@ -272,10 +296,15 @@ pub(super) struct Runs {
     runtime: Arc<dyn Runtime>,
     #[cfg(not(target_arch = "wasm32"))]
     http: Option<Arc<dyn Http>>,
+    /// The provider settings `keys.test` checks against as the app last saved them, so Test
+    /// follows an endpoint changed in the keys panel (#962).
+    #[cfg(not(target_arch = "wasm32"))]
+    key_settings: Arc<Mutex<ProviderSettings>>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
     plugins: Board,
+    plugin_grants: Grants,
     /// Whether the plugin store has been read, so a plugin missing from `plugins` is gone and
     /// not just still loading.
     plugins_known: bool,
@@ -283,6 +312,8 @@ pub(super) struct Runs {
 
 /// The session's plugins as the provider thread last saw them.
 type Board = Arc<Mutex<Arc<PluginSnapshot>>>;
+/// How brokers recheck their grant, shared with the provider thread.
+type Grants = Arc<Mutex<GrantCheck>>;
 
 impl Runs {
     /// The runtime, HTTP client and provider thread, with adapters reading their keys from
@@ -299,7 +330,8 @@ impl Runs {
         #[cfg(not(target_arch = "wasm32"))]
         let key_http = Arc::clone(&http);
         let board = Board::default();
-        let plugins = PluginMaker::new(Arc::clone(&board));
+        let grants = Grants::new(Mutex::new(GrantCheck::this_window()));
+        let plugins = PluginMaker::new(Arc::clone(&board), Arc::clone(&grants));
         let mut runs = Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
@@ -311,6 +343,7 @@ impl Runs {
             }),
         )?;
         runs.plugins = board;
+        runs.plugin_grants = grants;
         #[cfg(not(target_arch = "wasm32"))]
         {
             runs.http = Some(key_http);
@@ -338,6 +371,12 @@ impl Runs {
         Ok(())
     }
 
+    /// How plugin brokers built from now on recheck their grant before each request (#174): the
+    /// desktop reads the shared plugin store, so a revoke in another window stops them at once.
+    pub(super) fn set_plugin_grants(&mut self, grants: GrantCheck) {
+        *self.plugin_grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = grants;
+    }
+
     /// [`Self::new`] with adapters built by `make`.
     pub(super) fn with_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
         Self::on(services, Maker::spawn(make)?)
@@ -347,6 +386,13 @@ impl Runs {
     #[cfg(test)]
     pub(super) fn with_inline_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
         Self::on(services, Maker::inline(make))
+    }
+
+    /// Gives `keys.test` checks `http`, as [`Self::new`] gives them the runs' client.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(super) fn with_key_http(mut self, http: Arc<dyn Http>) -> Self {
+        self.http = Some(http);
+        self
     }
 
     fn on(services: &mut nodecraft_engine::commands::Services, maker: Maker) -> Result<Self, Error> {
@@ -371,9 +417,9 @@ impl Runs {
             session: id.iter().map(|b| format!("{b:02x}")).collect(),
             wall_clock_ms: wall_clock_ms(),
         };
-        // The desktop plays a speech card's sound while it arrives (#875); the browser can't
-        // play sound yet, so it doesn't ask for previews.
-        let host = RunHost::new(runtime, budget).with_previews(cfg!(not(target_arch = "wasm32")));
+        // A speech card plays its sound while it arrives (#875), on the desktop and, with the
+        // page's own player and `fetch` stream, in the browser (#1070).
+        let host = RunHost::new(runtime, budget).with_previews(true);
         host.register(services)?;
         host.register_estimates(services)?;
         host.register_ownership(services)?;
@@ -389,14 +435,19 @@ impl Runs {
             running: BTreeSet::new(),
             jobs: Vec::new(),
             held: Vec::new(),
+            cards: BTreeMap::new(),
+            charged: BTreeSet::new(),
             #[cfg(not(target_arch = "wasm32"))]
             tokio: Some(tokio),
             #[cfg(not(target_arch = "wasm32"))]
             runtime: key_runtime,
             #[cfg(not(target_arch = "wasm32"))]
             http: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            key_settings: Arc::default(),
             journal_problem: None,
             plugins: Board::default(),
+            plugin_grants: Grants::new(Mutex::new(GrantCheck::this_window())),
             plugins_known: false,
         })
     }
@@ -404,9 +455,28 @@ impl Runs {
     /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
     /// so a check goes out like a run's request does. `None` for a test host without a client.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn key_test_host(&self) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+    /// `dir` is the settings folder the app's store writes, read afresh at each check.
+    pub(super) fn key_test_host(
+        &self,
+        loaded: nodecraft_engine::settings::ProviderSettings,
+        dir: Option<std::path::PathBuf>,
+    ) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http })
+        self.keep_key_settings(&loaded);
+        // The settings as the app last saved them (first those loaded at startup) and the file
+        // as it is now, read at each check: either marking the account redirected is enough
+        // (#960), so an unreadable file never lowers protection below what was loaded, and a
+        // check goes to a custom endpoint only when both name the same one (#962).
+        let kept = Arc::clone(&self.key_settings);
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(move || {
+            let saved = kept.lock().map(|settings| settings.clone()).unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+            let file = match &dir {
+                Some(dir) => nodecraft_engine::settings::peek_at(dir),
+                None => nodecraft_engine::settings::peek(),
+            };
+            vec![saved, file.providers]
+        });
+        Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
     /// The caps later quotes and jobs are checked against (#201).
@@ -446,7 +516,7 @@ impl Runs {
             problems.push(format!("Paid results held from the last session: {}", error.message));
         }
         // Restored results show in the queue panel before anything runs.
-        self.held = self.host.held_results();
+        self.read_held();
         if !problems.is_empty() {
             self.journal_problem = Some(problems.join("\n"));
         }
@@ -467,9 +537,15 @@ impl Runs {
                 if !self.plugins_known {
                     continue;
                 }
-                let granted = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).is_some();
-                if !granted {
+                let current = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).map(|p| PluginGrant::of(&p.stamp));
+                let Some(current) = current else {
                     self.host.abandon(project, &adapter, "its plugin is no longer enabled or granted");
+                    continue;
+                };
+                // Only jobs sent under the grant that stands now are followed; the broker checks
+                // that grant against the store before every poll.
+                self.host.abandon_other_grants(project, &adapter, &current);
+                if !self.host.waiting_targets(project).contains(&target) {
                     continue;
                 }
             }
@@ -537,7 +613,7 @@ impl Runs {
         let (adapters, inner) = adapters_of(session, canvas, settings);
         let mut reached: BTreeSet<NodeId> = match kind {
             RunKind::Generate => ids.iter().copied().collect(),
-            RunKind::Refresh => with_upstream(session, canvas, ids, stale),
+            RunKind::Refresh | RunKind::Changed | RunKind::Workflow => with_upstream(session, canvas, ids, stale),
         };
         // A technique node runs the nodes inlined for it.
         reached.extend(inner.iter().filter(|(_, owner)| reached.contains(owner)).map(|(id, _)| *id).collect::<Vec<_>>());
@@ -635,10 +711,20 @@ impl Runs {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_key_settings(&self, settings: &ProviderSettings) {
+        match self.key_settings.lock() {
+            Ok(mut kept) => *kept = settings.clone(),
+            Err(poisoned) => *poisoned.into_inner() = settings.clone(),
+        }
+    }
+
     pub(super) fn settings_changed(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
         if let Some(waiting) = &mut self.waiting {
             waiting.settings = settings.clone();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.keep_key_settings(settings);
         self.forget_adapters(session)
     }
 
@@ -704,6 +790,7 @@ impl Runs {
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
+        self.summarize();
         tick
     }
 
@@ -719,20 +806,20 @@ impl Runs {
 
     /// Reads the held results again, after a decision about one.
     pub(super) fn refresh_held(&mut self) {
-        self.held = self.host.held_results();
+        self.read_held();
     }
 
     /// Asks one job to stop; its end shows on the next frames.
     pub(super) fn cancel(&mut self, key: JobKey) -> Result<(), Error> {
         self.host.cancel(key)?;
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
     /// Forgets the jobs that ended.
     pub(super) fn clear_finished(&mut self) {
         self.host.clear_finished();
-        self.jobs = self.host.jobs();
+        self.read_jobs();
     }
 
     /// A card's status while it has work queued or running: "Queued", "Generating 40%", ….
@@ -779,7 +866,7 @@ impl Runs {
     pub(super) fn keep_partial(&mut self, session: &mut Session, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         let kept = self.host.keep_partial(session, key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         kept
     }
 
@@ -787,7 +874,7 @@ impl Runs {
     pub(super) fn discard_partial(&mut self, canvas: CanvasId, node: NodeId) -> Result<(), Error> {
         let key = self.ended_partial(canvas, node)?;
         self.host.discard_partial(key);
-        self.jobs = self.host.jobs();
+        self.read_jobs();
         Ok(())
     }
 
@@ -802,9 +889,62 @@ impl Runs {
     pub(super) fn is_busy(&self) -> bool {
         self.host.is_busy() || self.host.is_estimating() || !self.asked.is_empty()
     }
+    /// The last pump at quit (#367): records what has finished, starts and sends nothing.
+    pub(super) fn record_for_quit(&mut self, session: &mut Session) {
+        let _ = self.host.pump_for_quit(session);
+    }
+    pub(super) fn is_preparing_results(&self) -> bool {
+        self.host.is_preparing_results()
+    }
 
     pub(super) fn is_running(&self, canvas: CanvasId, node: NodeId) -> bool {
         self.running.contains(&(canvas, node))
+    }
+
+    /// The cards whose latest job may have been charged with no result kept, until they run
+    /// again (`RunHost::possibly_charged`).
+    pub(super) fn possibly_charged(&self) -> &BTreeSet<(CanvasId, NodeId)> {
+        &self.charged
+    }
+
+    /// What card `node`'s jobs and held results say.
+    pub(super) fn card(&self, canvas: CanvasId, node: NodeId) -> CardJobs {
+        self.cards.get(&(canvas, node)).copied().unwrap_or_default()
+    }
+
+    fn read_jobs(&mut self) {
+        self.jobs = self.host.jobs();
+        self.summarize();
+    }
+
+    fn read_held(&mut self) {
+        self.held = self.host.held_results();
+        self.summarize();
+    }
+
+    /// One pass over the jobs (in order, so a card's last view is its latest job) and the held
+    /// results.
+    fn summarize(&mut self) {
+        let mut cards: BTreeMap<(CanvasId, NodeId), CardJobs> = BTreeMap::new();
+        for view in &self.jobs {
+            let card = cards.entry((view.canvas, view.node)).or_default();
+            let held = card.held;
+            *card = CardJobs {
+                live: card.live || !view.state.is_final(),
+                cancelled: view.state == JobState::Cancelled,
+                maybe_charged: view.may_have_been_charged(),
+                held,
+            };
+        }
+        for view in &self.held {
+            cards.entry((view.canvas, view.node)).or_default().held = true;
+        }
+        // Remembered after its job view is gone ("clear finished", newer jobs pushing it out).
+        self.charged.clone_from(self.host.possibly_charged());
+        for card in &self.charged {
+            cards.entry(*card).or_default().maybe_charged = true;
+        }
+        self.cards = cards;
     }
 
     pub(super) fn failure(&self, canvas: CanvasId, node: NodeId) -> Option<&str> {
@@ -853,6 +993,59 @@ fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
 fn wall_clock_ms() -> Arc<dyn Fn() -> u64 + Send + Sync> {
     // `SystemTime::now` isn't there in the browser.
     Arc::new(|| browser::millis(js_sys::Date::now()))
+}
+
+/// The cards a run of the whole canvas covers (#965), as the engine's `pending` and `workflow`
+/// modes pick them, for setting up their providers: generation, action and technique cards (and
+/// ones of a kind not installed) whose result is stale or missing; with `workflow`, every
+/// generation and technique card as well; then what they need upstream, and any card with work
+/// between two of them. The engine plans the run itself.
+pub(super) fn whole_roots(session: &Session, canvas: CanvasId, workflow: bool, stale: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    use nodecraft_nodes::Category;
+    let Some(on) = session.document().canvases().get(&canvas) else {
+        return Vec::new();
+    };
+    let category = |node: &nodecraft_graph::Node| session.kinds().get(&node.kind).map(|kind| kind.descriptor().category);
+    let generative = |node: &nodecraft_graph::Node| node.kind == nodecraft_nodes::technique::ID || matches!(category(node), Ok(Category::Generation));
+    let has_work = |node: &nodecraft_graph::Node| generative(node) || matches!(category(node), Ok(Category::Action) | Err(_));
+    let roots: Vec<NodeId> = on
+        .nodes()
+        .values()
+        .filter(|node| has_work(node) && ((workflow && generative(node)) || stale.contains(&node.id) || !has_result(node)))
+        .map(|node| node.id)
+        .collect();
+    let mut up: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let mut down: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in on.edges().values() {
+        up.entry(edge.to.node).or_default().push(edge.from.node);
+        down.entry(edge.from.node).or_default().push(edge.to.node);
+    }
+    // The graph may have cycles: seen-sets end each walk.
+    let reach = |from: &BTreeSet<NodeId>, next: &BTreeMap<NodeId, Vec<NodeId>>| {
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<NodeId> = from.iter().copied().collect();
+        while let Some(id) = stack.pop() {
+            for to in next.get(&id).into_iter().flatten() {
+                if seen.insert(*to) {
+                    stack.push(*to);
+                }
+            }
+        }
+        seen
+    };
+    let mut run = with_upstream(session, canvas, &roots, stale);
+    loop {
+        let after = reach(&run, &down);
+        let between: Vec<NodeId> =
+            reach(&run, &up).into_iter().filter(|id| after.contains(id) && !run.contains(id) && on.nodes().get(id).is_some_and(has_work)).collect();
+        if between.is_empty() {
+            break;
+        }
+        run.extend(between);
+        let ids: Vec<NodeId> = run.iter().copied().collect();
+        run = with_upstream(session, canvas, &ids, stale);
+    }
+    run.into_iter().collect()
 }
 
 /// `ids` and every node upstream of them on `canvas` that a `with_upstream` run would run too.
@@ -916,7 +1109,7 @@ mod plugin_maker_tests {
 
     #[test]
     fn a_plugin_provider_runs_only_while_the_session_publishes_it() {
-        let maker = PluginMaker::new(Board::default());
+        let maker = PluginMaker::new(Board::default(), Grants::default());
         let keys = nodecraft_engine::secrets::MemoryStore::default();
         match maker.make("plugin.io.example.acme.acme", &keys) {
             Err(Readiness::NotSetUp(why)) => assert_eq!(why, "that plugin isn't enabled"),
@@ -971,6 +1164,7 @@ mod plugin_maker_tests {
             recipe: None,
             launches: 0,
             staged: None,
+            plugin: None,
         };
         let journal = nodecraft_engine::run_journal::FileJournal::at(path.clone());
         journal.save(&Journal { version: JOURNAL_VERSION, usage, submitted: vec![job] }).unwrap();

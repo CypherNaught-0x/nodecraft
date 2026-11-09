@@ -468,6 +468,7 @@ fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
     h.state_mut().exports.answer = Some(path.clone());
     h.get_by_label("Export for another editor…").click();
     h.run_steps(3);
+    super::export_tests::finish(&mut h);
     assert_eq!(h.state().notice.as_deref(), Some("Exported cut.zip."));
     let zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     let mut names: Vec<String> = zip.file_names().map(|name| name.unwrap().into_owned()).collect();
@@ -476,6 +477,9 @@ fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
     assert!(names.iter().any(|n| n.ends_with(".fcpxml")) && names.contains(&"report.txt".to_owned()), "{names:?}");
     assert_eq!(h.state().session.revision(), revision, "exporting doesn't edit the project");
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod interchange643;
 
 fn captions(h: &mut Harness<'static, NodeCraftApp>) -> Vec<serde_json::Value> {
     let canvas = h.state().canvas;

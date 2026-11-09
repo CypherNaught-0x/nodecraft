@@ -10,6 +10,8 @@ mod results966;
 
 #[path = "asset_imports147.rs"]
 mod asset_imports147;
+#[path = "attach_storage1053.rs"]
+mod attach_storage1053;
 #[path = "audio_generation672.rs"]
 mod audio_generation672;
 #[path = "audio_length608.rs"]
@@ -22,16 +24,26 @@ mod azure45;
 mod background749;
 #[path = "background_open.rs"]
 mod background_open;
+#[path = "background_recover367.rs"]
+mod background_recover367;
 #[path = "background_save.rs"]
 mod background_save;
 #[path = "batch_keys517.rs"]
 mod batch_keys517;
+#[path = "bedrock46.rs"]
+mod bedrock46;
 #[path = "bfl33.rs"]
 mod bfl33;
+#[path = "bfl_kontext1060.rs"]
+mod bfl_kontext1060;
+#[path = "billing_host298.rs"]
+mod billing_host298;
 #[path = "browser_plugins866.rs"]
 mod browser_plugins866;
 #[path = "bulk_edits.rs"]
 mod bulk_edits;
+#[path = "comfy_models970.rs"]
+mod comfy_models970;
 #[path = "comfy_servers864.rs"]
 mod comfy_servers864;
 #[path = "comfy_workflow9.rs"]
@@ -40,6 +52,10 @@ mod comfy_workflow9;
 mod commands;
 #[path = "comments.rs"]
 mod comments;
+#[path = "context_window1074.rs"]
+mod context_window1074;
+#[path = "custom_endpoints960.rs"]
+mod custom_endpoints960;
 #[path = "document_input591.rs"]
 mod document_input591;
 #[path = "fal.rs"]
@@ -70,6 +86,7 @@ mod held_restart614;
 mod held_results369;
 #[path = "ideogram34.rs"]
 mod ideogram34;
+
 #[path = "image_modes500.rs"]
 mod image_modes500;
 #[path = "impact114.rs"]
@@ -98,6 +115,8 @@ mod mesh_generation22;
 mod model_swap157;
 #[path = "native_files.rs"]
 mod native_files;
+#[path = "nested_batch92.rs"]
+mod nested_batch92;
 #[path = "node_edits.rs"]
 mod node_edits;
 #[path = "openai_images.rs"]
@@ -116,6 +135,8 @@ mod paid_image_edit421;
 mod perf152;
 #[path = "perf_clock370.rs"]
 mod perf_clock370;
+#[path = "persistence_faults367.rs"]
+mod persistence_faults367;
 #[path = "project_identity879.rs"]
 mod project_identity879;
 #[path = "prompt_assist582.rs"]
@@ -124,6 +145,8 @@ mod prompt_assist582;
 mod provider_mock;
 #[path = "provider_quotes663.rs"]
 mod provider_quotes663;
+#[path = "pump_during_save367.rs"]
+mod pump_during_save367;
 #[path = "replicate.rs"]
 mod replicate;
 #[path = "request_size307.rs"]
@@ -144,8 +167,18 @@ mod settled_read_only556;
 mod shader_write90;
 #[path = "share.rs"]
 mod share;
+#[path = "sheet_offline163.rs"]
+mod sheet_offline163;
+#[path = "sheet_runs163.rs"]
+mod sheet_runs163;
+#[path = "soul_handles180.rs"]
+mod soul_handles180;
 #[path = "soul_training680.rs"]
 mod soul_training680;
+#[path = "space_preflight367.rs"]
+mod space_preflight367;
+#[path = "space_wiring367.rs"]
+mod space_wiring367;
 #[path = "split_ownership342.rs"]
 mod split_ownership342;
 #[path = "stability36.rs"]
@@ -168,10 +201,14 @@ mod timeline109;
 mod timeline574;
 #[path = "token_rates595.rs"]
 mod token_rates595;
+#[path = "topaz37.rs"]
+mod topaz37;
 #[path = "trained_styles167.rs"]
 mod trained_styles167;
 #[path = "video_generation559.rs"]
 mod video_generation559;
+#[path = "video_to_text84.rs"]
+mod video_to_text84;
 
 #[path = "deepgram40.rs"]
 mod deepgram40;
@@ -196,11 +233,32 @@ mod comfy3d24;
 #[path = "alibaba32.rs"]
 mod alibaba32;
 
+#[path = "recraft35.rs"]
+mod recraft35;
 #[path = "rodin41.rs"]
 mod rodin41;
 
 #[path = "templates952/author.rs"]
 mod templates952_author;
 
+#[path = "template_updates954.rs"]
+mod template_updates954;
 #[path = "templates952.rs"]
 mod templates952;
+
+#[path = "magnific38.rs"]
+mod magnific38;
+
+#[path = "svg_template35.rs"]
+mod svg_template35;
+
+#[path = "minimax27.rs"]
+mod minimax27;
+#[path = "pika29.rs"]
+mod pika29;
+
+#[path = "heygen43.rs"]
+mod heygen43;
+
+#[path = "stl569.rs"]
+mod stl569;

@@ -62,7 +62,7 @@ A package holds `manifest.json`, its descriptors, data or module, its license fi
 | `descriptor_contract` | `{major, minor}` of the #162 contract its descriptors use |
 | `publisher_key_id` | optional token |
 | `license` | SPDX expression, ≤ 128 ASCII bytes |
-| `runtime` | `{"kind":"data"}`, `{"kind":"text_actions","schema":1}`, `{"kind":"provider_operations","schema":1}` or `{"kind":"rust_wasm","module":<path>}`; a `text_actions` package registers only `action`s, each descriptor a text action definition (schema 1, #165), and requires no capability (`incompatible`); a `provider_operations` package registers only `provider`s, each descriptor a provider operation template (below), and requires `network` and at most `secret` besides (`incompatible`); another schema is `unsupported_feature` |
+| `runtime` | `{"kind":"data"}`, `{"kind":"text_actions","schema":1}`, `{"kind":"provider_operations","schema":1}` or `{"kind":"rust_wasm","module":<path>}`, which parses but is refused at install as `unsupported`, for good under this contract ([#1071](decisions/2026-11-06-module-packages-refused.md)); a `text_actions` package registers only `action`s, each descriptor a text action definition (schema 1, #165), and requires no capability (`incompatible`); a `provider_operations` package registers only `provider`s, each descriptor a provider operation template (below), and requires `network` and at most `secret` besides (`incompatible`); another schema is `unsupported_feature` |
 | `dependencies` | ≤ 16 `{package_id, version, digest}` exact locks; not itself, not twice |
 | `capabilities` | `{required, optional}`: `asset.read`, `asset.write`, `network`, `filesystem`, `process`, `gpu`, `secret`; an unknown required one is `unsupported_feature`, an unknown optional one is kept and ignored; a data package requires none (`incompatible`) |
 | `features` | optional `{required, optional}` protocol features, dotted lowercase |
@@ -108,12 +108,12 @@ its templates. Unknown fields are refused, and so is any template that breaks a 
 | `origin` | the API: `https://` and a public DNS name in canonical form, with no port, path, user, query or fragment. IP literals and local names (`localhost`, `.local`, `.internal`, `.lan`, `.home.arpa`, …) are refused |
 | `output_origins` | up to 4 more origins, under the same rule, that output links may point to |
 | `credential` | optional: where the host puts the key, one of `bearer`, `key` (`Authorization: Key`), `x_api_key`, `api_key`, `x_goog_api_key`. A template names no other header |
-| `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. Without one, an ambiguous submit is never retried |
+| `idempotency` | optional: `idempotency-key` or `x-idempotency-key`, which carries the host's key. It is the publisher's claim and shown as one at consent: an ambiguous submit is never sent again either way |
 | `models` | 1 to 64 `{id, price, label?, output?}`. An ID is `/`-separated parts of letters, digits, `.`, `_` and `-`. `price` is the publisher's positive per-job price in exact money (`{"currency":"USD","micros":"40000"}`); a zero price is refused. It is a floor the host's quote never goes under, not a price the host trusts. `label` is what the model picker shows (1 to 64 bytes, no control characters; the ID when absent). `output` is what the model makes: `image`, `video`, `audio`, `mesh` or `text`. A text model's outputs are all of kind `text` and any other's are all links; `output` defaults to whichever of `text` and `image` the outputs fit |
 | `submit` | `POST`, a `path`, a JSON `body`, and either `handle` (a JSON pointer to the job id) or `outputs` |
 | `poll` | needed for a queued submit, refused for one that finishes in its reply: `GET`, a `path` naming `{job}`, `status` (pointer), `states` (`queued`, `running`, `done`, `failed` status lists; `done` and `failed` required; no value in two), `outputs`, optional `error` (pointer), and `interval_ms` (500 to 60000) |
 | `cancel` | optional, queued jobs only: `POST` or `DELETE`, and a `path` naming `{job}` |
-| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise |
+| `limits` | `response_bytes` (up to 4 MiB), `timeout_ms` (1 to 120 s; a submit always gets at least 30 s) and `concurrency` (1 to 4): host ceilings a template can lower, never raise. `concurrency` caps both a run's jobs at once on the provider (its scheduler lane) and the requests in flight to it from every run and restored job together |
 
 A path segment is a literal of unreserved characters, or a whole `{model}` (a model the template
 lists) or `{job}` (an id from a reply of at most 128 unreserved characters). Paths have no query,
@@ -128,7 +128,7 @@ output origin.
 
 The broker's provider (`broker::Broker`) sends these requests without following a redirect: a
 `3xx` reply is an error, on the API origin and on a download alike. Outputs of kind `url` are
-fetched by the host without the credential, up to 256 MiB each, and typed by their bytes, not by
+fetched by the host without the credential, up to 64 MiB for one job (the downloads of a package's jobs hold at most 128 MiB at once), and typed by their bytes, not by
 the template's `mime`. A job id, output or link that carries the credential is refused, and the
 credential is taken out of every error. The service is unknown to the host, so no reply proves a
 submit created nothing: from the moment the submit is sent, every failure may have been billed.
@@ -168,7 +168,10 @@ waiting until a read succeeds.
 A grant records the package digest it was given for and its rights: the capabilities granted and,
 with `network`, the origins they reach. `plugins.rights` shows what a grant of the active version
 would cover: the manifest's required and known optional capabilities and every API and output
-origin its provider templates name (at most 8). A package that asks for anything is granted only
+origin its provider templates name (at most 8), and `key_origins`, those of them that receive a
+key: the API origin of each template that takes a credential. The consent says those apart ("It
+sends your key to") from the output origins results are only downloaded from; a grant still covers
+`origins` as a whole. A package that asks for anything is granted only
 when the request names the digest it was shown, every required capability, any chosen optional
 ones and, with `network`, exactly the origins shown; a mismatch is refused, never narrowed or
 widened, and a capability or origin named twice is refused. Origins are at most 256 bytes. This build grants only `network` and `secret`, and only to provider operations packages.
@@ -185,6 +188,14 @@ text is cut at a character boundary to 16 KiB, and all of them together to 64 Ki
 `grants.json` is version 1 while every live grant covers nothing (a revoked grant is kept without
 its rights), so older builds keep reading it; a live grant with rights writes version 2 with `capabilities` and `origins` on each grant. A build refuses
 a version it doesn't know, an unknown or repeated capability, and origins without `network`.
+
+
+Text a plugin's service writes into an error (an error reply's body, a failed job's message) is
+quoted escaped and labelled `the plugin provider said (unchecked): "…"`, since errors also reach
+the agent's context, where it is data, never instructions; a reply that repeated the key isn't
+quoted at all. Its name lookups run on a thread each, at most 8 at once; a further lookup waits
+for one to finish (never refused, so a submit can't look sent when it wasn't), bounded by the
+request's timeout.
 
 ## Frames and messages
 

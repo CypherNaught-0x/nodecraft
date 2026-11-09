@@ -12,7 +12,11 @@
 # https://developers.openai.com/api/docs/guides/images-vision (checked 2026-10-21): PNG, JPEG,
 # WebP, non-animated GIF.
 
-# GPT-6.1 Sol: 2 USD / 1M input, 10 USD / 1M output; max output 128,000; Chat Completions
+# Reading (checked 2026-11-03, each model's page): declared as `reads` on each text mode. A card's
+# prompt (1 MiB at most) can't come near these windows, so an over-long request is refused by the
+# API itself; the planner's own check only matters for small windows. GPT-6.1 Sol and GPT-6 Luna
+# also cap input at 922,000 tokens, which `reads` has no field for.
+# GPT-6.1 Sol: 2 USD / 1M input, 10 USD / 1M output; context window 1,050,000; max output 128,000; Chat Completions
 # supported without tools. https://developers.openai.com/api/docs/models/gpt-6.1-sol (verified 2026-10-21)
 # A prompt over 272K input tokens bills the whole request at 1.5x (output 15 USD / 1M); the quote
 # uses that rate so it stays an upper bound.
@@ -33,6 +37,7 @@ usage = { input = "0.002 USD", output = "0.01 USD", long = { above = 272000, inp
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -40,6 +45,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -50,6 +56,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 [[model.params.params]]
 name = "max_tokens"
@@ -76,7 +83,7 @@ description = "Upper limit on the reply, reasoning tokens included (sent as max_
 control = { type = "unsigned", min = "1", max = "128000" }
 default = { type = "unsigned", value = "16000" }
 
-# GPT-6 Luna: 0.10 USD / 1M input, 0.50 USD / 1M output; max output 128,000; Chat Completions
+# GPT-6 Luna: 0.10 USD / 1M input, 0.50 USD / 1M output; context window 1,050,000; max output 128,000; Chat Completions
 # supported. https://developers.openai.com/api/docs/models/gpt-6-luna (verified 2026-10-21)
 # A prompt over 272K input tokens bills the whole request at 1.5x (output 0.75 USD / 1M); the
 # quote uses that rate so it stays an upper bound.
@@ -97,6 +104,7 @@ usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 272000, 
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -104,6 +112,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -114,6 +123,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1050000, max_output_tokens = 128000 }
 
 [[model.params.params]]
 name = "max_tokens"
@@ -141,6 +151,9 @@ control = { type = "unsigned", min = "1", max = "128000" }
 default = { type = "unsigned", value = "16000" }
 
 # GPT-4.1 mini (snapshot gpt-4.1-mini-2025-04-14): 0.40 USD / 1M input, 1.60 USD / 1M output;
+# context window 1,047,576 (https://developers.openai.com/api/docs/models/gpt-4.1-mini, the
+# page lists it for the model, naming this snapshot its default, and marks the model and the
+# snapshot deprecated; checked 2026-11-03);
 # max output 32,768; non-reasoning, so temperature (0..2, Chat Completions) applies.
 # https://developers.openai.com/api/docs/models/gpt-4.1-mini (verified 2026-10-21)
 [[model]]
@@ -160,6 +173,7 @@ usage = { input = "0.0004 USD", output = "0.0016 USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1047576, max_output_tokens = 32768 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -167,6 +181,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1047576, max_output_tokens = 32768 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -177,6 +192,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1047576, max_output_tokens = 32768 }
 
 [[model.params.params]]
 name = "max_tokens"

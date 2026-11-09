@@ -70,7 +70,7 @@ impl Badges<'_> {
                 let dragging = reordering.as_ref().is_some_and(|(i, e)| i == input && e == id);
                 let centre = if dragging { pointer.unwrap_or(*at) } else { *at };
                 painter.circle(centre, radius, t.panel_fill, Stroke::new(t.port_stroke, t.wire(*modality)));
-                painter.text(centre, egui::Align2::CENTER_CENTER, format!("{}", index + 1), FontId::proportional(radius * 1.2), t.text);
+                painter.text(centre, egui::Align2::CENTER_CENTER, format!("{}", index + 1), FontId::proportional(radius * t.badge_text_ratio), t.text);
                 if dragging && response.drag_stopped() {
                     *reordering = None;
                     // The badge whose place it was dropped nearest to.
