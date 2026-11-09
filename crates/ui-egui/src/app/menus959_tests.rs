@@ -55,7 +55,7 @@ fn controls(h: &Harness<'static, NodeCraftApp>, label: &str) {
         }
         "Techniques" => {
             for tab in ["Library", "Assets", "History", "Styles"] {
-                h.get_by_label(tab);
+                h.get_by_role_and_label(Role::Button, tab);
             }
         }
         "Elements" => {
