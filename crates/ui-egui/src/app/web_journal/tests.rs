@@ -716,6 +716,7 @@ fn recovery959_question_buttons_restore_or_discard_and_then_close() {
             let starter = app.session.document().clone();
             let mut h = Harness::builder().with_size(egui::vec2(640.0, 400.0)).build_ui_state(
                 move |ui, app: &mut NodeCraftApp| {
+                    app.theme = theme;
                     crate::theme::apply(ui.ctx(), theme);
                     app.web_recovery_frame(ui.ctx());
                 },

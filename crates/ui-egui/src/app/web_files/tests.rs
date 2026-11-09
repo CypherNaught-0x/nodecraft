@@ -372,6 +372,7 @@ fn files959_unsaved_question_cancel_closes_and_preserves_the_project() {
         assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))));
         let mut h = Harness::builder().with_size(egui::vec2(640.0, 400.0)).build_ui_state(
             move |ui, app: &mut NodeCraftApp| {
+                app.theme = theme;
                 crate::theme::apply(ui.ctx(), theme);
                 app.web_files_frame(ui.ctx());
             },
