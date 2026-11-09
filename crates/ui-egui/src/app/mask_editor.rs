@@ -218,7 +218,7 @@ impl NodeCraftApp {
         // the controls around the image expand the modal beyond that room.
         let room = (ctx.content_rect().size() - Vec2::splat((t.navigation_margin + t.card_padding) * 2.0)).max(Vec2::splat(1.0));
         let width = t.viewer_width.min(room.x);
-        let modal = crate::floating::modal(ui.ctx(), egui::Id::new("mask_editor"), "Mask / Inpaint").show(&ctx, |ui| {
+        let modal = crate::floating::modal(&ctx, egui::Id::new("mask_editor"), "Mask editor").show(&ctx, |ui| {
             ui.set_width(width);
             egui::ScrollArea::vertical().id_salt("mask_editor_body").max_height(room.y).auto_shrink([false, true]).show(ui, |ui| {
                 ui.heading("Mask");
