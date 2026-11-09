@@ -98,6 +98,22 @@ pub(crate) fn policy(data: &Value) -> Result<bool, ProviderError> {
     }
 }
 
+/// Skip preview and texture files before they consume the preset's download budget. The
+/// downloaded bytes still have to pass MIME detection and bounded mesh validation below.
+pub(crate) fn select_files<T>(data: &Value, files: &mut Vec<T>, name: impl Fn(&T) -> &str) -> Result<(), ProviderError> {
+    if policy(data)? {
+        files.retain(|file| {
+            name(file)
+                .rsplit_once('.')
+                .is_some_and(|(_, extension)| ["glb", "gltf", "obj", "stl"].iter().any(|supported| extension.eq_ignore_ascii_case(supported)))
+        });
+        if files.is_empty() {
+            return Err(ProviderError::new(ErrorKind::JobFailed, "the 3D workflow saved no supported mesh; previews and texture images are not meshes"));
+        }
+    }
+    Ok(())
+}
+
 pub(crate) fn outputs(data: &Value, mut outputs: Vec<Output>) -> Result<Vec<Output>, ProviderError> {
     if !policy(data)? {
         return Ok(outputs);

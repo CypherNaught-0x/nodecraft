@@ -100,6 +100,29 @@ fn handle() -> JobHandle {
 }
 
 #[test]
+fn comfy3d24_cloud_skips_oversized_posters_before_fetching_meshes() {
+    let obj = b"v -1 0 0\nv 1 0 0\nv 0 2 0\nf 1 2 3\n";
+    let bytes = nodecraft_media::encode_glb(&nodecraft_media::decode_mesh(obj, &Default::default()).unwrap()).unwrap();
+    let http = Transport::new(vec![
+        job_reply(
+            "succeeded",
+            json!({"outputs":[
+                {"id":"poster", "node_id":"10", "name":"poster.png", "type":"image", "size_bytes":u64::MAX},
+                {"id":OUT, "node_id":"10", "name":"mesh.GLB", "type":"3d", "size_bytes":bytes.len()}
+            ]}),
+        ),
+        file(&bytes),
+    ]);
+    let mut handle = handle();
+    handle.data["comfy_mesh_model_v1"] = json!("hunyuan3d-2.1");
+    let JobProgress::Done(done) = block_on(provider(http.clone()).poll(&handle)).unwrap() else { panic!("done") };
+    assert_eq!(done.outputs.len(), 1);
+    assert_eq!(http.paths(), [format!("/api/v2/jobs/{JOB}"), format!("/api/v2/assets/{OUT}/content")]);
+    let Output::Bytes { bytes: actual, .. } = &done.outputs[0] else { panic!("original mesh bytes") };
+    assert_eq!(actual.as_ref(), bytes.as_slice());
+}
+
+#[test]
 fn submit_checks_uploads_the_input_as_an_asset_and_creates_one_job_with_a_stable_key() {
     let http = Transport::new(vec![object_info(), ok(json!({"id": ASSET, "name": "x.png"})), job_reply("queued", json!({}))]);
     let scope = SubmitContext::new();

@@ -608,7 +608,10 @@ impl Provider for ComfyProvider {
                 Known::Finished(mut entry) => {
                     output_selection::arrange(&mut entry.outputs, order.as_deref(), |(id, _)| id.as_str());
                     match finished(&entry) {
-                        Ok(files) => Ok(JobProgress::Done(Completed::new(template::mesh::outputs(&handle.data, self.download(&files).await?)?))),
+                        Ok(mut files) => {
+                            template::mesh::select_files(&handle.data, &mut files, |file| file.filename.as_str())?;
+                            Ok(JobProgress::Done(Completed::new(template::mesh::outputs(&handle.data, self.download(&files).await?)?)))
+                        }
                         Err(e) => Ok(JobProgress::Failed(e)),
                     }
                 }

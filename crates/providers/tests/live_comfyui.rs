@@ -33,7 +33,7 @@ async fn comfy3d24_live_shape_output() {
     let input = std::env::var_os("NODECRAFT_COMFYUI_3D_IMAGE").expect("set a public-safe image path");
     let mut image = Vec::new();
     std::fs::File::open(input).unwrap().take(16 * 1024 * 1024 + 1).read_to_end(&mut image).unwrap();
-    assert!(image.len() <= 16 * 1024 * 1024, "the live test input limit is16MiB");
+    assert!(image.len() <= 16 * 1024 * 1024, "the live test input limit is 16 MiB");
     let mime = nodecraft_media::sniff(&image).expect("a recognized image").mime;
     let model = std::env::var("NODECRAFT_COMFYUI_3D_MODEL").unwrap_or_else(|_| "hunyuan3d-2.1".into());
     assert!(matches!(model.as_str(), "hunyuan3d-2.0" | "hunyuan3d-2.1"));
@@ -64,7 +64,7 @@ async fn comfy3d24_live_shape_output() {
                     let _ = provider.cancel(&handle).await;
                     panic!("live mesh generation timed out; cancellation requested");
                 }
-                std::thread::sleep(Duration::from_secs(2));
+                tokio::time::sleep(Duration::from_secs(2)).await;
             }
         }
     }

@@ -31,6 +31,15 @@ const OBJ: &[u8] = b"v -1 0 0\nv 1 0 0\nv 0 2 0\nf 1 2 3\n";
 const GLTF: &[u8] = include_bytes!("../../providers/src/comfyui/fixtures/triangle.gltf");
 const RETAINED_PROMPT: &str = "A retained prompt from another model must never be sent to this image-only preset";
 
+#[test]
+fn comfy3d24_open_in_3d_lists_the_local_presets() {
+    let catalog = GenerationCatalog::builtin().unwrap();
+    let models = nodecraft_engine::image_tool_cmds::tool_models(&catalog, nodecraft_engine::image_tool_cmds::Tool::To3d);
+    for id in ["comfyui.hunyuan3d-2", "comfyui.hunyuan3d-2.1"] {
+        assert!(models.iter().any(|(model, role)| model == id && role == "image"), "{id} must be offered by Open in 3D");
+    }
+}
+
 struct Threads(Instant);
 impl Runtime for Threads {
     fn spawn(&self, task: TaskFuture<()>) {

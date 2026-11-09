@@ -125,6 +125,7 @@ fn comfy3d24_core_graphs_check_before_upload_and_durable_handles_keep_exact_mesh
         let requests = wire.requests.lock().unwrap();
         assert_eq!(requests.iter().filter(|r| r.url.ends_with("/prompt")).count(), 1);
         assert_eq!(requests.iter().filter(|r| r.url.ends_with("/upload/image")).count(), 1);
+        assert!(!requests.iter().any(|r| r.url.contains("poster.png")), "posters must not consume the mesh download budget");
         let sent: Value = serde_json::from_slice(&requests.iter().find(|r| r.url.ends_with("/prompt")).unwrap().body).unwrap();
         assert_eq!(sent["prompt"]["2"]["inputs"]["image"], "in/stored.png");
         assert_eq!(sent["prompt"]["7"]["inputs"]["seed"], 17);
@@ -132,6 +133,18 @@ fn comfy3d24_core_graphs_check_before_upload_and_durable_handles_keep_exact_mesh
         assert_eq!(sent["prompt"]["10"]["class_type"], "SaveGLB");
         assert_eq!(sent["prompt"]["6"].is_object(), model == "hunyuan3d-2.1");
     }
+}
+
+#[test]
+fn comfy3d24_mesh_downloads_ignore_posters_larger_than_the_remaining_budget() {
+    let mut wire = Wire::new();
+    wire.files.retain(|(name, _)| name.ends_with(".obj") || name.ends_with(".png"));
+    let wire = Arc::new(wire);
+    let p = provider(wire.clone()).with_output_limits(OBJ.len(), OBJ.len());
+    let Submission::Queued(handle) = block_on(p.submit(&job("hunyuan3d-2.0"))).unwrap() else { panic!("queued") };
+    let JobProgress::Done(done) = block_on(p.poll(&handle)).unwrap() else { panic!("done") };
+    assert_eq!(done.outputs.len(), 1);
+    assert!(!wire.paths().iter().any(|url| url.contains("poster.png")));
 }
 
 #[test]

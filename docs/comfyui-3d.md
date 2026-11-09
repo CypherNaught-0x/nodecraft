@@ -33,7 +33,8 @@ also applies an AuraFlow sampling shift of 1.0. Steps, CFG and seed are editable
 is derived stably from the job identity. Live validation must establish or correct this recipe.
 
 Named preset handles retain their Mesh-only output policy across save/resume. Poster and
-texture images are excluded from their results. Native runs validate meshes with bounded media
+texture images are excluded by filename before downloading, so they cannot consume a mesh's
+download budget. Downloaded candidates must still be recognized meshes. Native runs validate meshes with bounded media
 decoding off the frame thread. A poster-only, damaged native mesh or oversized result is an explicit error. Original mesh bytes
 are retained. Per-file and aggregate downloads remain capped at 256 MiB, with at most 512 files.
 Generic imported workflows keep their mapped Image/Mesh outputs and selected saver ordering.
