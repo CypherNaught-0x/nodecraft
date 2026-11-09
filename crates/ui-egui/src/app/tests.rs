@@ -4400,3 +4400,23 @@ fn a_click_ten_points_off_a_noodle_selects_it() {
     press(&mut h, mid + normal * 60.0, egui::PointerButton::Primary, egui::Modifiers::NONE);
     assert!(h.state().selection.edges().is_empty(), "60 points off is empty canvas: {:?}", h.state().selection.edges());
 }
+
+/// Navigation remains canvas-owned for keyboard quick-add while an uncovered map is idle.
+#[test]
+fn review959_uncovered_minimap_keeps_the_canvas_quick_add_key() {
+    let mut h = harness();
+    h.run_steps(4);
+    let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
+    h.hover_at(map.center());
+    h.run_steps(4);
+    let before_document = h.state().session.document().clone();
+    let before_view = h.state().view;
+    let before_count = before_document.canvases().get(&h.state().canvas).unwrap().nodes().len();
+    h.key_press(egui::Key::T);
+    h.run_steps(4);
+    assert_eq!(h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().len(), before_count + 1);
+    assert_eq!(h.state().view, before_view, "an idle map hover never pans the canvas");
+    assert!(!h.state().navigation.pointer_owned);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    assert_eq!(h.state().session.document(), &before_document, "quick-add keeps its ordinary undo contract");
+}

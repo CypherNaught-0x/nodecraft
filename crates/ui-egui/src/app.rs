@@ -2998,7 +2998,7 @@ impl NodeCraftApp {
             layer == canvas
                 // Canvas-owned navigation is not a floating Window, so quick-add over a visible
                 // minimap stays available; a *held* minimap gesture is refused by the busy gate.
-                || layer == egui::LayerId::new(egui::Order::Foreground, ui.id().with("navigation_overlay"))
+                || layer == crate::navigation::overlay_layer(ui.id())
                 || (layer.order == canvas.order && self.painted.keys().any(|id| layer.id == ui.id().with(("node_layer", *id))))
         };
         if ui.ctx().layer_id_at(pointer).is_some_and(|layer| layer.order >= canvas.order && !canvas_family(layer)) {

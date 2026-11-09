@@ -245,6 +245,13 @@ pub struct Layout {
     /// The map is drawn: the person shows it and the canvas is big enough (#1115).
     pub map_shown: bool,
 }
+const NAVIGATION_ORDER: egui::Order = egui::Order::Background;
+
+/// The canvas-owned navigation area, shared with quick-add's layer admission.
+pub(crate) fn overlay_layer(ui_id: egui::Id) -> egui::LayerId {
+    egui::LayerId::new(NAVIGATION_ORDER, ui_id.with("navigation_overlay"))
+}
+
 /// The navigation panel at the canvas's bottom right (#1115): `navigation_fraction` of the canvas
 /// width between `navigation_min_width` and `navigation_width`, never wider than the canvas. The
 /// map keeps the default panel's shape and hides below `minimap_hide_width` × `minimap_hide_height`.
@@ -387,8 +394,8 @@ impl Navigation {
         let blocked = self.pointer_owned || (!canvas_gesture && pointer.is_some_and(|p| layout.overlay.contains(p)));
         // Canvas chrome stays above the canvas root, while floating tools retain their
         // controls and scrollbars wherever the two overlap. Menus/questions remain above both.
-        self.layer = Some(egui::LayerId::new(egui::Order::Background, ui.id().with("navigation_overlay")));
-        egui::Area::new(ui.id().with("navigation_overlay")).order(egui::Order::Background).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
+        self.layer = Some(overlay_layer(ui.id()));
+        egui::Area::new(ui.id().with("navigation_overlay")).order(NAVIGATION_ORDER).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
             ui.ctx(),
             |ui| {
                 ui.set_min_size(layout.overlay.size());
