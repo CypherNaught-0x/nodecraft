@@ -629,7 +629,7 @@ a click outside, which never reaches the canvas (a click on another top-bar entr
 control still acts, as before). The browser's File menu offers Open…, Save and Save as…, with
 the same rules: while it is open the canvas gets no keys or clicks.
 
-**Tag filter** opens the tag panel below the row, and closes it again. While a filter is active the
+**Tag filter** opens the movable, resizable tag panel below the row, and closes it again. Its centered header holds Close, followed by a name search, color-marked tag checkboxes with card counts, Untagged, and match navigation. While a filter is active the
 entry shows the match count beside its label and in its accessible name ("Tag filter (3
 matches)"). Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
@@ -780,7 +780,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 1. **Canvas** (`Background`): the board, cards and wires.
 2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
    in front. Opening one never reorders the others.
-3. **Pinned chrome** (`Foreground`): the application row, the Tags panel, Format selection, Search,
+3. **Pinned chrome** (`Foreground`): the application row, Format selection, Search,
    Discussions, the minimap and comment pins.
 4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More and File menus, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
@@ -840,6 +840,7 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
+| Tag filter | floating panel | header | right/bottom edges, corner | Close tags, Escape, or its top-bar entry |
 | Custom shader, Image viewer, PDF reader, Charges to review, Batch items, Workflow fields, Choose a model | floating panel (viewer/review/tool) | header | right/bottom edges, corner | close button or Escape |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter trigger, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
