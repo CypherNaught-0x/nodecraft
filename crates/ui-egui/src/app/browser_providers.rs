@@ -60,7 +60,7 @@ impl BrowserProviders {
             return;
         }
         let mut open = self.open;
-        crate::floating::panel(ctx, "Provider servers", egui::Id::new("nodecraft.browser_providers"), crate::floating::Home::RightTop, t).open(&mut open).default_width(t.dialog_width).show(ctx, |ui| {
+        crate::floating::panel(ctx, "Provider servers", egui::Id::new("nodecraft.browser_providers"), crate::floating::Home::RightTop, t).open(&mut open).default_width(t.dialog_width).vscroll(true).show(ctx, |ui| {
             ui.label("Server addresses are kept in this browser for this site. Put tokens and virtual keys in API keys.");
             ui.label("Calls go directly from this page to the server. Allow this page's origin in ComfyUI and LiteLLM's CORS settings. HTTPS pages may block HTTP servers.");
             let label = ui.label("ComfyUI server");

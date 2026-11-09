@@ -667,8 +667,8 @@ impl NodeCraftApp {
             ui.set_min_size(size);
             ui.set_max_size(size);
             ui.horizontal(|ui| {
-                ui.heading("Layers");
-                ui.label(egui::RichText::new(&node.title).color(t.text_muted));
+                // Lay out the actions first, from the right. The title gets only the
+                // remaining width; its complete text stays in AccessKit and on hover.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close |= ui.button("Done").clicked();
                     if ui.button("Redo").clicked() {
@@ -677,11 +677,15 @@ impl NodeCraftApp {
                     if ui.button("Undo").clicked() {
                         commands.push(("edit.undo", json!({})));
                     }
-                    if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
-                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.heading("Layers");
+                        ui.add(egui::Label::new(egui::RichText::new(&node.title).color(t.text_muted)).truncate()).on_hover_text(&node.title);
+                    });
                 });
             });
+            if let Some(notice) = &notice {
+                ui.add(egui::Label::new(egui::RichText::new(notice).color(t.danger)).truncate()).on_hover_text(notice);
+            }
             let body = ui.available_rect_before_wrap();
             let side = t.layers_panel_width.min(body.width() / 4.0);
             let left = Rect::from_min_size(body.min, Vec2::new(side, body.height()));

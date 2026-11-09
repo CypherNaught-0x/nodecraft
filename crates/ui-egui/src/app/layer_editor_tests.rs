@@ -345,3 +345,34 @@ fn layers101_visual() {
         h.render().unwrap().save(dir.join(name)).unwrap();
     }
 }
+
+#[test]
+fn layout959_layer_title_and_notice_keep_actions_on_screen_and_full_accessible_text() {
+    use super::layout959_tests as layout;
+    use egui::accesskit::Role;
+    let title = "Public campaign composite with a detailed title to identify the image treatment and its intended destination";
+    let notice = "Public diagnostic details about the current composite and its source image. ".repeat(32);
+    for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        let mut h = opened();
+        let canvas = h.state().canvas;
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":EDITOR,"title":title})).unwrap();
+        h.state_mut().notices.error(&notice);
+        let revision = h.state().session.revision();
+        for (size, percent) in layout::CASES {
+            layout::viewport(&mut h, theme, size, percent);
+            let modal = layout::modal(&h, "layer_editor");
+            for label in ["Done", "Undo", "Redo"] {
+                let button = h.get_by_role_and_label(Role::Button, label).rect();
+                assert!(modal.contains_rect(button), "{label}: {button:?} leaves {modal:?}");
+            }
+            assert!(h.query_all_by_role_and_label(Role::Label, title).next().is_some(), "the complete title stays accessible");
+            assert!(h.query_all_by_role_and_label(Role::Label, &notice).next().is_some(), "the complete diagnostic stays accessible");
+            assert_eq!(h.state().session.revision(), revision);
+            layout::evidence(&mut h, "layer-long-title", theme, size, percent);
+        }
+        h.get_by_role_and_label(Role::Button, "Done").click();
+        h.run_steps(3);
+        assert!(h.state().layer_editor.is_none());
+        assert_eq!(h.state().session.revision(), revision);
+    }
+}

@@ -127,3 +127,34 @@ fn render_browser_provider_settings_evidence() {
     h.run();
     h.render().unwrap().save(folder.join("after-provider-servers.png")).unwrap();
 }
+
+#[test]
+fn layout959_provider_settings_scroll_to_save_at_small_and_enlarged_sizes() {
+    use crate::app::layout959_tests as layout;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        for (size, percent) in layout::CASES {
+            let origin = Arc::new(Origin::default());
+            let mut h = harness(app(Arc::clone(&origin)));
+            h.state_mut().browser_providers.as_mut().unwrap().open = true;
+            layout::viewport(&mut h, theme, size, percent);
+            crate::app::panel_check::check_open_panels(&h, "Provider servers before scrolling");
+            let panel = egui::AreaState::load(&h.ctx, egui::Id::new("nodecraft.browser_providers")).unwrap().rect();
+            layout::wheel(&mut h, panel.center(), -2000.0);
+            let save = h.get_by_label("Save servers").rect();
+            assert!(panel.contains_rect(save), "Save {save:?} leaves panel {panel:?}");
+            assert!(h.ctx.content_rect().contains_rect(save));
+            let providers = h.state_mut().browser_providers.as_mut().unwrap();
+            providers.comfyui = "http://127.0.0.1:8188".into();
+            providers.litellm = "https://proxy.example".into();
+            h.run_steps(3);
+            h.get_by_label("Save servers").click();
+            h.run_steps(6);
+            assert_eq!(h.state().provider_settings(), app(origin).provider_settings());
+            assert_eq!(h.state().provider_settings().litellm_url.as_deref(), Some("https://proxy.example"));
+            layout::evidence(&mut h, "provider-settings-save", theme, size, percent);
+            h.get_by_role_and_label(egui::accesskit::Role::Button, "Close window").click();
+            h.run_steps(3);
+            assert!(!h.state().browser_providers.as_ref().unwrap().open);
+        }
+    }
+}
