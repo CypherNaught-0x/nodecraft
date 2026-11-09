@@ -175,6 +175,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+| `vertex-llm.gemini-3.8-flash` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash) | 2026-11-09 |
 | `xai.grok-4.3` | [Documentation](https://docs.x.ai/developers/pricing) | 2026-11-08 |
 | `xai.grok-4.7` | [Documentation](https://docs.x.ai/developers/models) | 2026-11-08 |
 
@@ -197,3 +198,6 @@ only even where the service can handle other modalities.
 | `hyperbolic.glm-5.3-flash` | [Documentation](https://www.hyperbolic.ai/docs/inference/quickstart) | 2026-11-09 |
 | `mira.model` | [Documentation](https://docs.mira.network/network/get-started/introduction) | 2026-11-09 |
 | `cohere.command-a` | [Documentation](https://docs.cohere.com/docs/command-a) | 2026-11-09 |
+
+The Vertex chat catalog offers Gemini 3.8 Flash on the global route. Google's Cloud documentation
+marks Gemini 2.5 Flash retired on 2026-10-20; Gemini Developer API availability is separate.

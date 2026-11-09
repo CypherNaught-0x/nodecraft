@@ -67,6 +67,7 @@ const PRESETS: &[&str] = &[
     "bedrock:aws-secret-access-key",
     "bedrock:aws-session-token",
     "bedrock:aws-expiration",
+    "google-cloud",
     "anthropic",
     "deepseek",
     "mistral",

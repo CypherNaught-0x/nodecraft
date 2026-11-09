@@ -38,6 +38,9 @@ pub(super) fn failure(error: &rig_core::ProviderError, exchange: Exchange, strea
         _ => {}
     }
     let malformed = |what: String| ProviderError::new(ErrorKind::Malformed, what);
+    if error.provider_response().is_some_and(|response| response.refusal) {
+        return ProviderError::new(ErrorKind::BlockedContent, "the model declined this request");
+    }
     // An error event inside a 200 reply.
     if let Some(body) = error.provider_response_body() {
         return match serde_json::from_str::<Value>(body).ok().and_then(|v| v.get("error").cloned()) {

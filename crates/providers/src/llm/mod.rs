@@ -34,6 +34,8 @@ mod stream_tests;
 mod turns_tests;
 #[cfg(test)]
 mod vendors_tests;
+#[cfg(feature = "vertex-llm")]
+mod vertex;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
@@ -116,6 +118,9 @@ pub enum Dialect {
     Converse,
     /// Cohere's native v2 Chat API.
     Cohere,
+    /// Google Cloud Vertex AI GenerateContent, authenticated with a service account.
+    #[cfg(feature = "vertex-llm")]
+    Vertex,
 }
 
 /// Where to send chat requests.
@@ -538,6 +543,8 @@ pub struct LlmClient {
     http: Arc<dyn Http>,
     /// The endpoint's base URL was set by the person (#960), not the provider's own API.
     custom: bool,
+    #[cfg(feature = "vertex-llm")]
+    vertex: Option<Arc<crate::google_cloud::Tokens>>,
 }
 
 impl std::fmt::Debug for LlmClient {
@@ -548,7 +555,13 @@ impl std::fmt::Debug for LlmClient {
 
 impl LlmClient {
     pub fn new(endpoint: Endpoint, http: Arc<dyn Http>) -> Self {
-        Self { endpoint, http, custom: false }
+        Self {
+            endpoint,
+            http,
+            custom: false,
+            #[cfg(feature = "vertex-llm")]
+            vertex: None,
+        }
     }
 
     /// `endpoint` (with its id, dialect and key) served from `base` instead of its own API (#960),
@@ -557,7 +570,13 @@ impl LlmClient {
     /// again, and a spend header it sends is not trusted.
     pub fn with_base_url(mut endpoint: Endpoint, base: &crate::base_url::BaseUrl, http: Arc<dyn Http>) -> Self {
         endpoint.base_url = base.as_str().to_owned();
-        Self { endpoint, http, custom: true }
+        Self {
+            endpoint,
+            http,
+            custom: true,
+            #[cfg(feature = "vertex-llm")]
+            vertex: None,
+        }
     }
 
     /// The spend a reply's headers report. Never read from a custom base URL: any server can
@@ -590,6 +609,8 @@ impl LlmClient {
         let sent_limit = match self.endpoint.dialect {
             Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
             Dialect::OpenAi | Dialect::Converse | Dialect::Cohere => req.max_tokens,
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => req.max_tokens,
         };
         if stream {
             let cap = match sent_limit {
@@ -608,6 +629,8 @@ impl LlmClient {
                 http = http.secret_header("Authorization", format!("Bearer {}", key.expose()))
             }
             (Dialect::Anthropic, Some(key)) => http = http.secret_header("x-api-key", key.expose()),
+            #[cfg(feature = "vertex-llm")]
+            (Dialect::Vertex, _) => {}
             (_, None) => {}
         }
         if self.endpoint.dialect == Dialect::Anthropic {
@@ -655,11 +678,17 @@ impl LlmClient {
             Dialect::Anthropic => self.anthropic_chat(req, on_text, context).await,
             Dialect::Converse => self.converse_chat(req, on_text, context).await,
             Dialect::Cohere => self.cohere_chat(req, on_text, context).await,
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => self.vertex_chat(req, on_text, context).await,
         }
     }
 
     /// The model ids the endpoint offers (`GET /models`; Anthropic's list is paged).
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        #[cfg(feature = "vertex-llm")]
+        if self.endpoint.dialect == Dialect::Vertex {
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Vertex AI uses the curated catalog; its publisher runtime has no model list"));
+        }
         if matches!(self.endpoint.dialect, Dialect::Converse | Dialect::Cohere) {
             // Bedrock lists models on its control-plane host, not on `bedrock-runtime`.
             return Err(ProviderError::new(ErrorKind::UnsupportedInput, "this chat endpoint has no compatible model list; pick a model from the catalog"));
@@ -714,6 +743,8 @@ impl LlmClient {
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
             Dialect::Converse => converse::error(response.status, &response.headers, &response.body),
             Dialect::Cohere => cohere::error(response.status, &response.body),
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => vertex::status_error(response.status, &response.headers, &response.body),
         };
         e.retry_after_ms = retry_after(response.header("retry-after"));
         Err(e)
