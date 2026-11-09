@@ -39,3 +39,23 @@ are recorded with the completed local integration; this record does not replace 
 
 #959 still includes broader coverage work identified in the baseline inventory. These four
 repairs do not by themselves close its entire per-surface acceptance checklist.
+
+## Focused validation outcome
+
+The four `layout959_…` regressions passed on source `f0a395ff`, covering 24 theme/viewport
+combinations. The UI test crate was compiled directly against the exact coherent native
+artifacts from the integrated `017ed394` source; the source hash, dependency fingerprints,
+compiler arguments and output log accompany the local repair evidence. No primary-cache
+artifacts were modified by that proof. The 24 emitted PNGs were checked for size, and the
+640-point dark and 200% light results were inspected.
+
+Two test-fixture assumptions were corrected before this passing run: `Harness::set_size` takes
+logical points after zoom, and the compositor may legitimately advance a session revision while
+recording derived history. The final tests check the requested viewport and editable node data.
+The product implementation did not change after the initial independent review of
+`073c51d5..acddfbf8`, which found no correctness issue. Full integration gates still apply.
+
+The long-diagnostic fixture also exposed a separate global notice overflow (#1110): its wrapped
+body could extend above the viewport and hide Dismiss. That seventh local finding is preserved
+with evidence and is being corrected separately; it is not hidden by the successful editor-header
+checks. The baseline audit remains historical evidence, with its capture-size correction noted.

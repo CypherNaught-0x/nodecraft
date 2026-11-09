@@ -24,7 +24,11 @@ All nine final diagnostic probes passed; they record findings rather than assert
 The probes compile only the UI test crate against the exact existing dependency fingerprints;
 they do not change those dependencies. Captures cover 640 × 400, 800 × 520 and 1440 × 900 at
 100%, and a physical 1280 × 720 window at 200%, in dark and light themes. Geometry and source
-inspection accompany the screenshots. Underlying canvas controls and content intentionally
+inspection accompany the screenshots. **Capture correction:** the stored baseline files labelled
+1280 × 720 at 200% were emitted at 2560 × 1440 because the temporary fixture supplied physical
+size to a logical-points API. Their geometry dumps record the actual screen in points; the
+640 × 400 baseline images remain the narrow-window evidence. The repair fixture corrects the
+conversion and checks physical 1280 × 720 at 200% explicitly. Underlying canvas controls and content intentionally
 scrolled out of view are not counted as overlay-layout failures.
 
 The browser settings captures render its browser-only endpoint list in a native harness.
