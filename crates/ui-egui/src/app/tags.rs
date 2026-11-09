@@ -272,7 +272,7 @@ impl NodeCraftApp {
             let bounds = self.floating_bounds();
             let max_size = bounds.area.size();
             let canvas = self.session.document().canvases().get(&self.canvas);
-            let panel = floating::panel_with_bounds(&ctx, "Tag filter", id, Home::LeftTop, t, bounds)
+            let panel = floating::panel(&ctx, "Tag filter", id, Home::RightTop, t)
                 .max_size(max_size)
                 .vscroll(true)
                 .default_width(t.tag_panel_width.min(max_size.x))
@@ -479,7 +479,7 @@ mod tests {
         assert!(!before.intersects(file), "{before:?} covers the File control at {file:?}");
         let t = h.state().theme.tokens();
         let from = before.left_top() + Vec2::splat(t.card_padding + t.control_gap);
-        let delta = Vec2::new(140.0, 100.0);
+        let delta = Vec2::new(-140.0, 100.0);
         h.drag_at(from);
         h.run();
         h.hover_at(from + delta);
@@ -487,7 +487,7 @@ mod tests {
         h.drop_at(from + delta);
         h.run();
         let moved = h.state().tag_rect();
-        assert!(moved.left() > before.left() && moved.top() > before.top(), "{before:?} → {moved:?}");
+        assert!(moved.left() < before.left() && moved.top() > before.top(), "{before:?} → {moved:?}");
         h.state_mut().comments.open = true;
         h.set_size(Vec2::new(520.0, 650.0));
         h.run();
