@@ -143,7 +143,16 @@ fn a_question_cancels_before_a_tool_can_close() {
     let mut h = super::tests::harness();
     h.state_mut().keys.open = true;
     h.run();
-    h.state_mut().fields.rename = Some((nodecraft_types::FieldId::from_bytes([81; 16]), "A public example".into()));
+    let canvas = h.state().canvas;
+    let id = nodecraft_types::FieldId::from_bytes([81; 16]);
+    h.state_mut()
+        .session
+        .dispatch(
+            "field.create",
+            &json!({"canvas":canvas,"field":{"id":id,"title":"Public field","rect":{"pos":{"x":0,"y":0},"width":240,"height":160}},"nodes":[]}),
+        )
+        .unwrap();
+    h.state_mut().fields.rename = Some((id, "A public example".into()));
     h.run();
     h.get_by_role_and_label(Role::Dialog, "Rename field");
     let document = h.state().session.document().clone();
@@ -208,20 +217,23 @@ fn shared_close_requests_expire_and_never_execute_the_tool_body() {
     let id = egui::Id::new("test.closable.tool");
     let t = crate::theme::ThemeKind::Dark.tokens();
     let mut open = true;
-    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         let ctx = ui.ctx();
         crate::floating::request_close(ctx, id);
         crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t)
             .open(&mut open)
             .show(ctx, |_| panic!("a close request cannot run a tool action"));
     });
+    output.textures_delta.clear();
     assert!(!open, "the caller receives its ordinary closed flag");
-    let _ = ctx.run_ui(egui::RawInput::default(), |ui| crate::floating::request_close(ui.ctx(), id));
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| crate::floating::request_close(ui.ctx(), id));
+    output.textures_delta.clear();
     open = true;
-    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+    let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
         let ctx = ui.ctx();
         crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |_| ());
     });
+    output.textures_delta.clear();
     assert!(open, "an unrendered close request cannot close a later reopening");
 }
 
