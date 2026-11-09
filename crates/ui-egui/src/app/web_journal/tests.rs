@@ -707,10 +707,7 @@ fn render_browser_recovery_budget_evidence() {
 #[test]
 fn recovery959_question_buttons_restore_or_discard_and_then_close() {
     use egui::accesskit::Role;
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
         for recover in [true, false] {
             let disk = Rc::new(RefCell::new(Disk::default()));

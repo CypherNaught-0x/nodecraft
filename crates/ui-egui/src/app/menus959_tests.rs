@@ -6,7 +6,10 @@ use super::panel_check::overlaps;
 use super::topbar_tests::reveal;
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 /// The window sizes checked: the narrowest the overflow menu is built for, and a wide one.
 const SIZES: [Vec2; 2] = [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)];

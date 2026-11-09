@@ -357,10 +357,7 @@ fn dialogs1116_unsaved_changes_is_a_question_escape_keeps_enter_does_nothing() {
 #[test]
 fn files959_unsaved_question_cancel_closes_and_preserves_the_project() {
     use egui::accesskit::Role;
-    use egui_kittest::{
-        Harness,
-        kittest::{NodeT, Queryable},
-    };
+    use egui_kittest::{Harness, kittest::Queryable};
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
         let ctx = egui::Context::default();
         let (mut source, script) = app();
@@ -369,7 +366,9 @@ fn files959_unsaved_question_cancel_closes_and_preserves_the_project() {
         add_text(&mut app, 50);
         let edited = app.session.document().clone();
         script.borrow_mut().opens.push_back(Ok(Some(Picked { name: "forest.ncraft".into(), bytes, target: None })));
-        frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
+        frame(&mut app, &ctx, |app, ctx| {
+            app.web_file("file.open", ctx);
+        });
         assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))));
         let mut h = Harness::builder().with_size(egui::vec2(640.0, 400.0)).build_ui_state(
             move |ui, app: &mut NodeCraftApp| {
