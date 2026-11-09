@@ -266,6 +266,7 @@ fn dialogs1116_the_picker_is_a_panel_on_screen_and_escape_closes_only_it() {
     let mut h = small();
     open_small(&mut h);
     h.run_steps(4);
+    crate::app::panel_check::menu_evidence(&mut h, "choose-model");
     crate::app::panel_check::check_open_panels(&h, "Choose a model at 640 × 400");
     h.key_press(egui::Key::Escape);
     h.run();
@@ -283,6 +284,7 @@ fn dialogs1116_review_is_a_question_enter_applies_escape_cancels() {
     choose(&mut h);
     h.run_steps(4);
     crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_review"), "Review model change at 640 × 400");
+    crate::app::panel_check::menu_evidence(&mut h, "review-model-change");
     let apply = h.get_by_label("Apply model change").rect();
     assert!(h.ctx.content_rect().contains_rect(apply), "Apply {apply:?} is on the screen");
     h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change");
@@ -313,6 +315,7 @@ fn dialogs1116_preview_changed_is_a_question_enter_refreshes_escape_cancels() {
         h.run();
         assert!(h.state().model_choice.as_ref().unwrap().stale);
         crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_stale"), "Model preview changed at 640 × 400");
+        crate::app::panel_check::menu_evidence(&mut h, &format!("model-preview-changed-{escape}"));
         let before = h.state().session.document().clone();
         h.key_press(if escape { egui::Key::Escape } else { egui::Key::Enter });
         h.run();

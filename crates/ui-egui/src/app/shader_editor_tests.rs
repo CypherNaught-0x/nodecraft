@@ -384,5 +384,13 @@ fn the_shader_editor_lays_out_without_overlaps_at_both_sizes() {
         let (mut h, _runs) = open(scene_sized(None, size));
         h.run_steps(12);
         crate::app::panel_check::check_open_panels(&h, &format!("Custom shader at {size:?}"));
+        h.get_by_label("Apply");
+        h.get_by_label("Revert");
+        if size.x < 1600.0 {
+            crate::app::panel_check::close_panel(&mut h, egui::Id::new("nodecraft.shader_editor"), &format!("shader-{}x{}", size.x, size.y));
+        } else {
+            crate::app::panel_check::escape_panel(&mut h, egui::Id::new("nodecraft.shader_editor"), &format!("shader-{}x{}", size.x, size.y));
+        }
+        assert!(h.state().shader_editor.is_none());
     }
 }

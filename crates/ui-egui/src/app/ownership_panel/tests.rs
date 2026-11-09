@@ -77,6 +77,12 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     h.get_by_label("1 charge");
     press(&mut h, Role::Button, "Review");
     crate::app::panel_check::check_open_panels(&h, "Charges to review");
+    crate::app::panel_check::escape_panel(&mut h, egui::Id::new("nodecraft.ownership"), "charges-review-open");
+    assert!(h.state().ownership.is_none());
+    h.state_mut().dispatch_palette_command("usage.ownership");
+    h.run();
+    h.get_by_label("Session a");
+    press(&mut h, Role::Button, "Review");
 
     // What was known at import, then the charge itself.
     h.get_by_label("The earlier total could hold up to");
@@ -96,6 +102,8 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     // The decision was saved in the run journal before it was kept.
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.usage.ownership_reconciliations().len(), 1);
+    crate::app::panel_check::close_panel(&mut h, egui::Id::new("nodecraft.ownership"), "charges-review");
+    assert!(h.state().ownership.is_none());
     drop(h);
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

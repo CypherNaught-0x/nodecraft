@@ -125,8 +125,10 @@ fn the_context_menu_deletes_and_extracts_and_clear_is_undoable() {
     let nodes = |h: &Harness<'static, NodeCraftApp>| h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().len();
     h.get_by_label("Result 3 of 3, active").click_secondary();
     h.run();
+    super::panel_check::menu_evidence(&mut h, "history-result-menu");
     h.get_by_label("Delete result").click();
     h.run();
+    assert!(h.query_by_label("Delete result").is_none(), "the result menu closes after its action");
     assert_eq!(card(h.state()).history.iter().map(|g| g.id).collect::<Vec<_>>(), [g(1), g(2)]);
     assert_eq!(card(h.state()).active, Some(g(2)), "the neighbour takes over");
 

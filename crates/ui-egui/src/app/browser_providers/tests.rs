@@ -161,8 +161,19 @@ fn layout959_provider_settings_scroll_to_save_at_small_and_enlarged_sizes() {
             assert_eq!(h.state().provider_settings(), app(origin).provider_settings());
             assert_eq!(h.state().provider_settings().litellm_url.as_deref(), Some("https://proxy.example"));
             layout::evidence(&mut h, "provider-settings-save", theme, size, percent);
-            h.get_by_role_and_label(egui::accesskit::Role::Button, "Close window").click();
-            h.run_steps(3);
+            if size.x < 800.0 {
+                crate::app::panel_check::close_panel(
+                    &mut h,
+                    egui::Id::new("nodecraft.browser_providers"),
+                    &format!("providers-{theme:?}-{}x{}", size.x, size.y),
+                );
+            } else {
+                crate::app::panel_check::escape_panel(
+                    &mut h,
+                    egui::Id::new("nodecraft.browser_providers"),
+                    &format!("providers-{theme:?}-{}x{}", size.x, size.y),
+                );
+            }
             assert!(!h.state().browser_providers.as_ref().unwrap().open);
         }
     }

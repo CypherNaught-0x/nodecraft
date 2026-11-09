@@ -113,6 +113,7 @@ fn reading_shows_per_file_progress_and_cancel_adds_nothing() {
         assert!(Instant::now() < end, "progress counts each file");
         std::thread::sleep(Duration::from_millis(2));
     }
+    super::super::panel_check::menu_evidence(&mut h, "library-import-progress");
     h.get_by_label("Cancel import").click();
     h.run();
     assert!(!h.state().library.browsers.import.busy());

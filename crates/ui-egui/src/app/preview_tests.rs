@@ -47,6 +47,12 @@ fn a_tall_image_fits_the_viewer_inside_the_window() {
         }
         assert!(crate::floating::shown(&h.ctx).iter().any(|(shown, _)| *shown == egui::Id::new("image_viewer")), "the viewer is open");
         crate::app::panel_check::check_open_panels(&h, &format!("Image viewer, tall image, at {size:?}"));
+        if size.x < 1600.0 {
+            crate::app::panel_check::close_panel(&mut h, egui::Id::new("image_viewer"), &format!("image-viewer-{}x{}", size.x, size.y));
+        } else {
+            crate::app::panel_check::escape_panel(&mut h, egui::Id::new("image_viewer"), &format!("image-viewer-{}x{}", size.x, size.y));
+        }
+        assert!(h.state().viewer.is_none());
     }
 }
 

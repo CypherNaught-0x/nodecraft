@@ -207,6 +207,7 @@ fn dialogs1116_batch_items_is_a_panel_on_screen_and_escape_closes_only_it() {
     h.run_steps(6);
     assert!(h.query_by_label("Item 1 of 4").is_some());
     crate::app::panel_check::check_open_panels(&h, "Batch items at 640 × 400");
+    super::panel_check::menu_evidence(&mut h, "batch-items");
     h.key_press(egui::Key::Escape);
     h.run();
     assert!(h.state().batch_review.is_none());

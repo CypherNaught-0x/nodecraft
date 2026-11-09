@@ -701,3 +701,41 @@ fn render_browser_recovery_budget_evidence() {
     h.get_by_label_contains("Removed 1 old recovery copy");
     h.render().unwrap().save(folder.join("recovered-budget-guidance-final.png")).unwrap();
 }
+
+/// #959: the browser-owned recovery question is exercised through its real buttons, rather
+/// than answering its state machine directly. No browser, live storage or paid run is needed.
+#[test]
+fn recovery959_question_buttons_restore_or_discard_and_then_close() {
+    use egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        for recover in [true, false] {
+            let disk = Rc::new(RefCell::new(Disk::default()));
+            let edited = crashed_tab(&disk, &egui::Context::default());
+            let app = tab(&disk, 2);
+            let starter = app.session.document().clone();
+            let mut h = Harness::builder().with_size(egui::vec2(640.0, 400.0)).build_ui_state(
+                move |ui, app: &mut NodeCraftApp| {
+                    crate::theme::apply(ui.ctx(), theme);
+                    app.web_recovery_frame(ui.ctx());
+                },
+                app,
+            );
+            h.run_steps(12);
+            assert!(h.state().web_recovery_owns_input());
+            h.get_by_role_and_label(Role::Button, "Recover");
+            h.get_by_role_and_label(Role::Button, "Discard");
+            super::super::panel_check::menu_evidence(&mut h, &format!("browser-recovery-{theme:?}-{recover}"));
+            h.get_by_role_and_label(Role::Button, if recover { "Recover" } else { "Discard" }).click();
+            h.run_steps(6);
+            assert!(!h.state().web_recovery_owns_input());
+            assert!(h.query_by_role_and_label(Role::Button, "Recover").is_none());
+            assert!(h.query_by_role_and_label(Role::Button, "Discard").is_none());
+            assert_eq!(h.state().session.document(), if recover { &edited } else { &starter });
+            assert!(!disk.borrow().slots.contains_key(&slot(1)));
+        }
+    }
+}

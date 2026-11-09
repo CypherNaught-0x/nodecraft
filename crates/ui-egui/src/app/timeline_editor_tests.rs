@@ -217,6 +217,7 @@ fn dragging_a_clip_past_the_next_reorders_them() {
 #[test]
 fn the_playhead_splits_a_clip_and_keys_delete_and_close() {
     let mut h = opened();
+    super::panel_check::menu_evidence(&mut h, "timeline-editor");
     let one = clip_label(&h, ONE);
     // Click the ruler 2 s in, inside the first clip, and split there.
     let ruler = h.get_by_label("Playhead").rect();

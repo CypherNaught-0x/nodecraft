@@ -60,6 +60,14 @@ fn a_held_result_from_the_last_session_is_listed_and_can_be_discarded() {
     h.get_by_label("its card was deleted");
     crate::app::panel_check::check_open_panels(&h, "Queue with a held result");
     assert!(h.query_by_label("until quit").is_none(), "a saved result isn't marked");
+    crate::app::panel_check::escape_panel(&mut h, egui::Id::new("nodecraft.queue"), "queue-held");
+    assert!(!h.state().queue_open);
+    assert!(dir.join("held/1.held").exists(), "closing the Queue never discards a paid result");
+    crate::app::topbar_tests::reveal(&mut h, "Queue (1 held)");
+    h.get_by_role_and_label(Role::Button, "Queue (1 held)").click();
+    h.run();
+    assert!(h.state().queue_open);
+    h.get_by_label("1 paid result couldn't be kept");
     if let Ok(shot) = std::env::var("NODECRAFT_HELD_TEST_SHOT") {
         h.render().unwrap().save(shot).unwrap();
     }
@@ -73,5 +81,7 @@ fn a_held_result_from_the_last_session_is_listed_and_can_be_discarded() {
     h.run();
     assert!(h.query_by_label("1 paid result couldn't be kept").is_none(), "it is let go");
     assert!(!dir.join("held/1.held").exists(), "and its record removed, so it doesn't come back");
+    crate::app::panel_check::close_panel(&mut h, egui::Id::new("nodecraft.queue"), "queue");
+    assert!(!h.state().queue_open);
     std::fs::remove_dir_all(dir).unwrap();
 }

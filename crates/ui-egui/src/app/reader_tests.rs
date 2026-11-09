@@ -41,6 +41,11 @@ fn the_reader_pages_with_keys_and_buttons_without_editing_the_document() {
     assert_eq!(page(&h), Some(0));
     assert!(h.query_by_label_contains("page 1 of 3").is_some());
     crate::app::panel_check::check_open_panels(&h, "PDF reader");
+    crate::app::panel_check::escape_panel(&mut h, egui::Id::new("pdf_reader"), "pdf-reader-open");
+    assert!(h.state().reader.is_none());
+    h.state_mut().open_reader(PDF);
+    h.run();
+    assert_eq!(page(&h), Some(0));
     h.key_press(egui::Key::ArrowRight);
     h.run();
     assert_eq!(page(&h), Some(1));
@@ -60,6 +65,9 @@ fn the_reader_pages_with_keys_and_buttons_without_editing_the_document() {
     h.run();
     assert_eq!(page(&h), Some(0));
     assert_eq!(h.state().session.revision(), revision, "paging is view state");
+    crate::app::panel_check::close_panel(&mut h, egui::Id::new("pdf_reader"), "pdf-reader");
+    assert!(h.state().reader.is_none());
+    assert_eq!(h.state().session.revision(), revision, "closing the reader is view state");
 }
 
 #[test]

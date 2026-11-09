@@ -319,6 +319,7 @@ fn dialogs1116_shared_parameters_stay_on_screen_and_go_with_the_selection() {
     h.run_steps(4);
     let panel = h.get_by_role_and_label(Role::Window, "Shared parameters").rect();
     let screen = h.ctx.content_rect();
+    super::panel_check::menu_evidence(&mut h, "shared-parameters");
     assert!(screen.contains_rect(panel), "{panel:?} leaves the window {screen:?}");
     h.key_press(egui::Key::Escape);
     h.run();

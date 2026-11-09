@@ -178,12 +178,29 @@ fn an_empty_folder_card_imports_from_its_button() {
 fn reading_can_be_cancelled_and_nothing_is_added() {
     let mut h = harness();
     let before = h.state().session.document().clone();
-    let scratch = shoot("cancel");
-    // Cancelled before the reader reports: the result is dropped unread.
-    h.state_mut().read_folder_for(scratch.0.clone(), Target::New(Position::default()));
-    h.state_mut().folder_import.reading = None;
-    finish(&mut h);
+    // A held worker channel makes the real progress/Cancel state deterministic.
+    let (worker, result) = mpsc::channel();
+    let cancel = Arc::new(AtomicBool::new(false));
+    h.state_mut().folder_import.reading = Some(Reading {
+        name: "Public fixture".into(),
+        project: h.state().session.document().id(),
+        canvas: h.state().canvas,
+        target: Target::New(Position::default()),
+        cancel: Arc::clone(&cancel),
+        read: Arc::new(AtomicUsize::new(2)),
+        result,
+    });
+    h.run_steps(4);
+    h.get_by_label("Reading folder Public fixture… 2 files");
+    h.get_by_label("Cancel folder import");
+    super::super::panel_check::menu_evidence(&mut h, "folder-import-progress");
+    h.get_by_label("Cancel folder import").click();
+    h.run_steps(4);
+    assert!(cancel.load(Ordering::Acquire), "the reader receives cancellation");
+    assert!(!h.state().folder_import_busy());
+    assert!(h.query_by_label("Cancel folder import").is_none());
     assert_eq!(h.state().session.document(), &before);
+    drop(worker);
 }
 
 #[test]

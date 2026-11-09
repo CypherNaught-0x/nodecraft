@@ -75,6 +75,7 @@ fn typing_at_lists_text_cards_and_enter_inserts_the_mention() {
         (row.left() - visible.left()).abs() < 24.0 && row.top() >= visible.bottom() - 1.0 && row.top() < visible.bottom() + 80.0,
         "the list is under the visible prompt: {row:?} {visible:?} (full content {field:?})"
     );
+    super::panel_check::menu_evidence(&mut h, "prompt-mentions");
     press(&mut h, egui::Key::Enter);
     assert!(h.query_by_label("@Story").is_none(), "the list closes");
     type_text(&mut h, "briefly");

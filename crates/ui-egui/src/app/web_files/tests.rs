@@ -351,3 +351,42 @@ fn dialogs1116_unsaved_changes_is_a_question_escape_keeps_enter_does_nothing() {
     assert!(!app.web_files.busy());
     assert_eq!(app.session.document(), &edited, "Escape keeps the edits");
 }
+
+/// #959: inspect and dismiss the actual browser Unsaved changes controls. The existing
+/// keyboard test separately proves that Enter never approves losing edits.
+#[test]
+fn files959_unsaved_question_cancel_closes_and_preserves_the_project() {
+    use egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let ctx = egui::Context::default();
+        let (mut source, script) = app();
+        let (_, _, bytes) = save_as(&mut source, &script, &ctx, "forest.ncraft", None);
+        let (mut app, script) = app();
+        add_text(&mut app, 50);
+        let edited = app.session.document().clone();
+        script.borrow_mut().opens.push_back(Ok(Some(Picked { name: "forest.ncraft".into(), bytes, target: None })));
+        frame(&mut app, &ctx, |app, ctx| app.web_file("file.open", ctx));
+        assert!(matches!(app.web_files.phase, Some(Phase::Confirm(_))));
+        let mut h = Harness::builder().with_size(egui::vec2(640.0, 400.0)).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                crate::theme::apply(ui.ctx(), theme);
+                app.web_files_frame(ui.ctx());
+            },
+            app,
+        );
+        h.run_steps(6);
+        h.get_by_role_and_label(Role::Button, "Discard and open");
+        h.get_by_role_and_label(Role::Button, "Cancel");
+        super::super::panel_check::menu_evidence(&mut h, &format!("browser-unsaved-{theme:?}"));
+        h.get_by_role_and_label(Role::Button, "Cancel").click();
+        h.run_steps(6);
+        assert!(!h.state().web_files.busy());
+        assert!(h.query_by_role_and_label(Role::Button, "Discard and open").is_none());
+        assert!(h.query_by_role_and_label(Role::Button, "Cancel").is_none());
+        assert_eq!(h.state().session.document(), &edited);
+    }
+}

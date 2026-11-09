@@ -78,6 +78,7 @@ fn f_groups_the_selection_and_the_zone_encloses_it() {
     let before = h.state().session.document().clone();
     let id = field_around_card(&mut h);
     let node = member(&h);
+    assert!(h.query_by_role_and_label(Role::Button, "Move into Shots").is_none(), "the card field submenu closes after moving");
     assert_eq!(canvas(&h).nodes().get(&node).unwrap().field, Some(id));
     assert!(h.state().selection.is_empty(), "the new field is selected instead");
     let rect = canvas(&h).fields().get(&id).unwrap().rect;
@@ -178,9 +179,11 @@ fn collapse_from_the_header_menu_hides_members_until_expanded() {
     assert!(card(&h).is_some());
     let at = header(&h, "Field").left_center() + Vec2::new(60.0, 0.0);
     open_menu(&mut h, at);
+    super::panel_check::menu_evidence(&mut h, "field-context");
     h.get_by_role_and_label(Role::Button, "Collapse field").click();
     h.run();
     h.run();
+    assert!(h.query_by_role_and_label(Role::Button, "Collapse field").is_none(), "the field menu closes after its action");
     assert!(canvas(&h).fields().get(&id).unwrap().collapsed);
     assert!(card(&h).is_none(), "a collapsed field hides its cards");
     h.hover_at(Pos2::new(20.0, 680.0));
@@ -224,6 +227,7 @@ fn card_menu_moves_nodes_into_a_field_and_out_again() {
     open_menu(&mut h, at);
     h.get_by_role_and_label(Role::Button, "Field ⏵").click();
     h.run();
+    super::panel_check::menu_evidence(&mut h, "card-field-submenu");
     h.get_by_role_and_label(Role::Button, "Move into Shots").click();
     h.run();
     assert_eq!(canvas(&h).nodes().get(&node).unwrap().field, Some(id));
