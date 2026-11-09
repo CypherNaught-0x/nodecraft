@@ -8,10 +8,12 @@ use egui_kittest::kittest::Queryable;
 fn long_notices1110_keep_details_and_controls_inside_small_windows() {
     use egui_kittest::kittest::NodeT;
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
-        for scale in [1.0, 2.0] {
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
             let mut h = harness();
             h.set_size(egui::vec2(640.0, 400.0));
-            h.ctx.set_zoom_factor(scale);
+            h.run_steps(3);
+            h.state_mut().session.dispatch("view.ui_scale.set", &serde_json::json!({"percent": percent})).unwrap();
             h.state_mut().theme = theme;
             let text = format!("{}Final public detail.", "The provider refused this example; no run was started. ".repeat(45));
             let owner = "long-notice-layout";
@@ -20,6 +22,7 @@ fn long_notices1110_keep_details_and_controls_inside_small_windows() {
                 .push_notice(Notice::new(NoticeKind::Error, &text).from_run().owned_by(owner).with_action("Show map", "canvas.minimap_toggle"));
             h.run_steps(5);
             let screen = h.ctx.content_rect();
+            assert!((screen.width() - 640.0 / scale).abs() < 1.0 && (screen.height() - 400.0 / scale).abs() < 1.0, "{percent}%: {screen:?}");
             for label in ["Dismiss notice", "Show map"] {
                 let rect = h.get_by_label(label).rect();
                 assert!(screen.contains_rect(rect), "{theme:?} {scale}: {label}: {rect:?} outside {screen:?}");
