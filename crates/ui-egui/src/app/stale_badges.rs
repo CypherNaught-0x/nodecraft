@@ -109,6 +109,8 @@ pub(super) fn badge(ui: &egui::Ui, painter: &egui::Painter, view: &CanvasView, v
         ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
     }
     painter.galley(rect.center() - galley.size() / 2.0, galley, t.card_fill);
+
+    crate::focus::ring_if_focused(ui, painter, &response, rect, size.y / 2.0, 1.0 / view.zoom, t);
     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Stale result: refresh"));
     response.on_hover_text("This result no longer matches its inputs. Click to refresh it.").clicked()
 }

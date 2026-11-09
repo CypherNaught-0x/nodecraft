@@ -394,6 +394,10 @@ impl Navigation {
                     let response =
                         ui.interact(layout.map, ui.id().with("minimap"), if pan_enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, pan_enabled, "Minimap: click or drag to pan canvas"));
+                    // Inside the map: its painter clips at the overlay's edge.
+                    if crate::focus::keyboard_focused(ui, &response) {
+                        crate::focus::paint_ring_inside(&painter, layout.map, f32::from(t.panel_radius), t);
+                    }
                     if let Some(mapping) = mapping {
                         for (id, body) in &shapes {
                             let mut rect = mapping.rect(*body);

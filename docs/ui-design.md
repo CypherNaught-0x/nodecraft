@@ -65,6 +65,15 @@ Control states (#1112):
 Quiet buttons (the top bar, menus, selectable rows) stay frameless at rest by asking for it
 (`frame_when_inactive(false)`, egui's menu style) rather than being the default.
 
+Keyboard focus on painted canvas widgets (cards and Note cards and their titles, field headers,
+stale and mask badges, the minimap) shows a ring (#1108): `accent`, `focus_ring_width` (2) wide,
+`focus_ring_gap` (1) outside the widget (inside the minimap, whose edge clips), in screen points at
+any zoom, clear of the selected border inside and a point short of the presence ring further out.
+It shows when focus arrived any way but a pointer press (Tab, the arrow keys, a screen reader),
+stays when Enter or Space activates the widget, and goes when a click elsewhere takes focus away. `focus::ring_if_focused`
+is the one call a painted widget makes; a `theme.rs` test holds the ring at 3:1 against the canvas
+and card fill in both themes.
+
 A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
 disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
 as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own

@@ -331,6 +331,7 @@ impl NodeCraftApp {
 
             let response = ui.interact(header, ui.id().with(("field", field.id)), header_sense);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, !blocked, format!("Field {name}")));
+            crate::focus::ring_if_focused(ui, &painter, &response, header, f32::from(t.panel_radius), 1.0, t);
             if response.dragged_by(egui::PointerButton::Middle) || response.dragged_by(egui::PointerButton::Secondary) {
                 pan += response.drag_delta();
             }

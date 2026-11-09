@@ -3971,6 +3971,8 @@ mod centering_tests;
 #[cfg(test)]
 mod empty_canvas1119_tests;
 #[cfg(test)]
+mod focus1108_tests;
+#[cfg(test)]
 mod names1118_tests;
 #[cfg(test)]
 mod tests;
