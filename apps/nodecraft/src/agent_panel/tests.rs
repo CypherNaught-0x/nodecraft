@@ -290,7 +290,7 @@ fn agent959_busy_clear_and_settings_keep_their_explanation() {
     };
     let (panel, _script) = panel(AgentSettings::default());
     let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(frame, shell(panel));
-    h.ctx.style_mut(|style| {
+    h.ctx.all_styles_mut(|style| {
         style.interaction.tooltip_delay = 0.0;
         style.interaction.tooltip_grace_time = 0.0;
         style.interaction.show_tooltips_only_when_still = false;
