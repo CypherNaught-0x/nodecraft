@@ -496,3 +496,18 @@ fn a_newer_format_at_startup_keeps_the_advice_to_update() {
         )
     );
 }
+
+/// #1121: while the recovery journal needs a checkpoint every edit is refused first, before its
+/// parameters are read; the palette still lists no command that needs parameters.
+#[test]
+fn a_recovery_that_needs_saving_lists_no_command_needing_parameters_in_the_palette() {
+    let dir = Scratch::new("palette1121");
+    let mut app = app(&dir.0, None);
+    add_text(&mut app, 72);
+    let file = dir.0.join("p.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+    app.close_storage();
+    assert!(app.session.file_status().recovery_required);
+    assert_eq!(app.session.enabled("node.add", &json!({})).unwrap_err().kind, ErrorKind::Conflict, "the edit check comes first");
+    crate::app::palette1121_tests::lists_no_command_needing_parameters(&app);
+}

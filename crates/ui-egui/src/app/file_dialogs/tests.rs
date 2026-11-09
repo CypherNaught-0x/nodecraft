@@ -324,11 +324,16 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     settle(&mut h);
     h.get_by_label("File").click();
     settle(&mut h);
+    h.get_by_label("Open recent").click();
+    settle(&mut h);
     h.get_by_label("missing-public.ncraft").click();
     settle(&mut h);
     assert!(h.state().notice.is_some());
+    assert!(!h.state().files.menu_open, "choosing a recent project closes the menu");
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
+    settle(&mut h);
+    h.get_by_label("Open recent").click();
     settle(&mut h);
     assert!(!h.get_by_label("Clear recent projects").accesskit_node().is_disabled(), "a list to clear");
     h.get_by_label("Remove").click();
@@ -526,12 +531,17 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .with_size(Vec2::new(width, 700.0))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
         settle(&mut h);
+        // File is the top bar's first entry (#1123), clear of Comments.
         let file = h.get_by_label("File").rect();
-        assert!(!file.intersects(h.state().comments_toolbar_rect()));
+        assert!(h.state().topbar_rect().contains_rect(file));
+        if let Some(comments) = h.query_by_role_and_label(egui::accesskit::Role::Button, "Comments") {
+            assert!(!file.intersects(comments.rect()));
+        }
         h.get_by_label("File").click();
         settle(&mut h);
-        assert!(!file.intersects(h.get_by_label("Open project…").rect()));
-        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open project…").rect()));
+        assert!(!file.intersects(h.get_by_label("Open… (Ctrl+O)").rect()));
+        assert!(h.get_by_label("Open… (Ctrl+O)").rect().top() >= file.bottom(), "the menu opens below File");
+        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open… (Ctrl+O)").rect()));
     }
 }
 
@@ -602,17 +612,21 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
     let dir = Scratch::new("nav-pointer407");
     let mut h = harness(dir.app("journal"));
     settle(&mut h);
-    h.get_by_label("File").click();
-    settle(&mut h);
-    assert!(h.state().files.menu_open);
     let view = h.state().view;
     let visible = h.state().navigation.visible;
+    // #1123: a click outside the File menu closes it and never reaches the canvas.
     for label in ["Fit all", "100%", "Hide map"] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
         h.get_by_label(label).click();
         settle(&mut h);
+        assert!(!h.state().files.menu_open, "{label}: the click closed the menu");
         assert_eq!(h.state().navigation.visible, visible);
         assert_eq!(h.state().view, view);
     }
+    h.get_by_label("File").click();
+    settle(&mut h);
     let point = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
     for pressed in [true, false] {
         h.hover_at(point);
@@ -621,8 +635,11 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
         assert_eq!(h.state().view, view);
         assert!(!h.state().navigation.pointer_owned);
     }
-    h.key_press(egui::Key::Escape);
     settle(&mut h);
+    if h.state().files.menu_open {
+        h.key_press(egui::Key::Escape);
+        settle(&mut h);
+    }
     assert!(!h.state().files.menu_open);
     let ctx = h.ctx.clone();
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
@@ -915,7 +932,8 @@ fn model_and_file_pickers_cannot_acquire_a_second_owner() {
     settle(&mut h);
     h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
     settle(&mut h);
-    assert!(h.get_by_label("File").accesskit_node().is_disabled());
+    // The model picker owns the frame: the top bar, File with it, isn't offered.
+    assert!(h.query_by_label("File").is_none_or(|file| file.accesskit_node().is_disabled()));
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     assert_eq!(calls.get(), 0, "model ownership cannot create an OS-picker future");
@@ -983,12 +1001,11 @@ fn bulk_file_menu_and_parked_picker_disable_actual_bulk_reset_controls() {
     h.get_by_label("File").click();
     settle(&mut h);
     let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default");
-    assert!(reset.accesskit_node().is_disabled(), "the File panel owns bulk controls");
+    assert!(reset.accesskit_node().is_disabled(), "the File menu owns bulk controls");
     reset.click();
     settle(&mut h);
     assert_eq!(h.state().session.document(), &before);
-    h.key_press(egui::Key::Escape);
-    settle(&mut h);
+    assert!(!h.state().files.menu_open, "a click outside the File menu closes it, and does nothing else");
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1148,7 +1165,13 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     assert_eq!(closed.session.dispatch("file.save", &json!({})).unwrap_err().message, reason);
     let mut h = harness(closed);
     settle(&mut h);
-    h.get_by_role_and_label(egui::accesskit::Role::Window, "Project files").get_by_label(reason);
+    // The File menu opened with the reason at its top (the notice says it too), and the entries
+    // that need storage are disabled.
+    assert!(h.state().files.menu_open);
+    assert!(h.query_all_by_label(reason).count() >= 2, "the menu and the notice give the reason");
+    for label in ["Open… (Ctrl+O)", "Save (Ctrl+S)", "Save as… (Ctrl+Shift+S)"] {
+        assert!(h.get_by_label(label).accesskit_node().is_disabled(), "{label} is disabled without storage");
+    }
 }
 
 #[test]
@@ -1174,8 +1197,8 @@ fn render_storage968_evidence() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     settle(&mut h);
     h.run();
-    assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
-    h.get_by_label("Open project…");
+    assert!(h.state().files.menu_open, "An unavailable save opens the File menu with its storage guidance");
+    h.get_by_label("Open… (Ctrl+O)");
     h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
 }
 
@@ -1340,4 +1363,66 @@ fn render_file367_progress_evidence() {
     runner.run();
     settle(&mut h);
     h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
+}
+
+/// The File menu opens on the screen with no crossing controls at the two window sizes the
+/// panels are checked at (#959, #1123).
+#[test]
+fn file_menu_keeps_its_layout_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let dir = Scratch::new("layout959");
+        let mut app = dir.app("layout");
+        app.files.menu_open = true;
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        settle(&mut h);
+        h.run();
+        crate::app::panel_check::check_menu(&h, crate::app::topbar::file_popup_id(), &format!("File menu at {size:?}"));
+    }
+}
+
+/// #1123: the File menu's entries run the same flows as the shortcuts: Open… asks the picker,
+/// Save as… asks it to save, and choosing an entry closes the menu.
+#[test]
+fn file1123_menu_entries_run_the_file_flows() {
+    let dir = Scratch::new("menu1123");
+    let mut app = dir.app("journal");
+    let calls = stub(&mut app, vec![None, None]);
+    let mut h = harness(app);
+    settle(&mut h);
+    for (n, label) in [(1, "Open… (Ctrl+O)"), (2, "Save as… (Ctrl+Shift+S)")] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
+        assert!(!h.get_by_label(label).accesskit_node().is_disabled());
+        h.get_by_label(label).click();
+        settle(&mut h);
+        assert_eq!(calls.get(), n, "{label} asked the picker");
+        assert!(!h.state().files.menu_open, "{label} closed the menu");
+    }
+}
+
+/// #1121: the palette's Recent keeps Open project only once its picker opened.
+#[test]
+fn a_refused_open_from_the_palette_is_not_remembered_as_recent() {
+    let dir = Scratch::new("palette-recent-open");
+    let mut app = dir.app("journal");
+    app.files.picker = Box::new(|_| Err("Fixture native picker refused".into()));
+    let mut h = harness(app);
+    settle(&mut h);
+    let choose_open = |h: &mut Harness<'static, NodeCraftApp>| {
+        h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(200.0, 200.0)));
+        h.run();
+        h.event(egui::Event::Text("Open project".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        settle(h);
+        assert!(h.state().palette.is_none());
+    };
+    choose_open(&mut h);
+    assert!(h.state().notice.is_some(), "the refusal is explained");
+    assert!(crate::palette::recent(&h.ctx).is_empty(), "a refused Open isn't recent");
+    stub(h.state_mut(), vec![None]);
+    choose_open(&mut h);
+    assert_eq!(crate::palette::recent(&h.ctx), [crate::palette::Target::Command("file.open")]);
 }

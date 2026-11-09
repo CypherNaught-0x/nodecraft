@@ -456,7 +456,11 @@ impl View<'_> {
                     .stroke(egui::Stroke::new(t.stroke_hairline, t.accent))
                     .min_size(Vec2::new(t.app_thumbnail, 0.0)),
             );
-            if run.on_hover_text("Shows the price, then runs").clicked() {
+            if run
+                .on_hover_text("Shows the price, then runs")
+                .on_disabled_hover_text(self.form.blocked.clone().unwrap_or_else(|| "Fill in the inputs this form needs first".to_owned()))
+                .clicked()
+            {
                 asks.push(Ask::Run);
             }
             if let Some(price) = &self.form.price {

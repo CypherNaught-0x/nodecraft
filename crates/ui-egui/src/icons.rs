@@ -24,6 +24,8 @@ pub enum Icon {
     Apps,
     Cloud,
     Plug,
+    File,
+    Tag,
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
@@ -44,6 +46,8 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("folder-open", include_bytes!("../../../assets/icons/tabler/folder-open.svg")),
     ("device-floppy", include_bytes!("../../../assets/icons/tabler/device-floppy.svg")),
     ("plug-connected", include_bytes!("../../../assets/icons/tabler/plug-connected.svg")),
+    ("file", include_bytes!("../../../assets/icons/tabler/file.svg")),
+    ("tag", include_bytes!("../../../assets/icons/tabler/tag.svg")),
 ];
 
 fn catalog() -> &'static SvgIconSet {
@@ -60,7 +64,7 @@ fn catalog() -> &'static SvgIconSet {
 }
 
 impl Icon {
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 19] = [
         Self::Search,
         Self::Comments,
         Self::Key,
@@ -78,6 +82,8 @@ impl Icon {
         Self::Apps,
         Self::Cloud,
         Self::Plug,
+        Self::File,
+        Self::Tag,
     ];
 
     pub fn name(self) -> &'static str {
@@ -99,6 +105,8 @@ impl Icon {
             Self::Apps => "apps",
             Self::Cloud => "cloud",
             Self::Plug => "plug-connected",
+            Self::File => "file",
+            Self::Tag => "tag",
         }
     }
 
@@ -121,6 +129,8 @@ impl Icon {
             Self::Apps => "Open as app",
             Self::Cloud => "Providers",
             Self::Plug => "Automation",
+            Self::File => "File",
+            Self::Tag => "Tag filter",
         }
     }
 

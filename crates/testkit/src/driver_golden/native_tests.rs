@@ -295,8 +295,9 @@ async fn earlier_ambiguous_request_keeps_charge_after_actual_builder_failure() {
     let (l, url) = listener();
     let (done, wire) = tokio::join!(drive(&url, false, true), serve(l, false));
     assert!(wire.starts_with(b"POST "));
-    assert_eq!(done.events.iter().filter(|e| matches!(e, Event::Started { .. })).count(), 2);
-    assert_eq!(done.events.iter().filter(|e| matches!(e, Event::Retrying { .. })).count(), 1);
+    // A chat request that may have been sent is never resent (#1122): one attempt, its charge kept.
+    assert_eq!(done.events.iter().filter(|e| matches!(e, Event::Started { .. })).count(), 1);
+    assert_eq!(done.events.iter().filter(|e| matches!(e, Event::Retrying { .. })).count(), 0);
     assert!(matches!(done.scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
     assert_eq!(done.budget.log.lock().unwrap().entries().map(|e| e.status).collect::<Vec<_>>(), vec![Charge::Unresolved]);
     assert!(done.deliveries.lock().unwrap().is_empty());

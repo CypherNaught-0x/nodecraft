@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable ≥ 1.95 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
+- Rust stable ≥ 1.97.1 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
   target: `rustup target add wasm32-unknown-unknown`.
 - Linux: the usual eframe/wgpu system libraries (X11/Wayland, xkbcommon, Vulkan or GL drivers).
 - Optional: [cargo-nextest](https://nexte.st) for faster test runs (`.config/nextest.toml`).
@@ -137,6 +137,19 @@ tracks that edit, and it has to happen **after** this workflow reaches `main`: r
 means a required context that a branch's workflow never publishes leaves that pull request Pending
 forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
 open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
+
+## Image actions on the GPU
+
+The desktop app runs built-in image actions on the GPU and falls back to the CPU reference
+([decision](decisions/2026-11-06-image-actions-on-gpu.md)); `NODECRAFT_IMAGE_GPU=0` keeps it on
+the CPU. Tests never turn the GPU path on, so their results stay exact. The GPU parity tests are
+ignored by default; on Linux without a GPU, a software Vulkan driver (`mesa-vulkan-drivers`,
+lavapipe) runs them:
+
+```sh
+cargo test -p nodecraft-engine --lib image_gpu -- --ignored --nocapture
+cargo test -p nodecraft-gpu -- --ignored
+```
 
 ## Benchmarks
 
@@ -421,7 +434,7 @@ discard uncommitted card-field drafts before file actions.
 
 When project storage cannot start, the startup notice and File actions retain the same reason.
 A second desktop window that cannot acquire the shared recovery journal opens in memory only;
-its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+its File menu offers **Focus the other window**. This asks the owner to come forward so its File
 menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
 use the system window switcher. Older owners without the focus endpoint must also be switched to
 manually. An unreadable startup project instead leaves a new project with working storage and an

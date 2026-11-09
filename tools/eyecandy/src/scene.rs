@@ -233,7 +233,7 @@ pub fn showcase(plates: &[(&str, Vec<u8>)]) -> Result<Stage, Fail> {
         stage.import_image(key, name, bytes, -1_020.0, y)?;
         stage.title(key, title)?;
     }
-    stage.node(6, "image.grade", -460.0, 100.0)?;
+    stage.node(6, "image.grade", -460.0, 60.0)?;
     stage.title(6, "Colour grade")?;
     stage.number(6, "brightness", 0.12)?;
     stage.number(6, "contrast", 1.28)?;

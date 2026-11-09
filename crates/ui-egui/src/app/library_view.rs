@@ -145,7 +145,9 @@ impl NodeCraftApp {
                     .and_then(|value| serde_json::from_value(value).map_err(|_| "Starter templates could not be listed".into())),
             );
         }
-        let can_fetch_templates = self.session.enabled("template.refresh", &json!({})).is_ok();
+        // The engine's own reason, shown on the disabled Update templates button (#1113).
+        let fetch_reason = self.session.enabled("template.refresh", &json!({})).map_err(|error| error.message);
+        let can_fetch_templates = fetch_reason.is_ok();
         let template_status = self.template_status();
         let template_waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting)
             || nodecraft_engine::templates::disk::is_clearing(&self.session)
@@ -314,17 +316,25 @@ impl NodeCraftApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
-                            if ui
-                                .add_enabled(can_fetch_templates && !template_waiting, egui::Button::new("Update templates"))
-                                .on_hover_text("Download new and changed templates from the NodeCraft templates repository. Each is checked against its published digest before it is kept.")
-                                .clicked()
+                            let update = if template_waiting {
+                                Err("Templates are being updated, read or cleared; wait for it to finish".to_owned())
+                            } else {
+                                fetch_reason.clone()
+                            };
+                            if crate::ui_ext::command_button(
+                                ui,
+                                egui::Button::new("Update templates"),
+                                update,
+                                "Download new and changed templates from the NodeCraft templates repository. Each is checked against its published digest before it is kept.",
+                            )
+                            .clicked()
                             {
                                 ui.ctx().request_repaint();
                                 action = Some(Action::UpdateTemplates);
                             }
                             if ui
                                 .add_enabled(can_clear_templates, egui::Button::new("Clear downloaded"))
-                                .on_hover_text("Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.")
+                                .on_hover_text("Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.").on_disabled_hover_text(if template_waiting { "Templates are being updated, read or cleared; wait for it to finish" } else { "Nothing has been downloaded yet" })
                                 .clicked()
                             {
                                 action = Some(Action::Ask(Confirm::ClearTemplates));
@@ -386,7 +396,7 @@ impl NodeCraftApp {
                                         "Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."
                                     } else {
                                         "Retrieve and verify this exact version without adding or running it. It stays available for this project session."
-                                    })
+                                    }).on_disabled_hover_text(if added { "Open this canvas from Canvases; duplicate its nodes for another copy" } else { fetch_reason.as_ref().err().map_or("This window can't download templates; only bundled ones can be added", String::as_str) })
                                     .clicked()
                                 {
                                     ui.ctx().request_repaint();

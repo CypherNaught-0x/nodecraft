@@ -8,6 +8,7 @@
 //! A peer may come in through a share link instead (#121): the relay knows only the link's hash,
 //! finds the room that holds it, and lets the peer in with the link's role.
 mod store;
+pub mod tls;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::ErrorKind as IoKind;
@@ -23,6 +24,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use nodecraft_sync::{Frame, MAX_FRAME_BYTES, Out, PROTOCOL, Peer, Role, Room};
 use nodecraft_types::{Error, ErrorKind};
 use store::{RoomKey, Snapshot, Store};
+use tls::{Stream, Tls};
 use tungstenite::protocol::WebSocketConfig;
 use tungstenite::{Message, WebSocket};
 
@@ -193,14 +195,59 @@ impl Rooms {
 }
 
 pub struct Relay {
+    /// Where it serves plain `ws://`.
     pub addr: SocketAddr,
-    accepting: thread::JoinHandle<()>,
+    /// Where it serves `wss://`, when it has a certificate (#1067).
+    pub secure: Option<SocketAddr>,
+    accepting: Vec<thread::JoinHandle<()>>,
 }
 
 impl Relay {
     pub fn wait(self) {
-        let _ = self.accepting.join();
+        for accepting in self.accepting {
+            let _ = accepting.join();
+        }
     }
+}
+
+/// What every listener's connections share: the rooms, the store and the connection counts.
+#[derive(Clone)]
+struct Shared {
+    rooms: Arc<Mutex<Rooms>>,
+    store: Option<Arc<Mutex<Store>>>,
+    open: Arc<AtomicUsize>,
+    next: Arc<AtomicU64>,
+    waiting: Waiting,
+}
+
+/// Accepts connections on `listener`, each served on a thread of its own, with TLS when `tls`.
+fn accept(listener: TcpListener, tls: Option<Arc<Tls>>, shared: Shared) -> Result<thread::JoinHandle<()>, Error> {
+    let Shared { rooms, store, open, next, waiting } = shared;
+    thread::Builder::new()
+        .name(if tls.is_some() { "relay wss" } else { "relay" }.into())
+        .spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(stream) = stream else { continue };
+                let Some(hello) = stream.peer_addr().ok().and_then(|addr| Hello::new(&waiting, addr.ip())) else { continue };
+                if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
+                    open.fetch_sub(1, Ordering::SeqCst);
+                    continue;
+                }
+                let (rooms, count, peer) = (Arc::clone(&rooms), Arc::clone(&open), next.fetch_add(1, Ordering::SeqCst));
+                let store = store.clone();
+                let tls = tls.clone();
+                let spawned = thread::Builder::new().name("relay peer".into()).spawn(move || {
+                    connection(stream, tls.as_deref(), peer, &rooms, store.as_deref(), hello);
+                    lock(&rooms).leave(peer);
+                    count.fetch_sub(1, Ordering::SeqCst);
+                });
+                if spawned.is_err() {
+                    // The closure (and its count) never ran.
+                    open.fetch_sub(1, Ordering::SeqCst);
+                }
+            }
+        })
+        .map_err(|_| Error::new(ErrorKind::Internal, "the relay can't start"))
 }
 
 fn lock<T>(held: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -242,13 +289,27 @@ impl Drop for Hello {
     }
 }
 
-pub fn start(listen: SocketAddr, keeping: Option<Keeping>) -> Result<Relay, Error> {
+/// Serves plain `ws://` on `listen`, and `wss://` on the second address with the certificate when
+/// `tls` is given: both reach the same rooms, so desktop peers (plain) and browsers on HTTPS
+/// pages (secure) share them.
+pub fn start(listen: SocketAddr, keeping: Option<Keeping>, tls: Option<(Tls, SocketAddr)>) -> Result<Relay, Error> {
     let store = match keeping {
         Some(keeping) => Some(Store::open(&keeping.dir, keeping.keep, keeping.max_bytes, now()).map_err(|message| Error::new(ErrorKind::Internal, message))?),
         None => None,
     };
-    let listener = TcpListener::bind(listen).map_err(|_| Error::new(ErrorKind::Network, "the relay can't listen on that address"))?;
-    let addr = listener.local_addr().map_err(|_| Error::new(ErrorKind::Network, "the relay's address isn't known"))?;
+    let bind = |at: SocketAddr| {
+        let listener = TcpListener::bind(at).map_err(|_| Error::new(ErrorKind::Network, "the relay can't listen on that address"))?;
+        let addr = listener.local_addr().map_err(|_| Error::new(ErrorKind::Network, "the relay's address isn't known"))?;
+        Ok::<_, Error>((listener, addr))
+    };
+    let (listener, addr) = bind(listen)?;
+    let secure = tls
+        .map(|(tls, at)| {
+            bind(at)
+                .map(|(listener, addr)| (tls, listener, addr))
+                .map_err(|_| Error::new(ErrorKind::Network, "the relay can't listen for wss:// on that address (--tls-listen)"))
+        })
+        .transpose()?;
     let rooms = Arc::new(Mutex::new(Rooms::default()));
     let store = store.map(|store| Arc::new(Mutex::new(store)));
     if let Some(store) = &store {
@@ -260,34 +321,16 @@ pub fn start(listen: SocketAddr, keeping: Option<Keeping>) -> Result<Relay, Erro
             .spawn(move || saver(&rooms, &store, &woken))
             .map_err(|_| Error::new(ErrorKind::Internal, "the relay can't start"))?;
     }
-    let open = Arc::new(AtomicUsize::new(0));
-    let next = Arc::new(AtomicU64::new(1));
-    let waiting = Waiting::default();
-    let accepting = thread::Builder::new()
-        .name("relay".into())
-        .spawn(move || {
-            for stream in listener.incoming() {
-                let Ok(stream) = stream else { continue };
-                let Some(hello) = stream.peer_addr().ok().and_then(|addr| Hello::new(&waiting, addr.ip())) else { continue };
-                if open.fetch_add(1, Ordering::SeqCst) >= MAX_CONNECTIONS {
-                    open.fetch_sub(1, Ordering::SeqCst);
-                    continue;
-                }
-                let (rooms, count, peer) = (Arc::clone(&rooms), Arc::clone(&open), next.fetch_add(1, Ordering::SeqCst));
-                let store = store.clone();
-                let spawned = thread::Builder::new().name("relay peer".into()).spawn(move || {
-                    connection(stream, peer, &rooms, store.as_deref(), hello);
-                    lock(&rooms).leave(peer);
-                    count.fetch_sub(1, Ordering::SeqCst);
-                });
-                if spawned.is_err() {
-                    // The closure (and its count) never ran.
-                    open.fetch_sub(1, Ordering::SeqCst);
-                }
-            }
-        })
-        .map_err(|_| Error::new(ErrorKind::Internal, "the relay can't start"))?;
-    Ok(Relay { addr, accepting })
+    let shared = Shared { rooms, store, open: Arc::default(), next: Arc::new(AtomicU64::new(1)), waiting: Waiting::default() };
+    let mut accepting = vec![accept(listener, None, shared.clone())?];
+    let secure = match secure {
+        Some((tls, listener, at)) => {
+            accepting.push(accept(listener, Some(Arc::new(tls)), shared)?);
+            Some(at)
+        }
+        None => None,
+    };
+    Ok(Relay { addr, secure, accepting })
 }
 
 fn config(largest: usize) -> WebSocketConfig {
@@ -295,10 +338,18 @@ fn config(largest: usize) -> WebSocketConfig {
 }
 
 /// Serves one peer until it leaves, is refused, or the connection fails.
-fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>, store: Option<&Mutex<Store>>, hello: Hello) {
-    if stream.set_read_timeout(Some(HELLO_WITHIN)).is_err() {
+fn connection(stream: TcpStream, tls: Option<&Tls>, peer: Peer, rooms: &Mutex<Rooms>, store: Option<&Mutex<Store>>, hello: Hello) {
+    // The TLS handshake, like the hello, has HELLO_WITHIN to finish.
+    if stream.set_read_timeout(Some(HELLO_WITHIN)).is_err() || stream.set_write_timeout(Some(HELLO_WITHIN)).is_err() {
         return;
     }
+    let stream = match tls {
+        Some(tls) => {
+            let Some(secure) = tls.accept(stream) else { return };
+            secure
+        }
+        None => Stream::Plain(stream),
+    };
     let Ok(mut socket) = tungstenite::accept_with_config(stream, Some(config(MAX_HELLO_BYTES))) else { return };
     let (sender, inbox) = channel();
     let waiting = Arc::new(AtomicUsize::new(0));
@@ -307,7 +358,7 @@ fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>, store: Option
     }
     drop(hello);
     socket.set_config(|c| *c = config(MAX_FRAME_BYTES));
-    if socket.get_ref().set_read_timeout(Some(POLL)).is_err() || socket.get_ref().set_write_timeout(Some(WRITE_WITHIN)).is_err() {
+    if socket.get_ref().tcp().set_read_timeout(Some(POLL)).is_err() || socket.get_ref().tcp().set_write_timeout(Some(WRITE_WITHIN)).is_err() {
         return;
     }
     serve(&mut socket, peer, &inbox, &waiting, rooms);
@@ -315,7 +366,7 @@ fn connection(stream: TcpStream, peer: Peer, rooms: &Mutex<Rooms>, store: Option
 
 /// Reads the hello and joins its room; `false` if the peer doesn't get in.
 fn enter(
-    socket: &mut WebSocket<TcpStream>,
+    socket: &mut WebSocket<Stream>,
     peer: Peer,
     sender: Sender<Push>,
     waiting: Arc<AtomicUsize>,
@@ -415,7 +466,7 @@ fn enter(
     true
 }
 
-fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
+fn refuse(socket: &mut WebSocket<Stream>, message: &str) -> bool {
     if let Ok(bytes) = Frame::Refused(message.into()).encode() {
         let _ = socket.send(Message::binary(bytes));
     }
@@ -424,7 +475,7 @@ fn refuse(socket: &mut WebSocket<TcpStream>, message: &str) -> bool {
     false
 }
 
-fn serve(socket: &mut WebSocket<TcpStream>, peer: Peer, inbox: &Receiver<Push>, waiting: &AtomicUsize, rooms: &Mutex<Rooms>) {
+fn serve(socket: &mut WebSocket<Stream>, peer: Peer, inbox: &Receiver<Push>, waiting: &AtomicUsize, rooms: &Mutex<Rooms>) {
     // When the peer last said where it is, and the latest it said too soon after: that one is
     // passed on once PRESENCE_EVERY is up, so the others see where it stopped.
     let mut moved: Option<Instant> = None;

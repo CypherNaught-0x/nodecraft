@@ -135,7 +135,12 @@ impl Endpoints {
                     Err(error) => self.notice = Some(format!("{}: {}", entry.label, error.message)),
                 }
             }
-            if ui.add_enabled(*state != InUse::Default, egui::Button::new("Reset")).on_hover_text(format!("Use {}'s own API again", entry.label)).clicked() {
+            if ui
+                .add_enabled(*state != InUse::Default, egui::Button::new("Reset"))
+                .on_hover_text(format!("Use {}'s own API again", entry.label))
+                .on_disabled_hover_text(format!("{} already uses its own API", entry.label))
+                .clicked()
+            {
                 self.notice = None;
                 self.edits.insert(entry.provider, String::new());
                 self.changes.push(EndpointChange { provider: entry.provider, url: None });

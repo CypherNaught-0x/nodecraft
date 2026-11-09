@@ -118,6 +118,7 @@ pub fn picker(ui: &mut egui::Ui, choices: OptionList<'_>, value: Option<&Value>,
             if ui
                 .add_enabled(overridden, egui::Button::new("Use default").min_size(egui::vec2(ui.available_width(), row)))
                 .on_hover_text("Use the parameter's default")
+                .on_disabled_hover_text("It already uses the default")
                 .clicked()
             {
                 edited = Some(None);

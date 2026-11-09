@@ -249,9 +249,11 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
   The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
   between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
-  actions don't use the GPU path (#89) yet, and custom shaders need a GPU. Result caching for
+  actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
+  the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
-  (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
+  (`rust_wasm`) plugin packages are refused at install, as a final decision for this plugin
+  contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
   video/audio actions work in every host.
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
@@ -282,9 +284,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   editors are expected to need; the import itself has not been checked in Final Cut Pro or DaVinci
   Resolve yet (#1066).
 
-- **Relay transport and storage differ by client.** The relay serves plain `ws://`.
-  Desktop clients use that transport. A browser served over HTTPS needs a TLS proxy for a
-  remote relay. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
+- **Relay transport and storage differ by client.** The relay serves plain `ws://`, which
+  desktop clients use, and with a certificate also `wss://` on a second port for browsers on
+  HTTPS pages (#1067); both reach the same rooms. The [installation guide](docs/install.md#live-sharing-in-the-browser) covers
   local development and remote access. The relay holds rooms in memory unless it is given a
   store folder (`--store`), where rooms and their links survive a restart (#1068).
 - **Remaining gaps are specific, not whole missing milestones.** Batch, Techniques, app mode,

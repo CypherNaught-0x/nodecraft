@@ -417,7 +417,11 @@ impl NodeCraftApp {
             if let Some(fraction) = fraction {
                 ui.add(egui::ProgressBar::new(fraction));
             }
-            later = ui.add_enabled(!cancelling, egui::Button::new("Decide later")).on_hover_text(later_hover).clicked();
+            later = ui
+                .add_enabled(!cancelling, egui::Button::new("Decide later"))
+                .on_hover_text(later_hover)
+                .on_disabled_hover_text("Cancelling; it stops in a moment")
+                .clicked();
         });
         if later && let Some(job) = &self.keep_aside {
             job.cancel();
