@@ -106,6 +106,8 @@ fn sync_state(store: Arc<MemoryStore>, accounts: &[&str]) -> State {
 
 fn type_into(h: &mut Harness<'static, State>, label: &str, text: &str) {
     let role = if label == "Key" { Role::PasswordInput } else { Role::TextInput };
+    h.get_by_role_and_label(role, label).scroll_to_me();
+    h.run();
     h.get_by_role_and_label(role, label).click();
     h.run();
     h.event(egui::Event::Text(text.into()));
@@ -801,12 +803,18 @@ fn a_full_list_refuses_a_new_account_on_screen_before_writing() {
     );
     h.run();
     assert_eq!(h.state().panel.rows().len(), KeySettings::MAX_ACCOUNTS);
+    h.get_by_label("openai").scroll_to_me();
+    h.run();
     h.get_by_label("openai").click();
     h.run();
     type_into(&mut h, "Key", KEY);
     h.get_by_label("Save").click();
     h.run();
-    assert!(h.query_by_label_contains("at most 64 accounts").is_some(), "the refusal is on screen");
+    h.get_by_label_contains("at most 64 accounts").scroll_to_me();
+    h.run();
+    let refusal = h.get_by_label_contains("at most 64 accounts").rect();
+    let panel = egui::AreaState::load(&h.ctx, egui::Id::new("nodecraft.keys")).unwrap().rect();
+    assert!(panel.contains_rect(refusal), "the refusal is on screen: {refusal:?} in {panel:?}");
     assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none(), "no key was written");
     assert!(h.state().panel.key.is_empty(), "the typed key is cleared anyway");
     assert!(h.state().changes.is_empty());
