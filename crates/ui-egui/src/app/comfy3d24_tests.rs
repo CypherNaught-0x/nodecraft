@@ -79,7 +79,7 @@ fn comfy3d24_each_local_generation_card_shows_real_mesh_and_capture_pointer_adds
         for model in ["comfyui.hunyuan3d-2", "comfyui.hunyuan3d-2.1"] {
             for (mime, bytes) in [("model/gltf-binary", glb.as_slice()), ("model/obj", OBJ), ("model/gltf+json", GLTF)] {
                 let mut h = harness(app(model, mime, bytes, theme));
-                assert!(wait(&mut h, "3D model, 1 triangles, shaded view"), "{model}/{mime}: {:?}", h.state().notice);
+                assert!(wait(&mut h, "3D model, 1 triangles, shaded view"), "{model}/{mime}: {:?}", h.state().notice());
                 assert!(h.state().meshes.bytes() > 0, "the asset was decoded by the real viewer cache");
                 h.get_by_label("Shaded").click();
                 assert!(wait(&mut h, "3D model, 1 triangles, unlit view"));
