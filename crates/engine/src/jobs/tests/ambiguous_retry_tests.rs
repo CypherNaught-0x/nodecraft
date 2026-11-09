@@ -187,6 +187,33 @@ fn bedrock_lost_reply_stops_actual_driver_retries_and_keeps_the_charge_unresolve
     assert_eq!(statuses(&budget), [Charge::Unresolved]);
 }
 
+/// Anthropic's Messages API (#1122): a lost reply may have been billed, so it is never resent.
+#[test]
+fn anthropic_lost_reply_stops_actual_driver_retries_and_keeps_the_charge_unresolved() {
+    use nodecraft_providers::llm::{ApiKey, Endpoint, LlmClient};
+    struct LostHttp(AtomicU64);
+    impl nodecraft_providers::Http for LostHttp {
+        fn send(&self, _: nodecraft_providers::HttpRequest) -> BoxFuture<'_, Result<nodecraft_providers::HttpResponse, ProviderError>> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Box::pin(async { Err(ProviderError::new(ErrorKind::Network, "public Anthropic accepted-but-lost fixture")) })
+        }
+    }
+    let http = Arc::new(LostHttp(AtomicU64::new(0)));
+    let provider = Arc::new(LlmClient::new(Endpoint::anthropic(ApiKey::new("public-fixture")), http.clone()));
+    assert!(!provider.retry_ambiguous_submit());
+    let (runner, budget) = budgeted(Some(1_000_000));
+    let mut queued = priced(provider, Some(100_000));
+    queued.job.model = "claude-opus-5-5".into();
+    queued.job.inputs = vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A harbour".into() }];
+    runner.register(JobId(1), queued);
+    let (scheduler, events) = drive(Arc::new(runner));
+    assert_eq!(http.0.load(Ordering::SeqCst), 1, "one attempt");
+    assert!(!events.iter().any(|event| matches!(event, Event::Retrying { .. })), "{events:?}");
+    assert!(matches!(scheduler.state(JobId(1)), Some(JobState::Failed { .. })));
+    assert_eq!(spent(&budget), 100_000);
+    assert_eq!(statuses(&budget), [Charge::Unresolved]);
+}
+
 /// A catalog provider served from a custom base URL (#960, #961): neither a lost reply nor an
 /// error reply is sent again, and the job keeps its charge for reconciliation.
 #[test]

@@ -45,7 +45,7 @@ fn relay_with(more: &[&str]) -> Relay {
     let mut stderr = BufReader::new(child.stderr.take().unwrap());
     let mut line = String::new();
     stderr.read_line(&mut line).unwrap();
-    let url = line.split_whitespace().find(|word| word.starts_with("ws://")).unwrap().trim_end_matches('.').to_string();
+    let url = line.split_whitespace().find(|word| word.starts_with("ws://") || word.starts_with("wss://")).unwrap().trim_end_matches('.').to_string();
     Relay { child, url, stderr }
 }
 
@@ -397,4 +397,135 @@ fn a_hello_alone_leaves_nothing_in_the_store() {
     // Past a save pass (every 5 s).
     std::thread::sleep(Duration::from_millis(6500));
     assert_eq!(std::fs::read_dir(store.path()).unwrap().count(), 0, "nothing kept");
+}
+
+/// Given a certificate and its key, the relay serves `wss://` itself (#1067): a TLS client that
+/// trusts the certificate gets in and is answered, and a plain `ws://` client isn't. The
+/// certificate is made for the test, so no key is kept in the repository; without `openssl`
+/// the test says so and passes.
+#[cfg(not(any(windows, target_os = "macos")))]
+#[test]
+fn a_relay_with_a_certificate_serves_wss() {
+    use rustls::pki_types::CertificateDer;
+    use rustls::pki_types::pem::PemObject;
+    let dir = tempfile::tempdir().unwrap();
+    let (cert, key) = (dir.path().join("cert.pem"), dir.path().join("key.pem"));
+    // A test CA and a certificate for localhost signed by it, as an operator's would be.
+    let (ca, ca_key, request, extensions) = (dir.path().join("ca.pem"), dir.path().join("ca.key"), dir.path().join("leaf.csr"), dir.path().join("leaf.ext"));
+    std::fs::write(&extensions, "basicConstraints=critical,CA:FALSE\nsubjectAltName=DNS:localhost\nextendedKeyUsage=serverAuth\n").unwrap();
+    let openssl = |args: &[&std::ffi::OsStr]| Command::new("openssl").args(args).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    let os = |text: &'static str| std::ffi::OsStr::new(text);
+    let steps: [Vec<&std::ffi::OsStr>; 3] = [
+        vec![
+            os("req"),
+            os("-x509"),
+            os("-newkey"),
+            os("ec"),
+            os("-pkeyopt"),
+            os("ec_paramgen_curve:prime256v1"),
+            os("-nodes"),
+            os("-keyout"),
+            ca_key.as_os_str(),
+            os("-out"),
+            ca.as_os_str(),
+            os("-days"),
+            os("1"),
+            os("-subj"),
+            os("/CN=NodeCraft test CA"),
+        ],
+        vec![
+            os("req"),
+            os("-newkey"),
+            os("ec"),
+            os("-pkeyopt"),
+            os("ec_paramgen_curve:prime256v1"),
+            os("-nodes"),
+            os("-keyout"),
+            key.as_os_str(),
+            os("-out"),
+            request.as_os_str(),
+            os("-subj"),
+            os("/CN=localhost"),
+        ],
+        vec![
+            os("x509"),
+            os("-req"),
+            os("-in"),
+            request.as_os_str(),
+            os("-CA"),
+            ca.as_os_str(),
+            os("-CAkey"),
+            ca_key.as_os_str(),
+            os("-CAcreateserial"),
+            os("-out"),
+            cert.as_os_str(),
+            os("-days"),
+            os("1"),
+            os("-extfile"),
+            extensions.as_os_str(),
+        ],
+    ];
+    for step in &steps {
+        let Ok(made) = openssl(step) else {
+            eprintln!("skipped: no openssl to make a test certificate");
+            return;
+        };
+        assert!(made.success(), "{step:?}");
+    }
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nodecraft-cli"))
+        .args(["relay", "--listen", "127.0.0.1:0", "--tls-listen", "127.0.0.1:0", "--tls-cert", cert.to_str().unwrap(), "--tls-key", key.to_str().unwrap()])
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let mut line = String::new();
+    BufReader::new(child.stderr.take().unwrap()).read_line(&mut line).unwrap();
+    /// Stops the relay when the test ends, however it ends.
+    struct Stop(Child);
+    impl Drop for Stop {
+        fn drop(&mut self) {
+            let _ = self.0.kill();
+            let _ = self.0.wait();
+        }
+    }
+    let relay = Stop(child);
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let plain = words.iter().find(|w| w.starts_with("ws://")).unwrap().trim_end_matches('.').trim_end_matches('/').trim_start_matches("ws://").to_owned();
+    let addr = words.iter().find(|w| w.starts_with("wss://")).unwrap().trim_end_matches('.').trim_end_matches('/').trim_start_matches("wss://").to_owned();
+    let port = addr.rsplit(':').next().unwrap().to_owned();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(CertificateDer::from_pem_file(&ca).unwrap()).unwrap();
+    let config = rustls::ClientConfig::builder_with_provider(std::sync::Arc::new(rustls::crypto::aws_lc_rs::default_provider()))
+        .with_safe_default_protocol_versions()
+        .unwrap()
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    let tcp = TcpStream::connect(&addr).unwrap();
+    tcp.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+    let connection = rustls::ClientConnection::new(std::sync::Arc::new(config), "localhost".try_into().unwrap()).unwrap();
+    let tls = rustls::StreamOwned::new(connection, tcp);
+    let (mut socket, _) = tungstenite::client(format!("wss://localhost:{port}/"), tls).unwrap();
+    socket.send(Message::binary(Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: room() }.encode().unwrap())).unwrap();
+    let answer = loop {
+        match socket.read().unwrap() {
+            Message::Binary(bytes) => break Frame::decode(&bytes).unwrap(),
+            _ => continue,
+        }
+    };
+    assert!(matches!(answer, Frame::Step1(_)), "the owner is asked what it has: {answer:?}");
+
+    // Plain ws:// on the secure port gets no WebSocket; the plain port still serves it, for the
+    // desktop app, and its peers share the same rooms.
+    assert!(tungstenite::connect(format!("ws://{addr}/")).is_err());
+    let (mut desktop, _) = tungstenite::connect(format!("ws://{plain}/")).unwrap();
+    desktop.send(Message::binary(Frame::Hello { protocol: nodecraft_sync::PROTOCOL, room: room() }.encode().unwrap())).unwrap();
+    let answer = loop {
+        match desktop.read().unwrap() {
+            Message::Binary(bytes) => break Frame::decode(&bytes).unwrap(),
+            _ => continue,
+        }
+    };
+    assert!(matches!(answer, Frame::Step1(_)), "{answer:?}");
+    drop(relay);
 }

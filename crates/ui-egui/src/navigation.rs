@@ -239,20 +239,49 @@ impl Mapping {
 #[derive(Clone, Copy)]
 pub struct Layout {
     pub overlay: Rect,
+    /// Empty when the map is hidden, by the person or because the canvas is too small for it.
     pub map: Rect,
     pub toolbar: Rect,
+    /// The map is drawn: the person shows it and the canvas is big enough (#1115).
+    pub map_shown: bool,
 }
+/// The navigation panel at the canvas's bottom right (#1115): `navigation_fraction` of the canvas
+/// width between `navigation_min_width` and `navigation_width`, never wider than the canvas. The
+/// map keeps the default panel's shape and hides below `minimap_hide_width` × `minimap_hide_height`.
 pub fn layout(viewport: Rect, visible: bool, t: &Tokens) -> Layout {
-    let width = t.navigation_width.min((viewport.width() - 2.0 * t.navigation_margin).max(1.0));
-    let map_height = if visible {
-        t.minimap_height.min((viewport.height() - t.navigation_toolbar_height - 2.0 * t.navigation_margin - t.navigation_gap).max(1.0))
+    let room = (viewport.width() - 2.0 * t.navigation_margin).max(1.0);
+    let scaled = (viewport.width() * t.navigation_fraction).clamp(t.navigation_min_width.min(t.navigation_width), t.navigation_width);
+    let width = if scaled.is_finite() { scaled.min(room) } else { room.min(t.navigation_width) };
+    let fits = viewport.width() >= t.minimap_hide_width && viewport.height() >= t.minimap_hide_height;
+    let map_shown = visible && fits;
+    let map_height = if map_shown {
+        let shaped = if t.navigation_width > 0.0 { t.minimap_height * width / t.navigation_width } else { t.minimap_height };
+        shaped.min(t.minimap_height).min((viewport.height() - t.navigation_toolbar_height - 2.0 * t.navigation_margin - t.navigation_gap).max(1.0))
     } else {
         0.0
     };
-    let height = t.navigation_toolbar_height + if visible { map_height + t.navigation_gap } else { 0.0 };
+    let height = t.navigation_toolbar_height + if map_shown { map_height + t.navigation_gap } else { 0.0 };
     let overlay = Rect::from_min_size(viewport.max - Vec2::new(width + t.navigation_margin, height + t.navigation_margin), Vec2::new(width, height));
     let toolbar = Rect::from_min_size(Pos2::new(overlay.min.x, overlay.max.y - t.navigation_toolbar_height), Vec2::new(width, t.navigation_toolbar_height));
-    Layout { overlay, map: Rect::from_min_size(overlay.min, Vec2::new(width, map_height)), toolbar }
+    Layout { overlay, map: Rect::from_min_size(overlay.min, Vec2::new(width, map_height)), toolbar, map_shown }
+}
+/// Splits the toolbar between buttons whose labels measure `labels` wide: each gets its label
+/// and an equal share of what is left, so a narrow panel still shows every label whole (#1115).
+pub fn toolbar_cells(toolbar: Rect, labels: &[f32]) -> Vec<Rect> {
+    let count = labels.len().max(1) as f32;
+    let total: f32 = labels.iter().map(|w| w.max(0.0)).sum();
+    let spare = ((toolbar.width() - total) / count).max(0.0);
+    let squeeze = if total > toolbar.width() && total > 0.0 { toolbar.width() / total } else { 1.0 };
+    let mut left = toolbar.left();
+    labels
+        .iter()
+        .map(|label| {
+            let width = label.max(0.0) * squeeze + spare;
+            let cell = Rect::from_min_size(Pos2::new(left, toolbar.top()), Vec2::new(width, toolbar.height()));
+            left += width;
+            cell
+        })
+        .collect()
 }
 pub struct Navigation {
     pub visible: bool,
@@ -302,7 +331,10 @@ impl Navigation {
                         egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
                         _ => None,
                     })
-                    .is_some_and(|pos| layout(viewport, self.visible, t).map.contains(pos))
+                    .is_some_and(|pos| {
+                        let layout = layout(viewport, self.visible, t);
+                        layout.map_shown && layout.map.contains(pos)
+                    })
             })
     }
     /// What the minimap draws, in world space: each card the canvas draws (moved by a card drag's
@@ -339,7 +371,7 @@ impl Navigation {
         let shapes = self.shapes(preview, hidden, collapsed);
         let node_bounds = if self.geometry.error { None } else { shapes.iter().map(|(_, rect)| decorated(*rect, t)).reduce(|a, b| a.union(b)) };
         let domain = node_bounds.map_or(visible, |nodes| if valid_rect(visible) { nodes.union(visible) } else { nodes });
-        let mapping = self.drag.or_else(|| Mapping::new(domain, layout.map.shrink(t.navigation_gap)));
+        let mapping = self.drag.or_else(|| if layout.map_shown { Mapping::new(domain, layout.map.shrink(t.navigation_gap)) } else { None });
         let pointer = ui.input(|i| i.pointer.interact_pos());
         if self.drag.is_none() && press_admitted.unwrap_or_else(|| self.press_pending(ui.ctx(), viewport, pan_enabled, t)) {
             self.drag = mapping;
@@ -358,7 +390,7 @@ impl Navigation {
                 ui.set_min_size(layout.overlay.size());
                 let painter = ui.painter_at(layout.overlay.intersect(viewport));
                 painter.rect(layout.overlay, t.panel_radius, t.panel_fill, egui::Stroke::new(t.handle_stroke, t.panel_stroke), egui::StrokeKind::Inside);
-                if self.visible {
+                if layout.map_shown {
                     let response =
                         ui.interact(layout.map, ui.id().with("minimap"), if pan_enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, pan_enabled, "Minimap: click or drag to pan canvas"));
@@ -402,21 +434,25 @@ impl Navigation {
                         );
                     }
                 }
-                let width = layout.toolbar.width() / 4.0;
-                for (index, (label, id, enabled)) in [
+                // A map hidden for space has nothing to toggle; the zoom badge and Fit stay.
+                let room_for_map = crate::navigation::layout(viewport, true, t).map_shown;
+                let buttons: Vec<_> = [
                     (if self.visible { "Hide map" } else { "Show map" }, "canvas.minimap_toggle", toggle_enabled),
                     ("Fit all", "canvas.fit_all", all_enabled),
                     ("Fit selected", "canvas.fit_selection", selection_enabled),
                     ("100%", "reset", toggle_enabled),
                 ]
                 .into_iter()
-                .enumerate()
-                {
-                    let rect = Rect::from_min_size(layout.toolbar.min + Vec2::new(index as f32 * width, 0.0), Vec2::new(width, layout.toolbar.height()));
-                    let label = if id == "reset" { format!("{:.0}%", view.zoom * 100.0) } else { label.to_owned() };
+                .filter(|(_, id, _)| *id != "canvas.minimap_toggle" || room_for_map)
+                .map(|(label, id, enabled)| (if id == "reset" { format!("{:.0}%", view.zoom * 100.0) } else { label.to_owned() }, id, enabled))
+                .collect();
+                let font = egui::TextStyle::Button.resolve(ui.style());
+                let padding = ui.spacing().button_padding.x * 2.0;
+                let labels: Vec<f32> =
+                    buttons.iter().map(|(label, _, _)| ui.painter().layout_no_wrap(label.clone(), font.clone(), t.text).size().x + padding).collect();
+                for ((label, id, enabled), rect) in buttons.into_iter().zip(toolbar_cells(layout.toolbar, &labels)) {
                     let response = ui.add_enabled_ui(enabled, |ui| ui.put(rect, egui::Button::new(label).frame(false))).inner;
-                    let clicked = response.clicked();
-                    if clicked {
+                    if response.clicked() {
                         actions.push((id, json!({})));
                     }
                 }

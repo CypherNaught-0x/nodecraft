@@ -7,6 +7,11 @@
 //! pulls it back in), drawn in [`PANEL_ORDER`] under menus, popups and notices, and brought to
 //! the front when it opens or is pressed. Where panels sit, how big they are and which is in front
 //! is view state held in egui's memory; none of it is a document change.
+//!
+//! The rule for dialogs (#1116): a *question* the person answers before continuing is a
+//! [`question`] (an `egui::Modal`: Enter takes the primary action, Escape cancels); a *tool* the
+//! person works alongside is a [`panel`], or [`pinned`] for the fixed Shared parameters panel.
+//! This module is the only place that builds an `egui::Window`.
 use egui::{Align2, Context, Id, Pos2, Rect, Vec2};
 
 use crate::theme::Tokens;
@@ -16,7 +21,7 @@ use crate::theme::Tokens;
 pub const PANEL_ORDER: egui::Order = egui::Order::Middle;
 
 /// Where a panel first opens, relative to the shell's [`Bounds::home`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Home {
     /// Its top-right corner at `home`: the panels the application row opens.
     RightTop,
@@ -113,12 +118,17 @@ fn moved_id(id: Id) -> Id {
 pub struct Panel<'open> {
     window: egui::Window<'open>,
     id: Id,
+    title: String,
+    open: Option<&'open mut bool>,
+    vscroll: bool,
+    t: Tokens,
 }
 
 impl<'open> Panel<'open> {
-    /// Shows the header's close button and closes by clearing `open`.
+    /// Shows the header's close button and closes by clearing `open`; a panel whose `open` is
+    /// false isn't drawn.
     pub fn open(mut self, open: &'open mut bool) -> Self {
-        self.window = self.window.open(open);
+        self.open = Some(open);
         self
     }
 
@@ -132,28 +142,88 @@ impl<'open> Panel<'open> {
         self
     }
 
+    /// The tallest the panel may be, so it can open below the control that opened it.
+    pub fn max_height(mut self, height: f32) -> Self {
+        if height.is_finite() && height > 0.0 {
+            self.window = self.window.max_height(height);
+        }
+        self
+    }
+
+    /// Scrolls the body, below the header, when it is taller than the room the panel has.
+    pub fn vscroll(mut self, vscroll: bool) -> Self {
+        self.vscroll = vscroll;
+        self
+    }
+
     pub fn show<R>(self, ctx: &Context, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<Option<R>>> {
-        let id = self.id;
-        self.window.show(ctx, |ui| {
-            header_drag(ui, id);
-            add_contents(ui)
-        })
+        let Panel { window, id, title, open, vscroll, t } = self;
+        if open.as_deref() == Some(&false) {
+            return None;
+        }
+        let mut close = false;
+        let shown = window.show(ctx, |ui| {
+            close = panel_header(ui, id, &title, open.is_some(), &t);
+            if vscroll { egui::ScrollArea::vertical().show(ui, add_contents).inner } else { add_contents(ui) }
+        });
+        if close && let Some(open) = open {
+            *open = false;
+            ctx.request_repaint();
+        }
+        shown
     }
 }
 
-/// The header's move handle: the title strip above the content, left of the close button.
-/// Only this senses a drag, so pressing or dragging inside the body never moves the panel.
-fn header_drag(ui: &mut egui::Ui, id: Id) {
+/// Every panel's header (#1123): the title on the left in the body size and the theme's text
+/// colour, the close button (AccessKit "Close window") on the right, and a divider below. The
+/// title is painted, not a label: the window's own AccessKit node already carries it. Returns
+/// whether the close button was pressed.
+fn panel_header(ui: &mut egui::Ui, id: Id, title: &str, closable: bool, t: &Tokens) -> bool {
+    let button = t.icon_size;
+    let width = ui.available_width().max(button);
+    let room = if closable { width - button - t.control_gap } else { width };
+    let galley = egui::WidgetText::from(egui::RichText::new(title).size(t.body_size).color(t.text)).into_galley(
+        ui,
+        Some(egui::TextWrapMode::Truncate),
+        room.max(0.0),
+        egui::TextStyle::Body,
+    );
+    let height = galley.size().y.max(button);
+    let (_, row) = ui.allocate_space(Vec2::new(width, height));
+    ui.painter().galley(Pos2::new(row.left(), row.center().y - galley.size().y / 2.0), galley, t.text);
+    let mut closed = false;
+    let close = closable.then(|| Rect::from_center_size(Pos2::new(row.right() - button / 2.0, row.center().y), Vec2::splat(button)));
+    if let Some(rect) = close {
+        let response = ui.interact(rect, id.with("nodecraft.floating.close"), egui::Sense::click());
+        response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, ui.is_enabled(), "Close window"));
+        let visuals = ui.style().interact(&response);
+        let cross = rect.shrink(t.icon_size / 4.0).expand(visuals.expansion);
+        let painter = ui.painter();
+        painter.line_segment([cross.left_top(), cross.right_bottom()], visuals.fg_stroke);
+        painter.line_segment([cross.right_top(), cross.left_bottom()], visuals.fg_stroke);
+        closed = response.clicked();
+    }
+    // The divider spans the panel, frame padding included.
+    let divider = ui.cursor().top() + t.control_gap / 2.0;
+    let span = ui.max_rect().expand2(Vec2::new(t.card_padding, 0.0));
+    ui.painter().hline(span.x_range(), divider, egui::Stroke::new(t.handle_stroke, t.panel_stroke));
+    ui.add_space(t.control_gap);
+    header_drag(ui, id, ui.cursor().top(), close.map_or(row.right(), |rect| rect.left()));
+    closed
+}
+
+/// The header's move handle: the title strip above the content (from the panel's top edge down
+/// to `bottom`), left of the close button (`right`). Only this senses a drag, so pressing or
+/// dragging inside the body never moves the panel.
+fn header_drag(ui: &mut egui::Ui, id: Id, bottom: f32, right: f32) {
     let Some(area) = ui.ctx().memory(|m| m.area_rect(id)) else { return };
-    let top = ui.max_rect().top();
-    let height = top - area.top();
-    if !(height.is_finite() && height > 0.0 && area.is_finite()) {
+    let height = bottom - area.top();
+    if !(height.is_finite() && height > 0.0 && area.is_finite() && right.is_finite()) {
         return;
     }
     // Measured for the cascade: everything above the content is title and close button.
     ui.ctx().data_mut(|data| data.insert_temp(header_height_id(id), height));
-    // The close button sits at the right end of the title row, within one header height.
-    let rect = Rect::from_min_max(area.min, Pos2::new((area.right() - height).max(area.left()), top));
+    let rect = Rect::from_min_max(area.min, Pos2::new(right.max(area.left()).min(area.right()), bottom));
     let response = ui.interact(rect, header_id(id), egui::Sense::drag()).on_hover_cursor(egui::CursorIcon::Grab);
     let ctx = ui.ctx().clone();
     let held = ctx.data(|data| data.get_temp::<Drag>(moved_id(id)));
@@ -191,6 +261,140 @@ struct Drag {
     to: Pos2,
 }
 
+/// A *question* (#1116): something the person answers before continuing, such as a confirmation
+/// or a rename. It is an `egui::Modal` centred over a dimmed window, in the shared panel frame
+/// and no wider than the window less its margins. Its caller reads [`answer_keys`] before
+/// showing it, so Enter takes the primary action and Escape cancels, and neither reaches the
+/// canvas. A *tool* the person works alongside is a [`panel`]; nothing in the shell builds a raw
+/// `egui::Window` outside this module (`no_raw_windows_outside_floating` checks).
+///
+/// `title` names it for screen readers: its area is an AccessKit `Dialog` labelled `title`, with
+/// the question's controls inside it (callers still show `title` as a heading).
+pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
+    // The area's own node (`<id>.with("move")` in egui 0.36), made before its content so the
+    // content is placed inside it rather than at the root of the tree.
+    // Its bounds are where it was last drawn: it stays centred, so they only lag on its first pass.
+    let last = egui::AreaState::load(ctx, id).map(|state| state.rect()).filter(|rect| rect.is_finite());
+    ctx.accesskit_node_builder(id.with("move"), |node| {
+        node.set_role(egui::accesskit::Role::Dialog);
+        node.set_label(title);
+        node.set_modal();
+        if let Some(rect) = last {
+            node.set_bounds(egui::accesskit::Rect { x0: rect.min.x.into(), y0: rect.min.y.into(), x1: rect.max.x.into(), y1: rect.max.y.into() });
+        }
+    });
+    let screen = ctx.content_rect();
+    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
+    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
+    egui::Modal::new(id).area(area).frame(crate::theme::panel_frame(t))
+}
+
+/// The widest a [`question`]'s content may be: `dialog_width`, or less in a narrow window.
+pub fn question_width(ctx: &Context, t: &Tokens) -> f32 {
+    let room = ctx.content_rect().width() - t.navigation_margin * 2.0 - t.card_padding * 2.0;
+    t.dialog_width.min(room).max(t.navigation_margin)
+}
+
+/// The tallest a [`question`]'s content may be, so its buttons stay on the screen.
+pub fn question_height(ctx: &Context, t: &Tokens) -> f32 {
+    let room = ctx.content_rect().height() - t.navigation_margin * 2.0 - t.card_padding * 2.0;
+    room.max(t.navigation_margin)
+}
+
+/// A question's keys this frame, consumed so nothing else acts on them: a fresh press of Enter
+/// (the primary action) and of Escape (cancel), each without modifiers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Answer {
+    pub enter: bool,
+    pub escape: bool,
+}
+
+/// Which keys a question answers, for [`answer_keys`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Keys {
+    /// Enter takes the primary action and Escape cancels.
+    EnterAndEscape,
+    /// Escape cancels; Enter is left alone (a question whose only action loses work).
+    EscapeOnly,
+}
+
+/// Whether Enter may answer a question yet, and the pass it was last asked in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct EnterArmed {
+    pass: u64,
+    armed: bool,
+}
+
+/// Takes this frame's Enter and Escape for the open question `id`; see [`question`]. Call it
+/// before showing the question, every pass it is shown.
+///
+/// Only a fresh press counts: a key repeat never answers, and Enter answers only once it has been
+/// up since the question opened, so the Enter held to choose something in the step before
+/// can't also answer this. While one of the question's own controls other than `field` (its text
+/// field, if it has one) has the keyboard focus, Enter is left to that control: a focused Cancel
+/// cancels. Repeats of a key the question takes are consumed too, so none reaches the canvas;
+/// with [`Keys::EscapeOnly`], Enter is consumed without answering.
+pub fn answer_keys(ctx: &Context, id: Id, field: Option<Id>, keys: Keys) -> Answer {
+    let pass = ctx.cumulative_pass_nr();
+    let state_id = id.with("nodecraft.question.enter");
+    let held = ctx.input(|i| i.key_down(egui::Key::Enter));
+    let last = ctx.data(|data| data.get_temp::<EnterArmed>(state_id)).filter(|last| last.pass.saturating_add(1) >= pass);
+    // Asked in the previous pass and armed then: a press now answers.
+    let ready = last.is_some_and(|last| last.armed);
+    if last.is_none() {
+        // Just opened: the next pass arms Enter, so a press soon after isn't lost while idle.
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|data| data.insert_temp(state_id, EnterArmed { pass, armed: last.is_some() && (ready || !held) }));
+    let layer = egui::LayerId::new(egui::Order::Foreground, id);
+    let own_control = ctx
+        .memory(|m| m.focused())
+        .filter(|focused| Some(*focused) != field)
+        .and_then(|focused| ctx.read_response(focused))
+        .is_some_and(|response| response.layer_id == layer);
+    // A question that answers only Escape still takes Enter (doing nothing), so no panel drawn
+    // after it gets a keyboard click behind the modal.
+    let take_enter = !own_control;
+    ctx.input_mut(|i| {
+        let mut answer = Answer::default();
+        i.events.retain(|event| match event {
+            egui::Event::Key { key: egui::Key::Escape, pressed: true, repeat, modifiers, .. } if modifiers.is_none() => {
+                answer.escape |= !repeat;
+                false
+            }
+            egui::Event::Key { key: egui::Key::Enter, pressed: true, repeat, modifiers, .. } if take_enter && modifiers.is_none() => {
+                answer.enter |= !repeat && ready && keys == Keys::EnterAndEscape;
+                false
+            }
+            _ => true,
+        });
+        answer
+    })
+}
+
+/// A fixed tool pinned to the panel area's right edge, `down` points below its top (the Shared
+/// parameters and Row settings panels): it neither moves nor resizes, draws in [`PANEL_ORDER`],
+/// is no wider than the window less its margins, and panels opening over it step below its
+/// header ([`occupy`]). It is dismissed by changing the selection, not by a close button.
+pub fn pinned<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, down: f32, t: &Tokens) -> egui::Window<'open> {
+    occupy(ctx, id);
+    let screen = ctx.content_rect();
+    let room = (screen.width() - t.navigation_margin * 2.0).max(t.navigation_margin);
+    let frame =
+        egui::Frame::window(&ctx.global_style()).fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).corner_radius(t.panel_radius);
+    egui::Window::new(title)
+        .id(id)
+        .order(PANEL_ORDER)
+        .constrain_to(screen)
+        .max_width(room)
+        .default_width(t.card_width.min(room))
+        .anchor(Align2::RIGHT_TOP, [-t.navigation_margin, down])
+        .resizable(false)
+        .collapsible(false)
+        .movable(false)
+        .frame(frame)
+}
+
 /// A floating panel's window. Every panel behaves the same: see the module documentation.
 pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, home: Home, t: &Tokens) -> Panel<'open> {
     let bounds = bounds(ctx, t);
@@ -225,8 +429,12 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
         .corner_radius(t.panel_radius);
     // egui's own window move is off: it would also claim drags that start in the body. The pivot
     // is the top-left corner, so a non-movable window resizes from its right and bottom edges.
-    let window = egui::Window::new(title)
+    let title: egui::WidgetText = title.into();
+    let title = title.text().to_owned();
+    // The header is the panel's own (`panel_header`): egui's title bar centres its title.
+    let window = egui::Window::new(title.clone())
         .id(id)
+        .title_bar(false)
         .order(PANEL_ORDER)
         .collapsible(false)
         .movable(false)
@@ -243,7 +451,14 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
             let from = remembered.and_then(|state| state.pivot_pos).filter(|pos| pos.is_finite());
             ctx.data_mut(|data| data.insert_temp(placing_id(id), Placing(from)));
             let estimate = Vec2::new(t.search_width, t.panel_cascade);
-            return Panel { window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate))), id };
+            return Panel {
+                window: window.default_pos(from.unwrap_or_else(|| home_corner(home, &bounds, estimate))),
+                id,
+                title,
+                open: None,
+                vscroll: false,
+                t: *t,
+            };
         }
         (true, _, Some(_)) => remembered.map(|state| state.rect().min),
         (false, Some(Placing(from)), Some(size)) => Some(from.unwrap_or_else(|| home_corner(home, &bounds, size))),
@@ -262,7 +477,7 @@ pub fn panel<'open>(ctx: &Context, title: impl Into<egui::WidgetText>, id: Id, h
         Some(pos) => window.current_pos(pos),
         None => window,
     };
-    Panel { window, id }
+    Panel { window, id, title, open: None, vscroll: false, t: *t }
 }
 
 /// A panel's top-left corner at its home, for a panel of `size`.
@@ -311,6 +526,200 @@ fn header(rect: Rect, step: f32) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The 1-based lines of `text` that build or name an `egui::Window`, outside its
+    /// `#[cfg(test)]` modules (skipped by brace depth, so code after them is still read):
+    /// `Window::new` called or passed (`.map(egui::Window::new)`), any `egui::Window` path, and
+    /// `Window` brought in by a `use egui…` (an alias included).
+    /// `text` with its comments and string and char literals removed, newlines kept, so braces
+    /// and names inside them are never counted.
+    fn code_only(text: &str) -> String {
+        let chars: Vec<char> = text.chars().collect();
+        let mut out = String::with_capacity(text.len());
+        let mut i = 0;
+        let at = |i: usize| chars.get(i).copied();
+        while let Some(c) = at(i) {
+            let ident_before = i > 0 && at(i - 1).is_some_and(|p| p.is_alphanumeric() || p == '_');
+            if c == '/' && at(i + 1) == Some('/') {
+                while at(i).is_some_and(|c| c != '\n') {
+                    i += 1;
+                }
+            } else if c == '/' && at(i + 1) == Some('*') {
+                let mut depth = 0;
+                while let Some(c) = at(i) {
+                    if c == '/' && at(i + 1) == Some('*') {
+                        depth += 1;
+                        i += 2;
+                    } else if c == '*' && at(i + 1) == Some('/') {
+                        depth -= 1;
+                        i += 2;
+                        if depth == 0 {
+                            break;
+                        }
+                    } else {
+                        if c == '\n' {
+                            out.push('\n');
+                        }
+                        i += 1;
+                    }
+                }
+            } else if c == 'r' && !ident_before && matches!(at(i + 1), Some('"' | '#')) {
+                let mut hashes = 0;
+                let mut j = i + 1;
+                while at(j) == Some('#') {
+                    hashes += 1;
+                    j += 1;
+                }
+                if at(j) != Some('"') {
+                    out.push(c);
+                    i += 1;
+                    continue;
+                }
+                i = j + 1;
+                while let Some(c) = at(i) {
+                    if c == '"' && (1..=hashes).all(|k| at(i + k) == Some('#')) {
+                        i += 1 + hashes;
+                        break;
+                    }
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+            } else if c == '"' {
+                i += 1;
+                while let Some(c) = at(i) {
+                    if c == '\\' {
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    if c == '"' {
+                        break;
+                    }
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                }
+            } else if c == '\'' && at(i + 1) == Some('\\') {
+                // An escaped char literal such as '\n' or '\u{7b}'.
+                i += 2;
+                while at(i).is_some_and(|c| c != '\'' && c != '\n') {
+                    i += 1;
+                }
+                i += 1;
+            } else if c == '\'' && at(i + 2) == Some('\'') {
+                i += 3;
+            } else {
+                out.push(c);
+                i += 1;
+            }
+        }
+        out
+    }
+
+    /// The 1-based lines of `text` that build or name an `egui::Window`, outside its
+    /// `#[cfg(test)]` modules (skipped by brace depth, so code after them is still read):
+    /// `Window::new` called or passed (`.map(egui::Window::new)`), any `egui::Window` path, and
+    /// `Window` brought in by a `use` of egui (`use eframe::egui::…` and aliases included).
+    /// Comments and literals are ignored.
+    fn raw_window_lines(text: &str) -> Vec<usize> {
+        let mut found = Vec::new();
+        let mut test_attr = false;
+        let mut skip_depth: Option<i64> = None;
+        let mut in_use = false;
+        for (n, line) in code_only(text).lines().enumerate() {
+            let code = line.trim();
+            if let Some(depth) = &mut skip_depth {
+                *depth += code.matches('{').count() as i64 - code.matches('}').count() as i64;
+                if *depth <= 0 {
+                    skip_depth = None;
+                }
+                continue;
+            }
+            if code == "#[cfg(test)]" {
+                test_attr = true;
+                continue;
+            }
+            if test_attr && code.contains("mod ") && code.ends_with('{') {
+                test_attr = false;
+                skip_depth = Some(1);
+                continue;
+            }
+            if !code.is_empty() {
+                test_attr = false;
+            }
+            let statement = code.trim_start_matches("pub(crate) ").trim_start_matches("pub(super) ").trim_start_matches("pub ");
+            if statement.starts_with("use ") && statement.contains("egui") {
+                in_use = true;
+            }
+            let word = code.split(|c: char| !(c.is_alphanumeric() || c == '_')).any(|w| w == "Window");
+            if code.contains("Window::new") || code.contains("egui::Window") || (in_use && word) {
+                found.push(n + 1);
+            }
+            if in_use && code.contains(';') {
+                in_use = false;
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn the_raw_window_scan_finds_every_spelling_and_skips_only_test_modules() {
+        let text = "use egui::{Area, Window as Win};\nfn a() { let _ = names.map(egui::Window::new); }\nfn b() -> web_sys::Window { todo }\n#[cfg(test)]\nmod tests {\n    fn t() { egui::Window::new(\"x\"); }\n}\nfn c() { Win::new(\"y\"); egui::Window::new(\"z\"); }\nuse egui::{\n    Pos2,\n    Window,\n};\n";
+        assert_eq!(raw_window_lines(text), vec![1, 2, 8, 11]);
+        // Braces and names in literals and comments don't count; a module after a test module
+        // with a brace in a string is still read; `use eframe::egui` starts an import too.
+        let text = "#[cfg(test)]\nmod tests {\n    const OPEN: char = '{';\n    const S: &str = \"}}}\";\n    // }\n}\nfn d() { egui::Window::new(\"w\"); }\nuse eframe::egui::{\n    Window,\n};\nconst T: &str = \"egui::Window::new\"; // egui::Window::new\nconst R: &str = r#\"Window::new\"#;\nfn e<'a>(x: &'a str) {}\n";
+        assert_eq!(raw_window_lines(text), vec![7, 9]);
+    }
+
+    /// #1116: a question is a `question` (a modal) and a tool a `panel` (or `pinned`); nothing
+    /// outside this module builds a raw `egui::Window`, which would skip the panel area's
+    /// clamping, cascade and stacking. Test code may still build fixtures.
+    #[test]
+    fn no_raw_windows_outside_floating() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if !name.ends_with(".rs")
+                    || name == "floating.rs"
+                    || name == "tests.rs"
+                    || name.ends_with("_tests.rs")
+                    || path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                found.extend(raw_window_lines(&text).into_iter().map(|n| format!("{}:{n}", path.display())));
+            }
+        }
+        assert!(found.is_empty(), "use floating::question or floating::panel, not egui::Window: {found:#?}");
+    }
+
+    #[test]
+    fn a_question_fits_a_small_window() {
+        let ctx = Context::default();
+        let t = crate::theme::DARK;
+        let mut sizes = Vec::new();
+        for size in [Vec2::new(640.0, 400.0), Vec2::new(300.0, 200.0), Vec2::new(1600.0, 900.0)] {
+            let input = egui::RawInput { screen_rect: Some(Rect::from_min_size(Pos2::ZERO, size)), ..Default::default() };
+            let mut output = ctx.run_ui(input, |ui| sizes.push((question_width(ui.ctx(), &t), question_height(ui.ctx(), &t))));
+            output.textures_delta.clear();
+            let (width, height) = sizes.last().copied().unwrap();
+            assert!(width <= t.dialog_width && width <= size.x, "{size:?}: {width}");
+            assert!(height <= size.y && height > 0.0, "{size:?}: {height}");
+        }
+        assert_eq!(sizes.last().map(|s| s.0), Some(t.dialog_width), "a large window keeps the full width");
+    }
 
     #[test]
     fn a_panel_opening_over_another_steps_below_its_header() {

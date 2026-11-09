@@ -1,6 +1,6 @@
 {
   "ambiguous": {
-    "attempts": 2,
+    "attempts": 1,
     "charges": [
       {
         "micros": 100000,
@@ -9,7 +9,7 @@
     ],
     "deliveries": 0,
     "held": 0,
-    "retrying": 1,
+    "retrying": 0,
     "terminal": "failed"
   },
   "fresh": {

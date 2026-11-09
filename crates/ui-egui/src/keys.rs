@@ -61,7 +61,17 @@ const PRESETS: &[&str] = &[
     "openai",
     "azure-openai",
     "bedrock",
+    // Standard AWS credentials for Bedrock, signed with SigV4 when no Bedrock API key is stored
+    // (#1163); the last two only for temporary credentials.
+    "bedrock:aws-access-key-id",
+    "bedrock:aws-secret-access-key",
+    "bedrock:aws-session-token",
+    "bedrock:aws-expiration",
     "anthropic",
+    "deepseek",
+    "mistral",
+    "groq",
+    "xai",
     "openrouter",
     "litellm",
     "fal",
@@ -443,6 +453,7 @@ impl KeysPanel {
                             && ui
                                 .add_enabled(!waiting, egui::Button::new("Test"))
                                 .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                .on_disabled_hover_text("Waiting for the keychain or the provider; try again once it answers")
                                 .clicked()
                         {
                             changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
@@ -463,15 +474,23 @@ impl KeysPanel {
             });
             ui.separator();
             ui.label(egui::RichText::new("Add or replace a key").color(t.text));
-            ui.horizontal_wrapped(|ui| {
-                for preset in PRESETS {
-                    if ui.selectable_label(self.account == *preset, *preset).clicked() {
-                        self.account = (*preset).to_owned();
+            // The quick picks wrap at a fixed width, not the panel's, so widening the panel never
+            // reflows them into fewer rows and shortens it under the pointer.
+            ui.scope(|ui| {
+                ui.set_max_width(ui.available_width().min(t.card_width * 1.25));
+                ui.horizontal_wrapped(|ui| {
+                    for preset in PRESETS {
+                        if ui.selectable_label(self.account == *preset, *preset).clicked() {
+                            self.account = (*preset).to_owned();
+                        }
                     }
-                }
+                });
             });
             if self.account == "runway" {
                 ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
+            }
+            if let Some(hint) = account_hint(&self.account) {
+                ui.label(egui::RichText::new(hint).color(t.text_muted));
             }
             egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
                 let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
@@ -548,6 +567,20 @@ impl KeysPanel {
             }
         }
     }
+}
+
+/// What to store under an account whose key isn't simply an API key.
+fn account_hint(account: &str) -> Option<&'static str> {
+    Some(match account {
+        "bedrock" => "A Bedrock API key. To use AWS access keys instead, store them under the bedrock:aws-… accounts; the API key wins when both are stored.",
+        "bedrock:aws-access-key-id" => {
+            "The AWS access key ID (AKIA… or, for temporary credentials, ASIA…). Bedrock signs with it when no bedrock API key is stored."
+        }
+        "bedrock:aws-secret-access-key" => "The secret access key that belongs to bedrock:aws-access-key-id.",
+        "bedrock:aws-session-token" => "Temporary credentials only: the session token. Also store its expiry as bedrock:aws-expiration.",
+        "bedrock:aws-expiration" => "Temporary credentials only: when they expire, as an RFC 3339 time such as 2026-11-08T20:00:00Z.",
+        _ => return None,
+    })
 }
 
 /// What a row says when the keychain hasn't answered `op` in time.

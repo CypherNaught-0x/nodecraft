@@ -431,29 +431,40 @@ impl NodeCraftApp {
         }
         if rename.is_some() {
             self.fields.rename = rename;
+            // The question is asked from the top of the next frame, before any canvas key.
+            ui.ctx().request_repaint();
         }
-        self.rename_window(ui.ctx());
         pan
     }
 
-    /// The rename dialog: Enter or Save applies the title, Escape or Cancel keeps it.
-    fn rename_window(&mut self, ctx: &egui::Context) {
-        let Some((id, mut title)) = self.fields.rename.take() else { return };
-        let mut keep = true;
-        let mut save = false;
-        egui::Window::new("Rename field").order(egui::Order::Foreground).collapsible(false).resizable(false).show(ctx, |ui| {
+    /// The rename question (#1116), shown at the top of the frame so it owns the keyboard before
+    /// any canvas handler: Enter or Save applies the title, Escape or Cancel keeps it. Returns
+    /// whether it is open, which blocks the canvas like any other question.
+    pub(super) fn rename_window(&mut self, ctx: &egui::Context) -> bool {
+        let Some((id, mut title)) = self.fields.rename.take() else { return false };
+        let t = *self.theme.tokens();
+        let field = egui::Id::new("nodecraft.rename_field.title");
+        let keys = crate::floating::answer_keys(ctx, egui::Id::new("nodecraft.rename_field"), Some(field), crate::floating::Keys::EnterAndEscape);
+        let mut keep = !keys.escape;
+        let mut save = keys.enter;
+        let modal = crate::floating::question(ctx, egui::Id::new("nodecraft.rename_field"), "Rename field", &t).show(ctx, |ui| {
+            ui.set_max_width(crate::floating::question_width(ctx, &t));
+            ui.heading("Rename field");
             let label = ui.label("Field name");
-            let edit = ui.add(egui::TextEdit::singleline(&mut title).char_limit(4096)).labelled_by(label.id);
+            let edit = ui.add(egui::TextEdit::singleline(&mut title).id(field).char_limit(4096)).labelled_by(label.id);
             if !edit.has_focus() && !edit.lost_focus() && ctx.memory(|m| m.focused().is_none()) {
                 edit.request_focus();
             }
             ui.horizontal(|ui| {
-                save = ui.button("Save field name").clicked() || (edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
-                if ui.button("Cancel rename").clicked() || ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                save |= ui.button("Save field name").clicked();
+                if ui.button("Cancel rename").clicked() {
                     keep = false;
                 }
             });
         });
+        if modal.backdrop_response.clicked() {
+            keep = false;
+        }
         if save && keep {
             if title.len() > 4096 {
                 self.notice = Some("A field name is at most 4096 bytes.".into());
@@ -470,5 +481,6 @@ impl NodeCraftApp {
         if keep {
             self.fields.rename = Some((id, title));
         }
+        true
     }
 }

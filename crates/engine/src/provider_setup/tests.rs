@@ -107,6 +107,10 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "azure-openai",
         "bedrock",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
         "replicate",
         "runway",
         "bfl",
@@ -143,6 +147,10 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "openai-images",
         "openai",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
         "replicate",
         "runway",
         "seedream",
@@ -339,6 +347,48 @@ fn bedrock_uses_its_own_keychain_account_region_and_catalog_model() {
     assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
     assert!(requests[0].secret_headers.iter().any(|name| name == "authorization"));
     assert!(!format!("{:?}", requests[0]).contains(KEY));
+}
+
+/// With no Bedrock API key, stored AWS access keys sign the same route with SigV4 (#1163). The
+/// credentials are AWS's published examples, never real ones.
+#[test]
+fn bedrock_signs_with_stored_aws_credentials_when_there_is_no_api_key() {
+    const ACCESS: &str = "AKIDEXAMPLE";
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const TOKEN: &str = "public-fixture-session-token-1163";
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings { bedrock_region: Some("us-west-2".into()), ..Default::default() };
+    let set = |name: &str, value: &str| keys.set(&Account::new(name).unwrap(), &Secret::new(value).unwrap()).unwrap();
+    set("bedrock:aws-access-key-id", ACCESS);
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock:aws-secret-access-key".into() }));
+    set("bedrock:aws-secret-access-key", SECRET);
+    set("bedrock:aws-session-token", TOKEN);
+    set("bedrock:aws-expiration", "2015-08-30T12:36:00Z");
+    let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("expired credentials must refuse") };
+    assert!(why.contains("expired"), "{why}");
+    set("bedrock:aws-expiration", "9999-12-31T23:59:59Z");
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-1163".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    let [request] = requests.as_slice() else { panic!("one request") };
+    assert_eq!(request.url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let header = |name: &str| request.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
+    let authorization = header("authorization").unwrap();
+    assert!(authorization.starts_with(&format!("AWS4-HMAC-SHA256 Credential={ACCESS}/")), "{authorization}");
+    assert!(authorization.contains("/us-west-2/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token,"));
+    assert_eq!(header("x-amz-security-token"), Some(TOKEN));
+    assert!(request.secret_headers.iter().any(|name| name == "x-amz-security-token"));
+    let printed = format!("{request:?} {:?}", make("bedrock", &env(&keys, &http, &settings)).err());
+    assert!(!printed.contains(SECRET) && !printed.contains(TOKEN), "{printed}");
 }
 
 #[test]

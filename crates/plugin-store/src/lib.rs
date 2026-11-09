@@ -14,7 +14,7 @@ pub mod grants;
 pub mod layout;
 pub mod store;
 
-pub use archive::{ArchiveLimits, Package};
+pub use archive::{ArchiveLimits, MODULE_REFUSED, Package};
 #[cfg(not(target_arch = "wasm32"))]
 pub use backend::FolderBackend;
 pub use backend::MemoryBackend;

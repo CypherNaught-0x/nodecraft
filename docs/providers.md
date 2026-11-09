@@ -24,8 +24,12 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **OpenRouter** | `llm` | API key | text, vision, streaming | Model ids like `anthropic/claude-opus-5-5`. |
 | **LiteLLM** | `llm` | virtual key (bearer) | as configured on the proxy | Spend per request from `x-litellm-response-cost` (reaches budgets as the job's `Usage::cost`); a key's total spend and budget from `/key/info` (`LlmClient::litellm_key_info`); models from `/v1/models`. |
 | **Azure OpenAI** (v1 Chat Completions) | `llm` | resource API key (`Authorization: Bearer`) | text chat and streaming | Reuses `LlmClient` through `Endpoint::azure_openai`; the **Azure OpenAI deployment** card sends the configured deployment name as `model`. Unknown usage price requires explicit acceptance. No dated `api-version` or Azure SDK. |
-| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock` | text → text, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. No SigV4, AWS SDK, Converse API or AWS credential discovery (#489). See below. |
+| **Amazon Bedrock** (OpenAI-compatible Chat Completions on `bedrock-runtime`) | `llm` | Bedrock API key (`Authorization: Bearer`), keychain account `bedrock`; or AWS access keys signed with SigV4 (`bedrock:aws-*` accounts, #1163) | OpenAI route: text → text, streaming. Converse: text, images (≤ 3.75 MB each) and PDFs (≤ 4.5 MB each) + text → text, tools, reasoning kept across turns, streaming | Reuses `LlmClient` through `Endpoint::bedrock` with `[providers] bedrock_region`. GPT OSS 120B and 20B cards; unknown usage price requires explicit acceptance; no automatic paid replay. Native Converse (`Endpoint::bedrock_converse`, #1150) for whole and streamed chat, with no card yet; its live smoke test has not been run. SigV4 from stored AWS access keys on both routes (#1163); no AWS SDK or AWS credential discovery. See below. |
 | **Anthropic** (Messages) | `llm` | API key (`x-api-key`, `anthropic-version: 2023-06-01`) | text, image + text → text, streaming | Default model `claude-opus-5-5`. Builtin catalog (`assets/catalog/anthropic.toml`, #503): Opus, Sonnet and Haiku 5.5, text → text and up to 16 images + text → text (#592), quoted at the output price on `max_tokens` (input, images included, billed on top). Each image may be at most 7.5 MB (10 MB once base64-encoded); a larger one is refused before sending. Current models reject sampling parameters, so `temperature` is only sent when set; thinking is adaptive and not configured. A `refusal` stop is reported as blocked content. |
+| **DeepSeek** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `deepseek` | text → text, tools, streaming | rig's DeepSeek dialect (#1122): a reply's `reasoning_content` is kept and sent back with later turns, as its thinking models want when a request carries tools. Catalog `assets/catalog/deepseek.toml`: `deepseek-flash` and `deepseek-v4-pro`, quoted at the **peak** output rate on `max_tokens` (off-peak hours cost half; input billed on top). |
+| **Mistral** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `mistral` | text → text, tools, streaming | rig's Mistral dialect (#1122), its own content chunks. Catalog `assets/catalog/mistral.toml`: `mistral-large-4` and `mistral-small-2603`, text only for now, quoted at the output rate on `max_tokens` (prices from each model's docs page; mistral.ai/pricing draws its table in the browser). |
+| **Groq** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `groq` | text → text, tools, streaming | rig's Groq dialect (#1122). Catalog `assets/catalog/groq.toml`: `openai/gpt-oss-120b` and `openai/gpt-oss-20b`, usage pricing with no up-front quote (they reason, and Groq's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. |
+| **xAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `xai` | text → text, tools, streaming | rig's xAI dialect on its Chat Completions route (#1122; xAI calls it legacy, the Responses API is not used). Catalog `assets/catalog/xai.toml`: `grok-4.7` and `grok-4.3`, usage pricing with no up-front quote (xAI's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. xAI counts reasoning apart from `completion_tokens`; settlement counts it as reply tokens (as every OpenAI-dialect endpoint does: the larger of `completion_tokens` and `total_tokens` less `prompt_tokens`). |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. After the server is read, the model picker's ComfyUI group also lists the server's own models by type (`comfy.models.list`, #970). Only Generate image cards get them. A listed checkpoint runs through the FLUX graph when a word in its name starts with `flux`, and through the SDXL graph otherwise. SD 1.x/2.x names and names whose architecture isn't recognised carry a warning that they may fail. Names that hint at video, audio, SD3, inpainting, refiners, FLUX tool models or other model families are shown as unavailable. LoRAs, VAEs, text encoders, diffusion models and upscalers are listed as unavailable, each with its reason, because no built-in workflow loads them on their own. Imported workflow cards are listed by title, and choosing one places a copy. A name the server doesn't list is refused, never replaced (docs/decisions/2026-11-03-comfy-server-models-in-picker.md). A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
@@ -72,8 +76,12 @@ to do, and a node routed to it is refused before planning, so no request is sent
 |---|---|---|
 | `openai` (chat) | `openai` | — |
 | `anthropic` (chat) | `anthropic` | — |
+| `deepseek` (chat) | `deepseek` | — |
+| `mistral` (chat) | `mistral` | — |
+| `groq` (chat) | `groq` | — |
+| `xai` (chat) | `xai` | — |
 | `azure-openai` (chat) | `azure-openai` | `[providers] azure_openai_url` with an HTTPS Azure resource root or its `/openai/v1` base |
-| `bedrock` (chat) | `bedrock` (a Bedrock API key) | `[providers] bedrock_region` with an AWS Region code such as `us-east-1`, and access to the model in that Region |
+| `bedrock` (chat) | `bedrock` (a Bedrock API key), or `bedrock:aws-access-key-id` + `bedrock:aws-secret-access-key` (+ optional `bedrock:aws-session-token`, `bedrock:aws-expiration`) for SigV4 | `[providers] bedrock_region` with an AWS Region code such as `us-east-1`, and access to the model in that Region |
 | `openai-images` | `openai` | — |
 | `replicate` | `replicate` | — |
 | `seedream` | `seedream` | — |
@@ -232,11 +240,50 @@ bedrock_region = "us-east-1"
 The Region must be a code such as `us-east-1` or `us-gov-west-1`; anything else, including a URL,
 refuses before a request. Partitions not on `amazonaws.com` (China, European Sovereign Cloud,
 isolated US Regions) are not supported. The key comes
-only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, AWS profiles, access
-keys or instance metadata, and does not sign requests with SigV4. The native Converse API,
-SigV4 and other Bedrock models are deferred to the provider-layer decision in
-[#489](https://github.com/CypherNaught-0x/nodecraft/issues/489). The browser has no Bedrock
-settings panel.
+only from the keychain: NodeCraft never reads `AWS_BEARER_TOKEN_BEDROCK`, `AWS_ACCESS_KEY_ID`,
+AWS profiles, SSO caches or instance metadata. The browser has no Bedrock settings panel.
+
+**AWS access keys and SigV4 (#1163).** Instead of a Bedrock API key, store standard AWS
+credentials in the API keys panel (each is a quick pick) or with `keys.set`:
+
+| Account | What |
+|---|---|
+| `bedrock:aws-access-key-id` | The access key ID (`AKIA…`, or `ASIA…` for temporary credentials) |
+| `bedrock:aws-secret-access-key` | Its secret access key |
+| `bedrock:aws-session-token` | Temporary credentials only: the session token |
+| `bedrock:aws-expiration` | Temporary credentials only: their expiry, RFC 3339 (`2026-11-08T20:00:00Z`, the `Expiration` that `aws sts get-session-token` or `aws configure export-credentials` print) |
+
+When the `bedrock` account holds an API key it is used and the AWS accounts are not read. Without
+one, an access key ID and secret sign every request with AWS Signature Version 4 (service
+`bedrock`), on the OpenAI-compatible route (which AWS documents with SigV4 too) and on Converse,
+whole and streamed. The signature covers `host`, `x-amz-date`, `x-amz-content-sha256` (the
+body's SHA-256), `x-amz-security-token` and `content-type`, and goes only to
+`bedrock-runtime.{region}.amazonaws.com` over HTTPS. Stored credentials past their expiry (30
+seconds early) are refused before anything is sent. A refused signature, a clock more than about
+15 minutes off (`RequestTimeTooSkewed`, "Signature expired") and an expired token are
+Authentication errors that say what to fix, in NodeCraft's words: AWS's own message can quote the
+signed request. A keychain entry holds at most 1024 characters, so a longer session token can't
+be stored yet. FIPS endpoints (`bedrock-runtime-fips…`) and the China, European Sovereign Cloud
+and isolated partitions are not supported. `keys.test` can't check these accounts (no free request does). The signer is pure
+Rust (`nodecraft_providers::aws`) and builds for the browser; it passes AWS's published SigV4
+test suite. See [the decision](decisions/2026-11-08-bedrock-sigv4-aws-credentials.md).
+
+**Native Converse (#1150).** `Endpoint::bedrock_converse(region, key)` speaks Bedrock's own
+[Converse](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_Converse.html) and
+[ConverseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_ConverseStream.html)
+API (`POST /model/{modelId}/converse` and `/converse-stream`) with the same key, Region rules and
+keychain account, as `Dialect::Converse`. AWS documents Bedrock API keys as
+`Authorization: Bearer` for Converse
+([API keys](https://docs.aws.amazon.com/bedrock/latest/userguide/api-keys-use.html), checked
+2026-11-08). It carries the system prompt, text, images (PNG/JPEG/GIF/WebP, at most 3.75 MB each),
+PDFs (at most 4.5 MB each, with text beside them), tool calls and results, and the model's
+reasoning blocks back unchanged. Streamed replies are AWS event-stream frames, read by a bounded
+parser that checks both CRC32 checksums and caps each frame at 1 MiB. It is not through
+`rig-core` (which has no Bedrock provider) and needs no AWS SDK, so it builds for the browser too.
+The catalog's two GPT OSS cards keep the OpenAI-compatible route; no card uses Converse yet.
+`LlmClient::bedrock_converse(region, auth, http)` (and `bedrock_chat` for the OpenAI route) take
+either a `BedrockAuth::ApiKey` or `BedrockAuth::Aws` credentials. See
+[the decision](decisions/2026-11-08-bedrock-native-converse.md).
 
 AWS's pricing page lists these models' rates per service tier for one Region only, so the cards
 use `ByUsage`: the picker says
@@ -252,6 +299,22 @@ addition:
 ```sh
 NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
   cargo test -p nodecraft-providers --test live_llm live_bedrock46
+```
+
+The Converse smoke test (streamed, whole, and one tool call; pick the model or inference profile
+with `NODECRAFT_LIVE_BEDROCK_CONVERSE_MODEL`) was not run either:
+
+```sh
+NODECRAFT_LIVE_BEDROCK_CONVERSE=1 BEDROCK_API_KEY=… BEDROCK_REGION=us-east-1 \
+  cargo test -p nodecraft-providers --test live_llm live_bedrock_converse1150
+```
+
+The SigV4 smoke test (Converse streamed and whole, then the OpenAI-compatible route, signed with
+AWS access keys; `BEDROCK_AWS_SESSION_TOKEN` is optional) was not run either:
+
+```sh
+NODECRAFT_LIVE_BEDROCK_SIGV4=1 BEDROCK_AWS_ACCESS_KEY_ID=… BEDROCK_AWS_SECRET_ACCESS_KEY=… \
+  BEDROCK_REGION=us-east-1 cargo test -p nodecraft-providers --test live_llm live_bedrock_sigv4_1163
 ```
 
 Keys are read when an adapter is first built, which can show a keychain prompt, so hosts build
@@ -405,6 +468,7 @@ Live smoke tests are opt-in and never run in CI. Each costs a few tokens:
 NODECRAFT_LIVE_OPENAI=1 OPENAI_API_KEY=… cargo test -p nodecraft-providers --test live_llm
 NODECRAFT_LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=… cargo test -p nodecraft-providers --test live_llm
 NODECRAFT_LIVE_OLLAMA=1 cargo test -p nodecraft-providers --test live_llm
+NODECRAFT_LIVE_DEEPSEEK=1 DEEPSEEK_API_KEY=… cargo test -p nodecraft-providers --test live_llm   # likewise MISTRAL, GROQ, XAI
 NODECRAFT_LIVE_COMFYUI=1 cargo test -p nodecraft-providers --test live_comfyui   # reads /object_info only
 ```
 
@@ -1494,8 +1558,8 @@ NODECRAFT_LIVE_HIGGSFIELD=1 NODECRAFT_LIVE_HIGGSFIELD_ACKNOWLEDGE_COST=1 HIGGSFI
 
 The adapter tracker [#20](https://github.com/CypherNaught-0x/nodecraft/issues/20) is implemented
 across the following merged changes. Generation works in the desktop app and headless CLI.
-The desktop app and browser preview request the account voice list; streamed previews are
-desktop-only. The CLI does not request either capability. The host limits below apply.
+The desktop app and browser preview request the account voice list and streamed previews; the
+CLI requests streamed previews (#1070) but not the voice list. The host limits below apply.
 
 | Tracker requirement | Implementation and offline coverage |
 |---|---|
@@ -1570,8 +1634,11 @@ goes through the same no-redirect transport; a stream cut short is a lost reply,
 and keeps the previews already reported. Sound effects, music and the voice changer never stream.
 The audio before each chunk is previewed only once that chunk arrives, so the last chunk never
 makes a preview: a transport that can't stream hands the whole reply over as one chunk and makes
-none, rather than one equal to the result. The desktop app's runner asks for previews and its
-speech cards play them while the sound arrives (#875); the CLI's and the browser's don't.
+none, rather than one equal to the result. The desktop app's and the browser's runners ask for previews and their
+speech cards play them while the sound arrives (#875, #1070). In the browser the body is read as
+`fetch` streams it (reqwest's `bytes_stream`), under the same cap, so previews arrive there too.
+`nodecraft-cli run` asks for them as well and writes `<node>: <n> KiB of sound so far` to stderr
+as a sound grows, at most once a second per job; stdout keeps the JSON report.
 
 The ignored live tests speak one short sentence with Flash v2.5 (about 0.002 USD) and stream one
 through `/stream` with Eleven v3 as `mp3_44100_128`, checking that its previews grow and are never

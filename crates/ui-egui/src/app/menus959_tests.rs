@@ -99,7 +99,7 @@ fn search_and_discussions_open_and_close_from_the_top_bar() {
     for size in SIZES {
         let mut h = harness(size, crate::theme::ThemeKind::Dark);
         h.run();
-        let search = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+        let search = &crate::shortcut::with_shortcut(&h.ctx, "Search", "Command+F");
         choose(&mut h, search);
         assert!(h.state().search.open, "{size:?}");
         h.key_press(egui::Key::Escape);

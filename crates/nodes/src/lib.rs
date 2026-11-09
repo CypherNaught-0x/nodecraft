@@ -26,6 +26,7 @@ mod registry;
 pub mod router;
 pub mod shader;
 mod source;
+pub mod summary;
 pub mod svg;
 pub mod technique;
 pub mod text;

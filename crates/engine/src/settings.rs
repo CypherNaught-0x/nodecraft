@@ -18,9 +18,11 @@ use serde::{Deserialize, Serialize};
 
 mod agent;
 mod budgets;
+mod interface;
 mod projects;
 pub use agent::{AgentEndpoint, AgentMode, AgentSettings};
 pub use budgets::BudgetSettings;
+pub use interface::InterfaceSize;
 pub use projects::ProjectSettings;
 
 pub use craft_settings::{DocumentMut, LoadReport, MigrateError, SaveStatus, SettingsError, TickResult};
@@ -131,7 +133,8 @@ pub struct ProviderSettings {
     /// Azure OpenAI resource root or `/openai/v1` base; the key uses account `azure-openai`.
     pub azure_openai_url: Option<String>,
     /// Amazon Bedrock AWS Region code (such as `us-east-1`) for its `bedrock-runtime` OpenAI
-    /// route; the Bedrock API key uses account `bedrock`. No AWS credentials are read from the
+    /// route; the Bedrock API key uses account `bedrock`, or else AWS access keys the
+    /// `bedrock:aws-*` accounts, signed with SigV4 (#1163). No AWS credentials are read from the
     /// environment or profiles.
     pub bedrock_region: Option<String>,
     /// Base URLs set in place of a provider's own API (`[providers.base_urls]`, #960), by catalog
@@ -381,6 +384,9 @@ fn migrate_comfy_servers(doc: &mut DocumentMut) -> Result<(), String> {
 #[serde(default)]
 pub struct AppearanceSettings {
     pub theme: Theme,
+    /// How large panels, menus and dialogs are drawn (#1107), in percent; a damaged value reads
+    /// as 100 % and says so.
+    pub interface_size: InterfaceSize,
 }
 
 /// Colour theme of the whole app.
