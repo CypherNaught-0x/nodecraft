@@ -368,3 +368,32 @@ fn background_reports_are_classified_by_their_own_wording() {
     assert_eq!(NoticeKind::of_report("NodeCraft 1.2.0 is up to date."), NoticeKind::Success);
     assert_eq!(NoticeKind::of_report("Removing downloaded templates…"), NoticeKind::Info);
 }
+
+#[test]
+#[ignore = "writes public-safe dark/light notice screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_notices1110_evidence() {
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        for kind in [NoticeKind::Info, NoticeKind::Success, NoticeKind::Warning, NoticeKind::Error] {
+            let text = match kind {
+                NoticeKind::Info => "The selected workflow is ready to quote.",
+                NoticeKind::Success => "The public example project was saved.",
+                NoticeKind::Warning => "Some results are still being prepared.",
+                NoticeKind::Error => "The provider refused the key. No run was started.",
+            };
+            let mut notices = Notices::default();
+            notices.push(kind, text);
+            let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(520.0, 180.0)).build_ui_state(
+                move |ui, notices: &mut Notices| {
+                    crate::theme::apply(ui.ctx(), theme);
+                    ui.set_width(theme.tokens().notice_width);
+                    notices.show(ui, theme.tokens(), None);
+                },
+                notices,
+            );
+            h.run();
+            h.render().unwrap().save(folder.join(format!("notice-{theme:?}-{kind:?}.png"))).unwrap();
+        }
+    }
+}
