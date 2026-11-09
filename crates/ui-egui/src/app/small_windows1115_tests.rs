@@ -277,7 +277,9 @@ fn tags1123_the_tag_filter_entry_opens_the_panel_and_counts_matches() {
     h.run();
     assert!(h.state().tag_filter.open);
     assert!(h.state().tag_rect().top() >= h.state().topbar_rect().bottom(), "the panel opens below the row");
-    h.get_by_label("Tag filter · highlight matches");
+    h.get_by_role_and_label(Role::Label, "Tag filter");
+    h.get_by_role_and_label(Role::TextInput, "Find a tag");
+    h.get_by_role_and_label(Role::Button, "Close tags");
     // The entry closes it again.
     h.get_by_role_and_label(Role::Button, "Tag filter").click();
     h.run();
