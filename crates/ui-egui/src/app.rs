@@ -3087,30 +3087,34 @@ impl NodeCraftApp {
         let reading = self.web_drop.is_some();
         #[cfg(not(any(test, target_arch = "wasm32")))]
         let reading = false;
-        // Search and the Tag filter take Escape only when they can: open Search not blocked by
-        // something else, a Tag filter holding the keyboard focus.
-        let search = self.search.open && !self.search_context(ctx).blocked;
+        // Canvas-only owners may remain remembered while a sheet is open. They neither draw
+        // nor receive Escape on that route, so they cannot block its tools or focused notices.
+        let canvas_tools = !self.on_sheet();
+        let search = canvas_tools && self.search.open && !self.search_context(ctx).blocked;
+        let hidden_text = !canvas_tools
+            && ctx.memory(|m| m.focused()).or(self.last_text_focus).is_some_and(|id| id == self.search_input_id() || self.tag_focus_ids.contains(&id));
+        let canvas_owned = canvas_tools
+            && (self.palette.is_some()
+                || self.turn_into.is_some()
+                || self.key_wiring.is_some()
+                || search
+                || self.comments.open
+                || self.comments.drag.is_some()
+                || self.comments.gesture_cancelled
+                || self.tag_owns_focus(ctx)
+                || self.drag.is_some()
+                || self.marquee.is_some()
+                || self.wiring.is_some()
+                || self.reordering.is_some()
+                || self.fields.drag.is_some()
+                || self.navigation.pointer_owned
+                || self.navigation.drag.is_some());
         let owned = blocked
-            || self.text_focused
-            || canvas::text_input_focused(ctx)
+            || (!hidden_text && (self.text_focused || canvas::text_input_focused(ctx)))
             || egui::Popup::is_any_open(ctx)
             || ctx.dragged_id().is_some()
-            || self.palette.is_some()
-            || self.turn_into.is_some()
-            || self.key_wiring.is_some()
-            || search
-            || self.comments.open
-            || self.comments.drag.is_some()
-            || self.comments.gesture_cancelled
-            || self.tag_owns_focus(ctx)
+            || canvas_owned
             || (self.library.open && self.library.confirm.is_some())
-            || self.drag.is_some()
-            || self.marquee.is_some()
-            || self.wiring.is_some()
-            || self.reordering.is_some()
-            || self.fields.drag.is_some()
-            || self.navigation.pointer_owned
-            || self.navigation.drag.is_some()
             || self.drop_pointer_owned()
             || reading;
         if owned {
@@ -3122,7 +3126,6 @@ impl NodeCraftApp {
         }
         // Only the tool inventory participates: pinned selection panels, operation modals,
         // Tag, the model picker and unregistered host windows keep their own lifecycles.
-        let canvas_tools = !self.on_sheet();
         let mut open = vec![
             (self.sheet.open, egui::Id::new("nodecraft.sheets")),
             (self.library.open, egui::Id::new("nodecraft.techniques")),

@@ -222,3 +222,42 @@ fn shared_close_requests_expire_and_never_execute_the_tool_body() {
     });
     assert!(open, "an unrendered close request cannot close a later reopening");
 }
+
+#[test]
+fn remembered_canvas_owners_do_not_block_sheet_tools_or_focused_notices() {
+    for owner in ["Search", "Discussions", "Tag focus"] {
+        let mut h = super::tests::harness();
+        h.run();
+        match owner {
+            "Search" => h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::F),
+            "Discussions" => h.state_mut().comments.open = true,
+            _ => {
+                h.state_mut().tag_filter.open = true;
+                h.run();
+                h.get_by_role_and_label(Role::TextInput, "Find a tag").focus();
+            }
+        }
+        h.run();
+        let id = CanvasId::from_bytes([83; 16]);
+        h.state_mut().session.dispatch("sheet.create", &json!({"canvas":id,"title":"Public sheet"})).unwrap();
+        h.state_mut().open_canvas(id);
+        h.state_mut().keys.open = true;
+        h.run();
+        h.state_mut().notices.error("Public sheet notice");
+        h.run();
+        h.get_by_label("Dismiss notice").focus();
+        h.run();
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(h.state().notices.is_empty(), "hidden {owner} does not block the focused sheet notice");
+        assert!(h.state().keys.open);
+        h.key_press(egui::Key::Escape);
+        h.run();
+        assert!(!h.state().keys.open, "hidden {owner} does not block the sheet tool");
+        match owner {
+            "Search" => assert!(h.state().search.open),
+            "Discussions" => assert!(h.state().comments.open),
+            _ => assert!(h.state().tag_filter.open),
+        }
+    }
+}

@@ -6,7 +6,8 @@ the other floating tools had only their close button and top-bar toggle. Extend 
 to the registered tool inventory, including image, PDF and shader viewers, on ordinary and sheet
 canvases. A tool must be open and actually drawn recently; an unavailable service cannot swallow
 a key. The frontmost eligible panel layer wins, so one press closes one tool regardless of the
-order its renderer runs.
+order its renderer runs. Canvas-only owners and tools do not participate on the sheet route;
+their remembered open state is preserved for returning to the canvas.
 
 The shell still gives questions, popups, text editors, quick-add, Turn into, keyboard connect,
 Search, Discussions, a focused Tag filter, gestures and browser file reads their existing first
