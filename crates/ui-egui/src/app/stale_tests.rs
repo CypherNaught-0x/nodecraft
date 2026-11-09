@@ -671,3 +671,71 @@ fn unchecked_badge_native_capture() {
         h.render().unwrap().save(root.join(format!("{theme:?}-unchecked-badge.png"))).unwrap();
     }
 }
+
+/// #1112: a stale badge's fill answers hover and press, keeping its warning colour at rest.
+#[test]
+fn a_stale_badge_changes_colour_on_hover_and_press() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.hover_at(Pos2::new(990.0, 690.0));
+    h.run();
+    let t = *h.state().theme.tokens();
+    let fills = |h: &Harness<'static, NodeCraftApp>, fill: egui::Color32| {
+        h.output().shapes.iter().filter(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Rect(r) if r.fill == fill)).count()
+    };
+    let hover = crate::theme::State::Hovered.tint(t.stale, t.text);
+    let press = crate::theme::State::Pressed.tint(t.stale, t.text);
+    assert_eq!(fills(&h, t.stale), 2, "two badges at rest");
+    let badge = h.get_all_by_label(STALE).next().unwrap().rect();
+    h.hover_at(badge.center());
+    h.run();
+    assert_eq!((fills(&h, t.stale), fills(&h, hover)), (1, 1), "the hovered badge lifts");
+    h.event(egui::Event::PointerButton { pos: badge.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.step();
+    assert_eq!(fills(&h, press), 1, "the held badge lifts further");
+}
+
+#[test]
+#[ignore = "writes public-safe File and badge screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_control_states1112_evidence() {
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut app, _, rejected) = diagnostic();
+        app.theme = theme;
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .with_size(Vec2::new(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        crate::theme::apply(&h.ctx, theme);
+        unchecked_scene(&mut h);
+        rejected.store(false, Ordering::SeqCst);
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+        h.hover_at(Pos2::new(990.0, 690.0));
+        h.run();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-rest.png"))).unwrap();
+        let at = h.get_all_by_label(STALE).next().unwrap().rect().center();
+        h.hover_at(at);
+        h.step();
+        h.step();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-hover.png"))).unwrap();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        h.step();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-pressed.png"))).unwrap();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        // Close the priced refresh question before opening File.
+        h.state_mut().run_confirm = None;
+        h.run();
+        h.get_by_label("File").click();
+        h.run();
+        h.render().unwrap().save(folder.join(format!("file-{theme:?}-controls.png"))).unwrap();
+    }
+}

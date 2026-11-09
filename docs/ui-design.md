@@ -53,6 +53,18 @@ input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size`
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
 
+Control states (#1112):
+
+| State | egui widgets | Painted controls (badges, submit arrow, thumbnails, noodles) |
+|---|---|---|
+| Rest | `control_fill`, a 1-point `control_stroke` outline (≥ 3:1 against `panel_fill`); hovered and pressed drop the outline so selectable rows keep a clean edge | their own colour |
+| Hovered | `control_fill_hover` | `theme::State::Hovered.tint`: lifted toward the text colour; thumbnails take `card_stroke_hover`; a noodle is drawn `wire_width_hover` (3) wide and brighter, with a pointing cursor, within its hit band |
+| Pressed | `control_fill_pressed` | lifted further, including a held noodle; the submit arrow's accent moves toward the text colour |
+| Open (menu) | `control_fill_hover` | — |
+
+Quiet buttons (the top bar, menus, selectable rows) stay frameless at rest by asking for it
+(`frame_when_inactive(false)`, egui's menu style) rather than being the default.
+
 A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
 disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
 as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own
