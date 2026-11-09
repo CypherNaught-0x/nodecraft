@@ -3818,6 +3818,9 @@ mod audio875_tests;
 #[cfg(test)]
 mod audio_tests;
 #[cfg(test)]
+mod comfy3d24_tests;
+
+#[cfg(test)]
 mod batch_review_tests;
 #[cfg(test)]
 mod card_export746_tests;

@@ -701,6 +701,9 @@ mod recraft35_tests;
 mod rodin41_tests;
 
 #[cfg(test)]
+mod comfy3d24_tests;
+
+#[cfg(test)]
 mod magnific38_tests;
 
 #[cfg(test)]

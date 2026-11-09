@@ -65,6 +65,7 @@ impl Http for Server {
 fn server(checkpoints: &[&str]) -> Arc<Server> {
     let info = json!({
         "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [checkpoints]}}, "output": ["MODEL", "CLIP", "VAE"], "category": "loaders"},
+        "ImageOnlyCheckpointLoader": {"input": {"required": {"ckpt_name": [checkpoints]}}, "output": ["MODEL", "CLIP_VISION", "VAE"]},
         "KSampler": {"input": {"required": {"sampler_name": [["euler", "dpmpp_2m"]], "scheduler": [["normal", "karras"]]}}, "output": ["LATENT"]},
     });
     Server::answering(200, &serde_json::to_vec(&info).unwrap())
@@ -120,7 +121,7 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // Before a fetch any checkpoint is accepted: the list is unknown, not empty.
     checkpoint(&mut session, "anything.safetensors").unwrap();
     let sources = refresh(&mut session, &asked);
-    assert_eq!(sources, ["comfyui.checkpoints", "elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
+    assert_eq!(sources, ["comfyui.checkpoints", "comfyui.image_checkpoints", "elevenlabs.voices", "higgsfield.restyle_presets", "higgsfield.soul_ids"]);
     let http = server(&["sdxl.safetensors", "juggernaut.safetensors", "", "sdxl.safetensors"]);
     let fetched = fetch(http.clone(), &settings(), &sources);
     // Higgsfield and ElevenLabs have no key here: they aren't asked, and the ComfyUI lists still come.
@@ -129,9 +130,9 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     assert_eq!(http.asked.lock().unwrap()[0].1, OBJECT_INFO_CAP);
     let report = option_fetch::finish(&mut session, 1, fetched);
     assert_eq!(report.error, None);
-    // Both ComfyUI cards choose a checkpoint from the same list.
+    // Each catalog model gets the list from its own loader's source.
     let owners: Vec<&str> = report.installed.iter().map(|i| i.owner.as_str()).collect();
-    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"], "{report:?}");
+    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.hunyuan3d-2", "comfyui.hunyuan3d-2.1", "comfyui.sdxl"], "{report:?}");
     // Higgsfield and ElevenLabs aren't set up: their lists are unavailable, not refused.
     assert!(report.refused.is_empty(), "{report:?}");
     let mut unavailable: Vec<&str> = report.unavailable.iter().filter(|r| r.reason.contains("key")).map(|r| r.source.as_str()).collect();
@@ -150,7 +151,7 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     // A stale value saved before the fetch is reported, and the rest of the card stays editable.
     checkpoint(&mut session, "juggernaut.safetensors").unwrap();
     let report = option_fetch::finish(&mut session, 2, fetch(server(&["sdxl.safetensors"]), &settings(), &sources));
-    assert_eq!(report.installed.len(), 2);
+    assert_eq!(report.installed.len(), 4);
     let described = session.dispatch("node.describe", &json!({"canvas": C, "id": N})).unwrap();
     let issues = described["resolution"]["issues"].as_array().unwrap();
     assert!(issues.iter().any(|issue| issue["code"] == "not_an_option" && issue["param"] == "checkpoint"), "{issues:?}");
@@ -159,6 +160,31 @@ fn a_fetched_checkpoint_list_is_what_the_sdxl_card_accepts() {
     let status = session.dispatch("options.status", &json!({})).unwrap();
     assert_eq!(status["last"]["id"], 2);
     assert_eq!(status["last"]["installed"][0]["source"], "comfyui.checkpoints");
+}
+
+#[test]
+fn comfy3d24_image_only_checkpoint_options_do_not_reuse_the_sdxl_loader_list() {
+    let (mut session, asked) = session();
+    let id = NodeId::from_bytes([24; 16]);
+    let values = [("model".into(), Value::Text("comfyui.hunyuan3d-2.1".into()))].into();
+    let node = session.kinds().get(nodecraft_nodes::generation::MESH_KIND).unwrap().instantiate_instance(id, Default::default(), &values).unwrap();
+    session.dispatch("node.add", &json!({"canvas":C,"node":node})).unwrap();
+    let info = json!({
+        "CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["sdxl-only.safetensors"]]}},"output":["MODEL","CLIP","VAE"]},
+        "ImageOnlyCheckpointLoader":{"input":{"required":{"ckpt_name":[["hunyuan-only.safetensors"]]}},"output":["MODEL","CLIP_VISION","VAE"]}
+    });
+    let sources = refresh(&mut session, &asked);
+    let report = option_fetch::finish(&mut session, 24, fetch(Server::answering(200, &serde_json::to_vec(&info).unwrap()), &settings(), &sources));
+    assert!(report.refused.is_empty(), "{report:?}");
+    for (node, expected) in [(N, "sdxl-only.safetensors"), (id, "hunyuan-only.safetensors")] {
+        let options = session.dispatch("node.options", &json!({"canvas":C,"id":node,"param":"checkpoint"})).unwrap();
+        assert_eq!(options["known"], true);
+        assert_eq!(options["options"], json!([{"value":expected,"label":expected}]));
+        session.dispatch("node.param_set", &json!({"canvas":C,"id":node,"name":"checkpoint","value":{"type":"text","value":expected}})).unwrap();
+    }
+    assert!(
+        session.dispatch("node.param_set", &json!({"canvas":C,"id":id,"name":"checkpoint","value":{"type":"text","value":"sdxl-only.safetensors"}})).is_err()
+    );
 }
 
 #[test]
