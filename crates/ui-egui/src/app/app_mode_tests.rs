@@ -73,6 +73,12 @@ fn app_mode959_scaled_dialog_bounds_contain_its_controls() {
     h.run_steps(3);
     let dialog = h.get_by_role_and_label(Role::Dialog, "App mode");
     let done = dialog.get_by_role_and_label(Role::Button, "Done");
+    let area = egui::AreaState::load(&h.ctx, egui::Id::new("app_mode")).unwrap().rect();
+    assert!(
+        (dialog.rect().min - area.min).length() < 1.0 && (dialog.rect().max - area.max).length() < 1.0,
+        "scaled accessible bounds {:?} must match visual bounds {area:?}",
+        dialog.rect()
+    );
     assert!(dialog.rect().contains_rect(done.rect()), "scaled container {:?} must contain its control {:?}", dialog.rect(), done.rect());
 }
 
