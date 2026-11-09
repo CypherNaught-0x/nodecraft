@@ -2544,7 +2544,7 @@ impl NodeCraftApp {
             .flatten()
             .and_then(|p| {
                 let world = self.view.to_world(viewport.min, p);
-                let reach = NOODLE_HIT / self.view.zoom;
+                let reach = t.noodle_hit / self.view.zoom;
                 curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
             })
             .map(|(id, _)| id);

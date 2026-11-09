@@ -756,7 +756,7 @@ fn a_stale_badge_is_a_24_point_target_at_half_zoom() {
     h.run();
     let badge = h.get_all_by_label(STALE).next().expect("a stale badge").rect();
     assert!(badge.width() >= 24.0 && badge.height() >= 24.0, "hit rect {badge:?}");
-    assert!(h.state().run_confirm.is_none() && h.state().notice.is_none());
+    assert!(h.state().run_confirm.is_none() && h.state().notice().is_none());
     // The hit rect never rises into the card above it, so its bottom-left corner is clear of it.
     let card = h.state().view.rect_to_screen(h.state().viewport.min, *h.state().painted.get(&id(21)).unwrap());
     assert!(badge.top() >= card.bottom() - 0.01, "the hit rect {badge:?} stays below the card {card:?}");
@@ -765,5 +765,5 @@ fn a_stale_badge_is_a_24_point_target_at_half_zoom() {
     h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
     h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.run();
-    assert!(h.state().run_confirm.is_some() || h.state().notice.is_some(), "the corner click asked to refresh");
+    assert!(h.state().run_confirm.is_some() || h.state().notice().is_some(), "the corner click asked to refresh");
 }
