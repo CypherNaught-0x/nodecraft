@@ -12,13 +12,24 @@ pub(super) struct Interaction {
 }
 
 pub(super) fn header(ui: &mut egui::Ui, allowed: bool, focus_pending: &mut bool, t: &theme::Tokens) -> (Rect, (egui::Response, egui::Response)) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), t.navigation_toolbar_height), Sense::hover());
+    let width = ui.available_width();
     let font = egui::TextStyle::Button.resolve(ui.style());
     let label_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("Close".to_owned(), font, t.text).size().x);
-    let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(rect.width());
-    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, rect.top()), rect.max);
+    let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(width);
+    let title_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("Tag filter".to_owned(), egui::FontId::proportional(t.body_size), t.text).size().x);
+    // Preserve a centered title and visible Close label when pinned Comments leaves a narrow panel.
+    let stacked = title_width + close_width * 2.0 > width;
+    let gap = if stacked { ui.spacing().item_spacing.y } else { 0.0 };
+    let height = if stacked { t.navigation_toolbar_height * 2.0 + gap } else { t.navigation_toolbar_height };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let close_top = if stacked { rect.top() + t.navigation_toolbar_height + gap } else { rect.top() };
+    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, close_top), rect.max);
     let handle = rect.with_max_x(close_rect.left());
-    let title_rect = Rect::from_min_max(Pos2::new((rect.left() + close_width).min(close_rect.left()), rect.top()), close_rect.left_bottom());
+    let title_rect = if stacked {
+        Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.top() + t.navigation_toolbar_height))
+    } else {
+        Rect::from_min_max(Pos2::new(rect.left() + close_width, rect.top()), close_rect.left_bottom())
+    };
     let title = ui.place(title_rect, egui::Label::new(egui::RichText::new("Tag filter").size(t.body_size)).sense(Sense::focusable_noninteractive()).truncate());
     if allowed && *focus_pending && ui.is_visible() {
         title.request_focus();
@@ -51,6 +62,7 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
         list(ui, canvas, state, allowed, t, &mut result);
     }
 
+    let footer_start = ui.cursor().top();
     let mut untagged = state.untagged;
     let untagged_response = counted_row(ui, None, state.count(None), None, allowed, |_| checkbox(&mut untagged, "Untagged"), t);
     result.focus.push(untagged_response.id);
@@ -103,6 +115,20 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
             }
         }
     });
+    // Measure the actual footer, including wrapped action rows, for the next layout pass.
+    // Reserving three rows everywhere needlessly clips short tag lists in ordinary panels.
+    let height = ui.cursor().top() - footer_start;
+    let memory = ui.id().with("tag_filter_footer_height");
+    if height.is_finite() && height > 0.0 {
+        let prior = ui.ctx().data_mut(|data| {
+            let prior = data.get_temp::<f32>(memory);
+            data.insert_temp(memory, height);
+            prior
+        });
+        if prior.is_none_or(|prior| (prior - height).abs() > 0.5) {
+            ui.ctx().request_repaint();
+        }
+    }
     result
 }
 
@@ -120,7 +146,12 @@ fn list(ui: &mut egui::Ui, canvas: &Canvas, state: &TagFilter, allowed: bool, t:
         });
     } else {
         // Keep the Untagged row, footer and dividers outside the virtualized list.
-        let footer = t.tag_definition_row_height + ui.spacing().interact_size.y * 4.0 + ui.spacing().item_spacing.y * 2.0 + t.navigation_gap * 3.0;
+        let memory = ui.id().with("tag_filter_footer_height");
+        let footer = ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(memory))
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(t.tag_definition_row_height + ui.spacing().interact_size.y * 2.0 + t.navigation_gap * 3.0);
         let height = (ui.available_height() - footer).max(t.tag_definition_row_height);
         egui::ScrollArea::vertical().id_salt("filter_tags").max_height(height).show_rows(ui, t.tag_definition_row_height, ids.len(), |ui, range| {
             for id in ids.get(range).unwrap_or_default() {

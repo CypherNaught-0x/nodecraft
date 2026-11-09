@@ -272,7 +272,11 @@ impl NodeCraftApp {
             let bounds = self.floating_bounds();
             let max_size = bounds.area.size();
             let canvas = self.session.document().canvases().get(&self.canvas);
+            // Keep the body readable instead of retaining an empty panel's tiny intrinsic
+            // width. When Comments narrows the area, use all the room it leaves.
+            let minimum = (t.tag_panel_width - t.card_padding * 2.0).min((max_size.x - t.card_padding * 2.0).max(0.0));
             let panel = floating::panel(&ctx, "Tag filter", id, Home::RightTop, t)
+                .min_width(minimum)
                 .max_size(max_size)
                 .vscroll(true)
                 .default_width(t.tag_panel_width.min(max_size.x))
@@ -418,16 +422,26 @@ mod tests {
 
             let blue_label = format!("{blue}\nBlue skies");
             let orange_label = format!("{orange}\nOrange dust");
-            let mut previous_bottom = f32::NEG_INFINITY;
-            for (label, description) in [(&*blue_label, "1 card"), (&*orange_label, "0 cards"), ("Untagged", "1 card")] {
+            // Virtualized lists expose overscan rows in AccessKit even when those rows are
+            // clipped. Scroll each row into view before checking it against the pinned footer.
+            for (label, description) in [(&*blue_label, "1 card"), (&*orange_label, "0 cards")] {
+                h.get_by_role_and_label(Role::CheckBox, label).scroll_to_me();
+                h.run();
                 let row = h.get_by_role_and_label(Role::CheckBox, label);
                 assert_eq!(row.accesskit_node().description().as_deref(), Some(description));
                 let rect = row.rect();
+                let untagged = h.get_by_role_and_label(Role::CheckBox, "Untagged").rect();
                 assert!(h.state().tag_rect().contains_rect(rect));
-                assert!(rect.top() >= previous_bottom, "{label}: {rect:?} overlaps the previous row");
-                previous_bottom = rect.bottom();
+                assert!(rect.bottom() <= untagged.top() + h.state().theme.tokens().stroke_hairline, "visible {label}: {rect:?} overlaps Untagged {untagged:?}");
             }
-            assert!(h.get_by_role_and_label(Role::Button, "Next match").rect().top() >= previous_bottom);
+            let untagged = h.get_by_role_and_label(Role::CheckBox, "Untagged");
+            assert_eq!(untagged.accesskit_node().description().as_deref(), Some("1 card"));
+            assert!(h.get_by_role_and_label(Role::Button, "Next match").rect().top() >= untagged.rect().bottom());
+            if let Some(folder) = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE") {
+                let folder = std::path::PathBuf::from(folder);
+                std::fs::create_dir_all(&folder).unwrap();
+                h.render().unwrap().save(folder.join(format!("two-tags-{theme:?}-{width}.png"))).unwrap();
+            }
             for label in ["Previous match", "Next match", "Clear tag filter"] {
                 assert!(h.state().tag_rect().contains_rect(h.get_by_role_and_label(Role::Button, label).rect()), "{width}: {label} leaves the panel");
             }
