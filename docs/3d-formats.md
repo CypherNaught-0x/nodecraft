@@ -134,6 +134,8 @@ recursive scene traversal. Non-finite/unrepresentable numbers, zero normals, zer
 faces and unrepresentable preview spheres are errors. Bounds use f64 intermediates to avoid
 overflow when their final float32 sphere remains representable; other formats share that
 arithmetic improvement, without changing the renderer or their admission policy.
+USDZ refuses the entire mesh if even one triangle has zero area. A mesh that converts to
+GLB, OBJ or PLY can therefore need its degenerate triangles removed before USDZ conversion.
 
 A finite interchange mesh can still exceed the current preview camera's float32 numeric
 range. Such a model reports **3D preview unavailable at this coordinate range** before

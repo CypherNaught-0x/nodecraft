@@ -29,9 +29,11 @@ impl<'a> Lexer<'a> {
         let start = self.at;
         self.at += 1;
         if b == b'"' {
+            let mut closed = false;
             while let Some(&c) = bytes.get(self.at) {
                 self.at += 1;
                 if c == b'"' {
+                    closed = true;
                     break;
                 }
                 if !c.is_ascii_alphanumeric() && !matches!(c, b'_' | b'-') {
@@ -41,7 +43,7 @@ impl<'a> Lexer<'a> {
                     return Err(invalid("USDZ token exceeds 64 bytes"));
                 }
             }
-            if bytes.get(self.at.saturating_sub(1)) != Some(&b'"') {
+            if !closed {
                 return Err(invalid("unterminated USDZ quoted token"));
             }
         } else if !b"(){}[]=,".contains(&b) {

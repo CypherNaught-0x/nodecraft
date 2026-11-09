@@ -149,6 +149,19 @@ fn usdz1019_container_authorities_crc_alignment_and_extents_are_all_checked() {
     assert_eq!(crate::sniff(&stl).unwrap().mime, "model/stl", "arbitrary binary STL headers still win");
 }
 #[test]
+fn usdz1019_binary_layer_errors_name_the_supported_export_profile() {
+    let mut bytes = usdz::package_layer(b"PXR-USDC").unwrap();
+    let central_name = bytes.len() - 78 + 46;
+    bytes.get_mut(30..40).unwrap().copy_from_slice(b"model.usdc");
+    bytes.get_mut(central_name..central_name + 10).unwrap().copy_from_slice(b"model.usdc");
+    assert_eq!(crate::sniff(&bytes).unwrap().mime, "model/vnd.usdz+zip");
+    usdz::reset_allocations();
+    let error = decode_mesh(&bytes, &Default::default()).unwrap_err().to_string();
+    assert!(error.contains("USDC") && error.contains("export one static USDA triangle mesh"), "{error}");
+    assert_eq!(usdz::allocations(), [0, 0]);
+    refuse_layer(&format!("{LAYER}\""));
+}
+#[test]
 fn usdz1019_indexed_facets_are_validated_before_adoption_and_limits_cannot_widen() {
     assert!(encode_usdz(&Mesh::default(), 1 << 20).is_err());
     let mut no_faces = indexed();
@@ -208,6 +221,20 @@ proptest! {
     }
     #[test]
     fn usdz1019_bounded_hostile_bytes_return_without_panic(bytes in prop::collection::vec(any::<u8>(),0..4096)){
+        let _=decode_mesh_as(&bytes,MeshFormat::Usdz,&MeshLimits{max_input_bytes:4096,max_vertices:32,max_triangles:32,..Default::default()});
+    }
+    #[test]
+    fn usdz1019_hostile_ascii_layers_reach_parser_with_valid_crc(ascii in prop::collection::vec(0x20u8..0x7f,0..2048)){
+        let bytes=usdz::package_layer(&ascii).unwrap();
+        prop_assert_eq!(usdz::layer(&bytes).unwrap(),ascii);
+        let _=decode_mesh_as(&bytes,MeshFormat::Usdz,&MeshLimits{max_input_bytes:4096,max_vertices:32,max_triangles:32,..Default::default()});
+    }
+    #[test]
+    fn usdz1019_mutated_valid_layers_exercise_grammar_beyond_container(offset in 0usize..LAYER.len(),replacement in 0x20u8..0x7f){
+        let mut layer=LAYER.as_bytes().to_vec();
+        *layer.get_mut(offset).unwrap()=replacement;
+        let bytes=usdz::package_layer(&layer).unwrap();
+        prop_assert_eq!(usdz::layer(&bytes).unwrap(),layer);
         let _=decode_mesh_as(&bytes,MeshFormat::Usdz,&MeshLimits{max_input_bytes:4096,max_vertices:32,max_triangles:32,..Default::default()});
     }
 }
