@@ -111,6 +111,16 @@ enum Action {
 }
 
 impl NodeCraftApp {
+    /// The inline removal question keeps its Escape before canvas or tool handlers. Use the
+    /// same cancellation as its late renderer, only while its question was actually drawn.
+    pub(super) fn library_question_escape(&mut self, ctx: &egui::Context) -> bool {
+        let owns = self.library.open && self.library.confirm.is_some() && self.library.confirm_shown;
+        if owns && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.library.confirm = None;
+        }
+        owns
+    }
+
     pub(super) fn toggle_techniques(&mut self) {
         self.library.open = !self.library.open;
         self.library.listed = None;
@@ -506,8 +516,8 @@ impl NodeCraftApp {
             self.library.listed = None;
         }
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

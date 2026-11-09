@@ -16,6 +16,8 @@ use nodecraft_comfy::{InputKind, NodeCatalog};
 use crate::provider::{JobInput, ProviderJob};
 use crate::{ErrorKind, ProviderError};
 
+pub(crate) mod mesh;
+
 /// The prefix of saved outputs in the server's `output` folder.
 const SAVE_PREFIX: &str = "NodeCraft";
 /// How much of an input image image-to-image keeps changing (1 would ignore the image).
@@ -140,6 +142,9 @@ pub(crate) fn is_templated(job: &ProviderJob) -> bool {
 /// missing checkpoint and to fill inputs newer servers require with their defaults. A missing
 /// checkpoint is marked `true`, like the adapter's other errors a fresher catalog could fix.
 pub(crate) fn expand(job: &ProviderJob, catalog: &NodeCatalog) -> Result<ProviderJob, (ProviderError, bool)> {
+    if mesh::supports(&job.model) {
+        return mesh::expand(job, catalog);
+    }
     let plain = |e: ProviderError| (e, false);
     let t = template(&job.model)
         .ok_or_else(|| refused(format!("the ComfyUI model {:?} has no built-in workflow; import its workflow into a Workflow node", job.model)))

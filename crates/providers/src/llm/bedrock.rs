@@ -115,7 +115,9 @@ impl LlmClient {
         let host = runtime_host(region)?;
         let base_url = match dialect {
             Dialect::OpenAi => format!("https://{host}/openai/v1"),
-            Dialect::Anthropic | Dialect::Converse => format!("https://{host}"),
+            Dialect::Anthropic | Dialect::Converse | Dialect::Cohere => format!("https://{host}"),
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Vertex is not a Bedrock dialect")),
         };
         Ok(match auth {
             BedrockAuth::ApiKey(key) => Self::new(Endpoint { id: BEDROCK.into(), dialect, base_url, key: Some(key) }, http),

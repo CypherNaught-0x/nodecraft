@@ -228,6 +228,21 @@ pub struct Tokens {
     /// App mode (#95): the width of its form and side of a result or media thumbnail.
     pub app_form_width: f32,
     pub app_thumbnail: f32,
+    /// A button at rest, under the pointer and held down (#1112): its fill, and an outline at
+    /// least 3:1 against `panel_fill` so it never reads as a plain label. Quiet buttons (the top
+    /// bar, menus) opt out with `frame_when_inactive(false)`.
+    pub control_fill: Color32,
+    pub control_stroke: Color32,
+    pub control_fill_hover: Color32,
+    pub control_fill_pressed: Color32,
+    /// A noodle under the pointer is drawn this wide, a little brighter, so it reads as clickable.
+    pub wire_width_hover: f32,
+
+    /// The smallest pointer target on screen (#1114, WCAG 2.5.8): a badge's or avatar's hit
+    /// rect grows to this square around its painted shape, at any zoom.
+    pub min_target: f32,
+    /// Half the width of a noodle's hit band, in screen points; only the hit area, not the line.
+    pub noodle_hit: f32,
     /// The Library's Assets, History and Styles browsers (#96): the side of a listed thumbnail.
     pub library_thumbnail: f32,
     /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
@@ -235,6 +250,10 @@ pub struct Tokens {
     pub timeline_track_height: f32,
     pub timeline_ruler_height: f32,
     pub timeline_trim_grip: f32,
+    /// The keyboard focus ring on painted canvas widgets (#1108): its width and its gap outside
+    /// the widget, in screen points at any zoom.
+    pub focus_ring_width: f32,
+    pub focus_ring_gap: f32,
     /// Stroke widths (#1124): a hairline outline (panel and frame edges, guides), a medium line
     /// (a playhead, a traced shape) and a strong one (a chosen thumbnail or clip, a drop marker).
     pub stroke_hairline: f32,
@@ -250,6 +269,10 @@ pub struct Tokens {
     pub dim: f32,
     /// A number inside a round badge, as a fraction of the badge's radius (input order badges).
     pub badge_text_ratio: f32,
+    /// The coloured edge on a notice's left side, in its kind's colour (#1110).
+    pub notice_edge: f32,
+    /// The width of the bottom-left notice stack, before it is fitted to the window.
+    pub notice_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -386,6 +409,14 @@ pub const DARK: Tokens = Tokens {
     port_radius: 5.0,
     port_min_radius: 3.0,
     port_stroke: 2.0,
+    control_fill: Color32::from_rgb(0x1f, 0x1f, 0x22),
+    control_stroke: Color32::from_rgb(0x67, 0x67, 0x6e),
+    control_fill_hover: Color32::from_rgb(0x2c, 0x2c, 0x30),
+    control_fill_pressed: Color32::from_rgb(0x3c, 0x3c, 0x42),
+    wire_width_hover: 3.0,
+
+    min_target: 24.0,
+    noodle_hit: 12.0,
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
@@ -397,6 +428,8 @@ pub const DARK: Tokens = Tokens {
     toolbar_gap: 10.0,
     viewer_width: 720.0,
     reader_thumb_width: 112.0,
+    focus_ring_width: 2.0,
+    focus_ring_gap: 1.0,
     connected_thumb: 40.0,
     sheet_index_width: 32.0,
     sheet_column_width: 120.0,
@@ -420,6 +453,8 @@ pub const DARK: Tokens = Tokens {
     inset: 2.0,
     dim: 0.6,
     badge_text_ratio: 1.2,
+    notice_edge: 3.0,
+    notice_width: 380.0,
 };
 
 pub const LIGHT: Tokens = Tokens {
@@ -478,6 +513,10 @@ pub const LIGHT: Tokens = Tokens {
     ],
     prompt_fill: Color32::from_rgb(0xf4, 0xf4, 0xf5),
     mention_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
+    control_fill: Color32::from_rgb(0xf6, 0xf6, 0xf7),
+    control_stroke: Color32::from_rgb(0x8c, 0x8c, 0x94),
+    control_fill_hover: Color32::from_rgb(0xdd, 0xdd, 0xe1),
+    control_fill_pressed: Color32::from_rgb(0xc9, 0xc9, 0xcf),
     ..DARK
 };
 
@@ -524,13 +563,50 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
     v.hyperlink_color = t.accent_text;
     v.warn_fg_color = t.stale;
     v.error_fg_color = t.danger;
-    let hover = t.panel_stroke;
-    craft_ui::theme::WidgetPalette { noninteractive: t.panel_fill, inactive: t.panel_fill, hovered: hover, active: hover, open: hover }.apply_to(
-        &mut v.widgets,
-        CornerRadius::same(8),
-        Stroke::new(1.0, t.text),
-    );
+    craft_ui::theme::WidgetPalette {
+        noninteractive: t.panel_fill,
+        inactive: t.control_fill,
+        hovered: t.control_fill_hover,
+        active: t.control_fill_pressed,
+        open: t.control_fill_hover,
+    }
+    .apply_to(&mut v.widgets, CornerRadius::same(8), Stroke::new(t.stroke_hairline, t.text));
+    // A visible outline at rest, so a button never reads as a label (#1112). Hovered and pressed
+    // keep egui's own (no) outline: their fill already answers, and a selectable row or a
+    // selection keeps a clean edge.
+    v.widgets.inactive.bg_stroke = Stroke::new(t.stroke_hairline, t.control_stroke);
     v
+}
+
+/// How a custom-painted control looks in its current state (#1112): the shell's own widgets get
+/// this from egui; badges, the submit arrow, thumbnails and noodles ask here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Rest,
+    Hovered,
+    Pressed,
+}
+
+impl State {
+    pub fn of(response: &egui::Response) -> Self {
+        if response.is_pointer_button_down_on() {
+            State::Pressed
+        } else if response.hovered() {
+            State::Hovered
+        } else {
+            State::Rest
+        }
+    }
+
+    /// `base` lifted toward `toward` when hovered, further when pressed: a painted fill that
+    /// keeps its meaning (a badge's warning colour) but answers the pointer.
+    pub fn tint(self, base: Color32, toward: Color32) -> Color32 {
+        match self {
+            State::Rest => base,
+            State::Hovered => base.lerp_to_gamma(toward, 0.18),
+            State::Pressed => base.lerp_to_gamma(toward, 0.36),
+        }
+    }
 }
 
 /// Install the theme on a context. Call once at startup and on theme change.
@@ -549,6 +625,27 @@ fn style_text(style: &mut egui::Style, label_size: f32) {
 /// `panel_stroke` edge, `panel_radius` corners and `card_padding` inside.
 pub fn panel_frame(t: &Tokens) -> egui::Frame {
     egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(Stroke::new(t.stroke_hairline, t.panel_stroke)).corner_radius(t.panel_radius)
+}
+
+/// `rect` grown, about its centre, to at least `side` × `side`: a hit rect for a small painted
+/// shape (#1114). A rect already as large is returned unchanged.
+pub fn at_least(rect: egui::Rect, side: f32) -> egui::Rect {
+    let side = if side.is_finite() { side.max(0.0) } else { 0.0 };
+    let grow = egui::vec2((side - rect.width()).max(0.0), (side - rect.height()).max(0.0)) * 0.5;
+    rect.expand2(grow)
+}
+
+/// A badge's hit rect under a card (#1114): [`at_least`] `side` square, but grown down and sideways
+/// only, never above `below` (the card's bottom edge), so it can't take the card's or a port's
+/// clicks.
+pub fn badge_hit(rect: egui::Rect, side: f32, below: f32) -> egui::Rect {
+    let mut hit = at_least(rect, side);
+    if below.is_finite() && hit.min.y < below {
+        let lift = below - hit.min.y;
+        hit.min.y = below;
+        hit.max.y += lift;
+    }
+    hit
 }
 
 impl Tokens {
@@ -706,6 +803,53 @@ mod tests {
             }
         }
         assert!(found.is_empty(), "literal stroke widths: {found:#?}");
+    }
+
+    #[test]
+    fn buttons_are_outlined_at_rest_and_each_state_differs() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.control_stroke, t.panel_fill) >= 3.0, "{kind:?} control outline: {}", contrast(t.control_stroke, t.panel_fill));
+            assert!(contrast(t.text, t.control_fill_pressed) >= 7.0, "{kind:?} text on a pressed button");
+            let v = visuals(kind);
+            assert_eq!(v.widgets.inactive.bg_stroke, Stroke::new(1.0, t.control_stroke));
+            let fills = [v.widgets.inactive.weak_bg_fill, v.widgets.hovered.weak_bg_fill, v.widgets.active.weak_bg_fill];
+            assert!(fills[0] != fills[1] && fills[1] != fills[2] && fills[0] != fills[2], "{kind:?} rest, hover and press differ");
+            assert_ne!(v.widgets.inactive.weak_bg_fill, t.panel_fill, "{kind:?} a resting button isn't the panel");
+            assert_eq!(v.widgets.hovered.bg_fill, t.panel_stroke, "{kind:?} the tag contrast test checks the real hover fill");
+            // The pressed submit arrow (card_fill on the tinted accent) stays a readable graphic.
+            assert!(contrast(t.card_fill, t.accent.lerp_to_gamma(t.text, 0.3)) >= 3.0, "{kind:?} pressed submit arrow");
+        }
+        assert_eq!(State::Rest.tint(DARK.stale, DARK.text), DARK.stale);
+        assert_ne!(State::Hovered.tint(DARK.stale, DARK.text), State::Pressed.tint(DARK.stale, DARK.text));
+    }
+
+    #[test]
+    fn the_focus_ring_stands_out_from_canvas_and_card() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for bg in [t.canvas_bg, t.card_fill] {
+                assert!(contrast(t.accent, bg) >= 3.0, "{kind:?} focus ring on {bg:?}: {}", contrast(t.accent, bg));
+            }
+            assert!(t.focus_ring_width >= 2.0, "{kind:?} WCAG 2.4.11 wants a ring at least 2 pt wide");
+            // The ring sits clear of the presence ring, which starts `presence_ring * 2` out.
+            assert!(t.focus_ring_gap + t.focus_ring_width < t.presence_ring * 2.0, "{kind:?} a gap stays before the presence ring");
+        }
+    }
+
+    #[test]
+    fn small_targets_grow_to_the_minimum_and_large_ones_stay() {
+        let small = egui::Rect::from_center_size(egui::pos2(10.0, 10.0), egui::vec2(40.0, 19.0));
+        let hit = at_least(small, DARK.min_target);
+        assert_eq!(hit.center(), small.center());
+        assert_eq!(hit.size(), egui::vec2(40.0, 24.0));
+        let big = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(30.0, 30.0));
+        assert_eq!(at_least(big, 24.0), big);
+        assert_eq!(at_least(big, f32::NAN), big, "a hostile side changes nothing");
+        let under = egui::Rect::from_min_size(egui::pos2(0.0, 103.0), egui::vec2(40.0, 9.5));
+        let hit = badge_hit(under, 24.0, 100.0);
+        assert_eq!((hit.min.y, hit.height()), (100.0, 24.0), "never above the card, still 24 tall");
+        const { assert!(DARK.min_target >= 24.0 && DARK.noodle_hit >= 10.0) };
     }
 
     #[test]

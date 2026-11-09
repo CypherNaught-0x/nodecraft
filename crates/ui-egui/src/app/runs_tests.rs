@@ -200,9 +200,9 @@ fn wait_for_generate(h: &mut Harness<'static, NodeCraftApp>) {
                 reason = "not laid out after hover";
             }
         }
-        assert!(Instant::now() < deadline, "Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice());
     }
-    panic!("Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice);
+    panic!("Generate hit target never became ready ({reason}); notice: {:?}", h.state().notice());
 }
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
@@ -225,7 +225,7 @@ fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     h.run();
     if label == "Generate" {
         let clicked_on_up = h.ctx.data(|data| data.get_temp::<bool>(egui::Id::new("nodecraft-test-generate-clicked"))).unwrap_or(false);
-        assert!(clicked_on_down || clicked_on_up, "Generate pointer press was not delivered to the actual button; notice: {:?}", h.state().notice);
+        assert!(clicked_on_down || clicked_on_up, "Generate pointer press was not delivered to the actual button; notice: {:?}", h.state().notice());
     }
 }
 
@@ -246,7 +246,7 @@ fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraft
         if done(h.state()) {
             return;
         }
-        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -277,17 +277,17 @@ fn generate_sets_up_the_provider_first_then_quotes_and_records_the_run() {
     }));
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none(), "no quote before the provider is set up");
-    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
+    assert_eq!(h.state().notice(), Some(super::runs::SETTING_UP));
     frames_until(&mut h, |_| true);
     assert!(h.state().run_confirm.is_none());
     open.send(()).unwrap();
     frames_until(&mut h, |app| app.run_confirm.is_some());
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     assert!(mock.requests().is_empty(), "the quote alone sends nothing");
     accept(&mut h);
     frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
     assert_eq!(mock.requests().len(), 1, "one accepted run, one request");
-    assert!(h.query_by_label("Run failed").is_none(), "notice: {:?}", h.state().notice);
+    assert!(h.query_by_label("Run failed").is_none(), "notice: {:?}", h.state().notice());
 }
 
 #[test]
@@ -297,7 +297,7 @@ fn the_browsers_inline_maker_hands_the_provider_over_on_the_next_tick() {
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none(), "the adapter is handed over on a tick, not inside the click");
     frames_until(&mut h, |app| app.run_confirm.is_some());
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     accept(&mut h);
     frames_until(&mut h, |app| idle(app) && !node(app).history.is_empty());
     assert_eq!(mock.requests().len(), 1);
@@ -430,7 +430,7 @@ fn a_failed_run_is_shown_on_its_card_with_the_reason() {
     accept(&mut h);
     frames_until(&mut h, |app| idle(app) && app.runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_some()));
     h.get_by_label("Run failed: input not supported");
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("A run failed")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("A run failed")), "{:?}", h.state().notice());
     assert!(node(h.state()).history.is_empty());
 }
 
@@ -443,13 +443,13 @@ fn a_provider_without_its_key_says_what_to_do_and_asks_again_next_time() {
         Err(Readiness::NeedsKey { account: "mock".into() })
     }));
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref() != Some(super::runs::SETTING_UP));
-    let notice = h.state().notice.clone().unwrap_or_default();
+    frames_until(&mut h, |app| app.notice() != Some(super::runs::SETTING_UP));
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.contains("needs an API key"), "{notice}");
     assert!(h.state().run_confirm.is_none(), "nothing is quoted for a provider that can't run");
     // The person adds the key; the next Generate reads it again rather than remembering the miss.
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref() != Some(super::runs::SETTING_UP));
+    frames_until(&mut h, |app| app.notice() != Some(super::runs::SETTING_UP));
     assert_eq!(*asked.lock().unwrap(), 2);
 }
 
@@ -555,7 +555,7 @@ fn a_session_dispatched_key_remove_cannot_reuse_the_old_adapter() {
     frames_until(&mut h, |app| app.runs.as_ref().is_some_and(|runs| !runs.has_cached_adapters()));
     wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref().is_some_and(|notice| notice.contains("needs an API key")));
+    frames_until(&mut h, |app| app.notice().is_some_and(|notice| notice.contains("needs an API key")));
     assert_eq!(*reads.lock().unwrap(), [Some(false), None]);
     assert!(h.state().run_confirm.is_none());
 }
@@ -574,9 +574,9 @@ fn failed_native_write_preserves_adapter(command: &str, params: serde_json::Valu
     wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     assert!(
-        h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP),
+        h.state().run_confirm.is_some() || h.state().notice() == Some(super::runs::SETTING_UP),
         "{command}: Generate press was not delivered; notice: {:?}",
-        h.state().notice
+        h.state().notice()
     );
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
@@ -645,7 +645,7 @@ fn a_synchronous_key_service_change_outside_the_panel_forgets_browser_adapters()
     h.run();
     wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
-    frames_until(&mut h, |app| app.notice.as_deref().is_some_and(|notice| notice.contains("needs an API key")));
+    frames_until(&mut h, |app| app.notice().is_some_and(|notice| notice.contains("needs an API key")));
     assert_eq!(*reads.lock().unwrap(), [Some(false), Some(true), None]);
 }
 
@@ -685,9 +685,9 @@ fn failed_browser_style_write_preserves_adapter(command: &str, params: serde_jso
     wait_for_generate(&mut h);
     press(&mut h, Role::Button, "Generate");
     assert!(
-        h.state().run_confirm.is_some() || h.state().notice.as_deref() == Some(super::runs::SETTING_UP),
+        h.state().run_confirm.is_some() || h.state().notice() == Some(super::runs::SETTING_UP),
         "{command}: Generate press was not delivered; notice: {:?}",
-        h.state().notice
+        h.state().notice()
     );
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*reads.lock().unwrap(), [Some(false)], "{command} must reuse the old adapter");
@@ -718,7 +718,7 @@ fn a_key_change_while_the_provider_is_set_up_builds_it_again_with_the_new_key() 
     let (make, open, built) = gated(image(MockModel::new(MockOutput::Image)));
     let mut h = scene(make);
     press(&mut h, Role::Button, "Generate");
-    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
+    assert_eq!(h.state().notice(), Some(super::runs::SETTING_UP));
     // The key is replaced while the first build is still reading the old one.
     let app = h.state_mut();
     app.runs.as_mut().unwrap().forget_adapters(&mut app.session).unwrap();
@@ -731,7 +731,7 @@ fn a_key_change_while_the_provider_is_set_up_builds_it_again_with_the_new_key() 
     open.send(()).unwrap();
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert_eq!(*built.lock().unwrap(), 2);
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 }
 
 #[test]
@@ -761,10 +761,10 @@ fn leaving_the_canvas_while_its_provider_is_set_up_clears_the_waiting_notice() {
     let (make, open, _) = gated(image(MockModel::new(MockOutput::Image)));
     let mut h = scene(make);
     press(&mut h, Role::Button, "Generate");
-    assert_eq!(h.state().notice.as_deref(), Some(super::runs::SETTING_UP));
+    assert_eq!(h.state().notice(), Some(super::runs::SETTING_UP));
     h.state_mut().canvas = CanvasId::from_bytes([94; 16]);
     open.send(()).unwrap();
-    frames_until(&mut h, |app| app.notice.is_none());
+    frames_until(&mut h, |app| app.notices.is_empty());
     assert!(h.state().run_confirm.is_none(), "nothing is quoted for a card on another canvas");
 }
 
@@ -795,7 +795,7 @@ fn an_edited_card_shows_a_stale_badge_and_refreshing_runs_it_again() {
     press(&mut h, Role::Button, BADGE);
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert!(mock.requests().len() == 1, "the badge quotes; it starts nothing");
-    h.get_by_label("Refresh");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Refresh");
     refresh_accept(&mut h);
     frames_until(&mut h, |app| idle(app) && node(app).history.len() == 2);
     h.run();
@@ -960,8 +960,8 @@ fn a_refresh_needs_no_provider_for_an_upstream_card_with_a_current_result() {
         Change::Connect { canvas: C, edge }.apply(project).unwrap();
     });
     h.state_mut().request_run(N, super::generate::RunKind::Refresh).unwrap();
-    frames_until(&mut h, |app| app.run_confirm.is_some() || app.notice.as_deref().is_some_and(|n| n != super::runs::SETTING_UP));
-    assert!(h.state().run_confirm.is_some(), "notice: {:?}", h.state().notice);
+    frames_until(&mut h, |app| app.run_confirm.is_some() || app.notice().is_some_and(|n| n != super::runs::SETTING_UP));
+    assert!(h.state().run_confirm.is_some(), "notice: {:?}", h.state().notice());
 }
 
 #[test]
@@ -1061,7 +1061,7 @@ fn the_queue_lists_a_running_job_and_cancelling_it_leaves_its_cost_unresolved() 
     // A cancel is not a failure: the card says nothing went wrong, and no failure notice shows.
     assert!(h.query_by_label_contains("Run failed").is_none());
     assert!(h.state().runs.as_ref().is_some_and(|runs| runs.failure(C, N).is_none()));
-    assert!(!h.state().notice.as_deref().is_some_and(|notice| notice.contains("failed")), "{:?}", h.state().notice);
+    assert!(!h.state().notice().is_some_and(|notice| notice.contains("failed")), "{:?}", h.state().notice());
     h.get_by_role_and_label(Role::Button, "Queue");
     press(&mut h, Role::Button, "Clear finished");
     h.get_by_label_contains("Nothing has run yet");
@@ -1149,8 +1149,8 @@ fn the_toolbar_downloads_the_shown_result_once_there_is_one() {
         other => panic!("an image result, not {other:?}"),
     };
     let bytes = h.state().session.assets().get(&asset.hash).unwrap().to_vec();
-    assert_eq!(std::fs::read(&path).unwrap(), bytes, "{:?}", h.state().notice);
-    assert_eq!(h.state().notice.as_deref(), Some("Exported take.png."));
+    assert_eq!(std::fs::read(&path).unwrap(), bytes, "{:?}", h.state().notice());
+    assert_eq!(h.state().notice(), Some("Exported take.png."));
 }
 
 /// Three variations of the card, run against the mock host with the canvas's preference set by
@@ -1440,4 +1440,30 @@ fn quitting_during_a_save_records_the_results_that_waited_for_it() {
     assert_eq!(node(h.state()).history.len(), 1, "the result is recorded, not lost with the run host");
     let status = h.state().session.file_status();
     assert!(status.dirty && status.available, "unsaved after the result, so the journal is kept for recovery: {status:?}");
+}
+
+/// #1119: with no API key and no ComfyUI server, the submit tooltip and the quote name the missing
+/// setup, and the quote's button opens the API keys panel.
+#[test]
+fn with_no_provider_set_up_the_submit_tooltip_and_quote_say_so() {
+    let mock = image(MockModel::new(MockOutput::Image));
+    let mut h = scene(making(mock));
+    // The cards hear about missing providers from the first-run guidance, on in the real app.
+    h.state_mut().guidance = true;
+    h.run();
+    assert!(!h.state().providers_ready(), "the headless fixture has no key and no ComfyUI server");
+    // The accessible node's rect is in screen points; the response's is in the card layer's.
+    let submit = h.get_by_role_and_label(Role::Button, "Generate").rect().center();
+    h.hover_at(submit);
+    for _ in 0..90 {
+        h.step();
+    }
+    assert!(h.query_by_label_contains(super::empty_canvas::NO_PROVIDER).is_some(), "the tooltip names the missing setup");
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    h.get_by_label(super::empty_canvas::NO_PROVIDER);
+    h.get_by_label("Open API keys").click();
+    h.run();
+    assert!(h.state().keys.open, "the quote's button opens API keys");
+    assert!(h.state().run_confirm.is_none(), "and closes the quote");
 }

@@ -19,6 +19,8 @@ http = ["dep:reqwest"]
 # rig-core), Anthropic, and Amazon Bedrock with a Bedrock API key or AWS credentials, signed with
 # SigV4 by the pure-Rust `aws` module (hmac, sha2; web-time for the clock in the browser too).
 llm = ["dep:rig-core", "dep:hmac", "dep:sha2", "dep:web-time"]
+# Vertex chat through rig's native Gemini wire and the shared Google Cloud signer.
+vertex-llm = ["llm", "google-cloud"]
 # Synchronous OpenAI speech synthesis and file transcription.
 openai-audio = []
 # Direct Google text through the existing OpenAI-compatible chat client, and video to text through

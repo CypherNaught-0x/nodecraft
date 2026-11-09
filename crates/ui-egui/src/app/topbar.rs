@@ -552,7 +552,7 @@ impl NodeCraftApp {
             Entry::Tags => {
                 let id = if self.tag_filter.open { "canvas.tag_filter_close" } else { "canvas.tag_filter_open" };
                 if let Err(error) = self.dispatch_tag_filter(ctx, id, &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
             }
             Entry::Sheets => self.sheet.open = !self.sheet.open,
@@ -590,12 +590,12 @@ impl NodeCraftApp {
                 self.search_focus_pending = true;
                 if let Err(error) = self.dispatch_search(ctx, "canvas.search_open", &json!({})) {
                     self.search_focus_pending = false;
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
             }
             Entry::Comments => {
                 if let Err(error) = self.dispatch_comments(ctx, "canvas.comments_toggle", &json!({})) {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                 }
             }
         }

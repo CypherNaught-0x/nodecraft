@@ -18,7 +18,10 @@ impl Http for Fixture {
 /// Fetches from a fixture server with the given checkpoints, or with the app's own settings
 /// (none, headless) when `checkpoints` is `None`.
 fn fetcher(checkpoints: Option<&'static [&'static str]>) -> Fetch {
-    let info = json!({"CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [checkpoints.unwrap_or(&[])]}}, "output": ["MODEL"]}});
+    let info = json!({
+        "CheckpointLoaderSimple": {"input": {"required": {"ckpt_name": [checkpoints.unwrap_or(&[])]}}, "output": ["MODEL"]},
+        "ImageOnlyCheckpointLoader": {"input": {"required": {"ckpt_name": [checkpoints.unwrap_or(&[])]}}, "output": ["MODEL","CLIP_VISION","VAE"]}
+    });
     let http: Arc<dyn Http> = Arc::new(Fixture(serde_json::to_vec(&info).unwrap()));
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
     Box::new(move |sources, settings| {
@@ -96,7 +99,7 @@ fn answered(h: &mut Harness<'static, NodeCraftApp>) -> String {
         let ctx = h.ctx.clone();
         h.state_mut().tick_option_fetch(&ctx);
         if !h.state().option_fetch.as_ref().unwrap().is_waiting() {
-            return h.state().notice.clone().unwrap_or_default();
+            return h.state().notice().map(str::to_owned).unwrap_or_default();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -111,11 +114,11 @@ fn the_palette_refreshes_the_lists_and_says_what_it_installed() {
     // A second ask while the first runs is refused, not queued behind it.
     let busy = h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap_err();
     assert_eq!(busy.kind, ErrorKind::Busy);
-    // The FLUX and SDXL cards each list the server's checkpoints.
-    assert_eq!(answered(&mut h), "Fetched 2 option lists (4 values).");
+    // FLUX/SDXL and the two Hunyuan3D cards each list their loader's checkpoints.
+    assert_eq!(answered(&mut h), "Fetched 4 option lists (8 values).");
     let status = h.state_mut().session.dispatch("options.status", &json!({})).unwrap();
     let owners: Vec<&str> = status["last"]["installed"].as_array().unwrap().iter().filter_map(|i| i["owner"].as_str()).collect();
-    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.sdxl"]);
+    assert_eq!(owners, ["comfyui.flux-dev", "comfyui.hunyuan3d-2", "comfyui.hunyuan3d-2.1", "comfyui.sdxl"]);
     // And it can be asked again once that one is done.
     h.state_mut().session.dispatch("options.refresh", &json!({})).unwrap();
     answered(&mut h);
@@ -344,7 +347,7 @@ mod picker {
         assert_eq!(status["last"]["id"], pending["pending"]);
         assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
         assert_eq!(status["last"]["installed"], json!([]));
-        assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("server changed")));
+        assert!(h.state().notice().is_some_and(|notice| notice.contains("server changed")));
         ready.set(true);
         wake.borrow_mut().take().unwrap().wake();
         h.state_mut().tick_option_fetch(&ctx);

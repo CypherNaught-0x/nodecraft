@@ -57,7 +57,7 @@ fn the_context_menu_splits_an_image_into_selected_nodes_in_one_undo_step() {
     assert_eq!(h.state().session.document(), &before);
     h.get_by_label("Split into 4 images").click();
     h.run();
-    assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice);
+    assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice());
     assert_eq!(h.state().selection.nodes().len(), 4, "the tiles are selected");
     let app = h.state();
     let canvas = app.session.document().canvases().get(&app.canvas).unwrap();
@@ -119,6 +119,15 @@ fn split_preview_owns_input_until_the_tag_filter_can_resume() {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
+    // Tag filter is movable and starts on the right. Keep the image's menu anchor
+    // exposed on the left instead of right-clicking through that floating panel.
+    let app = h.state();
+    let source = *app.painted.get(&IMAGE).unwrap();
+    let at = app.view.rect_to_screen(app.viewport.min, source).min;
+    let target = Pos2::new(app.viewport.left() + app.theme.tokens().card_padding * 2.0, app.tag_rect().top() + app.theme.tokens().card_padding);
+    h.state_mut().view.pan += target - at;
+    h.run();
+    assert!(!h.state().tag_rect().contains(target + Vec2::splat(6.0)), "the context-menu anchor is exposed");
     right_click(&mut h, IMAGE);
     h.get_by_label_contains("Image tools").hover();
     h.run();

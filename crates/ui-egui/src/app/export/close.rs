@@ -69,7 +69,7 @@ impl NodeCraftApp {
                 && let Err(error) = self.session.dispatch("export.cancel", &serde_json::json!({"id": status.id}))
                 && watch.status().cancellable
             {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         }
@@ -96,7 +96,7 @@ impl NodeCraftApp {
         let tokens = *self.theme.tokens();
         let mut cancel_and_quit = false;
         let mut stay = false;
-        egui::Modal::new(egui::Id::new("export_close"))
+        crate::floating::modal(ctx, egui::Id::new("export_close"), "Export before quitting")
             .frame(egui::Frame::NONE.fill(tokens.panel_fill).inner_margin(tokens.card_padding))
             .backdrop_color(tokens.canvas_bg)
             .show(ctx, |ui| {

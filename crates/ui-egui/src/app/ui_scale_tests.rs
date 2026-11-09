@@ -122,7 +122,7 @@ fn the_shortcuts_size_the_interface_and_leave_canvas_zoom_alone() {
     h.run();
     assert_eq!(h.state().interface_size().percent(), 200);
     assert_eq!(h.state().view.zoom, zoom);
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_none(), "{:?}", h.state().notice());
 }
 
 /// AltGr is Ctrl+Alt: on a Swedish layout AltGr with the physical `-` key types `\`, which must
@@ -188,7 +188,7 @@ fn the_size_persists_across_restarts_and_a_damaged_value_falls_back_with_a_notic
     let ctx = egui::Context::default();
     let app = NodeCraftApp::with_settings_and_storage(&ctx, open(), None).unwrap();
     assert_eq!(app.interface_size().percent(), 100);
-    assert!(app.notice.as_deref().is_some_and(|notice| notice.contains(nodecraft_engine::settings::InterfaceSize::DAMAGED)), "{:?}", app.notice);
+    assert!(app.notice().is_some_and(|notice| notice.contains(nodecraft_engine::settings::InterfaceSize::DAMAGED)), "{:?}", app.notice());
     assert_eq!(app.theme, ThemeKind::Light, "the rest of the section is kept");
     let mut h = harness_with(app);
     assert_eq!(h.ctx.zoom_factor(), 1.0);
@@ -204,7 +204,7 @@ fn the_size_persists_across_restarts_and_a_damaged_value_falls_back_with_a_notic
 
     let app = NodeCraftApp::with_settings_and_storage(&egui::Context::default(), open(), None).unwrap();
     assert_eq!(app.interface_size().percent(), 175);
-    assert!(!app.notice.as_deref().unwrap_or_default().contains(nodecraft_engine::settings::InterfaceSize::DAMAGED), "{:?}", app.notice);
+    assert!(!app.notice().unwrap_or_default().contains(nodecraft_engine::settings::InterfaceSize::DAMAGED), "{:?}", app.notice());
     let h = harness_with(app);
     assert!((h.ctx.zoom_factor() - 1.75).abs() < 1e-4);
 }

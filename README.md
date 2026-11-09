@@ -57,8 +57,10 @@ the inputs, settings and connections beside the work instead of hiding them in a
   model can write or fix one through an ordinary priced card. The Plugins panel checks, installs
   and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
 - **Compose and finish**: a Layer Editor combines wired images, text and shapes; Mask/Inpaint
-  paints masks and prepares inpaint/outpaint cards. Image tools add wired action cards in one
-  undo step. Elements keep named image references reusable across projects.
+  paints masks, checks whether their source changed, and prepares inpaint/outpaint cards. Image
+  tools add wired action cards in one undo step. Elements keep named image references reusable
+  across projects; provider-trained Soul IDs remain bound to their Higgsfield account. See
+  [media editing workflows](docs/media-editors.md) for fonts, masks, Elements and their limits.
 - **Work with video and sound**: scrub video cards, play sound cards and render a Timeline with
   picture tracks, fades, crossfades, mixed audio and captions. The Timeline can export its edit
   and source media as FCPXML in a ZIP. Native playback and rendering use installed
@@ -202,18 +204,18 @@ and host, and several milestone exit criteria remain open.
   without rewiring, or run several side by side. Each run shows its cost before it starts.
 - **ComfyUI first-class.** Import any workflow as a node with typed ports, follow live progress,
   and switch a node between cloud models and local ComfyUI without rewiring.
-- **Providers**: LLM endpoints (OpenAI-compatible, Anthropic, LiteLLM, Ollama), OpenAI Images,
-  Replicate, Seedream, Tripo, Meshy, Higgsfield, Gemini images, Gemini Omni Flash video, and Veo
-  3.1 and Google TTS on Google Cloud have adapters. ComfyUI now accepts video/audio workflows;
-  fal.ai, ElevenLabs, Seedance (BytePlus ModelArk) and Kling's own task API also have adapters.
-  Adapters and
-  catalog entries are not proof of usable workflows in every host. Consult
-  [`docs/providers.md`](docs/providers.md) for per-adapter modes, authentication and limitations;
-  desktop and browser support differ.
+- **Providers**: supported catalog cards use direct adapters or scoped aggregator routes.
+  The Future providers feature batch includes BFL, Runway, Stability, Magnific, OpenAI Audio,
+  Deepgram, Azure OpenAI, Bedrock and Hugging Face, plus fal routes for Luma, MiniMax media,
+  Pika, LTX, Grok Imagine, Alibaba, Recraft, Ideogram, Topaz, HeyGen, Rodin and Hunyuan3D.
+  Google Cloud hosts Gemini images, Veo, TTS and, in current source, Vertex Gemini chat;
+  additional key-only text endpoints share the LLM client. Retired Sora is not offered.
+  The [provider guide](docs/providers.md) gives exact modes, credentials, prices and host limits;
+  a feature's completion does not establish live service availability or browser parity.
 - **Deterministic actions** — colour grading, blur, crop, aspect ratio, split into grid, text
   operations, PDF pages and text — recompute live, with custom actions authored as GPU shaders;
-  video actions run when asked. Built-in image actions run on the CPU today; their tested wgpu
-  path is not yet used by the app.
+  video actions run when asked. Desktop image actions use wgpu when available and the CPU
+  reference otherwise; the CLI and browser use the CPU.
 - **Editors inside nodes**: a Layer Editor, a Timeline, Mask/Inpaint, and a 3D viewer that captures
   photos, turntables and multi-view sheets.
 - **Reuse**: Batch and Router nodes, Elements, Techniques and app mode have shipped in part; the
@@ -260,7 +262,8 @@ orientation for contributors and coding agents.
 [NodeCraft v0.6.0](../../releases/tag/v0.6.0) provides desktop builds for macOS, Windows
 and Linux, the CLI with its integrated MCP server, and a browser preview ZIP. The CLI is
 included in the Linux and Windows packages and is a separate download on macOS. The release
-lists per-platform downloads and SHA-256 checksums.
+lists per-platform downloads and SHA-256 checksums. Current-source provider additions and
+this documentation refresh are not a new release; downloads contain their tagged source.
 
 macOS and Windows packages are unsigned ([#100](../../issues/100)). See
 [installation instructions](docs/install.md) for first launch, checksums and browser hosting.
@@ -280,11 +283,12 @@ and checklists for adding commands, node kinds and providers.
 | M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
 | M4 | Actions, live recompute, custom shaders | done: local actions, result reuse, shader cards and text-action plugins work |
 | M5 | Batch, Techniques, CLI, first release | partial; reuse surfaces shipped in part, first signed release open |
-| M6 | Layer and mask editors, Elements | partial |
+| M6 | Layer and mask editors, Elements | features complete; documentation refreshed locally, #377 remains open |
 | M7 | Video and audio playback, Timeline, providers | done. Four clips with fades and sound render through the Timeline |
 | M8 | 3D viewer, capture, PDF, providers | partial |
 | M9 | Agent, MCP, control, serve | desktop agent and command-line automation available with follow-up work open |
 | M10 | Browser, live collaboration and decks | done |
+| Future providers | Scoped direct adapters and aggregator routes | feature batch complete; [documented limits and close-out](docs/reviews/2026-11-09-future-provider-closeout.md) |
 
 Full detail, including what does not work yet: [`ROADMAP.md`](ROADMAP.md).
 

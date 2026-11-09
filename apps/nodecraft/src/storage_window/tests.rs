@@ -66,7 +66,7 @@ fn storage968_missing_owner_request_fails_without_freezing_or_changing_the_docum
         assert!(Instant::now() < deadline);
         thread::sleep(Duration::from_millis(2));
     }
-    assert!(guest.notice.as_deref().unwrap().contains("could not be reached"));
+    assert!(guest.notice().unwrap().contains("could not be reached"));
     assert_eq!(guest.session.document(), &before);
     assert!(owner.session.file_status().available);
 }

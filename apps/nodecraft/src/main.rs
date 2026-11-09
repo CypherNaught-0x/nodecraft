@@ -185,20 +185,17 @@ fn main() -> ExitCode {
                 Ok(tools) => app.set_media_tools(tools.tools()),
                 Err(problem) => {
                     app.set_media_tools(None);
-                    app.notice = Some(match app.notice.take() {
-                        Some(previous) => format!("{previous} {problem}"),
-                        None => problem.into(),
-                    });
+                    app.notices.warning(problem);
                     log::warn!("{problem}");
                 }
             }
             match &join {
                 Some(Some(link)) => {
                     if let Err(error) = app.join_live(&cc.egui_ctx, link) {
-                        app.notice = Some(format!("Couldn't join: {}", error.message));
+                        app.notices.error(format!("Couldn't join: {}", error.message));
                     }
                 }
-                Some(None) => app.notice = Some("Couldn't join: no join link came with this window.".into()),
+                Some(None) => app.notices.error("Couldn't join: no join link came with this window."),
                 None => {}
             }
             // Performance reports name what draws the frames (#151).

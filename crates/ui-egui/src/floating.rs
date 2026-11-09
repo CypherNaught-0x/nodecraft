@@ -80,6 +80,29 @@ pub fn shown(ctx: &Context) -> Vec<(Id, egui::Rect)> {
         .collect()
 }
 
+/// Whether this panel was laid out in this or the preceding pass. Opening flags alone do not
+/// make a tool an Escape target: a missing service may have prevented its panel from drawing.
+pub fn recently_shown(ctx: &Context, id: Id) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<Shown>(shown_id())).unwrap_or_default().iter().any(|(shown, at)| *shown == id && at.saturating_add(1) >= pass)
+}
+
+fn close_request_id(id: Id) -> Id {
+    id.with("nodecraft.floating.close_request")
+}
+
+/// Requests the same close lifecycle as the header button. The shell first arbitrates Escape
+/// ownership and the frontmost eligible tool; panels never read Escape themselves. A request
+/// expires after this pass, so an absent panel cannot close a later reopening.
+pub fn request_close(ctx: &Context, id: Id) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|data| data.insert_temp(close_request_id(id), pass));
+}
+
+fn take_close_request(ctx: &Context, id: Id) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<u64>(close_request_id(id))).is_some_and(|at| at == ctx.cumulative_pass_nr())
+}
+
 /// Records a fixed surface drawn in the panel layer this pass (the Shared parameters panel), so
 /// a panel opening over it steps below its header like it does for any open panel.
 pub fn occupy(ctx: &Context, id: Id) {
@@ -142,6 +165,42 @@ impl<'open> Panel<'open> {
         self
     }
 
+    /// The body's minimum width; callers cap it to the published panel area.
+    pub fn min_width(mut self, width: f32) -> Self {
+        self.window = self.window.min_width(width);
+        self
+    }
+
+    pub fn max_size(mut self, size: Vec2) -> Self {
+        self.window = self.window.max_size(size);
+        self
+    }
+
+    /// Uses a custom header with the shared drag, clamp and stacking behavior.
+    pub fn show_with_header<H, R>(
+        self,
+        ctx: &Context,
+        add_header: impl FnOnce(&mut egui::Ui) -> (Rect, H),
+        add_contents: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> Option<egui::InnerResponse<Option<(H, R)>>> {
+        let Panel { window, id, mut open, vscroll, .. } = self;
+        if take_close_request(ctx, id)
+            && let Some(open) = open.as_deref_mut()
+        {
+            *open = false;
+            ctx.request_repaint();
+        }
+        if open.as_deref() == Some(&false) {
+            return None;
+        }
+        window.show(ctx, |ui| {
+            let (handle, header) = add_header(ui);
+            header_drag(ui, id, handle.bottom(), handle.right());
+            let body = if vscroll { egui::ScrollArea::vertical().show(ui, add_contents).inner } else { add_contents(ui) };
+            (header, body)
+        })
+    }
+
     /// The tallest the panel may be, so it can open below the control that opened it.
     pub fn max_height(mut self, height: f32) -> Self {
         if height.is_finite() && height > 0.0 {
@@ -157,7 +216,13 @@ impl<'open> Panel<'open> {
     }
 
     pub fn show<R>(self, ctx: &Context, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<Option<R>>> {
-        let Panel { window, id, title, open, vscroll, t } = self;
+        let Panel { window, id, title, mut open, vscroll, t } = self;
+        if take_close_request(ctx, id)
+            && let Some(open) = open.as_deref_mut()
+        {
+            *open = false;
+            ctx.request_repaint();
+        }
         if open.as_deref() == Some(&false) {
             return None;
         }
@@ -271,6 +336,16 @@ struct Drag {
 /// `title` names it for screen readers: its area is an AccessKit `Dialog` labelled `title`, with
 /// the question's controls inside it (callers still show `title` as a heading).
 pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
+    let screen = ctx.content_rect();
+    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
+    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
+    modal(ctx, id, title).area(area).frame(crate::theme::panel_frame(t))
+}
+
+/// A named modal container for editors, progress and confirmations. Its controls appear under
+/// an AccessKit Dialog carrying `title` and the modal flag. Callers retain their own sizing,
+/// visual frame and keyboard/action policy; naming a modal never confirms or cancels it.
+pub fn modal(ctx: &Context, id: Id, title: &str) -> egui::Modal {
     // The area's own node (`<id>.with("move")` in egui 0.36), made before its content so the
     // content is placed inside it rather than at the root of the tree.
     // Its bounds are where it was last drawn: it stays centred, so they only lag on its first pass.
@@ -283,10 +358,7 @@ pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
             node.set_bounds(egui::accesskit::Rect { x0: rect.min.x.into(), y0: rect.min.y.into(), x1: rect.max.x.into(), y1: rect.max.y.into() });
         }
     });
-    let screen = ctx.content_rect();
-    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
-    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
-    egui::Modal::new(id).area(area).frame(crate::theme::panel_frame(t))
+    egui::Modal::new(id)
 }
 
 /// The widest a [`question`]'s content may be: `dialog_width`, or less in a narrow window.

@@ -652,6 +652,7 @@ fn visible_pending_cancel_unavailable_and_success_are_real_ui_states() {
     h.step();
     entered.recv_timeout(Duration::from_secs(10)).unwrap();
     h.run();
+    crate::app::panel_check::menu_evidence(&mut h, "pending-drop-progress");
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel file reading").click();
     h.run();
     assert!(!h.state().drop_pending());
@@ -659,7 +660,7 @@ fn visible_pending_cancel_unavailable_and_success_are_real_ui_states() {
     h.input_mut().dropped_files = handles(&["retry.txt"]);
     h.step();
     assert!(!h.state().drop_pending());
-    assert!(h.state().notice.as_ref().unwrap().contains("still finishing"));
+    assert!(h.state().notice().unwrap().contains("still finishing"));
     drop(release);
     idle(&worker.service);
     let files = TestService::filesystem();
@@ -745,7 +746,7 @@ fn cancel_has_priority_over_an_already_completed_queued_result() {
     assert!(!h.state().drop_pending());
     assert_eq!(h.state().session.document(), &document);
     assert!(!h.state().session.can_undo());
-    assert!(h.state().notice.as_deref().unwrap().contains("cancelled"));
+    assert!(h.state().notice().unwrap().contains("cancelled"));
     idle(&worker.service);
 }
 #[cfg(unix)]
@@ -886,7 +887,7 @@ fn pending_control_yields_to_focused_text_and_unavailable_service_is_explicit() 
     h.input_mut().dropped_files = handles(&["not-opened"]);
     h.step();
     assert!(!h.state().drop_pending());
-    assert!(h.state().notice.as_deref().unwrap().contains("Restart the app"));
+    assert!(h.state().notice().unwrap().contains("Restart the app"));
 }
 
 fn shortcut_fixture() -> egui_kittest::Harness<'static, crate::app::NodeCraftApp> {
@@ -972,7 +973,7 @@ fn owned_pending_control_excludes_canvas_shortcuts_and_search_in_all_pointer_pha
                 assert_eq!(h.state().view, view);
                 assert_eq!(h.ctx.memory(|m| m.focused()), focus);
                 assert!(!h.state().search.open);
-                assert!(h.state().drop_pending(), "{key:?} phase{phase} order{reversed} notice{:?}", h.state().notice);
+                assert!(h.state().drop_pending(), "{key:?} phase{phase} order{reversed} notice{:?}", h.state().notice());
                 if matches!(key, egui::Key::T | egui::Key::I | egui::Key::F) {
                     assert!(
                         h.ctx.input(|i| i.events.iter().any(|e| matches!(e,egui::Event::Key{key:k,pressed:true,..} if *k==key))),

@@ -189,7 +189,7 @@ fn connected_router_and_batch_use_engine_modality_instantiation_and_single_undo(
             let at = Pos2::new(800.0, 400.0);
             let menu = TurnInto::new(app.session.kinds(), Endpoint { node: source, port: output.name }, output.port_type, at, at);
             app.create_connected(kind, &menu);
-            assert!(app.notice.is_none(), "{source_kind} -> {kind}: {:?}", app.notice);
+            assert!(app.notices.is_empty(), "{source_kind} -> {kind}: {:?}", app.notice());
             let id = *app.selection.nodes().first().unwrap();
             let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();
             assert_eq!(node.inputs[0].port_type.modality, output.port_type.modality);

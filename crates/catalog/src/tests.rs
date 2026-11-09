@@ -377,6 +377,9 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("bedrock.gpt-oss-20b", false),
             ("bfl.flux-kontext-max", false),
             ("bfl.flux-kontext-pro", false),
+            ("cohere.command-a", false),
+            ("comfyui.hunyuan3d-2", false),
+            ("comfyui.hunyuan3d-2.1", false),
             ("deepgram.nova-3", false),
             ("deepseek.v4-pro", false),
             ("deepseek.flash", false),
@@ -445,6 +448,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("higgsfield.soul-id-trainer", false),
             ("higgsfield.kling-2.5-turbo-i2v", false),
             ("huggingface.gpt-oss-120b-groq", false),
+            ("hyperbolic.glm-5.3-flash", false),
             ("kling.v2_1_master", false),
             ("kling.v2_5_turbo", false),
             ("kling.v1_6", false),
@@ -455,13 +459,17 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("meshy.retexture", false),
             ("meshy.retexture-image", false),
             ("meshy.text-to-3d", false),
+            ("minimax.m3", false),
+            ("mira.model", false),
             ("mistral.large-4", false),
             ("mistral.small-4", false),
+            ("moonshot.kimi-k3", false),
             ("openai.gpt-6.1-sol", false),
             ("openai.gpt-6-luna", false),
             ("openai.gpt-4.1-mini", false),
             ("openai-audio.transcribe", false),
             ("openai-audio.mini-tts", false),
+            ("perplexity.sonar", false),
             ("replicate.hello", false),
             ("runway.gen4-5", false),
             ("runway.gen4-turbo", false),
@@ -472,11 +480,14 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("stability.audio3", false),
             ("stability.fast-3d", false),
             ("test.video", false),
+            ("together.gpt-oss-120b", false),
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
             ("tripo.text-to-3d", false),
+            ("vertex-llm.gemini-3.8-flash", false),
             ("xai.grok-4.7", false),
-            ("xai.grok-4.3", false)
+            ("xai.grok-4.3", false),
+            ("zai.glm-4.6", false)
         ]
     );
     // Wiring an image narrows it to image-to-image models.
@@ -488,7 +499,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
     assert!(edit.fit(bria).is_err(), "a wired prompt cannot select the differently priced guided operation");
     let groups = catalog.by_provider(&edit);
     let comfy: Vec<(&str, bool)> = groups.get("comfyui").unwrap().iter().map(|c| (c.model.id.as_str(), c.fit.is_ok())).collect();
-    assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.sdxl", false)]);
+    assert_eq!(comfy, vec![("comfyui.flux-dev", true), ("comfyui.hunyuan3d-2", false), ("comfyui.hunyuan3d-2.1", false), ("comfyui.sdxl", false)]);
     // A wired 3D model picks the Meshy models that take one; the prompt picks retexture.
     let retexture = catalog.get("meshy.retexture").unwrap();
     let remesh = catalog.get("meshy.remesh").unwrap();
@@ -1333,4 +1344,60 @@ default = { type = "unsigned", value = "1024" }"#;
     ] {
         assert!(Catalog::from_toml(&model(&pricing, height)).is_err(), "{pricing} with {height:?}");
     }
+}
+
+#[test]
+fn additional_key_only_chat_models_keep_upfront_quotes_unknown() {
+    let catalog = Catalog::builtin().unwrap();
+    for id in [
+        "together.gpt-oss-120b",
+        "moonshot.kimi-k3",
+        "zai.glm-4.6",
+        "minimax.m3",
+        "perplexity.sonar",
+        "hyperbolic.glm-5.3-flash",
+        "mira.model",
+        "cohere.command-a",
+    ] {
+        let model = catalog.get(id).unwrap();
+        assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD }, "{id}");
+        assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{id}");
+        if let Some(rates) = &model.usage {
+            let (input, output) = match id {
+                "together.gpt-oss-120b" => (150, 600),
+                "zai.glm-4.6" => (600, 2200),
+                _ => panic!("{id}: unverified rate"),
+            };
+            assert_eq!((rates.input.0, rates.output.0), (Money::new(Currency::USD, input), Money::new(Currency::USD, output)));
+        } else {
+            assert!(!matches!(id, "together.gpt-oss-120b" | "zai.glm-4.6"));
+        }
+        assert_eq!(model.modes.len(), 1);
+        assert_eq!(model.modes[0].output, Modality::Text);
+        assert!(model.modes[0].inputs.iter().all(|input| input.modality == Modality::Text));
+    }
+}
+
+#[test]
+fn vertex_chat_catalog_keeps_cloud_pricing_unknown_and_caps_output_tokens() {
+    let catalog = Catalog::builtin().unwrap();
+    assert!(catalog.get("vertex-llm.gemini-2.5-flash").is_none(), "retired Cloud model is not offered");
+    let model = catalog.get("vertex-llm.gemini-3.8-flash").unwrap();
+    assert_eq!(model.provider, "vertex-llm");
+    assert_eq!(model.provider_model, "gemini-3.8-flash");
+    assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
+    assert!(model.usage.is_none(), "Vertex prices are distinct from the Gemini Developer API");
+    let defaults = model.effective_params(&ParamValues::new(), true).unwrap();
+    assert_eq!(defaults.get("max_tokens"), Some(&Value::Integer(nodecraft_types::Integer(4096))));
+    assert_eq!(model.quote(&defaults).unwrap(), None);
+    for count in [1, 65536] {
+        let params = ParamValues::from([("max_tokens".into(), Value::Integer(nodecraft_types::Integer(count)))]);
+        assert_eq!(model.quote(&params).unwrap(), None);
+    }
+    for count in [0, 65537] {
+        let params = ParamValues::from([("max_tokens".into(), Value::Integer(nodecraft_types::Integer(count)))]);
+        assert!(model.quote(&params).is_err());
+    }
+    assert!(Wiring::new(Modality::Text).with_inline_prompt().fit(model).is_ok());
+    assert!(Wiring::new(Modality::Image).with_inline_prompt().fit(model).is_err());
 }

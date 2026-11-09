@@ -4,7 +4,10 @@
 //! `floating::question` modals, #1116) [`check_question`].
 use super::*;
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::NodeT};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 
 /// Controls a person acts on.
 fn interactive(role: Role) -> bool {
@@ -121,4 +124,53 @@ pub(super) fn check_menu(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what:
     assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
     let crossing = overlaps(h, id, rect);
     assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
+}
+
+/// Check the actual opening state's controls at both agreed inventory sizes, then restore
+/// the feature fixture's viewport before its dismissal and optional screenshot.
+fn dismissal_sizes(h: &mut Harness<'static, NodeCraftApp>, what: &str) {
+    let original = h.ctx.content_rect().size();
+    for size in [egui::vec2(1000.0, 700.0), egui::vec2(1600.0, 900.0)] {
+        h.set_size(size);
+        h.run_steps(6);
+        check_open_panels(h, &format!("{what} at {size:?}"));
+    }
+    h.set_size(original);
+    h.run_steps(6);
+}
+
+/// Exercise the real shared header control, then prove the panel stopped being drawn.
+/// Callers also assert their own open state/lifecycle cleanup after this returns.
+pub(super) fn close_panel(h: &mut Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    dismissal_sizes(h, what);
+    h.run_steps(4);
+    menu_evidence(h, what);
+    h.get_by_role_and_label(Role::Button, "Close window").click();
+    h.run_steps(4);
+    assert!(!crate::floating::shown(&h.ctx).iter().any(|(shown, _)| *shown == id), "{what} still draws after Close window");
+}
+
+/// Opt-in public-safe inventory evidence, shared by the real open/control/close flows.
+pub(super) fn menu_evidence(h: &mut Harness<'static, NodeCraftApp>, what: &str) {
+    if let Some(folder) = std::env::var_os("NODECRAFT_MENU959_EVIDENCE") {
+        let folder = std::path::PathBuf::from(folder);
+        std::fs::create_dir_all(&folder).unwrap();
+        h.render().unwrap().save(folder.join(format!("{what}.png"))).unwrap();
+    }
+}
+
+/// The tool owns Escape only after the focused editor (if any) has yielded it. The
+/// application-level owner tests exercise the first-press/editor/gesture precedence.
+pub(super) fn escape_panel(h: &mut Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    dismissal_sizes(h, what);
+    h.ctx.memory_mut(|memory| {
+        if let Some(focused) = memory.focused() {
+            memory.surrender_focus(focused);
+        }
+    });
+    h.run_steps(4);
+    menu_evidence(h, what);
+    h.key_press(egui::Key::Escape);
+    h.run_steps(4);
+    assert!(!crate::floating::shown(&h.ctx).iter().any(|(shown, _)| *shown == id), "{what} still draws after its Escape");
 }

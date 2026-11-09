@@ -571,11 +571,11 @@ impl NodeCraftApp {
     pub(super) fn layer_dispatch(&mut self, command: &str, params: &Json) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 true
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -601,7 +601,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| serde_json::from_value::<Listing>(v).map_err(|_| "The layers can't be read.".to_owned())) {
                 Ok(listing) => editor.listing = Some((revision, listing)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -658,17 +658,17 @@ impl NodeCraftApp {
 
         let mut commands: Commands = Vec::new();
         let mut close = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest_text().map(str::to_owned);
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
-        egui::Modal::new(egui::Id::new("layer_editor")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("layer_editor"), "Layer Editor").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             let size = (content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0));
             ui.set_min_size(size);
             ui.set_max_size(size);
             ui.horizontal(|ui| {
-                ui.heading("Layers");
-                ui.label(egui::RichText::new(&node.title).color(t.text_muted));
+                // Lay out the actions first, from the right. The title gets only the
+                // remaining width; its complete text stays in AccessKit and on hover.
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     close |= ui.button("Done").clicked();
                     if ui.button("Redo").clicked() {
@@ -677,11 +677,15 @@ impl NodeCraftApp {
                     if ui.button("Undo").clicked() {
                         commands.push(("edit.undo", json!({})));
                     }
-                    if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
-                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                        ui.heading("Layers");
+                        ui.add(egui::Label::new(egui::RichText::new(&node.title).color(t.text_muted)).truncate()).on_hover_text(&node.title);
+                    });
                 });
             });
+            if let Some(notice) = &notice {
+                ui.add(egui::Label::new(egui::RichText::new(notice).color(t.danger)).truncate()).on_hover_text(notice);
+            }
             let body = ui.available_rect_before_wrap();
             let side = t.layers_panel_width.min(body.width() / 4.0);
             let left = Rect::from_min_size(body.min, Vec2::new(side, body.height()));
@@ -727,7 +731,7 @@ impl NodeCraftApp {
         };
         let lineage = editor.picking_lineage.take();
         if !lineage.as_ref().is_some_and(|lineage| self.session.is_current_document(lineage)) {
-            self.notice = Some("Another project opened; choose the font file again.".into());
+            self.notices.warning("Another project opened; choose the font file again.");
             return false;
         }
         match picking.poll(ctx) {
@@ -736,10 +740,10 @@ impl NodeCraftApp {
                 editor.picking_lineage = lineage;
             }
             Polled::Cancelled => {}
-            Polled::Failed(message) => self.notice = Some(message),
+            Polled::Failed(message) => self.notices.error(message),
             Polled::Read(layer, bytes) => {
                 if layer.as_ref().is_some_and(|id| !listing.layers.iter().any(|layer| &layer.id == id && matches!(&layer.content, Content::Text { .. }))) {
-                    self.notice = Some("The text layer changed while the font was loading; choose the font file again.".into());
+                    self.notices.warning("The text layer changed while the font was loading; choose the font file again.");
                     return false;
                 }
                 match match &editor.target {
@@ -751,13 +755,13 @@ impl NodeCraftApp {
                     Ok(name) => {
                         editor.font_files.forget_missing();
                         self.deck_thumbnails.forget_missing_fonts();
-                        self.notice = None;
+                        self.notices.clear();
                         if let Some(layer) = layer {
                             commands.push(update(editor, &layer, json!({"content": {"font": name}})));
                         }
                         return true;
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notices.report(error),
                 }
             }
         }

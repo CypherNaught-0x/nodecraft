@@ -208,6 +208,13 @@ fn panels_and_windows_stay_on_screen_at_every_size() {
             h.get_by_role_and_label(Role::Button, label).click();
             h.run_steps(12);
             check_open_panels(&h, &format!("{label} at {size:?}"));
+            if label == "API keys"
+                && let Some(folder) = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE")
+            {
+                let folder = std::path::PathBuf::from(folder);
+                std::fs::create_dir_all(&folder).unwrap();
+                h.render().unwrap().save(folder.join(format!("api-keys-{}-{}.png", size.x, size.y))).unwrap();
+            }
             reveal(&mut h, label);
             h.get_by_role_and_label(Role::Button, label).click();
             h.run_steps(12);
@@ -277,7 +284,9 @@ fn tags1123_the_tag_filter_entry_opens_the_panel_and_counts_matches() {
     h.run();
     assert!(h.state().tag_filter.open);
     assert!(h.state().tag_rect().top() >= h.state().topbar_rect().bottom(), "the panel opens below the row");
-    h.get_by_label("Tag filter · highlight matches");
+    h.get_by_role_and_label(Role::Label, "Tag filter");
+    h.get_by_role_and_label(Role::TextInput, "Find a tag");
+    h.get_by_role_and_label(Role::Button, "Close tags");
     // The entry closes it again.
     h.get_by_role_and_label(Role::Button, "Tag filter").click();
     h.run();
@@ -310,6 +319,8 @@ fn dialogs1116_shared_parameters_stay_on_screen_and_go_with_the_selection() {
     h.run_steps(4);
     let panel = h.get_by_role_and_label(Role::Window, "Shared parameters").rect();
     let screen = h.ctx.content_rect();
+    h.get_by_label("A selected node has incompatible ports.");
+    super::panel_check::menu_evidence(&mut h, "shared-parameters");
     assert!(screen.contains_rect(panel), "{panel:?} leaves the window {screen:?}");
     h.key_press(egui::Key::Escape);
     h.run();

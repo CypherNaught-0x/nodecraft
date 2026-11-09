@@ -21,7 +21,7 @@ fn templates952_library_shows_descriptions_and_pointer_add_preserves_work_and_un
     let before = h.state().session.document().clone();
     h.get_by_label("Add template").click();
     h.run();
-    assert!(h.state().session.document().canvases().contains_key(&entry.canvas), "{:?}", h.state().notice);
+    assert!(h.state().session.document().canvases().contains_key(&entry.canvas), "{:?}", h.state().notice());
     assert_eq!(h.state().canvas, entry.canvas);
     assert!(h.query_by_label("In project").is_some());
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
@@ -54,7 +54,7 @@ fn templates952_shipped_app_form_opens_through_the_actual_selected_technique_but
     crate::app::topbar_tests::reveal(&mut h, "Open as app");
     h.get_by_label("Open as app").click();
     h.run();
-    assert!(h.state().app_mode.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().app_mode.is_some(), "{:?}", h.state().notice());
     assert!(h.query_by_label("Subject").is_some());
     let form = h.state_mut().session.dispatch("app.form", &json!({"canvas":entry.canvas,"id":placed})).unwrap();
     assert_eq!(form["inputs"][0]["feed"], json!("example"));

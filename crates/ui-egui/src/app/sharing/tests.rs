@@ -163,7 +163,7 @@ fn a_shared_project_reaches_who_joins_and_stopping_keeps_it_there() {
     until(&mut [&mut joiner], |apps| chip(apps[0]) == "Share");
     assert_eq!(joiner.session.document().id(), owner.session.document().id());
     assert_eq!(joiner.session.dispatch("share.status", &json!({})).unwrap(), json!({"state": "off"}));
-    assert!(joiner.notice.as_deref().is_some_and(|notice| notice.contains("stays open")));
+    assert!(joiner.notice().is_some_and(|notice| notice.contains("stays open")));
     assert!(opened.borrow().is_empty(), "nothing here opened a window");
     // Stopping again has nothing to stop.
     assert_eq!(joiner.session.dispatch("share.stop", &json!({})).unwrap_err().kind, ErrorKind::Conflict);
@@ -270,7 +270,7 @@ fn opening_another_copy_of_the_project_ends_sharing_and_sends_nothing() {
     let id = owner.session.document().id();
     owner.session.adopt_joined(nodecraft_engine::collab::joining(id).unwrap()).unwrap();
     until(&mut [&mut owner], |apps| chip(apps[0]) == "Share");
-    assert!(owner.notice.as_deref().is_some_and(|notice| notice.contains("another project was opened")), "{:?}", owner.notice);
+    assert!(owner.notice().is_some_and(|notice| notice.contains("another project was opened")), "{:?}", owner.notice());
 }
 
 #[test]
@@ -321,6 +321,16 @@ fn the_share_chip_opens_the_panel() {
     h.get_by_label("Join a shared project in a new window");
     assert!(h.query_by_label("Stop sharing").is_none());
     crate::app::panel_check::check_open_panels(&h, "Share, not sharing");
+    crate::app::panel_check::escape_panel(&mut h, egui::Id::new("nodecraft.share"), "share-idle-open");
+    assert!(!h.state().sharing.as_ref().unwrap().panel.open);
+    crate::app::topbar_tests::reveal(&mut h, "Share");
+    h.get_by_label("Share").click();
+    h.run();
+    assert!(h.state().sharing.as_ref().unwrap().panel.open);
+    h.get_by_label("Join a shared project in a new window");
+    // The idle fixture contains no live room credential, so it is safe to capture.
+    crate::app::panel_check::close_panel(&mut h, egui::Id::new("nodecraft.share"), "share-idle");
+    assert!(!h.state().sharing.as_ref().unwrap().panel.open);
 }
 
 /// The Share panel, idle and live, opens inside the panel area with no crossing controls at the

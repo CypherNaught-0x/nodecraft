@@ -80,8 +80,8 @@ fn a_project_path_at_startup_is_opened_and_cmd_s_saves_it() {
     assert!(!has_60(&opened), "the file opens with the first frame, not before the window exists");
     let mut h = harness(opened);
     settle(&mut h);
-    assert!(has_60(h.state()), "{:?}", h.state().notice);
-    assert!(h.state().notice.is_none());
+    assert!(has_60(h.state()), "{:?}", h.state().notice());
+    assert!(h.state().notices.is_empty());
     add_text(h.state_mut(), 61);
     assert!(h.state().session.file_status().dirty);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
@@ -95,7 +95,7 @@ fn a_project_path_at_startup_is_opened_and_cmd_s_saves_it() {
         h.step();
     }
     h.run();
-    assert!(!h.state().session.file_status().dirty, "⌘S saved: {:?}", h.state().notice);
+    assert!(!h.state().session.file_status().dirty, "⌘S saved: {:?}", h.state().notice());
     assert_eq!(h.state().window_title(), "start.ncraft — NodeCraft");
 }
 
@@ -108,7 +108,7 @@ fn cancelling_untitled_save_and_open_is_silent() {
     for key in [egui::Key::S, egui::Key::O] {
         h.key_press_modifiers(egui::Modifiers::COMMAND, key);
         h.run();
-        assert!(h.state().notice.is_none());
+        assert!(h.state().notices.is_empty());
         assert_eq!(h.state().session.document(), &original);
         assert!(h.state().session.file_status().location.is_none());
     }
@@ -162,7 +162,7 @@ fn a_bad_startup_path_keeps_saving_working_and_says_why() {
     let mut h = harness(app(&dir.0, Some(dir.0.join("missing.ncraft"))));
     settle(&mut h);
     assert_eq!(
-        h.state().notice.as_deref(),
+        h.state().notice(),
         Some(
             "missing.ncraft couldn't be opened: the selected project cannot be found or inspected; choose another file. The new project is open instead and can be saved."
         ),
@@ -339,7 +339,7 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
     let mut h = harness(app);
     h.step();
     // The very first frame already shows the open, before it has read anything.
-    assert!(h.query_by_label("Opening project…").is_some(), "progress shows from the first frame");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some(), "progress shows from the first frame");
     assert!(h.query_by_label("Cancel").is_some());
     assert_eq!(h.state().window_title(), "Untitled • (opening…) — NodeCraft");
     assert!(runner.0.lock().unwrap().is_some(), "the open waits on the runner, not the frame");
@@ -350,7 +350,7 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
         assert!(h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay <= std::time::Duration::from_millis(16));
     }
     assert_eq!(h.ctx.cumulative_frame_nr(), first + 30, "frames advanced while the open was held");
-    assert!(h.query_by_label("Opening project…").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some());
     assert_eq!(h.state().session.document(), &starter, "nothing is replaced until the open settles");
     // Input belongs to the progress window: a shortcut doesn't reach the canvas behind it.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
@@ -359,9 +359,9 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
     assert_eq!(h.state().session.document(), &starter);
     held_job(&runner).run();
     settle(&mut h);
-    assert!(holds(h.state(), 90), "the file is open: {:?}", h.state().notice);
-    assert!(h.state().notice.is_none());
-    assert!(h.query_by_label("Opening project…").is_none());
+    assert!(holds(h.state(), 90), "the file is open: {:?}", h.state().notice());
+    assert!(h.state().notices.is_empty());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_none());
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file.clone())));
     assert_eq!(h.state().files.projects.recent(), vec![file.to_str().unwrap()]);
     assert_eq!(h.state().canvas, crate::app::sheet_view::home_canvas(h.state().session.document()).unwrap());
@@ -386,7 +386,7 @@ fn cancelling_the_startup_open_keeps_the_new_project_and_says_so() {
     held_job(&runner).run();
     settle(&mut h);
     assert_eq!(h.state().session.document(), &starter, "the cancelled open replaced nothing");
-    assert_eq!(h.state().notice.as_deref(), Some("Opening big.ncraft was cancelled; the new project is open instead."));
+    assert_eq!(h.state().notice(), Some("Opening big.ncraft was cancelled; the new project is open instead."));
     let status = h.state().session.file_status();
     assert!(status.available && status.location.is_none() && status.operation.is_none());
     assert!(h.state().files.projects.recent().is_empty());
@@ -409,10 +409,10 @@ fn a_startup_open_the_runner_refuses_runs_inline_and_still_opens() {
     app.session.set_save_runner(Arc::new(Refuses));
     let mut h = harness(app);
     h.step();
-    assert!(holds(h.state(), 92), "opened inline in the first frame: {:?}", h.state().notice);
+    assert!(holds(h.state(), 92), "opened inline in the first frame: {:?}", h.state().notice());
     assert!(!h.state().files.owns_input());
     settle(&mut h);
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
 }
 
 #[test]
@@ -455,7 +455,7 @@ fn a_command_before_the_first_frame_is_refused_while_the_startup_open_runs_and_n
     held_job(&runner).run();
     let mut h = harness(first);
     settle(&mut h);
-    assert!(holds(h.state(), 94), "the file opened: {:?}", h.state().notice);
+    assert!(holds(h.state(), 94), "the file opened: {:?}", h.state().notice());
     // A host that edits before starting the open: the edit is kept, not opened over.
     let dir = Scratch::new("startup-race-kept367");
     let file = saved_project(&dir.0, "kept.ncraft", 96);
@@ -467,7 +467,7 @@ fn a_command_before_the_first_frame_is_refused_while_the_startup_open_runs_and_n
     assert_eq!(h.state().session.document(), &edited, "the edit survives");
     assert!(!holds(h.state(), 96));
     assert_eq!(
-        h.state().notice.as_deref(),
+        h.state().notice(),
         Some("kept.ncraft wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.")
     );
 }
@@ -490,7 +490,7 @@ fn a_newer_format_at_startup_keeps_the_advice_to_update() {
     let mut h = harness(app(&dir.0, Some(file)));
     settle(&mut h);
     assert_eq!(
-        h.state().notice.as_deref(),
+        h.state().notice(),
         Some(
             "future.ncraft couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. The new project is open instead and can be saved."
         )

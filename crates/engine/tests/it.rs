@@ -227,6 +227,9 @@ mod grok31;
 #[path = "hunyuan42.rs"]
 mod hunyuan42;
 
+#[path = "comfy3d24.rs"]
+mod comfy3d24;
+
 #[path = "alibaba32.rs"]
 mod alibaba32;
 
@@ -259,3 +262,8 @@ mod heygen43;
 
 #[path = "stl569.rs"]
 mod stl569;
+
+#[path = "ply1011.rs"]
+mod ply1011;
+#[path = "usdz1019.rs"]
+mod usdz1019;

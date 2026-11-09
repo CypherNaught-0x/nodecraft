@@ -1,0 +1,25 @@
+# Vertex AI Gemini chat (#1151), authenticated with the existing google-cloud service account.
+# Native GenerateContent REST shape: https://cloud.google.com/vertex-ai/generative-ai/docs/model-reference/inference
+# Current model/route checked 2026-11-09:
+# https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash
+# Gemini 2.5 Flash retired on Vertex on 2026-10-20; it is not offered by this catalog.
+# Current pricing was not verified in this environment. ByUsage deliberately shows an unknown
+# charge rather than importing Gemini Developer API prices into the separate Vertex product.
+[[model]]
+id = "vertex-llm.gemini-3.8-flash"
+provider = "vertex-llm"
+provider_model = "gemini-3.8-flash"
+label = "Gemini 3.8 Flash (Vertex AI)"
+description = "Gemini chat in your Google Cloud project, using a service account. Global endpoint; cost unknown."
+latency_s = 10
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+control = { type = "integer", min = "1", max = "65536", step = "1" }
+default = { type = "integer", value = "4096" }

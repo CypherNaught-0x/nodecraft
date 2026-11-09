@@ -151,3 +151,8 @@ runs:
         version=$(awk '/^name = "wasm-bindgen"$/ { getline; gsub(/version = |"/, ""); print; exit }' Cargo.lock)
         cargo install wasm-bindgen-cli --version "$version" --locked
         CHROMEDRIVER="$CHROMEWEBDRIVER/chromedriver" cargo xtask browser
+
+    - name: browser package inventory tests
+      if: steps.plat.outputs.once == 'true'
+      shell: bash
+      run: bash packaging/web/tests.sh

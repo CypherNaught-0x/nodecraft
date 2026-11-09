@@ -52,6 +52,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `bfl.flux-kontext-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `bfl.flux-kontext-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
+| `comfyui.hunyuan3d-2` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
+| `comfyui.hunyuan3d-2.1` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `deepgram.nova-3` | [Documentation](https://developers.deepgram.com/docs/pre-recorded-audio) | 2026-10-27 |
@@ -173,9 +175,29 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+| `vertex-llm.gemini-3.8-flash` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash) | 2026-11-09 |
 | `xai.grok-4.3` | [Documentation](https://docs.x.ai/developers/pricing) | 2026-11-08 |
 | `xai.grok-4.7` | [Documentation](https://docs.x.ai/developers/models) | 2026-11-08 |
 
 MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
 Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
 scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).
+
+Additional key-only chat model capabilities were checked on 2026-11-09. Perplexity retains
+its synchronous/streamed Sonar compatibility route, which the provider reformulates as Agent API
+requests; Hyperbolic uses its replacement `.ai/inference/v1` route. These entries expose text
+only even where the service can handle other modalities.
+
+| Model id | Primary capability source | Checked |
+| --- | --- | --- |
+| `together.gpt-oss-120b` | [Documentation](https://docs.together.ai/docs/serverless/models) | 2026-11-09 |
+| `moonshot.kimi-k3` | [Documentation](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) | 2026-11-09 |
+| `zai.glm-4.6` | [Documentation](https://docs.z.ai/guides/llm/glm-4.6) | 2026-11-09 |
+| `minimax.m3` | [Documentation](https://platform.minimax.io/docs/guides/models-intro) | 2026-11-09 |
+| `perplexity.sonar` | [Documentation](https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview) | 2026-11-09 |
+| `hyperbolic.glm-5.3-flash` | [Documentation](https://www.hyperbolic.ai/docs/inference/quickstart) | 2026-11-09 |
+| `mira.model` | [Documentation](https://docs.mira.network/network/get-started/introduction) | 2026-11-09 |
+| `cohere.command-a` | [Documentation](https://docs.cohere.com/docs/command-a) | 2026-11-09 |
+
+The Vertex chat catalog offers Gemini 3.8 Flash on the global route. Google's Cloud documentation
+marks Gemini 2.5 Flash retired on 2026-10-20; Gemini Developer API availability is separate.

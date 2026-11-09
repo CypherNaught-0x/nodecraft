@@ -69,6 +69,6 @@ fn a_control_request_queued_before_the_first_frame_meets_the_startup_open_busy()
         h.step();
     }
     let document = h.state().app.session.document();
-    assert!(document.canvases().values().any(|c| c.nodes().contains_key(&marker)), "the file opened: {:?}", h.state().app.notice);
+    assert!(document.canvases().values().any(|c| c.nodes().contains_key(&marker)), "the file opened: {:?}", h.state().app.notice());
     assert!(!document.canvases().values().any(|c| c.nodes().contains_key(&added)), "the refused request left nothing");
 }

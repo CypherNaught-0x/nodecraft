@@ -60,7 +60,7 @@ impl BrowserProviders {
             return;
         }
         let mut open = self.open;
-        crate::floating::panel(ctx, "Provider servers", egui::Id::new("nodecraft.browser_providers"), crate::floating::Home::RightTop, t).open(&mut open).default_width(t.dialog_width).show(ctx, |ui| {
+        crate::floating::panel(ctx, "Provider servers", egui::Id::new("nodecraft.browser_providers"), crate::floating::Home::RightTop, t).open(&mut open).default_width(t.dialog_width).vscroll(true).show(ctx, |ui| {
             ui.label("Server addresses are kept in this browser for this site. Put tokens and virtual keys in API keys.");
             ui.label("Calls go directly from this page to the server. Allow this page's origin in ComfyUI and LiteLLM's CORS settings. HTTPS pages may block HTTP servers.");
             let label = ui.label("ComfyUI server");
@@ -118,7 +118,7 @@ impl NodeCraftApp {
             Ok(Some(settings)) => settings,
             Ok(None) => return,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         };
@@ -127,14 +127,14 @@ impl NodeCraftApp {
         if let Some(fetcher) = &mut self.option_fetch
             && let Some(notice) = fetcher.invalidate(&mut self.session)
         {
-            self.notice = Some(notice);
+            self.notices.error(notice);
         }
         self.session.swap_resource::<nodecraft_types::OptionLists>(None);
         self.schemas.forget_listed();
         if let Some(runs) = &mut self.runs
             && let Err(error) = runs.settings_changed(&mut self.session, &settings)
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
     }
 }

@@ -27,6 +27,7 @@ const MAX_VALUE_BYTES: usize = 4096;
 /// choices are the list (recorded in docs/decisions/2026-10-20-option-fetch.md).
 const COMFY_SOURCES: &[(&str, &str, &str)] = &[
     ("comfyui.checkpoints", "CheckpointLoaderSimple", "ckpt_name"),
+    ("comfyui.image_checkpoints", "ImageOnlyCheckpointLoader", "ckpt_name"),
     ("comfyui.loras", "LoraLoader", "lora_name"),
     ("comfyui.vaes", "VAELoader", "vae_name"),
     ("comfyui.upscale_models", "UpscaleModelLoader", "model_name"),

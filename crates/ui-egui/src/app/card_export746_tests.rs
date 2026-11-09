@@ -112,9 +112,9 @@ fn card746_a_person_chooses_the_folder_and_export_writes_there() {
 
     press(&mut h, "Export");
     export_tests::finish(&mut h);
-    assert_eq!(files_in(&folder), ["hero-out-1.png"], "{:?}", h.state().notice);
+    assert_eq!(files_in(&folder), ["hero-out-1.png"], "{:?}", h.state().notice());
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png());
-    assert_eq!(h.state().notice.as_deref(), Some("Exported 1 file to Renders."));
+    assert_eq!(h.state().notice(), Some("Exported 1 file to Renders."));
     assert_eq!(h.state().session.document(), &before, "an export is no edit");
     assert!(!h.state().session.can_undo(), "and no undo step");
     evidence(&mut h, "3-exported");
@@ -123,7 +123,7 @@ fn card746_a_person_chooses_the_folder_and_export_writes_there() {
     press(&mut h, "Export");
     export_tests::finish(&mut h);
     assert_eq!(files_in(&folder), ["hero-out-1.png"]);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("1 kept")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("1 kept")), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -181,18 +181,18 @@ fn card746_replacing_existing_files_needs_the_persons_yes() {
     export_tests::finish(&mut h);
 
     press(&mut h, "Export");
-    h.get_by_label("Replace existing files?");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Replace existing files?");
     h.get_by_label("1 file in Renders will be replaced by this export.");
     evidence(&mut h, "4-confirm-replace");
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "nothing is written before the answer");
     press(&mut h, "Cancel");
     export_tests::finish(&mut h);
-    assert!(h.query_by_label("Replace existing files?").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Replace existing files?").is_none());
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "Cancel keeps the file");
 
     press(&mut h, "Export");
     press(&mut h, "Replace files");
     export_tests::finish(&mut h);
-    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png(), "{:?}", h.state().notice);
+    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png(), "{:?}", h.state().notice());
     assert_eq!(files_in(&folder), ["hero-out-1.png"]);
 }

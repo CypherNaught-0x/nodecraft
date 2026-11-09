@@ -1,6 +1,6 @@
 //! 3D meshes (#111): reading glTF 2.0 (binary `.glb`, or `.gltf` JSON whose buffers are embedded)
 //! and Wavefront OBJ into one flat, triangulated [`Mesh`], and writing a mesh back out as GLB or
-//! OBJ or geometry-only binary STL.
+//! OBJ, geometry-only binary STL, bounded ASCII PLY/RGBA, or the static USDA/USDZ profile.
 //!
 //! Every reader takes untrusted bytes. Counts, offsets and strides come from the file, so each is
 //! checked against [`MeshLimits`] and the real data before anything is allocated; node hierarchies
@@ -15,13 +15,19 @@
 mod encode;
 mod gltf;
 mod obj;
+mod ply;
 mod stl;
+mod usdz;
 
 use crate::MediaError;
 
 pub use encode::{encode_glb, encode_obj};
+pub use ply::encode_ply;
+pub(crate) use ply::recognizes as recognizes_ply;
 pub use stl::encode_stl;
 pub(crate) use stl::recognizes as recognizes_stl;
+pub use usdz::encode_usdz;
+pub(crate) use usdz::recognizes as recognizes_usdz;
 
 /// The 3D file formats NodeCraft reads and writes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -34,6 +40,10 @@ pub enum MeshFormat {
     Obj,
     /// Binary STL, with zero facet attributes and geometry only.
     Stl,
+    /// NodeCraft ASCII triangle/RGBA profile; model/ply is an internal convention.
+    Ply,
+    /// NodeCraft's self-contained static USDA triangle/RGBA profile in USDZ.
+    Usdz,
 }
 
 impl MeshFormat {
@@ -44,12 +54,14 @@ impl MeshFormat {
             Self::Gltf => "model/gltf+json",
             Self::Obj => "model/obj",
             Self::Stl => "model/stl",
+            Self::Ply => "model/ply",
+            Self::Usdz => "model/vnd.usdz+zip",
         }
     }
 
     /// The format for a MIME essence, if NodeCraft reads it.
     pub fn from_mime(essence: &str) -> Option<Self> {
-        [Self::Glb, Self::Gltf, Self::Obj, Self::Stl].into_iter().find(|format| format.mime() == essence)
+        [Self::Glb, Self::Gltf, Self::Obj, Self::Stl, Self::Ply, Self::Usdz].into_iter().find(|format| format.mime() == essence)
     }
 
     /// The usual file extension, without the dot.
@@ -59,6 +71,8 @@ impl MeshFormat {
             Self::Gltf => "gltf",
             Self::Obj => "obj",
             Self::Stl => "stl",
+            Self::Ply => "ply",
+            Self::Usdz => "usdz",
         }
     }
 }
@@ -82,6 +96,13 @@ pub struct MeshLimits {
     pub max_texture_pixels: u64,
     /// Most textures decoded for one mesh; the rest are left out.
     pub max_textures: usize,
+    /// Per-texture image decoder budget, including decoded pixels and orientation admission.
+    /// RGBA conversion, other retained textures and codec overhead are separate resource costs.
+    pub max_texture_alloc: u64,
+    /// JSON values admitted before typed glTF parsing, additionally capped by its hard ceiling.
+    pub max_json_values: usize,
+    /// JSON objects admitted before typed glTF parsing, additionally capped by its hard ceiling.
+    pub max_json_objects: usize,
 }
 
 impl Default for MeshLimits {
@@ -94,6 +115,9 @@ impl Default for MeshLimits {
             max_depth: 64,
             max_texture_pixels: 4096 * 4096,
             max_textures: 16,
+            max_texture_alloc: 512 * 1024 * 1024,
+            max_json_values: 4_000_000,
+            max_json_objects: 262_144,
         }
     }
 }
@@ -119,13 +143,53 @@ pub struct Bounds {
 
 impl Bounds {
     pub fn center(&self) -> [f32; 3] {
-        [(self.min[0] + self.max[0]) * 0.5, (self.min[1] + self.max[1]) * 0.5, (self.min[2] + self.max[2]) * 0.5]
+        std::array::from_fn(|i| match (self.min.get(i), self.max.get(i)) {
+            (Some(a), Some(b)) if a.is_finite() && b.is_finite() => ((f64::from(*a) + f64::from(*b)) * 0.5) as f32,
+            (Some(a), Some(b)) => (a + b) * 0.5,
+            _ => f32::NAN,
+        })
     }
 
     /// Half the box's diagonal: the radius of a sphere around it.
     pub fn radius(&self) -> f32 {
-        let d = [self.max[0] - self.min[0], self.max[1] - self.min[1], self.max[2] - self.min[2]];
-        (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt() * 0.5
+        let radius = self.radius_f64();
+        if radius.is_nan() {
+            f32::NAN
+        } else if radius > f64::from(f32::MAX) {
+            f32::INFINITY
+        } else {
+            radius as f32
+        }
+    }
+
+    fn radius_f64(&self) -> f64 {
+        self.min
+            .iter()
+            .zip(self.max)
+            .map(|(a, b)| {
+                let d = f64::from(b) - f64::from(*a);
+                d * d
+            })
+            .sum::<f64>()
+            .sqrt()
+            * 0.5
+    }
+
+    /// A finite representable preview sphere, or `None` for invalid/unrepresentable bounds.
+    /// The original center/radius APIs retain their non-finite behavior on invalid boxes.
+    pub fn checked_sphere(&self) -> Option<([f32; 3], f32)> {
+        if self.min.iter().zip(self.max).any(|(a, b)| !a.is_finite() || !b.is_finite() || *a > b) {
+            return None;
+        }
+        let radius = self.radius_f64();
+        if !radius.is_finite() || radius > f64::from(f32::MAX) {
+            return None;
+        }
+        let rounded = radius as f32;
+        if radius > 0.0 && rounded == 0.0 {
+            return None;
+        }
+        Some((self.center(), rounded))
     }
 }
 
@@ -217,6 +281,8 @@ pub fn decode_mesh_as(bytes: &[u8], format: MeshFormat, limits: &MeshLimits) -> 
         MeshFormat::Gltf => gltf::decode_gltf(bytes, limits)?,
         MeshFormat::Obj => obj::decode(bytes, limits)?,
         MeshFormat::Stl => stl::decode(bytes, limits)?,
+        MeshFormat::Ply => ply::decode(bytes, limits)?,
+        MeshFormat::Usdz => usdz::decode(bytes, limits)?,
     };
     if mesh.indices.is_empty() {
         return Err(MediaError::Decode("the file has no triangles to show".into()));
@@ -329,3 +395,8 @@ pub(crate) fn normalize(v: [f32; 3]) -> Option<[f32; 3]> {
 mod stl_tests;
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ply_tests;
+#[cfg(test)]
+mod usdz_tests;

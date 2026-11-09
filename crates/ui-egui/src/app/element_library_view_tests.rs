@@ -60,7 +60,7 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     assert!(h.query_by_label("Update from Elements library").is_none(), "nothing to update from yet");
     h.get_by_label("Save to Elements library").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     right_click(&mut h, id);
     assert!(h.query_by_label("Replace in Elements library").is_some(), "saved");
     assert!(h.query_by_label("Update from Elements library").is_some());
@@ -77,7 +77,7 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     h.get_by_label("Place").click();
     h.run();
     let placed: Vec<Node> = elements(&h).into_iter().filter(|n| n.id != id).collect();
-    assert_eq!(placed.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(placed.len(), 1, "{:?}", h.state().notice());
     assert_eq!(nodecraft_nodes::element::name(&placed[0]), Some("element-2"), "under a free name");
     assert!(h.state().selection.contains(placed[0].id));
     // Local evaluation may finish during the pointer-driven frame and append a history
@@ -144,7 +144,7 @@ fn an_entry_is_renamed_in_the_panel_and_its_placed_element_still_updates() {
     h.run();
     h.key_press(egui::Key::Enter);
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     assert_eq!(library(&mut h)[0]["name"], "Hero");
     assert!(h.query_by_label_contains("#Hero · general").is_some());
 
@@ -185,17 +185,17 @@ fn an_entry_is_shared_exported_and_imported_from_the_panel() {
     h.get_by_label("Export…").click();
     h.run();
     h.run();
-    assert!(file.is_file(), "{:?}", h.state().notice);
+    assert!(file.is_file(), "{:?}", h.state().notice());
 
     // Importing over its own name asks first.
     h.state_mut().element_library.answer = Some(file.clone());
     h.get_by_label("Import…").click();
     h.run();
     h.run();
-    assert!(h.query_by_label_contains("already has an Element").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label_contains("already has an Element").is_some(), "{:?}", h.state().notice());
     h.get_by_label("Replace it").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     assert_eq!(library(&mut h)[0]["shared"], false, "an imported Element is private");
 }
 
@@ -228,7 +228,7 @@ fn update_takes_the_librarys_settings() {
     right_click(&mut h, id);
     h.get_by_label("Update from Elements library").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     let node = elements(&h).into_iter().find(|n| n.id == id).unwrap();
     assert_eq!(node.params.get("guidelines"), Some(&Value::Text(String::new())));
 }

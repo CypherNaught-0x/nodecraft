@@ -3531,6 +3531,7 @@ dependencies = [
  "futures",
  "naga",
  "nodecraft-actions",
+ "nodecraft-mesh-preview",
  "serde_json",
  "wgpu",
 ]
@@ -3552,14 +3553,28 @@ version = "0.6.0"
 dependencies = [
  "blake3",
  "craft-pdf",
+ "crc32fast",
  "image",
  "kurbo 0.13.1",
+ "proptest",
  "quick-xml",
  "resvg",
  "roxmltree",
  "serde",
  "serde_json",
  "svgtypes",
+]
+
+[[package]]
+name = "nodecraft-mesh-preview"
+version = "0.6.0"
+dependencies = [
+ "blake3",
+ "js-sys",
+ "nodecraft-media",
+ "wasm-bindgen",
+ "wasm-bindgen-test",
+ "web-sys",
 ]
 
 [[package]]
@@ -3705,6 +3720,7 @@ dependencies = [
  "nodecraft-gpu",
  "nodecraft-graph",
  "nodecraft-media",
+ "nodecraft-mesh-preview",
  "nodecraft-nodes",
  "nodecraft-plugin",
  "nodecraft-plugin-store",
@@ -3729,9 +3745,14 @@ dependencies = [
 name = "nodecraft-web"
 version = "0.6.0"
 dependencies = [
+ "blake3",
  "eframe",
+ "js-sys",
  "log",
+ "nodecraft-gpu",
+ "nodecraft-mesh-preview",
  "nodecraft-ui-egui",
+ "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
 ]

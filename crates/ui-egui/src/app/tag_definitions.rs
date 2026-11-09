@@ -18,20 +18,17 @@ impl Editor {
     }
 }
 
-/// The exact ID stays visible above the title, independent of sorting and rename.
-pub(super) fn row_text(ui: &egui::Ui, tag: &Tag, state: &str, t: &theme::Tokens) -> egui::WidgetText {
+/// The title and identity use separate lines. The filter leads with the name people search for.
+pub(super) fn row_text(ui: &egui::Ui, tag: &Tag, state: &str, title_first: bool, t: &theme::Tokens) -> egui::WidgetText {
     let mut job = egui::text::LayoutJob::default();
-    job.append(
-        &format!("{}\n", tag.id),
-        0.0,
-        egui::TextFormat { font_id: egui::FontId::monospace(t.tag_identity_size), color: t.text_muted, ..Default::default() },
-    );
-    job.append(
-        &format!("{}{state}", crate::tags::label(&tag.title)),
-        0.0,
-        egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: t.tag_color(tag.color.as_deref()), ..Default::default() },
-    );
-    // Lay out explicitly: the list's single-line truncation must not hide the identity.
+    let identity = tag.id.to_string();
+    let title = format!("{}{state}", crate::tags::label(&tag.title));
+    let identity_style = egui::TextFormat { font_id: egui::FontId::monospace(t.tag_identity_size), color: t.text_muted, ..Default::default() };
+    let title_style = egui::TextFormat { font_id: egui::TextStyle::Body.resolve(ui.style()), color: t.tag_color(tag.color.as_deref()), ..Default::default() };
+    let [(first, first_style), (second, second_style)] =
+        if title_first { [(title, title_style), (identity, identity_style)] } else { [(identity, identity_style), (title, title_style)] };
+    job.append(&format!("{first}\n"), 0.0, first_style);
+    job.append(&second, 0.0, second_style);
     job.wrap = egui::text::TextWrapping {
         max_width: (ui.available_width() - ui.spacing().icon_width - ui.spacing().icon_spacing - ui.spacing().button_padding.x * 2.0).max(1.0),
         max_rows: 2,
@@ -72,13 +69,14 @@ impl NodeCraftApp {
         }
         let current = self.session.document().canvases().get(&editor.canvas).and_then(|c| c.tags().get(&editor.original.id));
         if current != Some(&editor.original) {
-            self.notice = Some("The tag changed or was removed. Open its controls again.".into());
+            self.notices.warning("The tag changed or was removed. Open its controls again.");
             return false;
         }
         let t = self.theme.tokens();
         let mut submit = false;
         let mut cancel = false;
-        let modal = egui::Modal::new(egui::Id::new("tag_definition")).show(ui.ctx(), |ui| {
+        let title = if editor.deleting { "Delete tag?" } else { "Rename tag" };
+        let modal = crate::floating::modal(ui.ctx(), egui::Id::new("tag_definition"), title).show(ui.ctx(), |ui| {
             ui.set_max_width(t.viewer_width);
             ui.heading(if editor.deleting { "Delete tag?" } else { "Rename tag" });
             ui.label(crate::tags::label(&editor.original.title));
@@ -190,8 +188,11 @@ mod tests {
         h.hover_at(pos);
         for pressed in [true, false] {
             h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Secondary, pressed, modifiers: egui::Modifiers::NONE });
-            h.run();
+            // Keep the click short in simulated time. A full run while held can
+            // advance to a deferred hover tooltip after the click timeout.
+            h.step();
         }
+        h.run();
         h.get_by_role_and_label(Role::Button, button).click();
         h.run();
     }

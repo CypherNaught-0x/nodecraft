@@ -303,6 +303,9 @@ fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
 fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
     let (mut h, runs) = scene("mock-square");
     press(&mut h, Role::Button, "Generate");
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Generate");
+    assert!(dialog.accesskit_node().is_modal());
+    dialog.get_by_role_and_label(Role::Button, "Cancel");
     assert!(runs.lock().unwrap().is_empty(), "pressing Generate alone never spends");
     let accept = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
     assert!(accept.contains("0.04"), "the price is shown before the run: {accept}");
@@ -314,7 +317,7 @@ fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
     press(&mut h, Role::Button, &accept);
     assert_eq!(runs.lock().unwrap().len(), 1, "exactly one accepted run reaches the host");
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 }
 
 #[test]
@@ -460,7 +463,7 @@ fn without_run_resources_generate_reports_why_instead_of_spending() {
     h.run();
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none());
-    assert!(h.state().notice.is_some(), "the person is told why nothing ran");
+    assert!(h.state().notice().is_some(), "the person is told why nothing ran");
 
     // The counter steps the model's own image count, found by its meaning tag.
     press(&mut h, Role::Button, "More images");
@@ -686,7 +689,7 @@ fn improve_prompt_adds_a_wired_text_card_and_selects_it() {
         h.render().unwrap().save(dir.join("assist582-before.png")).unwrap();
     }
     press(&mut h, Role::Button, "Improve prompt");
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     if let Some(dir) = &shots {
         h.render().unwrap().save(dir.join("assist582-after.png")).unwrap();
     }
@@ -760,4 +763,40 @@ fn the_reuse_switch_turns_caching_on_and_a_reused_result_is_not_paid_for() {
     h.run();
     assert!(!nodecraft_engine::cache::enabled(node(h.state()), h.state().session.kinds()), "one undo step turns it off");
     assert!(!shown_on(&h));
+}
+
+#[test]
+fn layout959_full_length_blocking_reasons_scroll_but_cancel_stays_visible_and_enter_never_runs() {
+    use super::layout959_tests as layout;
+    for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        for (size, percent) in layout::CASES {
+            let (mut h, runs) = scene("mock-square");
+            press(&mut h, Role::Button, "Generate");
+            let mut quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas":C,"mode":"selected","nodes":[N]})).unwrap();
+            quote["allowed"] = json!(false);
+            quote["blocked"] = json!(
+                (1..=8).map(|i| format!("Card {i}: {}", "A required input must be connected before this workflow can run. ".repeat(5))).collect::<Vec<_>>()
+            );
+            h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+            layout::viewport(&mut h, theme, size, percent);
+            let modal = layout::modal(&h, "run_confirm");
+            let cancel = h.get_by_role_and_label(Role::Button, "Cancel").rect();
+            assert!(modal.contains_rect(cancel));
+            let before = h.get_by_label_contains("Card 8:").rect();
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(h.state().run_confirm.is_some());
+            assert!(runs.lock().unwrap().is_empty(), "Enter cannot run a quote");
+            layout::wheel(&mut h, modal.center(), -2000.0);
+            let after = h.get_by_label_contains("Card 8:").rect();
+            assert!(after.min.y < before.min.y - 1.0, "the admitted reasons scroll");
+            assert!(modal.contains_rect(after), "last reason {after:?} becomes readable in {modal:?}");
+            assert_eq!(h.get_by_role_and_label(Role::Button, "Cancel").rect(), cancel, "scrolling never moves the action row");
+            layout::evidence(&mut h, "blocked-quote-last-reason", theme, size, percent);
+            h.get_by_role_and_label(Role::Button, "Cancel").click();
+            h.run_steps(3);
+            assert!(h.state().run_confirm.is_none());
+            assert!(runs.lock().unwrap().is_empty());
+        }
+    }
 }

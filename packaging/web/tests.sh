@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Adversarial generated-site inventory tests, no Cargo or browser needed.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+INVENTORY="${NODECRAFT_INVENTORY_TEST_SOURCE:-$HERE/inventory.sh}"
+TEMP="$(mktemp -d "${TMPDIR:-/tmp}/nodecraft-web-inventory.XXXXXX")"
+trap 'rm -rf "$TEMP"' EXIT
+SITE="$TEMP/site"
+fixture() {
+  rm -rf "$SITE"; mkdir -p "$SITE"
+  printf 'original icon fixture' > "$SITE/icon.png"
+  digest="$(openssl dgst -sha384 -binary "$SITE/icon.png" | openssl base64 -A)"
+  printf '<html>./nodecraft-web-abcdef.js ./nodecraft-web-abcdef_bg.wasm<link rel="icon" href="./icon.png" integrity="sha384-%s"/></html>' "$digest" > "$SITE/index.html"
+  for name in nodecraft-web-abcdef_bg.wasm nodecraft-web-abcdef.js nodecraft-mesh-worker_bg.wasm nodecraft-mesh-worker.js; do printf 'fixture' > "$SITE/$name"; done
+  printf "import init from './nodecraft-mesh-worker.js';await init();" > "$SITE/nodecraft-mesh-worker_loader.js"
+  printf "new URL('nodecraft-mesh-worker_bg.wasm', import.meta.url)" > "$SITE/nodecraft-mesh-worker.js"
+}
+accept() { ( . "$INVENTORY" ) >/dev/null 2>&1; }
+reject() { if accept; then echo "FAIL: $1 unexpectedly accepted" >&2; exit 1; fi; }
+fixture; accept
+rm "$SITE/nodecraft-mesh-worker_loader.js"; reject 'missing worker shim'
+fixture; rm "$SITE/nodecraft-mesh-worker_bg.wasm"; reject 'missing worker Wasm'
+fixture; printf 'extra' > "$SITE/old.wasm"; reject 'stale extra Wasm'
+fixture; printf 'old' > "$SITE/nodecraft-web-old.js"; reject 'stale extra main wrapper'
+fixture; printf 'old' > "$SITE/worker.rs"; reject 'source in package'
+fixture; printf './workers/workers/other.js' > "$SITE/nodecraft-mesh-worker_loader.js"; reject 'broken generated relative wrapper'
+fixture; printf '<script integrity="old" src="x"></script>' > "$SITE/index.html"; reject 'stale integrity'
+fixture; printf "new URL('workers/worker.wasm', import.meta.url)" > "$SITE/nodecraft-mesh-worker.js"; reject 'broken generated Wasm URL'
+fixture; printf '<html>old.js old.wasm</html>' > "$SITE/index.html"; reject 'stale main HTML references'
+fixture; printf 'changed icon' > "$SITE/icon.png"; reject 'corrupt unchanged icon bytes'
+fixture; rm "$SITE/icon.png"; reject 'missing referenced icon'
+fixture; sed 's/sha384-/sha256-/' "$SITE/index.html" > "$SITE/changed.html"; mv "$SITE/changed.html" "$SITE/index.html"; reject 'wrong icon integrity algorithm'
+fixture; printf 'unrelated' > "$SITE/screenshot.png"; reject 'unreferenced PNG'
+fixture; ln -s "$SITE/index.html" "$SITE/linked.html"; reject 'linked file'
+fixture; mkdir -p "$SITE/snippets/valid"; printf 'generated' > "$SITE/snippets/valid/example.js"; reject 'unreferenced snippet'
+printf "import './snippets/valid/example.js';\n" >> "$SITE/nodecraft-web-abcdef.js"; accept
+rm "$SITE/snippets/valid/example.js"; reject 'missing referenced snippet'
+fixture; printf "import './snippets/../icon.js';\n" >> "$SITE/nodecraft-web-abcdef.js"; reject 'snippet traversal'
+printf 'web generated-inventory tests: 19 passed\n'

@@ -1,0 +1,27 @@
+# GLM 4.6 (Z.AI) through rig-core 0.46's own dialect (#1152).
+# Checked 2026-11-09: https://docs.z.ai/guides/overview/pricing lists GLM-4.6 at
+# $0.60 input / $2.20 output per 1M tokens (cache hits are cheaper). No up-front
+# bound is asserted for reasoning; settlement uses uncached token rates.
+# Latency and selection tier below are generic discovery hints, not measurements.
+[[model]]
+id = "zai.glm-4.6"
+provider = "zai"
+provider_model = "glm-4.6"
+label = "GLM 4.6 (Z.AI)"
+description = "Text chat with usage pricing. No up-front quote; token rates apply after the reply."
+latency_s = 20
+quality = 2
+pricing = { type = "by_usage", currency = "USD" }
+usage = { input = "0.0006 USD", output = "0.0022 USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Your model may require a smaller limit; reasoning may count separately."
+control = { type = "unsigned", min = "1", max = "8192" }
+default = { type = "unsigned", value = "1024" }

@@ -24,11 +24,15 @@ fn batch(session: &Session, id: NodeId, title: &str, text: &str, x: f32) -> Node
 /// Subjects (a fox, an owl) × times (at dawn, at night) crossed into a text card whose last
 /// combination failed; `pairs` lists which combinations the result holds, in order.
 fn project(pairs: &[(usize, usize)], failed: Option<usize>) -> (Session, CanvasId) {
+    project_with_times(pairs, failed, "at dawn\nat night")
+}
+
+fn project_with_times(pairs: &[(usize, usize)], failed: Option<usize>, times: &str) -> (Session, CanvasId) {
     let canvas = CanvasId::from_bytes([9; 16]);
     let scratch = Session::new(Project::new(ProjectId::from_bytes([8; 16]), "Scratch").unwrap()).unwrap();
     let mut project = Project::new(ProjectId::from_bytes([7; 16]), "Review").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
-    for node in [batch(&scratch, SUBJECTS, "Subjects", "a fox\nan owl", -300.0), batch(&scratch, TIMES, "Times", "at dawn\nat night", 300.0)] {
+    for node in [batch(&scratch, SUBJECTS, "Subjects", "a fox\nan owl", -300.0), batch(&scratch, TIMES, "Times", times, 300.0)] {
         Change::AddNode { canvas, node }.apply(&mut project).unwrap();
     }
     let listed = |id: NodeId| {
@@ -207,6 +211,7 @@ fn dialogs1116_batch_items_is_a_panel_on_screen_and_escape_closes_only_it() {
     h.run_steps(6);
     assert!(h.query_by_label("Item 1 of 4").is_some());
     crate::app::panel_check::check_open_panels(&h, "Batch items at 640 × 400");
+    super::panel_check::menu_evidence(&mut h, "batch-items");
     h.key_press(egui::Key::Escape);
     h.run();
     assert!(h.state().batch_review.is_none());
@@ -295,4 +300,113 @@ fn dialogs1116_an_unfocused_tag_filter_leaves_escape_to_the_review() {
     h.key_press(egui::Key::Escape);
     h.run();
     assert!(h.state().batch_review.is_none(), "Escape closed the review");
+}
+
+/// A real pointer in a grid cell must select the item even near fixed canvas chrome.
+#[test]
+fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
+    use egui::accesskit::Role;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        // Three columns put a broad cell interior under Fit all, clear of the grid
+        // scrollbar's expanded hit target at the content's right edge.
+        let pairs = [(0, 0), (0, 2), (0, 1), (1, 0), (1, 1), (1, 2)];
+        let (session, canvas) = project_with_times(&pairs, Some(5), "at dawn\nat night\nat noon");
+        let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+        app.theme = theme;
+        app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
+        app.selection.only(CARD);
+        let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(160).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                crate::theme::apply(ui.ctx(), theme);
+                app.show(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        let cell = h.get_by_role_and_label(Role::Button, "fox noon").rect();
+        let fit = h.get_by_role_and_label(Role::Button, "Fit all").rect();
+        let overlap = cell.intersect(fit);
+        // Probe the edge previously occupied by the overlaid toolbar, not only its label.
+        let at = if overlap.is_positive() { overlap.center() } else { cell.right_bottom() - Vec2::splat(3.0) };
+        eprintln!("theme={theme:?} cell={cell:?} fit={fit:?} overlap={overlap:?} at={at:?} layer={:?}", h.ctx.layer_id_at(at));
+        super::panel_check::menu_evidence(&mut h, &format!("batch-navigation-{theme:?}"));
+        let before_view = h.state().view;
+        let before_document = h.state().session.document().clone();
+        h.hover_at(at);
+        h.run_steps(3);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(4);
+        eprintln!(
+            "after pointer cell={:?} view={:?}->{:?} item={}",
+            h.get_by_role_and_label(Role::Button, "fox noon").rect(),
+            before_view,
+            h.state().view,
+            h.state().batch_review.as_ref().unwrap().item
+        );
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 1, "the actual grid cell receives the pointer");
+        assert_eq!(h.state().view, before_view, "choosing a batch item never fits the canvas");
+        assert_eq!(h.state().session.document(), &before_document);
+        // The bottom row remains reachable through the panel's real nested scroll areas.
+        h.get_by_role_and_label(Role::Button, "Failed").scroll_to_me();
+        h.run_steps(8);
+        let bottom = h.get_by_role_and_label(Role::Button, "Failed").rect();
+        assert_eq!(h.ctx.layer_id_at(bottom.center()), Some(crate::floating::layer(egui::Id::new("nodecraft.batch_review"))));
+        h.get_by_role_and_label(Role::Button, "Failed").click();
+        h.run_steps(4);
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 5, "the last grid item remains selectable");
+        assert_eq!(h.state().view, before_view);
+        assert_eq!(h.state().session.document(), &before_document);
+    }
+}
+
+/// Real desktop/browser hosts enable guidance: its persistent button must yield to a tool
+/// moved over the bottom-left corner, while the uncovered part remains usable.
+#[test]
+fn review959_add_node_guidance_stays_below_floating_tools() {
+    use egui::accesskit::Role;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let pairs = [(0, 0), (0, 2), (0, 1), (1, 0), (1, 1), (1, 2)];
+        let (session, canvas) = project_with_times(&pairs, Some(5), "at dawn\nat night\nat noon");
+        let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+        app.theme = theme;
+        app.guidance = true;
+        app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
+        app.selection.only(CARD);
+        let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(160).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                crate::theme::apply(ui.ctx(), theme);
+                app.show(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        let add = h.get_by_role_and_label(Role::Button, "+ Add node").rect();
+        let panel_id = egui::Id::new(super::batch_review::BATCH_REVIEW_ID);
+        let tool = crate::floating::shown(&h.ctx).into_iter().find(|(id, _)| *id == panel_id).unwrap().1;
+        let overlap = add.intersect(tool.shrink(8.0));
+        assert!(overlap.is_positive(), "fixture must overlap the actual guidance button and tool body: {add:?}, {tool:?}");
+        let before_document = h.state().session.document().clone();
+        let before_view = h.state().view;
+        super::panel_check::menu_evidence(&mut h, &format!("guidance-tool-overlap-{theme:?}"));
+        h.hover_at(overlap.center());
+        h.run_steps(3);
+        press_at(&mut h, overlap.center(), egui::PointerButton::Primary);
+        assert!(h.state().palette.is_none(), "pressing a floating tool must not activate the covered Add node button");
+        assert_eq!(h.ctx.layer_id_at(overlap.center()), Some(crate::floating::layer(panel_id)));
+        assert_eq!(h.state().session.document(), &before_document);
+        assert_eq!(h.state().view, before_view);
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 0);
+
+        let exposed = Pos2::new((add.left() + tool.left()) * 0.5, add.center().y);
+        assert!(add.contains(exposed) && !tool.contains(exposed), "the fixture also leaves part of Add node uncovered");
+        h.hover_at(exposed);
+        h.run_steps(3);
+        press_at(&mut h, exposed, egui::PointerButton::Primary);
+        assert!(h.state().palette.is_some(), "the uncovered guidance button still opens quick-add");
+        assert_eq!(h.state().session.document(), &before_document);
+        assert_eq!(h.state().view, before_view);
+    }
 }

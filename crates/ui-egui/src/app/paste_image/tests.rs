@@ -52,14 +52,14 @@ fn a_copied_image_becomes_an_image_node_at_the_pointer_as_one_undo_step() {
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     let existing = before.canvases().get(&h.state().canvas).unwrap().nodes().clone();
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
-    assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 1, "{:?}", h.state().notice());
     assert_eq!(added[0].kind, "source.image");
     let world = h.state().view.to_world(h.state().viewport.min, at);
     let t = *h.state().theme.tokens();
     let rect = super::super::payload_rect(&h.state().session, &added[0], &t);
     assert!((rect.center() - world).length() < 1.0, "actual image body centered under pointer");
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before, "one undo removes the pasted image");
@@ -117,7 +117,7 @@ fn command_let_go_just_before_v_still_pastes_but_a_typed_v_never_does() {
     h.step();
     finish(&mut h);
     assert_eq!(reads.load(Ordering::SeqCst), 1);
-    assert_eq!(nodes(&h).len(), count + 1, "{:?}", h.state().notice);
+    assert_eq!(nodes(&h).len(), count + 1, "{:?}", h.state().notice());
 }
 
 #[test]
@@ -136,7 +136,7 @@ fn an_empty_unreadable_or_oversized_clipboard_adds_nothing_and_says_why() {
         release_paste(&mut h, Pos2::new(600.0, 300.0));
         finish(&mut h);
         assert_eq!(nodes(&h).len(), count);
-        assert_eq!(h.state().notice.as_deref(), Some(notice));
+        assert_eq!(h.state().notice(), Some(notice));
         assert!(!h.state().session.can_undo());
     }
 }
@@ -155,7 +155,7 @@ fn an_edit_while_the_image_is_read_wins_and_a_second_paste_waits() {
     release_paste(&mut h, at);
     assert!(h.state().image_paste_pending());
     release_paste(&mut h, at);
-    assert_eq!(h.state().notice.as_deref(), Some("The copied image is still being read; try again in a moment."));
+    assert_eq!(h.state().notice(), Some("The copied image is still being read; try again in a moment."));
     let canvas = h.state().canvas;
     let node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([77; 16]), "fixture.unknown");
     h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": node})).unwrap();
@@ -164,7 +164,7 @@ fn an_edit_while_the_image_is_read_wins_and_a_second_paste_waits() {
     finish(&mut h);
     assert_eq!(reads.load(Ordering::SeqCst), 1);
     assert_eq!(nodes(&h).len(), count);
-    assert_eq!(h.state().notice.as_deref(), Some("The document changed while reading the clipboard; nothing was added. Paste again."));
+    assert_eq!(h.state().notice(), Some("The document changed while reading the clipboard; nothing was added. Paste again."));
 }
 
 /// The real OS clipboard: copy an image first, e.g. on macOS
@@ -206,7 +206,7 @@ fn the_system_clipboard_imports_copied_file_references() {
     }
     let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
     let added: Vec<_> = nodes(&h).into_iter().filter(|node| !existing.contains_key(&node.id)).collect();
-    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice());
     assert!(added.iter().any(|node| node.kind == "source.text"));
     assert!(added.iter().any(|node| node.kind == "source.image"));
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
@@ -277,11 +277,11 @@ fn failed_file_probe_or_worker_start_keeps_egui_text_and_one_undo_step() {
         finish(&mut h);
         let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
         let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
-        assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+        assert_eq!(added.len(), 1, "{:?}", h.state().notice());
         assert_eq!(added[0].params.get("text"), Some(&nodecraft_types::Value::Text("Public text survives a clipboard probe failure.".into())));
         assert_eq!(probes.load(Ordering::SeqCst), usize::from(!fail_spawn));
         assert_eq!(pixels.load(Ordering::SeqCst), 0);
-        assert!(h.state().notice.is_none());
+        assert!(h.state().notices.is_empty());
         let world = h.state().view.to_world(h.state().viewport.min, at);
         let rect = super::super::payload_rect(&h.state().session, &added[0], h.state().theme.tokens());
         assert!((rect.center() - world).length() < 1.0);

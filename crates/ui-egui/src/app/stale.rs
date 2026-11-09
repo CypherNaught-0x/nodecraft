@@ -117,6 +117,15 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
+    /// Notices draw after the canvas. Reserve their wheel input before canvas navigation
+    /// runs, so scrolling their details does not first move the graph underneath them.
+    pub(super) fn notice_owns_scroll(&self, ui: &egui::Ui) -> bool {
+        !self.notices.is_empty()
+            && !self.drop_pending()
+            && ui
+                .input(|input| input.pointer.hover_pos())
+                .is_some_and(|pointer| egui::AreaState::load(ui.ctx(), ui.id().with("notice")).is_some_and(|area| area.rect().contains(pointer)))
+    }
     /// Run changed (Command+Enter) or Run workflow (#965), from the shortcut or the palette:
     /// quotes the run and shows its confirmation, or says there is nothing to run.
     /// Whether it ran: false when it was refused (and the notice says why).
@@ -125,7 +134,7 @@ impl NodeCraftApp {
         match self.request_whole(kind) {
             Ok(_) => true,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -149,11 +158,11 @@ impl NodeCraftApp {
         let Some(mut stamp) = stamp else {
             return match result {
                 Ok(_) => {
-                    self.notice = None;
+                    self.notices.clear();
                     true
                 }
                 Err(error) => {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                     false
                 }
             };
@@ -168,7 +177,7 @@ impl NodeCraftApp {
             Err(error) => {
                 let mut message = String::new();
                 if message.try_reserve_exact(MAX_TEXT).is_err() {
-                    self.notice = Some(MALFORMED.into());
+                    self.notices.error(MALFORMED);
                     return false;
                 }
                 let _ = append(&mut message, "Staleness check failed (");
@@ -200,7 +209,7 @@ impl NodeCraftApp {
                     bytes += c.len_utf8();
                     let _ = normalized(&mut message, c.encode_utf8(&mut [0; 4]));
                 }
-                self.notice = Some(message);
+                self.notices.error(message);
                 return false;
             }
         };
@@ -211,7 +220,7 @@ impl NodeCraftApp {
                 true
             }
             Err(message) => {
-                self.notice = Some(message.into());
+                self.notices.error(message);
                 false
             }
         }
@@ -227,29 +236,36 @@ impl NodeCraftApp {
             .values()
             .any(|editor| editor.hidden_dirty)
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
-        let notice = self.notice.as_deref().or(hidden);
+        let escape = self.notice_escape.take();
         // A pending drop shows its own progress in this corner.
-        if (notice.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
+        if (!self.notices.is_empty() || hidden.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
             let mut dismiss_check = false;
+            let mut action = None;
             let notice_id = ui.id().with("notice");
             let previous_size = egui::AreaState::load(ui.ctx(), notice_id).map(|state| state.rect().size());
+            let width = t.notice_width.min((viewport.width() - 2.0 * t.card_padding).max(0.0));
             let area = egui::Area::new(notice_id)
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                        ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
-                        if let Some(notice) = notice {
-                            ui.label(notice);
-                        }
-                        if hidden.is_some() && ui.button("Discard drafts").clicked() {
-                            self.editors.clear();
-                        }
-                        if let Some(snapshot) = &self.stale_snapshot {
-                            ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
-                            dismiss_check = ui.small_button("Dismiss check").clicked();
-                        }
-                    });
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = t.control_gap;
+                    action = self.notices.show(ui, t, escape).action;
+                    if hidden.is_some() || self.stale_snapshot.is_some() {
+                        crate::theme::panel_frame(t).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if let Some(hidden) = hidden {
+                                ui.add(egui::Label::new(hidden).wrap());
+                                if ui.button("Discard drafts").clicked() {
+                                    self.editors.clear();
+                                }
+                            }
+                            if let Some(snapshot) = &self.stale_snapshot {
+                                ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
+                                dismiss_check = ui.small_button("Dismiss check").clicked();
+                            }
+                        });
+                    }
                 });
             // A changed bottom-anchored area needs a settled frame before its controls are hit-tested.
             if previous_size != Some(area.response.rect.size()) {
@@ -257,6 +273,9 @@ impl NodeCraftApp {
             }
             if dismiss_check {
                 self.stale_snapshot = None;
+            }
+            if let Some(command) = action {
+                self.run_palette_command(ui.ctx(), &command);
             }
             for (open, id) in [(self.palette.is_some(), "quick_add_palette"), (self.turn_into.is_some(), "turn_into_menu")] {
                 if open {

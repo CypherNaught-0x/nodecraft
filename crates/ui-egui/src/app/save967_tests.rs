@@ -106,7 +106,7 @@ fn save967_each_media_card_writes_only_the_chosen_bytes() {
         assert!(h.query_by_label("Save to folder…").is_some(), "{kind} context at {point:?}, popup {}", egui::Popup::is_any_open(&h.ctx));
         h.get_by_label("Save as…").click();
         finish_file(&mut h);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{kind}: {:?}", h.state().notice);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{kind}: {:?}", h.state().notice());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecars or siblings: {kind}");
         assert_eq!(h.state().session.document(), &before);
     }

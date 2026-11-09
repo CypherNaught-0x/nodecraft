@@ -137,7 +137,7 @@ fn an_unavailable_command_shows_its_reason_and_enter_or_a_click_does_nothing() {
     h.key_press(egui::Key::Enter);
     h.run();
     assert!(h.state().palette.is_some(), "Enter on an unavailable command keeps the palette open");
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     h.get_by_label(&name).click();
     h.run();
     assert!(h.state().palette.is_some(), "a click does nothing either");

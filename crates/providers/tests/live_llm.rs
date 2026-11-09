@@ -231,3 +231,64 @@ async fn live_groq() {
 async fn live_xai() {
     live_vendor("XAI", Endpoint::xai, "grok-4.3").await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_together1152() {
+    live_vendor("TOGETHER", Endpoint::together, "openai/gpt-oss-120b").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_moonshot1152() {
+    live_vendor("MOONSHOT", Endpoint::moonshot, "kimi-k3").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_zai1152() {
+    live_vendor("ZAI", Endpoint::zai, "glm-4.6").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_minimax1152() {
+    live_vendor("MINIMAX", Endpoint::minimax, "MiniMax-M3").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_perplexity1152() {
+    live_vendor("PERPLEXITY", Endpoint::perplexity, "sonar").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_hyperbolic1152() {
+    live_vendor("HYPERBOLIC", Endpoint::hyperbolic, "glm-5.3-flash").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_cohere1152() {
+    live_vendor("COHERE", Endpoint::cohere, "command-a-03-2025").await;
+}
+
+/// Mira model ids are account-specific: NODECRAFT_LIVE_MIRA_MODEL is required.
+#[tokio::test(flavor = "current_thread")]
+async fn live_mira1152() {
+    if !enabled("MIRA") {
+        return;
+    }
+    let model = std::env::var("NODECRAFT_LIVE_MIRA_MODEL").expect("choose a model from your Mira account");
+    live_vendor("MIRA", Endpoint::mira, &model).await;
+}
+
+/// Explicitly opt-in: one streamed request in the service account's own project, billed there.
+#[cfg(feature = "vertex-llm")]
+#[tokio::test(flavor = "current_thread")]
+async fn live_vertex() {
+    if !enabled("VERTEX") {
+        return;
+    }
+    let file = std::env::var("NODECRAFT_LIVE_VERTEX_KEY_FILE").unwrap();
+    let secret = nodecraft_providers::google_cloud::compact(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let region = std::env::var("NODECRAFT_LIVE_VERTEX_REGION").unwrap_or_else(|_| "global".into());
+    let model = std::env::var("NODECRAFT_LIVE_VERTEX_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into());
+    let client = LlmClient::vertex(&region, &secret, Arc::new(ReqwestHttp::new().unwrap()), nodecraft_providers::google_cloud::system_clock()).unwrap();
+    let reply = client.chat_stream(&ask(&model), &mut |_| {}).await.unwrap();
+    assert!(reply.text.to_lowercase().contains("pong"));
+}

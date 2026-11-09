@@ -394,14 +394,13 @@ impl WebRecovery {
         self.scan.is_some() || self.offer.is_some()
     }
 
-    fn note_pruned(&mut self, notice: &mut Option<String>, count: usize) {
+    fn note_pruned(&mut self, notices: &mut crate::notices::Notices, count: usize) {
         let next = maintenance::notice(count);
-        let previous = self.prune_notice.replace(next.clone());
-        let current = notice.take().unwrap_or_default();
-        let suffix = previous.as_ref().map(|previous| format!("\n{previous}"));
-        let retained =
-            if previous.as_ref() == Some(&current) { "" } else { suffix.as_ref().and_then(|suffix| current.strip_suffix(suffix.as_str())).unwrap_or(&current) };
-        *notice = Some(if retained.is_empty() { next } else { format!("{retained}\n{next}") });
+        // A later count replaces the earlier one; other notices stay.
+        if let Some(previous) = self.prune_notice.replace(next.clone()) {
+            notices.dismiss_text(&previous);
+        }
+        notices.info(next);
     }
 }
 
@@ -433,7 +432,7 @@ impl NodeCraftApp {
                     recovery.inventory = Some(scanned.inventory);
                     recovery.inventory_at = now + INVENTORY_SECS;
                     if scanned.pruned > 0 {
-                        recovery.note_pruned(&mut self.notice, scanned.pruned);
+                        recovery.note_pruned(&mut self.notices, scanned.pruned);
                     }
                 }
                 Poll::Ready(Err(why)) => {
@@ -441,7 +440,7 @@ impl NodeCraftApp {
                     if let Ok(mut journal) = recovery.journal.try_borrow_mut() {
                         journal.disable();
                     }
-                    self.notice = Some(format!("This browser can't keep unsaved work for recovery ({why}). Save the project to a file to keep it."));
+                    self.notices.warning(format!("This browser can't keep unsaved work for recovery ({why}). Save the project to a file to keep it."));
                 }
             }
         }
@@ -485,7 +484,7 @@ impl NodeCraftApp {
                 Poll::Ready(Ok(written)) => {
                     recovery.inventory = Some(written.inventory);
                     if written.pruned > 0 {
-                        recovery.note_pruned(&mut self.notice, written.pruned);
+                        recovery.note_pruned(&mut self.notices, written.pruned);
                     }
                     recovery.removing.clear();
                     recovery.told = false;
@@ -500,7 +499,7 @@ impl NodeCraftApp {
                     recovery.retry_at = Some(now + RETRY_SECS);
                     ctx.request_repaint_after(std::time::Duration::from_secs_f64(RETRY_SECS));
                     if !std::mem::replace(&mut recovery.told, true) {
-                        self.notice = Some(format!(
+                        self.notices.warning(format!(
                             "Unsaved work isn't being kept for recovery: {why}. Save the project to a file to keep it, or free up this site's storage; NodeCraft keeps trying."
                         ));
                     }
@@ -544,7 +543,7 @@ impl NodeCraftApp {
     fn web_recovery_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(offer) = self.web_recovery.as_ref().and_then(|recovery| recovery.offer.as_ref()) else { return };
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("nodecraft.web_recovery")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("nodecraft.web_recovery"), "Recover unsaved work?").show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             ui.heading("Recover unsaved work?");
             match &offer.found {
@@ -610,14 +609,14 @@ impl NodeCraftApp {
                             recovery.recovered = Some(lineage);
                         }
                         self.after_file_open();
-                        self.notice = Some(format!("Recovered {title} as an untitled project. Save it to a file to keep it."));
+                        self.notices.success(format!("Recovered {title} as an untitled project. Save it to a file to keep it."));
                     }
-                    Err(error) => self.notice = Some(format!("That work couldn't be recovered ({}). It is offered again next time.", error.message)),
+                    Err(error) => self.notices.error(format!("That work couldn't be recovered ({}). It is offered again next time.", error.message)),
                 }
             }
             (Choice::Discard, _) => {
                 self.web_journal(|journal| journal.remove(offer.slot));
-                self.notice = Some("The unsaved work was discarded.".into());
+                self.notices.info("The unsaved work was discarded.");
             }
             (Choice::Recover | Choice::Later, _) => {}
         }

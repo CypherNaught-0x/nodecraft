@@ -233,7 +233,7 @@ provider not listed here is tracked as a GitHub issue labelled `area:providers` 
 | **Comfy Cloud** | Hosted ComfyUI | Same Workflow node and ComfyUI-backed catalog models, run without a local GPU | Separate backend profile (auth, upload, queue differences); the exact API surface is confirmed in its issue | 5 |
 | **Aggregators: fal.ai, Replicate** | Hundreds of hosted image, video, audio, 3D and upscale models | Every mode; models added as catalog entries pointing at the aggregator's model id | Broadest coverage with one key each; queue/webhook-style async APIs | 3 |
 | **OpenAI Images** | GPT Image family | text→image, image(s)→image edit, mask inpaint | Sizes, quality, background transparency, N | 3 |
-| **Google** (Gemini API, Vertex AI later) | **Imagen** (generate, edit), **Gemini image** models, **Veo** (video) | text→image, image(s)→image; text→video, image→video (first/last frame), audio on/off | Long-running operations polled | 3 (Veo: 7) |
+| **Google** (Gemini API and Google Cloud) | Gemini image models, Gemini Omni Flash video, Cloud Veo and Cloud Gemini images | Scoped text/image generation, reference editing and video modes | Credentials, pricing and supported hosts differ between the Developer API and Google Cloud; see `docs/providers.md` | 3 (Veo: 7) |
 | **Google TTS** | Cloud Text-to-Speech (Neural2/Chirp voices) and Gemini TTS | text→speech; voice, language, speaking rate, pitch, SSML; multi-speaker on Gemini TTS | Same Google credentials as above | 7 |
 | **ElevenLabs** | Text-to-speech, sound effects, music, voice changer | text→speech, text→SFX, text→music, audio→audio | Voice picker loaded from the account; streaming previews | 7 |
 | **ByteDance** (BytePlus ModelArk) | **Seedream** (image), **Seedance** (video) | text→image, multi-reference image edit; text/image→video, reference mode | Async task API | 3 (Seedance: 7) |
@@ -283,8 +283,11 @@ ComfyUI is the main local engine, not just one more HTTP endpoint:
 
 #### 2.5.2 Future providers (tracked as issues)
 
-These are worth adding once the adapter pattern has settled. Each one gets a GitHub issue
-(`area:providers`, `future`) so contributors can `/claim` it:
+This originally separate batch has resolved its feature issues as of the 2026-11-09 tracker
+snapshot; its documentation close-out (#382) is prepared locally. The list records the scoped
+service families, not a promise that every vendor mode works in every host. Several use fal
+routes rather than a separate native adapter; see [the close-out evidence](reviews/2026-11-09-future-provider-closeout.md)
+and [provider availability](providers.md). New follow-ups remain separate issues:
 
 - **Video:** Runway, Luma (Ray), MiniMax Hailuo, Pika, Lightricks LTX, xAI Grok
   Imagine, Alibaba Wan (DashScope)
@@ -498,8 +501,10 @@ browser. HTTP via `reqwest` (works on both).
 - **Audio:** the native host uses FFmpeg for bounded PCM decode and `cpal` for sound card
   playback, with cached waveform thumbnails. Browser playback and native FFmpeg operations
   are unsupported. See [native media](media-video.md).
-- **3D:** `gltf` import/export (+ OBJ), wgpu viewer as an egui paint callback, offscreen render
-  for photo/turntable/sheet capture.
+- **3D:** bounded GLB/glTF/OBJ, binary STL, ASCII PLY and static USDA/USDZ readers, with
+  GLB/OBJ/STL/PLY/USDZ conversion. The wgpu viewer is an egui paint callback with offscreen
+  photo/turntable/sheet capture; browser previews decode and prepare buffers on a Rust/Wasm
+  worker. Retained UV/material rendering remains #569 work. See [format fidelity and bounds](3d-formats.md).
 - **PDF:** page rendering and text extraction through `craft-pdf` (pure Rust, from craft-libs;
   features `read`/`raster`), behind a `pdf` feature.
 - **Text layout in Layer Editor:** `parley`/`cosmic-text` with user-uploaded fonts.
@@ -756,8 +761,8 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   renders full size on release. Video actions and the Timeline run only when asked.
 - [x] Split into grid: an image cut into tiles as new Image cards, one undo step (#86).
 - [x] GPU path (#89): a wgpu executor for the image actions, checked against the CPU reference
-  within a tolerance. It is a tested library; the app still runs built-in image actions on the
-  CPU.
+  within a tolerance. Desktop built-in image actions use it when available, with CPU fallback
+  (#1058); the CLI and browser use the CPU reference.
 - [x] Custom WGSL actions (#90): a shader card with declared sliders, validated before dispatch
   and run on the GPU; a text model writes or fixes it through an ordinary priced text card, and
   a versioned shader library keeps it across projects.
@@ -771,6 +776,39 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
   archives and failing operation sequences (#824).
 - [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
 - [x] Close the M4 documentation follow-up (#375).
+
+### M6 media editors
+
+M6's feature work is complete. The following checklist records implementation and host wiring;
+its documentation close-out (#377) is prepared locally, while the GitHub issue remains open.
+The 2026-11-09 issue snapshot has 13 completed issues out of 14, with #377 the only open issue.
+
+- [x] Layer Editor: wired image layers, transforms, alignment, visibility, locking, ordering,
+  text and shapes, rendered by the same compositor used by the editor (#101); custom per-card
+  fonts imported on desktop and retained with copied cards and Techniques (#548).
+- [x] Mask/Inpaint and outpaint: brush strokes, canvas margins and a command that creates a
+  correctly wired generation card (#102). Source-image bindings warn on changed content and
+  require an explicit refit after an aspect-ratio change of more than 1% (#546).
+- [x] Image tools add supported remove-background, upscale, expand, split, grade, Element and
+  3D cards through commands, with disabled reasons for unavailable tools (#103).
+- [x] Elements: up to eight reference images, generated sheets and compatible prompt mentions
+  (#104); save/place/update across desktop projects (#552), with rename, provenance, sharing
+  flags and explicit bundle import/export (#765).
+- [x] Provider-trained identities remain account-bound, distinguishable from portable reference
+  images and LoRAs, including Library/Share/export behaviour (#180). Higgsfield Soul ID training
+  (#680) and SOUL 2 image-to-image with its required scene image (#1043) are implemented with
+  readiness checks and fixture contracts; paid live training is not a CI requirement.
+- [x] Exit criterion: composite → downstream image workflow and Element reference workflows are
+  wired in the app. Evidence includes the [Layer Editor UI tests](../crates/ui-egui/src/app/layer_editor_tests.rs),
+  [compositor execution tests](../crates/engine/tests/layers101.rs),
+  [mask UI tests](../crates/ui-egui/src/app/mask_editor_tests.rs),
+  [quoted mask execution tests](../crates/engine/tests/mask_edit102.rs),
+  [Element UI tests](../crates/ui-egui/src/app/elements_tests.rs),
+  [Element library UI tests](../crates/ui-egui/src/app/element_library_view_tests.rs) and
+  [reference-routing tests](../crates/exec/src/mentions/tests.rs). These deterministic proofs
+  establish editing, wiring and planning; they do not establish live output from every paid model.
+- [x] Local documentation close-out (#377): current workflows and platform limits are in
+  [media-editors.md](media-editors.md). No GitHub issue or milestone state is changed by this refresh.
 
 ### M7 video and audio
 
@@ -792,6 +830,29 @@ M7's feature and exit-criterion checklist:
 - [x] Exit criterion: four picture clips with sound and fades rendered through the Timeline
   run host. See the [four-clip render check](media-video.md#m7-four-clip-render-check).
 - [x] M7 documentation close-out (#378).
+
+### Future providers batch
+
+The feature issues in milestone 12 are resolved. The 2026-11-09 tracker snapshot has 31
+completed issues, one retired-service decline (#28), and documentation close-out #382 open.
+This local refresh does not close the issue or milestone.
+
+- [x] Direct Runway, BFL (including Kontext editing and output-megapixel quotes), Stability,
+  Magnific, OpenAI Audio and Deepgram adapters (#25, #33, #36, #38–#40, #1060, #1062).
+- [x] Scoped fal routes for Luma, MiniMax media, Pika, LTX, Grok Imagine, Alibaba, Ideogram,
+  Recraft, Topaz, Rodin, Hunyuan3D and HeyGen (#26–#27, #29–#32, #34–#35, #37, #41–#43).
+  Pika keyframes are implemented; its removed text-to-video route is not offered (#1061).
+- [x] Gemini API text, Azure deployment cards, Bedrock's OpenAI route, Google Cloud Gemini
+  images and Hugging Face text (#44–#48); separate Bedrock Converse and Vertex chat follow-ups
+  have their own scope and evidence. The maintained LLM-layer decision is recorded (#489).
+- [x] Several ComfyUI servers with a default and per-server concurrency, plus hosted Comfy Cloud
+  profiles (#864–#865); partner/API nodes are refused by the Comfy Cloud route.
+- [x] Speech previews reach desktop, browser playback and CLI partial-progress reporting (#1070).
+- [x] Quote uncertainty remains explicit: BFL has verified scoped quotes; HeyGen and Magnific
+  keep unknown-price admission where published data cannot establish a monetary bound (#1062).
+- [x] Retired Sora is excluded, with the decline recorded separately from completed work (#28).
+- [ ] Publish the documentation refresh and reconcile #382's GitHub state. No new release or
+  paid live verification follows from this checklist.
 
 ### M10 sharing and collaboration
 
@@ -817,7 +878,8 @@ M10's feature and exit-criterion checklist (#381 closes the documentation follow
 ## 8. First steps (M0 checklist and M1 hand-off)
 
 M0 is complete; the M1 checklist and exit evidence are in §7 above. These were the initial
-workspace steps, not an outstanding list of canvas features.
+workspace steps, not an outstanding list of canvas features. Provider-batch implementation and
+remaining follow-ups are recorded in §7 and the current [roadmap](../ROADMAP.md).
 
 - [x] `Cargo.toml` workspace with the settings in §5; `rustfmt.toml`, `clippy.toml`,
       `.cargo/config.toml`, `.config/nextest.toml`

@@ -41,6 +41,11 @@ fn the_reader_pages_with_keys_and_buttons_without_editing_the_document() {
     assert_eq!(page(&h), Some(0));
     assert!(h.query_by_label_contains("page 1 of 3").is_some());
     crate::app::panel_check::check_open_panels(&h, "PDF reader");
+    crate::app::panel_check::escape_panel(&mut h, egui::Id::new("pdf_reader"), "pdf-reader-open");
+    assert!(h.state().reader.is_none());
+    h.state_mut().open_reader(PDF);
+    h.run();
+    assert_eq!(page(&h), Some(0));
     h.key_press(egui::Key::ArrowRight);
     h.run();
     assert_eq!(page(&h), Some(1));
@@ -60,6 +65,9 @@ fn the_reader_pages_with_keys_and_buttons_without_editing_the_document() {
     h.run();
     assert_eq!(page(&h), Some(0));
     assert_eq!(h.state().session.revision(), revision, "paging is view state");
+    crate::app::panel_check::close_panel(&mut h, egui::Id::new("pdf_reader"), "pdf-reader");
+    assert!(h.state().reader.is_none());
+    assert_eq!(h.state().session.revision(), revision, "closing the reader is view state");
 }
 
 #[test]
@@ -73,7 +81,7 @@ fn a_page_and_its_text_become_new_nodes_each_one_undo_step() {
     h.get_by_label("New Text node from page").click();
     h.run();
     let all = nodes(&h);
-    assert_eq!(all.len(), before + 1, "{:?}", h.state().notice);
+    assert_eq!(all.len(), before + 1, "{:?}", h.state().notice());
     // The new node is selected.
     let [made] = h.state().selection.nodes().iter().copied().collect::<Vec<_>>()[..] else { panic!("one node selected") };
     let text = all.iter().find(|node| node.id == made).unwrap();
@@ -118,7 +126,7 @@ fn opened_from_pdf_to_images_it_sets_the_page_range_undoably() {
         let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&PAGES).unwrap().clone();
         (node.params.get("first").cloned(), node.params.get("last").cloned())
     };
-    assert_eq!(range(&h), (Some(Value::Unsigned(Unsigned(2))), Some(Value::Unsigned(Unsigned(2)))), "{:?}", h.state().notice);
+    assert_eq!(range(&h), (Some(Value::Unsigned(Unsigned(2))), Some(Value::Unsigned(Unsigned(2)))), "{:?}", h.state().notice());
     h.key_press(egui::Key::End);
     h.run();
     h.get_by_label("End here").click();
@@ -192,7 +200,7 @@ fn text_dragged_over_on_the_page_becomes_a_text_node() {
     h.get_by_label("New Text node from selection").click();
     h.run();
     let all = nodes(&h);
-    assert_eq!(all.len(), before + 1, "{:?}", h.state().notice);
+    assert_eq!(all.len(), before + 1, "{:?}", h.state().notice());
     let [made] = h.state().selection.nodes().iter().copied().collect::<Vec<_>>()[..] else { panic!("one node selected") };
     assert_eq!(all.iter().find(|node| node.id == made).unwrap().params.get("text"), Some(&Value::Text("Middle page".into())));
     // A drag over the empty bottom right takes nothing.
@@ -201,7 +209,7 @@ fn text_dragged_over_on_the_page_becomes_a_text_node() {
     h.run();
     let after = nodes(&h);
     let texts = |nodes: &[Node]| nodes.iter().filter(|node| node.kind == "source.text").count();
-    assert!(texts(&after) == texts(&all) || after.iter().any(|node| node.params.get("text") == Some(&Value::Text(String::new()))), "{:?}", h.state().notice);
+    assert!(texts(&after) == texts(&all) || after.iter().any(|node| node.params.get("text") == Some(&Value::Text(String::new()))), "{:?}", h.state().notice());
     assert!(!after.iter().any(|node| node.id != made && node.params.get("text") == Some(&Value::Text("Middle page".into()))));
 }
 

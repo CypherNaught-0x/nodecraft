@@ -37,7 +37,7 @@ impl NodeCraftApp {
             match self.dispatch_navigation(ctx, id, &self.palette_command_params(id)) {
                 Ok(_) => true,
                 Err(error) => {
-                    self.notice = Some(error.message);
+                    self.notices.report(error);
                     false
                 }
             }

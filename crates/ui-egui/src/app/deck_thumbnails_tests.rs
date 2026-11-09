@@ -194,7 +194,7 @@ fn deck695_real_duplicate_and_paste_follow_copied_sources_as_one_undo_step() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::D);
     h.run_steps(3);
     let selected = h.state().selection.nodes();
-    assert_eq!(selected.len(), 3, "{:?}", h.state().notice);
+    assert_eq!(selected.len(), 3, "{:?}", h.state().notice());
     for source in selected_deck_sources(&h) {
         assert!(selected.contains(&source));
         assert!(![IMAGE, TEXT].contains(&source));
@@ -210,7 +210,7 @@ fn deck695_real_duplicate_and_paste_follow_copied_sources_as_one_undo_step() {
     h.event(egui::Event::Paste(text));
     h.run_steps(3);
     let selected = h.state().selection.nodes();
-    assert_eq!(selected.len(), 3, "{:?}", h.state().notice);
+    assert_eq!(selected.len(), 3, "{:?}", h.state().notice());
     for source in selected_deck_sources(&h) {
         assert!(selected.contains(&source));
         assert!(![IMAGE, TEXT].contains(&source));

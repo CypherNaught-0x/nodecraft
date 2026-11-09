@@ -12,6 +12,7 @@
 //! followed again once their provider is set up ([`Runs::resume_waiting`]), and quitting leaves
 //! running jobs at the provider instead of cancelling them.
 use super::generate::RunKind;
+use crate::notices::{NoticeKind, RunEvent};
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
@@ -243,7 +244,7 @@ pub(super) struct Tick {
     /// A card stopped waiting for its provider without being quoted (it's on another canvas).
     pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
-    pub notice: Option<String>,
+    pub notice: Option<(NoticeKind, String)>,
     /// Providers answered `run.estimate` requests (#663), or they couldn't ask them.
     pub estimated: Vec<Estimated>,
     /// A Soul ID training was recorded, so the account's Soul IDs are worth fetching again (#680).
@@ -751,7 +752,9 @@ impl Runs {
                 self.waiting = None;
             }
         }
-        let mut notices: Vec<String> = self.journal_problem.take().into_iter().collect();
+        // Each run event says what kind of notice it is in one place, `NoticeKind::of_run`.
+        let mut notices: Vec<(NoticeKind, String)> =
+            self.journal_problem.take().map(|problem| (NoticeKind::of_run(RunEvent::Unsaved), problem)).into_iter().collect();
         for notice in self.host.pump(session) {
             match notice {
                 RunNotice::Started { canvas, nodes } => {
@@ -768,25 +771,21 @@ impl Runs {
                     self.failed.remove(&(canvas, node));
                 }
                 RunNotice::Failed { canvas, node, reason } | RunNotice::Unaccounted { canvas, node, reason } => {
-                    notices.push(format!("A run failed: {reason}"));
+                    notices.push((NoticeKind::of_run(RunEvent::Failed), format!("A run failed: {reason}")));
                     self.failed.insert((canvas, node), reason);
                 }
                 RunNotice::Placed { canvas, node } => {
-                    notices.push("The held result is on the canvas.".into());
+                    notices.push((NoticeKind::of_run(RunEvent::Placed), "The held result is on the canvas.".into()));
                     self.failed.remove(&(canvas, node));
                 }
-                RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
-                RunNotice::Unsaved { reason } => notices.push(format!("Runs can't be kept for a restart: {reason}")),
+                RunNotice::Refused { reason } => notices.push((NoticeKind::of_run(RunEvent::Refused), format!("The run didn't start: {reason}"))),
+                RunNotice::Unsaved { reason } => notices.push((NoticeKind::of_run(RunEvent::Unsaved), format!("Runs can't be kept for a restart: {reason}"))),
                 RunNotice::Estimated { request, unquoted, .. } => tick.estimated.push(Estimated::Answered { request, unquoted }),
                 RunNotice::NotEstimated { request, reason } => tick.estimated.push(Estimated::Failed { request, reason }),
                 RunNotice::Finished { .. } => {}
             }
         }
-        // The first says why; the rest are on their cards.
-        tick.notice = notices.first().map(|first| match notices.len().saturating_sub(1) {
-            0 => first.clone(),
-            more => format!("{first} (and {more} more)"),
-        });
+        tick.notice = headline(&notices);
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
@@ -1103,9 +1102,30 @@ fn adapters_of(session: &Session, canvas: CanvasId, settings: &ProviderSettings)
     (adapters, expanded.inner)
 }
 
+/// One notice for a tick's run events: as severe as the worst, in the words of the first event of
+/// that kind; the rest are on their cards.
+fn headline(notices: &[(NoticeKind, String)]) -> Option<(NoticeKind, String)> {
+    let kind = notices.iter().map(|(kind, _)| *kind).max()?;
+    let (_, first) = notices.iter().find(|(each, _)| *each == kind)?;
+    Some(match notices.len().saturating_sub(1) {
+        0 => (kind, first.clone()),
+        more => (kind, format!("{first} (and {more} more)")),
+    })
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod plugin_maker_tests {
     use super::*;
+
+    #[test]
+    fn a_batched_run_notice_leads_with_its_worst_event() {
+        let notices = [
+            (NoticeKind::of_run(RunEvent::Placed), "The held result is on the canvas.".to_owned()),
+            (NoticeKind::of_run(RunEvent::Failed), "A run failed: over budget".to_owned()),
+        ];
+        assert_eq!(headline(&notices), Some((NoticeKind::Error, "A run failed: over budget (and 1 more)".to_owned())));
+        assert_eq!(headline(&[]), None);
+    }
 
     #[test]
     fn a_plugin_provider_runs_only_while_the_session_publishes_it() {
@@ -1204,7 +1224,10 @@ mod plugin_maker_tests {
         runs.resume_waiting(&session, &settings);
         assert!(!runs.has_waiting());
         let tick = runs.tick(&mut session, C);
-        assert_eq!(tick.notice.as_deref(), Some("A run failed: it couldn't be followed after a restart: its plugin is no longer enabled or granted"));
+        assert_eq!(
+            tick.notice.as_ref().map(|(kind, text)| (*kind, text.as_str())),
+            Some((NoticeKind::Error, "A run failed: it couldn't be followed after a restart: its plugin is no longer enabled or granted"))
+        );
         assert!(runs.failure(C, N).is_some());
         assert!(asked.lock().unwrap().is_empty(), "no provider was asked for: {:?}", asked.lock().unwrap());
         let saved = journal.load().unwrap().unwrap();

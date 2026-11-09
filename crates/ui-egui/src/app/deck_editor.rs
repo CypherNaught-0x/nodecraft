@@ -164,7 +164,7 @@ fn gap_at(rows: &[Rect], y: f32) -> usize {
 
 impl NodeCraftApp {
     pub(super) fn open_deck_editor(&mut self, node: NodeId) {
-        self.notice = None;
+        self.notices.clear();
         self.selection.only(node);
         self.deck_editor = Some(DeckEditor::new(self.canvas, node));
     }
@@ -180,11 +180,15 @@ impl NodeCraftApp {
                 params.insert("expected_revision".into(), json!(expected));
             }
             match self.session.dispatch(command, &params) {
-                Ok(_) => self.notice = None,
+                Ok(_) => self.notices.clear(),
                 Err(error) => {
                     // The engine's wording tells an agent to list again; here the next frame does.
                     let conflict = error.kind == nodecraft_types::ErrorKind::Conflict && command.starts_with("deck.");
-                    self.notice = Some(if conflict { "The deck changed meanwhile; try again.".into() } else { error.message });
+                    if conflict {
+                        self.notices.warning("The deck changed meanwhile; try again.");
+                    } else {
+                        self.notices.report(error);
+                    }
                     break;
                 }
             }
@@ -248,7 +252,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| listing(v).ok_or_else(|| "The deck's slides can't be read.".to_owned())) {
                 Ok(deck) => editor.listing = Some((revision, deck)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -320,7 +324,7 @@ impl NodeCraftApp {
         let mut present = false;
         // Where an export goes: (as one PDF, the slides as PNGs).
         let mut export: Option<(bool, Vec<String>)> = None;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest().cloned();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let frame_params = FrameParams {
@@ -331,7 +335,7 @@ impl NodeCraftApp {
             colour: Some(Value::Text(deck.background.clone())),
         };
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
-        egui::Modal::new(egui::Id::new("deck_editor")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("deck_editor"), "Slides editor").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             let size = (content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0));
             ui.set_min_size(size);
             ui.set_max_size(size);
@@ -371,7 +375,7 @@ impl NodeCraftApp {
                         commands.push(("edit.undo", json!({})));
                     }
                     if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
+                        crate::notices::inline_notice(ui, &t, notice);
                     }
                 });
             });
@@ -452,8 +456,8 @@ impl NodeCraftApp {
         editor.listing = Some((revision, deck));
         self.deck_run(listed, commands);
         #[cfg(not(target_arch = "wasm32"))]
-        if cancelled_font && self.notice.is_none() {
-            self.notice = Some("The deck changed while choosing a font; choose the font file again.".into());
+        if cancelled_font && self.notices.is_empty() {
+            self.notices.warning("The deck changed while choosing a font; choose the font file again.");
         }
         if let Some((pdf, slides)) = export {
             let stem: String = node.title.chars().filter(|c| c.is_alphanumeric() || matches!(c, ' ' | '-' | '_')).take(48).collect();

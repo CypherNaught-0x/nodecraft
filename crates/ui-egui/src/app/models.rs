@@ -269,13 +269,13 @@ impl NodeCraftApp {
                     }
                     Outcome::Workflow { canvas, id } => match self.place_workflow(&choice, (canvas, id), &t) {
                         Ok(()) => {
-                            self.notice = Some("Placed a copy of the imported workflow beside the card. The card itself is unchanged.".into());
+                            self.notices.success("Placed a copy of the imported workflow beside the card. The card itself is unchanged.");
                             close = true;
                         }
                         Err(error) => choice.error = Some(error.message),
                     },
                     Outcome::RefreshServer => match self.session.dispatch("comfy.nodes.refresh", &json!({})) {
-                        Ok(_) => self.notice = Some("Reading the ComfyUI server's models…".into()),
+                        Ok(_) => self.notices.info("Reading the ComfyUI server's models…"),
                         Err(error) => choice.error = Some(error.message),
                     },
                 },
@@ -358,14 +358,11 @@ impl NodeCraftApp {
             };
             match self.session.dispatch(command, &request) {
                 Ok(_) => {
-                    self.notice = Some(
-                        if preview.targets.iter().any(|target| target.changed) {
-                            "Model settings changed. Review the next run's quote before starting it."
-                        } else {
-                            "Model settings already match this choice."
-                        }
-                        .into(),
-                    );
+                    if preview.targets.iter().any(|target| target.changed) {
+                        self.notices.warning("Model settings changed. Review the next run's quote before starting it.");
+                    } else {
+                        self.notices.info("Model settings already match this choice.");
+                    }
                     close = true;
                 }
                 Err(error) => choice.error = Some(error.message),

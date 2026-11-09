@@ -24,11 +24,23 @@ pub enum Icon {
     Apps,
     Cloud,
     Plug,
+    Info,
+    Success,
+    Warning,
+    Error,
+    Close,
     File,
     Tag,
+    Clear,
+    Previous,
+    Next,
 }
 
 const ASSETS: &[(&str, &[u8])] = &[
+    ("x", include_bytes!("../../../assets/icons/tabler/x.svg")),
+    ("filter-off", include_bytes!("../../../assets/icons/tabler/filter-off.svg")),
+    ("chevron-left", include_bytes!("../../../assets/icons/tabler/chevron-left.svg")),
+    ("chevron-right", include_bytes!("../../../assets/icons/tabler/chevron-right.svg")),
     ("table", include_bytes!("../../../assets/icons/tabler/table.svg")),
     ("affiliate", include_bytes!("../../../assets/icons/tabler/affiliate.svg")),
     ("components", include_bytes!("../../../assets/icons/tabler/components.svg")),
@@ -46,6 +58,10 @@ const ASSETS: &[(&str, &[u8])] = &[
     ("folder-open", include_bytes!("../../../assets/icons/tabler/folder-open.svg")),
     ("device-floppy", include_bytes!("../../../assets/icons/tabler/device-floppy.svg")),
     ("plug-connected", include_bytes!("../../../assets/icons/tabler/plug-connected.svg")),
+    ("info-circle", include_bytes!("../../../assets/icons/tabler/info-circle.svg")),
+    ("circle-check", include_bytes!("../../../assets/icons/tabler/circle-check.svg")),
+    ("alert-triangle", include_bytes!("../../../assets/icons/tabler/alert-triangle.svg")),
+    ("alert-circle", include_bytes!("../../../assets/icons/tabler/alert-circle.svg")),
     ("file", include_bytes!("../../../assets/icons/tabler/file.svg")),
     ("tag", include_bytes!("../../../assets/icons/tabler/tag.svg")),
 ];
@@ -64,7 +80,7 @@ fn catalog() -> &'static SvgIconSet {
 }
 
 impl Icon {
-    pub const ALL: [Self; 19] = [
+    pub const ALL: [Self; 27] = [
         Self::Search,
         Self::Comments,
         Self::Key,
@@ -82,8 +98,16 @@ impl Icon {
         Self::Apps,
         Self::Cloud,
         Self::Plug,
+        Self::Info,
+        Self::Success,
+        Self::Warning,
+        Self::Error,
+        Self::Close,
         Self::File,
         Self::Tag,
+        Self::Clear,
+        Self::Previous,
+        Self::Next,
     ];
 
     pub fn name(self) -> &'static str {
@@ -105,8 +129,16 @@ impl Icon {
             Self::Apps => "apps",
             Self::Cloud => "cloud",
             Self::Plug => "plug-connected",
+            Self::Info => "info-circle",
+            Self::Success => "circle-check",
+            Self::Warning => "alert-triangle",
+            Self::Error => "alert-circle",
+            Self::Close => "x",
             Self::File => "file",
             Self::Tag => "tag",
+            Self::Clear => "filter-off",
+            Self::Previous => "chevron-left",
+            Self::Next => "chevron-right",
         }
     }
 
@@ -129,8 +161,16 @@ impl Icon {
             Self::Apps => "Open as app",
             Self::Cloud => "Providers",
             Self::Plug => "Automation",
+            Self::Info => "Information",
+            Self::Success => "Done",
+            Self::Warning => "Warning",
+            Self::Error => "Error",
+            Self::Close => "Close",
             Self::File => "File",
             Self::Tag => "Tag filter",
+            Self::Clear => "Clear filter",
+            Self::Previous => "Previous",
+            Self::Next => "Next",
         }
     }
 

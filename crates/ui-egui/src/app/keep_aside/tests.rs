@@ -104,7 +104,7 @@ fn the_first_frame_shows_the_keep_aside_and_frames_go_on_while_it_is_held() {
     let mut h = launch(&dir, &held.spawn());
     // The first frame: the window is up, and nothing has been read or written yet.
     h.step();
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_some(), "the first frame shows the keep-aside");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_some(), "the first frame shows the keep-aside");
     assert!(h.query_by_label("Decide later").is_some());
     let started = Instant::now();
     for _ in 0..30 {
@@ -123,8 +123,8 @@ fn the_first_frame_shows_the_keep_aside_and_frames_go_on_while_it_is_held() {
 
     held.release();
     settle(&mut h);
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_none());
-    assert!(h.query_by_label("Recover unsaved work?").is_some(), "then the question is asked");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some(), "then the question is asked");
     assert!(h.query_by_label_contains("1 unsaved change to").is_some());
     assert!(h.state().session.file_status().available, "and the session owns the journal");
     assert_eq!(dir.copies(), ["session.journal.unrecovered-1"], "no partial copy is left");
@@ -138,7 +138,7 @@ fn recover_after_a_background_keep_aside_brings_the_work_back() {
     crash(&dir);
     let mut h = launch(&dir, &thread_spawn());
     settle(&mut h);
-    assert!(h.query_by_label("Recover unsaved work?").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     h.get_by_label("Recover").click();
     let deadline = Instant::now() + Duration::from_secs(20);
     while h.state().session.file_status().operation.is_some() || h.state().recovery.is_some() {
@@ -163,7 +163,7 @@ fn decide_later_keeps_every_byte_and_leaves_the_journal_for_the_next_launch() {
     assert!(h.state().keep_aside.as_ref().is_some_and(|job| job.cancelling()), "the cancel was asked for");
     held.release();
     settle(&mut h);
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.contains("offers it again the next time it starts"), "{notice}");
     assert!(!h.state().session.file_status().available, "this window can't save, and says so");
     assert_eq!(std::fs::read(dir.journal()).unwrap(), before, "the journal is as it was");
@@ -173,7 +173,7 @@ fn decide_later_keeps_every_byte_and_leaves_the_journal_for_the_next_launch() {
     // The next launch keeps it aside as usual.
     let mut next = launch(&dir, &thread_spawn());
     settle(&mut next);
-    assert!(next.query_by_label("Recover unsaved work?").is_some());
+    assert!(next.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), before);
 }
 
@@ -205,7 +205,7 @@ fn quitting_while_it_is_held_or_dropped_keeps_every_byte() {
     h.step();
     held.drop_jobs();
     settle(&mut h);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("stopped before it finished")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("stopped before it finished")), "{:?}", h.state().notice());
     assert_eq!(std::fs::read(dir.journal()).unwrap(), before);
     assert!(dir.copies().is_empty());
 }
@@ -225,7 +225,7 @@ fn quitting_after_it_finished_but_before_a_frame_took_it_in_decides_the_journal_
     // The kept copy is offered next time, and the live journal isn't kept a second time.
     let mut next = launch(&dir, &thread_spawn());
     settle(&mut next);
-    assert!(next.query_by_label("Recover unsaved work?").is_some());
+    assert!(next.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     assert_eq!(dir.copies(), ["session.journal.unrecovered-1"]);
 }
 
@@ -242,10 +242,10 @@ fn a_damaged_earlier_copy_is_skipped_off_the_ui_thread() {
     let held = Held::default();
     let mut h = launch(&dir, &held.spawn());
     h.step();
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_some(), "the window is up before any copy is read");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_some(), "the window is up before any copy is read");
     held.release();
     settle(&mut h);
-    assert!(h.query_by_label("Recover unsaved work?").is_some(), "the copy that replays is offered");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some(), "the copy that replays is offered");
     assert_eq!(h.state().recovery.as_ref().map(|offer| offer.kept.clone()), Some(dir.0.join("session.journal.unrecovered-1")));
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-2")).unwrap(), b"not a journal", "the damaged copy is left for the person");
 }
@@ -404,7 +404,7 @@ fn until_idle(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while h.state().session.file_status().operation.is_some() || h.state().files.owns_input() {
         h.step();
-        assert!(Instant::now() < deadline, "the file operation never settled: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "the file operation never settled: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(1));
     }
     h.step();
@@ -425,7 +425,7 @@ fn recovered_media_from_the_reused_replay_save_and_save_again() {
     h.get_by_label("Recover").click();
     h.step();
     until_idle(&mut h);
-    assert!(h.state().recovery.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().recovery.is_none(), "{:?}", h.state().notice());
     assert!(hashes.iter().all(|hash| readable(h.state(), hash)));
     let file = dir.0.join("recovered.ncraft");
     for round in 0..3 {
@@ -450,7 +450,7 @@ fn start_from_last_save_opens_beside_the_reused_replays_media() {
     h.get_by_label("Start from last save").click();
     h.step();
     until_idle(&mut h);
-    assert!(h.state().recovery.is_none(), "the open succeeded: {:?}", h.state().notice);
+    assert!(h.state().recovery.is_none(), "the open succeeded: {:?}", h.state().notice());
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file)));
     assert!(hashes.iter().take(3).all(|hash| readable(h.state(), hash)), "the saved media open");
     assert!(dir.copies().is_empty(), "the discarded copy is gone");
@@ -471,7 +471,7 @@ fn decide_later_while_only_looking_for_earlier_copies_still_takes_the_journal_ov
     settle(&mut h);
     assert!(h.state().session.file_status().available, "the live journal held nothing, so the window can save");
     assert!(h.state().recovery.is_none());
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("offered the next time")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("offered the next time")), "{:?}", h.state().notice());
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), good, "the copy stays");
     let canvas = h.state().canvas;
     h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": nodecraft_graph::Node::new(ADDED, "source.text")})).unwrap();

@@ -14,7 +14,7 @@ fn scene(builder: egui_kittest::HarnessBuilder<View>, theme: crate::theme::Theme
         wiring = wiring.with(Modality::Image, images);
     }
     let mut picker = ModelPicker::new(&catalog, &wiring, |_| Ok(())).unwrap();
-    picker.set_query("Hunyuan").unwrap();
+    picker.set_query("Hunyuan3D V3").unwrap();
     let state = View { catalog, picker, outcome: Outcome::Open };
     let mut h = builder.with_size(egui::vec2(1000.0, 700.0)).build_ui_state(
         move |ui, state: &mut View| {

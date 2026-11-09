@@ -191,7 +191,7 @@ impl NodeCraftApp {
             return;
         }
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("recovery_offer")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("recovery_offer"), "Recover unsaved work?").show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             ui.heading("Recover unsaved work?");
             match &offer.found {
@@ -261,8 +261,8 @@ impl NodeCraftApp {
         let replaced_unsaved =
             offer.offered_over.as_ref().is_some_and(|lineage| !self.session.is_current_document(lineage)) && self.session.file_status().dirty;
         if matches!(choice, Choice::Recover | Choice::StartFromLastSave) && (self.session.can_undo() || self.session.can_redo() || replaced_unsaved) {
-            self.notice =
-                Some(format!("The current project has unsaved work. The recovery copy was kept as {name}; save the current work before recovering it."));
+            self.notices
+                .warning(format!("The current project has unsaved work. The recovery copy was kept as {name}; save the current work before recovering it."));
             return;
         }
 
@@ -298,7 +298,7 @@ impl NodeCraftApp {
         log::info!("recovery: recovered {changes} changes from {name}");
         self.after_document_replaced();
         let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or(title, |n| n.to_string_lossy().into_owned());
-        self.notice = Some(if offer.location.is_some() {
+        self.notices.success(if offer.location.is_some() {
             format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
         } else {
             format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
@@ -313,10 +313,12 @@ impl NodeCraftApp {
     pub(super) fn recovery_not_restored(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
         let name = offer.kept_name();
         log::warn!("recovery: the work wasn't recovered; kept {name}");
-        self.notice = Some(match failed {
-            super::file_dialogs::OpenFailed::Cancelled => format!("Recovering was cancelled. The unsaved work was kept as {name} in the recovery folder."),
-            failed => format!("That work couldn't be recovered: {}. It was kept as {name} in the recovery folder.", failed.clause()),
-        });
+        match failed {
+            super::file_dialogs::OpenFailed::Cancelled => {
+                self.notices.info(format!("Recovering was cancelled. The unsaved work was kept as {name} in the recovery folder."))
+            }
+            failed => self.notices.error(format!("That work couldn't be recovered: {}. It was kept as {name} in the recovery folder.", failed.clause())),
+        }
         if same_session && self.recovery.is_none() {
             self.recovery = Some(offer);
         }
@@ -326,11 +328,13 @@ impl NodeCraftApp {
     /// only now is the selected copy discarded.
     pub(super) fn started_from_last_save(&mut self, offer: &RecoveryOffer) {
         let name = offer.kept_name();
-        self.notice = Some(match offer.remove_selected() {
-            Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
-            Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
-            Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
-        });
+        match offer.remove_selected() {
+            Ok(()) if offer.location.is_some() => self.notices.info("Started from the last save; the selected unsaved recovery copy was discarded."),
+            Ok(()) => self.notices.info("The selected unsaved recovery copy was discarded."),
+            Err(error) => {
+                self.notices.warning(format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."))
+            }
+        }
     }
 
     /// The last save didn't open (it failed, was cancelled, or the open ended without an
@@ -338,12 +342,14 @@ impl NodeCraftApp {
     pub(super) fn last_save_not_opened(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
         let name = offer.kept_name();
         log::warn!("recovery: the last save didn't open; kept {name}");
-        self.notice = Some(match failed {
+        match failed {
             super::file_dialogs::OpenFailed::Cancelled => {
-                format!("Opening the last save was cancelled. Unsaved work was kept as {name} in the recovery folder.")
+                self.notices.info(format!("Opening the last save was cancelled. Unsaved work was kept as {name} in the recovery folder."))
             }
-            failed => format!("The last save couldn't be opened: {}. Unsaved work was kept as {name} in the recovery folder.", failed.clause()),
-        });
+            failed => {
+                self.notices.error(format!("The last save couldn't be opened: {}. Unsaved work was kept as {name} in the recovery folder.", failed.clause()))
+            }
+        }
         if same_session && self.recovery.is_none() {
             self.recovery = Some(offer);
         }
@@ -385,7 +391,7 @@ impl NodeCraftApp {
         {
             let name = recovered.offer.kept_name();
             log::warn!("recovery: saved work's safety copy couldn't be removed: {error}");
-            self.notice = Some(format!("The work was saved, but its recovery copy remains as {name}."));
+            self.notices.warning(format!("The work was saved, but its recovery copy remains as {name}."));
         }
     }
 

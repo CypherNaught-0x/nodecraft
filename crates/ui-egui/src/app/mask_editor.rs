@@ -149,7 +149,7 @@ impl NodeCraftApp {
             return;
         };
         let Some(port) = image_output(source) else {
-            self.notice = Some("This card has no single image to paint over.".into());
+            self.notices.warning("This card has no single image to paint over.");
             return;
         };
         let revision = self.session.revision();
@@ -159,7 +159,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edge", node, revision, 0)),
             ids::edge_id(document, ("mask-edge", node, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let pos = mask_cmds::beside(source.pos, 1.0);
@@ -167,22 +167,22 @@ impl NodeCraftApp {
             json!({"canvas": self.canvas, "from": Endpoint { node, port: port.into() }, "expand": expand, "mask": mask, "edges": [first, second], "pos": pos});
         match self.session.dispatch("mask.create", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(mask);
                 self.mask_editor = Some(MaskEditor::new(self.canvas, mask));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
     fn mask_dispatch(&mut self, command: &str, params: &serde_json::Value) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 true
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -213,85 +213,93 @@ impl NodeCraftApp {
         let mut create = false;
         let canvas = self.canvas;
         let id = editor.mask;
-        let modal = egui::Modal::new(egui::Id::new("mask_editor")).show(&ctx, |ui| {
-            ui.set_width(t.viewer_width);
-            ui.heading("Mask");
-            drift_banner(ui, &target, canvas, id, &t, &mut commands);
-            ui.horizontal_wrapped(|ui| {
-                ui.selectable_value(&mut editor.erase, false, "Brush");
-                ui.selectable_value(&mut editor.erase, true, "Eraser");
-                ui.add(egui::Slider::new(&mut editor.size, BRUSH).logarithmic(true).text("Size"));
-                ui.add(egui::Slider::new(&mut editor.hardness, 0.0..=1.0).text("Hardness"));
-                if ui.add_enabled(!target.strokes.strokes.is_empty(), egui::Button::new("Undo stroke")).clicked() {
-                    let mut fewer = target.strokes.strokes.clone();
-                    fewer.pop();
-                    commands.push(("node.mask_set", json!({"canvas": canvas, "id": id, "strokes": fewer})));
-                }
-                if ui.add_enabled(!target.strokes.strokes.is_empty(), egui::Button::new("Clear")).clicked() {
-                    commands.push(("node.mask_set", json!({"canvas": canvas, "id": id, "strokes": []})));
-                }
-            });
-            ui.horizontal_wrapped(|ui| {
-                for (name, label, on) in [("transparent", "Include transparent areas", target.options.transparent), ("invert", "Invert", target.options.invert)]
-                {
-                    let mut value = on;
-                    if ui.checkbox(&mut value, label).changed() {
-                        commands.push(("node.param_set", json!({"canvas": canvas, "id": id, "name": name, "value": param_json(Value::Bool(value))})));
-                    }
-                }
-            });
-            if let Some(expand) = target.expand {
+        // Content is in interface points: a 200% interface can have the same room as a
+        // small window. Scroll the editor rather than letting its fixed preview width or
+        // the controls around the image expand the modal beyond that room.
+        let room = (ctx.content_rect().size() - Vec2::splat((t.navigation_margin + t.card_padding) * 2.0)).max(Vec2::splat(1.0));
+        let width = t.viewer_width.min(room.x);
+        let modal = crate::floating::modal(&ctx, egui::Id::new("mask_editor"), "Mask editor").show(&ctx, |ui| {
+            ui.set_width(width);
+            egui::ScrollArea::vertical().id_salt("mask_editor_body").max_height(room.y).auto_shrink([false, true]).show(ui, |ui| {
+                ui.heading("Mask");
+                drift_banner(ui, &target, canvas, id, &t, &mut commands);
                 ui.horizontal_wrapped(|ui| {
-                    ui.label(egui::RichText::new("Expand canvas").color(t.text_muted));
-                    // Held while a control is in use; the document's margins otherwise.
-                    let mut margins = editor.margins.unwrap_or(target.margins);
-                    let (mut apply, mut held) = (false, false);
-                    for (side, value) in SIDE_LABELS.iter().zip(margins.iter_mut()) {
-                        let label = ui.label(*side);
-                        let r = ui.add(egui::DragValue::new(value).range(0..=mask::MAX_MARGIN).speed(4.0).suffix(" px")).labelled_by(label.id);
-                        apply |= r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
-                        held |= r.dragged() || r.has_focus();
+                    ui.selectable_value(&mut editor.erase, false, "Brush");
+                    ui.selectable_value(&mut editor.erase, true, "Eraser");
+                    ui.add(egui::Slider::new(&mut editor.size, BRUSH).logarithmic(true).text("Size"));
+                    ui.add(egui::Slider::new(&mut editor.hardness, 0.0..=1.0).text("Hardness"));
+                    if ui.add_enabled(!target.strokes.strokes.is_empty(), egui::Button::new("Undo stroke")).clicked() {
+                        let mut fewer = target.strokes.strokes.clone();
+                        fewer.pop();
+                        commands.push(("node.mask_set", json!({"canvas": canvas, "id": id, "strokes": fewer})));
                     }
-                    if apply && margins != target.margins {
-                        let [left, top, right, bottom] = margins;
-                        let margins = json!({"left": left, "top": top, "right": right, "bottom": bottom});
-                        commands.push(("mask.margins_set", json!({"canvas": canvas, "id": expand, "margins": margins})));
+                    if ui.add_enabled(!target.strokes.strokes.is_empty(), egui::Button::new("Clear")).clicked() {
+                        commands.push(("node.mask_set", json!({"canvas": canvas, "id": id, "strokes": []})));
                     }
-                    editor.margins = (held && !apply).then_some(margins);
                 });
-            }
-            let shown = editor.margins.unwrap_or(target.margins);
-            match image_size {
-                Some(size) => paint_area(ui, &mut editor, &target, size, shown, preview.as_ref(), &t, &mut commands),
-                None => {
-                    ui.label("Run the image card first: the mask is painted over its result.");
-                }
-            }
-            if let Some(warning) = &editor.warning {
-                ui.label(egui::RichText::new(warning).color(t.danger));
-            }
-            ui.horizontal_wrapped(|ui| {
-                ui.add(egui::TextEdit::singleline(&mut editor.prompt).hint_text("Describe the change").desired_width(t.viewer_width * 0.5));
-                let chosen = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());
-                let label = ui.label(egui::RichText::new("Model").color(t.text_muted));
-                egui::ComboBox::from_id_salt("mask_model")
-                    .selected_text(chosen.as_deref().unwrap_or("No model takes a mask"))
-                    .show_ui(ui, |ui| {
-                        for model in &models {
-                            if ui.selectable_label(chosen.as_ref() == Some(model), model).clicked() {
-                                editor.model = Some(model.clone());
-                            }
+                ui.horizontal_wrapped(|ui| {
+                    for (name, label, on) in
+                        [("transparent", "Include transparent areas", target.options.transparent), ("invert", "Invert", target.options.invert)]
+                    {
+                        let mut value = on;
+                        if ui.checkbox(&mut value, label).changed() {
+                            commands.push(("node.param_set", json!({"canvas": canvas, "id": id, "name": name, "value": param_json(Value::Bool(value))})));
                         }
-                    })
-                    .response
-                    .labelled_by(label.id);
-                let ready = !editor.prompt.trim().is_empty() && chosen.is_some();
-                create = ui
-                    .add_enabled(ready, egui::Button::new("Create edit"))
-                    .on_hover_text("Add a generation card that redraws the masked area")
-                    .on_disabled_hover_text("Describe the edit and choose a model first")
-                    .clicked();
-                close |= ui.button("Close").clicked();
+                    }
+                });
+                if let Some(expand) = target.expand {
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new("Expand canvas").color(t.text_muted));
+                        // Held while a control is in use; the document's margins otherwise.
+                        let mut margins = editor.margins.unwrap_or(target.margins);
+                        let (mut apply, mut held) = (false, false);
+                        for (side, value) in SIDE_LABELS.iter().zip(margins.iter_mut()) {
+                            let label = ui.label(*side);
+                            let r = ui.add(egui::DragValue::new(value).range(0..=mask::MAX_MARGIN).speed(4.0).suffix(" px")).labelled_by(label.id);
+                            apply |= r.drag_stopped() || r.lost_focus() || (r.changed() && !r.dragged() && !r.has_focus());
+                            held |= r.dragged() || r.has_focus();
+                        }
+                        if apply && margins != target.margins {
+                            let [left, top, right, bottom] = margins;
+                            let margins = json!({"left": left, "top": top, "right": right, "bottom": bottom});
+                            commands.push(("mask.margins_set", json!({"canvas": canvas, "id": expand, "margins": margins})));
+                        }
+                        editor.margins = (held && !apply).then_some(margins);
+                    });
+                }
+                let shown = editor.margins.unwrap_or(target.margins);
+                match image_size {
+                    Some(size) => paint_area(ui, &mut editor, &target, size, shown, preview.as_ref(), &t, &mut commands),
+                    None => {
+                        ui.label("Run the image card first: the mask is painted over its result.");
+                    }
+                }
+                if let Some(warning) = &editor.warning {
+                    ui.label(egui::RichText::new(warning).color(t.danger));
+                }
+                ui.horizontal_wrapped(|ui| {
+                    ui.add(egui::TextEdit::singleline(&mut editor.prompt).hint_text("Describe the change").desired_width(width * 0.5));
+                    let chosen = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());
+                    let label = ui.label(egui::RichText::new("Model").color(t.text_muted));
+                    egui::ComboBox::from_id_salt("mask_model")
+                        .selected_text(chosen.as_deref().unwrap_or("No model takes a mask"))
+                        .show_ui(ui, |ui| {
+                            for model in &models {
+                                if ui.selectable_label(chosen.as_ref() == Some(model), model).clicked() {
+                                    editor.model = Some(model.clone());
+                                }
+                            }
+                        })
+                        .response
+                        .labelled_by(label.id);
+                    let ready = !editor.prompt.trim().is_empty() && chosen.is_some();
+                    create = ui
+                        .add_enabled(ready, egui::Button::new("Create edit"))
+                        .on_hover_text("Add a generation card that redraws the masked area")
+                        .on_disabled_hover_text("Describe the edit and choose a model first")
+                        .clicked();
+                    close |= ui.button("Close").clicked();
+                });
             });
         });
         close |= modal.should_close();
@@ -317,7 +325,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 0)),
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return false;
         };
         let model = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());

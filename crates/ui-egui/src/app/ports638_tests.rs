@@ -74,7 +74,7 @@ fn dragging_to_each_new_input_updates_the_legacy_card_and_undo_restores_it() {
         let from = point(&h, source, Side::Output, "out");
         let to = point(&h, OLD, Side::Input, port);
         super::tests::wire_drag(&mut h, from, to);
-        assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice);
+        assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice());
         let canvas = h.state().session.document().canvases().get(&C).unwrap();
         assert!(canvas.edges().values().any(|e| e.from.node == source && e.to.node == OLD && e.to.port == port));
         let after = h.state().session.document().clone();
@@ -99,7 +99,7 @@ fn picking_up_a_wire_can_drop_on_a_legacy_cards_new_input() {
     let from = point(&h, OTHER, Side::Input, "audio");
     let to = point(&h, OLD, Side::Input, "audio");
     super::tests::wire_drag(&mut h, from, to);
-    assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice);
+    assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice());
     let canvas = h.state().session.document().canvases().get(&C).unwrap();
     assert_eq!(canvas.edges().len(), 1);
     assert_eq!(canvas.edges().get(&EdgeId::from_bytes([66; 16])).unwrap().to.node, OLD);

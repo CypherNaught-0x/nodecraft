@@ -116,7 +116,8 @@ impl NodeCraftApp {
         let mut go = None;
         for person in people.iter().take(MAX_AVATARS) {
             let side = t.presence_avatar;
-            let (rect, response) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::click());
+            // The hit square is at least `min_target`, the painted circle stays `side` (#1114).
+            let (rect, response) = ui.allocate_exact_size(egui::Vec2::splat(side.max(t.min_target)), egui::Sense::click());
             let color = color(t, person);
             ui.painter().circle_filled(rect.center(), side * 0.5, color);
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial(&person.name), egui::FontId::proportional(t.label_size), t.presence_ink);
@@ -144,11 +145,11 @@ impl NodeCraftApp {
     /// they have selected.
     fn go_to(&mut self, presence: &Presence) {
         let Some(canvas) = presence.canvas else {
-            self.notice = Some("They aren't on a canvas.".into());
+            self.notices.info("They aren't on a canvas.");
             return;
         };
         if !self.session.document().canvases().contains_key(&canvas) {
-            self.notice = Some("They're on a canvas you can't see.".into());
+            self.notices.info("They're on a canvas you can't see.");
             return;
         }
         self.open_canvas(canvas);

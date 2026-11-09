@@ -252,7 +252,7 @@ impl NodeCraftApp {
     pub(super) fn partial_intent(&mut self, id: NodeId, keep: bool) {
         if let Some(runs) = &mut self.runs {
             let done = if keep { runs.keep_partial(&mut self.session, self.canvas, id) } else { runs.discard_partial(self.canvas, id) };
-            self.notice = done.err().map(|error| error.message);
+            self.notices.outcome(done);
         }
     }
 
@@ -307,7 +307,7 @@ impl NodeCraftApp {
             if let Some(runs) = &mut self.runs
                 && runs.route(&mut self.session, self.canvas, &nodes, kind, &stale, &settings)? == super::runs::Route::Waiting
             {
-                self.notice = Some(super::runs::SETTING_UP.into());
+                self.notices.info(super::runs::SETTING_UP);
                 return Ok(());
             }
         }
@@ -315,7 +315,7 @@ impl NodeCraftApp {
         let value = self.session.dispatch(command, &request)?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
         if kind.whole() && quote.nothing() {
-            self.notice = Some(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN }.into());
+            self.notices.info(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN });
             return Ok(());
         }
         let request = kind.estimate_request(self.canvas, &nodes);
@@ -404,11 +404,13 @@ impl NodeCraftApp {
         if runs.is_busy() || runs.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
-        if (tick.ready.is_some() || tick.abandoned) && self.notice.as_deref() == Some(super::runs::SETTING_UP) {
-            self.notice = None;
+        if tick.ready.is_some() || tick.abandoned {
+            self.notices.dismiss_text(super::runs::SETTING_UP);
         }
-        if let Some(notice) = tick.notice {
-            self.notice = Some(notice);
+        if let Some((kind, notice)) = tick.notice {
+            // A run problem costs money if missed: it stays until dismissed, warnings too.
+            let notice = crate::notices::Notice::new(kind, notice);
+            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.from_run() } else { notice });
         }
         for estimated in tick.estimated {
             self.estimated(estimated);
@@ -422,7 +424,7 @@ impl NodeCraftApp {
         if let Some((nodes, kind)) = tick.ready
             && let Err(error) = self.request_runs(nodes, kind)
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
     }
 
@@ -452,94 +454,112 @@ impl NodeCraftApp {
             }
             _ => 0,
         };
-        let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
-            ui.set_width(t.dialog_width);
+        let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
+        let (mut open_keys, mut open_comfy) = (false, false);
+        let modal = crate::floating::modal(ui.ctx(), egui::Id::new("run_confirm"), confirm.kind.title()).show(ui.ctx(), |ui| {
+            ui.set_width(crate::floating::question_width(ui.ctx(), &t));
             ui.heading(confirm.kind.title());
-            let quote = &confirm.quote;
-            if stale {
-                ui.label("The canvas changed after this price was quoted. Nothing was started.");
-            } else if !quote.allowed {
-                ui.label("This run can't start:");
-                for reason in &quote.reasons {
-                    ui.label(reason);
+            // Keep the action row outside the details' scroll viewport. Explanations may
+            // include eight full-length reasons, provider estimates and recovery guidance.
+            let actions = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+            let heading = ui.min_rect().height();
+            let details = (crate::floating::question_height(ui.ctx(), &t) - heading - actions).max(1.0);
+            egui::ScrollArea::vertical().id_salt("run_quote_details").max_height(details).auto_shrink([false, true]).show(ui, |ui| {
+                // Nothing can generate until a provider is set up (#1119): say so, with the way there.
+                if !providers_ready {
+                    ui.label(egui::RichText::new(super::empty_canvas::NO_PROVIDER).color(t.stale));
+                    ui.horizontal(|ui| {
+                        open_keys = ui.button("Open API keys").clicked();
+                        open_comfy = ui.button("Open ComfyUI").clicked();
+                    });
                 }
-                if confirm.estimating.is_some() {
-                    ui.label(
-                        "Asking the provider for a price, which sends it this run's inputs (nothing is charged). The run is checked again when it answers.",
-                    );
-                }
-                if let Some(note) = &confirm.estimate_note {
-                    ui.label(note);
-                }
-            } else {
-                ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
-                if let Some(runs) = &runs {
-                    ui.label(runs);
-                }
-                if quote.waiting > 0 {
-                    ui.label(format!(
-                        "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
-                        quote.waiting,
-                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
-                    ));
-                }
-                if busy > 0 {
-                    ui.colored_label(
-                        t.danger,
-                        format!(
-                            "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
-                        ),
-                    );
-                }
-                if quote.reused > 0 {
-                    ui.label(format!("{} reused, free", quote.reused));
-                }
-                if quote.cached_only {
-                    ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
-                }
-                if !quote.complete {
-                    if quote.unpriced_jobs > 0 {
-                        ui.label(format!("{} job(s) are priced only while they run.", quote.unpriced_jobs));
+                let quote = &confirm.quote;
+                if stale {
+                    ui.label("The canvas changed after this price was quoted. Nothing was started.");
+                } else if !quote.allowed {
+                    ui.label("This run can't start:");
+                    for reason in &quote.reasons {
+                        ui.label(reason);
                     }
-                    ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
-                    ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
-                }
-                if confirm.estimating.is_some() {
-                    ui.label("Asking the provider for a price, which sends it this run's inputs (nothing is charged)…");
-                }
-                if quote.quoted > 0 {
-                    ui.label(format!("{} step(s) are priced by their provider's quote.", quote.quoted));
-                }
-                if let Some(note) = &confirm.estimate_note {
-                    ui.label(note);
-                }
-                if quote.alike > 0 {
-                    ui.colored_label(t.stale, ALIKE);
-                }
-                if quote.resumable {
-                    ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
-                }
-                if !quote.listed {
-                    ui.label("This run has more steps than can be reviewed here. Run it from the CLI or select fewer nodes.");
-                }
-                for reason in &quote.reasons {
-                    ui.label(reason);
-                }
-            }
-            if confirm.drafts {
-                ui.label(if confirm.kind.whole() {
-                    "Unsaved edits on cards are not part of this run."
+                    if confirm.estimating.is_some() {
+                        ui.label(
+                            "Asking the provider for a price, which sends it this run's inputs (nothing is charged). The run is checked again when it answers.",
+                        );
+                    }
+                    if let Some(note) = &confirm.estimate_note {
+                        ui.label(note);
+                    }
                 } else {
-                    "Unsaved edits on this card are not part of this run."
-                });
-            }
-            if let Some(error) = &confirm.error {
-                ui.colored_label(t.danger, error);
-                // The host may have taken the run before it failed, so the same price is never
-                // offered again from here; generating again quotes afresh.
-                ui.label("The run may have started. Check its results before generating again.");
-            }
-            ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
+                    if let Some(runs) = &runs {
+                        ui.label(runs);
+                    }
+                    if quote.waiting > 0 {
+                        ui.label(format!(
+                            "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
+                            quote.waiting,
+                            crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
+                        ));
+                    }
+                    if busy > 0 {
+                        ui.colored_label(
+                            t.danger,
+                            format!(
+                                "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
+                            ),
+                        );
+                    }
+                    if quote.reused > 0 {
+                        ui.label(format!("{} reused, free", quote.reused));
+                    }
+                    if quote.cached_only {
+                        ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
+                    }
+                    if !quote.complete {
+                        if quote.unpriced_jobs > 0 {
+                            ui.label(format!("{} job(s) are priced only while they run.", quote.unpriced_jobs));
+                        }
+                        ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
+                        ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
+                    }
+                    if confirm.estimating.is_some() {
+                        ui.label("Asking the provider for a price, which sends it this run's inputs (nothing is charged)…");
+                    }
+                    if quote.quoted > 0 {
+                        ui.label(format!("{} step(s) are priced by their provider's quote.", quote.quoted));
+                    }
+                    if let Some(note) = &confirm.estimate_note {
+                        ui.label(note);
+                    }
+                    if quote.alike > 0 {
+                        ui.colored_label(t.stale, ALIKE);
+                    }
+                    if quote.resumable {
+                        ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
+                    }
+                    if !quote.listed {
+                        ui.label("This run has more steps than can be reviewed here. Run it from the CLI or select fewer nodes.");
+                    }
+                    for reason in &quote.reasons {
+                        ui.label(reason);
+                    }
+                }
+                if confirm.drafts {
+                    ui.label(if confirm.kind.whole() {
+                        "Unsaved edits on cards are not part of this run."
+                    } else {
+                        "Unsaved edits on this card are not part of this run."
+                    });
+                }
+                if let Some(error) = &confirm.error {
+                    ui.colored_label(t.danger, error);
+                    // The host may have taken the run before it failed, so the same price is never
+                    // offered again from here; generating again quotes afresh.
+                    ui.label("The run may have started. Check its results before generating again.");
+                }
+            });
+            let quote = &confirm.quote;
+            ui.horizontal_wrapped(|ui| {
                 let failed = confirm.error.is_some();
                 if stale && !failed {
                     requote = ui.button("Quote again").clicked();
@@ -565,6 +585,19 @@ impl NodeCraftApp {
             self.budgets.open();
             close = true;
         }
+        if open_keys || open_comfy {
+            self.keys.open |= open_keys;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.comfy_server.open |= open_comfy;
+            }
+            // The browser build has no ComfyUI panel of its own: its providers panel sets servers up.
+            #[cfg(target_arch = "wasm32")]
+            if open_comfy && let Some(providers) = &mut self.browser_providers {
+                providers.open = true;
+            }
+            close = true;
+        }
         close |= modal.should_close();
         if start && busy == 0 && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;
@@ -577,7 +610,7 @@ impl NodeCraftApp {
             }
             match self.session.dispatch("run.start", &confirm.kind.start_request(confirm.canvas, &confirm.nodes, accept)) {
                 Ok(_) => {
-                    self.notice = None;
+                    self.notices.clear();
                     close = true;
                 }
                 Err(error) => confirm.error = Some(error.message),
@@ -585,7 +618,7 @@ impl NodeCraftApp {
         }
         if requote {
             if let Err(error) = self.request_runs(confirm.nodes, confirm.kind) {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
             return true;
         }
@@ -817,15 +850,15 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("prompt-assist", id, self.session.revision());
         let (Some(node), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         match self.session.dispatch("node.prompt_assist", &json!({"canvas": self.canvas, "node": id, "id": node, "edge": edge})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(node);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 

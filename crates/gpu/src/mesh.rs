@@ -120,6 +120,41 @@ impl GpuMesh {
         Ok(mesh)
     }
 
+    /// Uploads already packed and validated worker bytes. No geometry scan or CPU packing
+    /// occurs in paint; device allocation and write_buffer still cost proportional to bytes.
+    pub fn upload_prepared(device: &wgpu::Device, queue: &wgpu::Queue, data: &nodecraft_mesh_preview::Prepared) -> Result<Self, MeshUploadError> {
+        let [vertices, indices, edges] = data.buffers();
+        let counts = data.layout();
+        let index_count = counts.triangles.checked_mul(3).ok_or(MeshUploadError::TooLarge)?;
+        let max = device.limits().max_buffer_size;
+        for bytes in [vertices, indices, edges] {
+            if u64::try_from(bytes.len()).map_or(true, |n| n > max) {
+                return Err(MeshUploadError::TooLarge);
+            }
+        }
+        let buffer = |label: &str, bytes: &[u8], usage: wgpu::BufferUsages| {
+            let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+                label: Some(label),
+                size: bytes.len() as u64,
+                usage: usage | wgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            });
+            queue.write_buffer(&buffer, 0, bytes);
+            buffer
+        };
+        let (mesh, caught) = crate::scoped(device, || Self {
+            vertices: buffer("NodeCraft prepared vertices", vertices, wgpu::BufferUsages::VERTEX),
+            indices: buffer("NodeCraft prepared triangles", indices, wgpu::BufferUsages::INDEX),
+            index_count,
+            edges: (!edges.is_empty()).then(|| (buffer("NodeCraft prepared edges", edges, wgpu::BufferUsages::INDEX), counts.edge_words)),
+            bytes: data.bytes() as u64,
+        });
+        if caught {
+            return Err(MeshUploadError::TooLarge);
+        }
+        Ok(mesh)
+    }
+
     /// GPU memory the model's buffers take.
     pub fn bytes(&self) -> u64 {
         self.bytes
@@ -189,6 +224,17 @@ impl Orbit {
         let near = (distance - radius * 1.5).max(distance * 0.01);
         let far = distance + radius * 1.5;
         multiply(&perspective(FOV, aspect, near, far), &look_at(eye, center))
+    }
+
+    /// The existing camera's projection for finite model bounds, if its matrix is finite.
+    /// This is a preview capability check, not a geometry transform or camera rescaling.
+    /// A valid interchange mesh can lie outside this renderer's current numeric range.
+    pub fn checked_view_projection(self, center: [f32; 3], radius: f32, aspect: f32) -> Option<[f32; 16]> {
+        if center.iter().any(|v| !v.is_finite()) || !radius.is_finite() {
+            return None;
+        }
+        let matrix = self.view_projection(center, radius, aspect);
+        matrix.iter().all(|v| v.is_finite()).then_some(matrix)
     }
 
     /// The direction towards the light: above and to the left of the camera, so it follows the

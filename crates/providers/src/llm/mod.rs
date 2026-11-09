@@ -1,10 +1,11 @@
 //! Chat (LLM) endpoints for Text nodes, prompt helpers, auto-select and the agent.
 //!
-//! Two wire dialects cover the endpoints in #10:
+//! Wire dialects cover the endpoints in #10 and the additional key-only vendors:
 //! - [`Dialect::OpenAi`]: Chat Completions, spoken by OpenAI, Ollama, LM Studio, vLLM, OpenRouter
 //!   and LiteLLM (which also reports per-request spend);
 //! - [`Dialect::Anthropic`]: the Anthropic Messages API;
-//! - [`Dialect::Converse`]: Amazon Bedrock's native Converse API (#1150).
+//! - [`Dialect::Converse`]: Amazon Bedrock's native Converse API (#1150);
+//! - [`Dialect::Cohere`]: Cohere's native v2 Chat API (#1152).
 //!
 //! The first two are spoken through `rig-core`'s wires over our own transport (#1122): `rig_chat`
 //! sends, `openai` and `anthropic` turn requests, replies and errors to and from the crate's
@@ -17,9 +18,11 @@
 //! blocks, which must be sent back unchanged). [`LlmClient`] also implements [`Provider`], so text
 //! jobs go through the same queue as everything else.
 
+mod additional_vendors;
 mod anthropic;
 mod azure;
 mod bedrock;
+mod cohere;
 mod converse;
 #[cfg(test)]
 mod custom_base_tests;
@@ -31,6 +34,8 @@ mod stream_tests;
 mod turns_tests;
 #[cfg(test)]
 mod vendors_tests;
+#[cfg(feature = "vertex-llm")]
+mod vertex;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
@@ -111,6 +116,11 @@ pub enum Dialect {
     Anthropic,
     /// Amazon Bedrock's Converse API (`bedrock-runtime`), with a Bedrock API key or SigV4.
     Converse,
+    /// Cohere's native v2 Chat API.
+    Cohere,
+    /// Google Cloud Vertex AI GenerateContent, authenticated with a service account.
+    #[cfg(feature = "vertex-llm")]
+    Vertex,
 }
 
 /// Where to send chat requests.
@@ -381,7 +391,7 @@ impl ChatRequest {
             return bad("the conversation must end with a user message".into());
         }
         if let Some(t) = self.temperature {
-            let max = if matches!(dialect, Dialect::Anthropic | Dialect::Converse) { 1.0 } else { 2.0 };
+            let max = if matches!(dialect, Dialect::Anthropic | Dialect::Converse | Dialect::Cohere) { 1.0 } else { 2.0 };
             if !t.is_finite() || !(0.0..=max).contains(&t) {
                 return bad(format!("temperature must be between 0 and {max}"));
             }
@@ -533,6 +543,8 @@ pub struct LlmClient {
     http: Arc<dyn Http>,
     /// The endpoint's base URL was set by the person (#960), not the provider's own API.
     custom: bool,
+    #[cfg(feature = "vertex-llm")]
+    vertex: Option<Arc<crate::google_cloud::Tokens>>,
 }
 
 impl std::fmt::Debug for LlmClient {
@@ -543,7 +555,13 @@ impl std::fmt::Debug for LlmClient {
 
 impl LlmClient {
     pub fn new(endpoint: Endpoint, http: Arc<dyn Http>) -> Self {
-        Self { endpoint, http, custom: false }
+        Self {
+            endpoint,
+            http,
+            custom: false,
+            #[cfg(feature = "vertex-llm")]
+            vertex: None,
+        }
     }
 
     /// `endpoint` (with its id, dialect and key) served from `base` instead of its own API (#960),
@@ -552,7 +570,13 @@ impl LlmClient {
     /// again, and a spend header it sends is not trusted.
     pub fn with_base_url(mut endpoint: Endpoint, base: &crate::base_url::BaseUrl, http: Arc<dyn Http>) -> Self {
         endpoint.base_url = base.as_str().to_owned();
-        Self { endpoint, http, custom: true }
+        Self {
+            endpoint,
+            http,
+            custom: true,
+            #[cfg(feature = "vertex-llm")]
+            vertex: None,
+        }
     }
 
     /// The spend a reply's headers report. Never read from a custom base URL: any server can
@@ -573,6 +597,7 @@ impl LlmClient {
     fn validated(&self, req: &ChatRequest) -> Result<ChatRequest, ProviderError> {
         let mut req = req.clone();
         req.validate(self.endpoint.dialect)?;
+        additional_vendors::validate(&self.endpoint, &req)?;
         Ok(req)
     }
 
@@ -583,7 +608,9 @@ impl LlmClient {
     fn limits(&self, req: &ChatRequest, stream: bool) -> (usize, u64) {
         let sent_limit = match self.endpoint.dialect {
             Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
-            Dialect::OpenAi | Dialect::Converse => req.max_tokens,
+            Dialect::OpenAi | Dialect::Converse | Dialect::Cohere => req.max_tokens,
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => req.max_tokens,
         };
         if stream {
             let cap = match sent_limit {
@@ -598,8 +625,12 @@ impl LlmClient {
 
     fn auth(&self, mut http: HttpRequest) -> HttpRequest {
         match (self.endpoint.dialect, &self.endpoint.key) {
-            (Dialect::OpenAi | Dialect::Converse, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
+            (Dialect::OpenAi | Dialect::Converse | Dialect::Cohere, Some(key)) => {
+                http = http.secret_header("Authorization", format!("Bearer {}", key.expose()))
+            }
             (Dialect::Anthropic, Some(key)) => http = http.secret_header("x-api-key", key.expose()),
+            #[cfg(feature = "vertex-llm")]
+            (Dialect::Vertex, _) => {}
             (_, None) => {}
         }
         if self.endpoint.dialect == Dialect::Anthropic {
@@ -646,14 +677,21 @@ impl LlmClient {
             Dialect::OpenAi => self.openai_chat(req, on_text, context).await,
             Dialect::Anthropic => self.anthropic_chat(req, on_text, context).await,
             Dialect::Converse => self.converse_chat(req, on_text, context).await,
+            Dialect::Cohere => self.cohere_chat(req, on_text, context).await,
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => self.vertex_chat(req, on_text, context).await,
         }
     }
 
     /// The model ids the endpoint offers (`GET /models`; Anthropic's list is paged).
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
-        if self.endpoint.dialect == Dialect::Converse {
+        #[cfg(feature = "vertex-llm")]
+        if self.endpoint.dialect == Dialect::Vertex {
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Vertex AI uses the curated catalog; its publisher runtime has no model list"));
+        }
+        if matches!(self.endpoint.dialect, Dialect::Converse | Dialect::Cohere) {
             // Bedrock lists models on its control-plane host, not on `bedrock-runtime`.
-            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Bedrock's runtime has no model list; pick a model from the catalog"));
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "this chat endpoint has no compatible model list; pick a model from the catalog"));
         }
         let mut ids = Vec::new();
         let mut after: Option<String> = None;
@@ -704,6 +742,9 @@ impl LlmClient {
             Dialect::OpenAi => openai::error(response.status, &response.body),
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
             Dialect::Converse => converse::error(response.status, &response.headers, &response.body),
+            Dialect::Cohere => cohere::error(response.status, &response.body),
+            #[cfg(feature = "vertex-llm")]
+            Dialect::Vertex => vertex::status_error(response.status, &response.headers, &response.body),
         };
         e.retry_after_ms = retry_after(response.header("retry-after"));
         Err(e)

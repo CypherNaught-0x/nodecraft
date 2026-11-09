@@ -106,6 +106,6 @@ impl NodeCraftApp {
                 Ok(())
             }),
         };
-        self.notice = result.err().map(|error| error.message);
+        self.notices.outcome(result);
     }
 }

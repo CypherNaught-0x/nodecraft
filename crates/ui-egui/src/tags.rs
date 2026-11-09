@@ -6,6 +6,7 @@ use std::{
     ops::Bound::{Excluded, Unbounded},
 };
 pub const FRAME_NODES: usize = 256;
+pub const QUERY_CHARS: usize = 128;
 pub const PALETTE: [(&str, &str); 8] = [
     ("red", "Red"),
     ("orange", "Orange"),
@@ -22,6 +23,12 @@ pub struct TagFilter {
     pub tags: BTreeSet<TagId>,
     pub untagged: bool,
     pub presentation: Vec<TagId>,
+    pub query_draft: String,
+    query: String,
+    query_cursor: Option<usize>,
+    query_results: Vec<TagId>,
+    query_build: Vec<TagId>,
+    counts: Counts,
     pub results: Vec<NodeId>,
     pub current: Option<NodeId>,
     pub frame_request: Option<NodeId>,
@@ -38,7 +45,89 @@ pub struct TagFilter {
     cursor: Option<NodeId>,
     pending: Option<bool>,
 }
+#[derive(Default)]
+struct Counts {
+    pending: bool,
+    ready: bool,
+    cursor: Option<NodeId>,
+    building: BTreeMap<Option<TagId>, usize>,
+    values: BTreeMap<Option<TagId>, usize>,
+}
+
 impl TagFilter {
+    pub fn update_query(&mut self) {
+        let query: String = self.query_draft.trim().chars().take(QUERY_CHARS).flat_map(crate::search::fold).collect();
+        if self.query != query {
+            self.query = query;
+            self.restart_query(true);
+        }
+    }
+
+    fn restart_query(&mut self, changed: bool) {
+        self.query_cursor = (!self.query.is_empty()).then_some(0);
+        self.query_build.clear();
+        if changed {
+            self.query_results.clear();
+        }
+    }
+
+    pub fn query_pending(&self) -> bool {
+        self.query_cursor.is_some()
+    }
+
+    pub fn visible_tags(&self) -> &[TagId] {
+        if self.query.is_empty() { &self.presentation } else { &self.query_results }
+    }
+
+    pub fn count(&self, tag: Option<TagId>) -> Option<usize> {
+        self.counts.ready.then(|| self.counts.values.get(&tag).copied().unwrap_or(0))
+    }
+
+    pub fn counts_pending(&self) -> bool {
+        self.counts.pending
+    }
+
+    pub fn current_index(&self) -> Option<usize> {
+        self.current.and_then(|id| self.results.binary_search(&id).ok())
+    }
+
+    fn tick_query(&mut self, canvas: &nodecraft_graph::Canvas) {
+        if self.indexing {
+            return;
+        }
+        let Some(start) = self.query_cursor else {
+            return;
+        };
+        let end = start.saturating_add(FRAME_NODES).min(self.presentation.len());
+        for id in self.presentation.get(start..end).unwrap_or_default() {
+            if let Some(tag) = canvas.tags().get(id) {
+                let folded: String = label(&tag.title).chars().flat_map(crate::search::fold).collect();
+                if folded.contains(&self.query) {
+                    self.query_build.push(*id);
+                }
+            }
+        }
+        self.query_cursor = (end < self.presentation.len()).then_some(end);
+        if self.query_cursor.is_none() {
+            self.query_results = std::mem::take(&mut self.query_build);
+        }
+    }
+
+    fn tick_counts(&mut self, canvas: &nodecraft_graph::Canvas) {
+        let start = self.counts.cursor.map_or(Unbounded, Excluded);
+        let mut iter = canvas.nodes().range((start, Unbounded));
+        for (id, node) in iter.by_ref().take(FRAME_NODES) {
+            self.counts.cursor = Some(*id);
+            self.last_work += 1;
+            *self.counts.building.entry(node.tag).or_default() += 1;
+        }
+        self.counts.pending = iter.next().is_some();
+        if !self.counts.pending {
+            self.counts.values = std::mem::take(&mut self.counts.building);
+            self.counts.ready = true;
+        }
+    }
+
     pub fn active(&self) -> bool {
         !self.tags.is_empty() || self.untagged
     }
@@ -67,7 +156,16 @@ impl TagFilter {
             if self.stamp.is_some_and(|s| s.0 != p.id() || s.1 != c) {
                 self.tags.clear();
                 self.untagged = false;
+                self.presentation.clear();
+                self.query_draft.clear();
+                self.query.clear();
+                self.query_results.clear();
+                self.counts = Counts::default();
             }
+            self.restart_query(false);
+            self.counts.pending = true;
+            self.counts.cursor = None;
+            self.counts.building.clear();
             if let Some(canvas) = p.canvases().get(&c) {
                 self.tags.retain(|id| canvas.tags().contains_key(id));
             } else {
@@ -105,7 +203,7 @@ impl TagFilter {
         if len == 0 {
             return;
         }
-        let index = self.current.and_then(|id| self.results.binary_search(&id).ok());
+        let index = self.current_index();
         let next = match (index, previous) {
             (Some(0), true) | (None, true) => len - 1,
             (Some(i), true) => i - 1,
@@ -153,13 +251,23 @@ impl TagFilter {
                 self.indexing = false;
             }
         }
-        if !self.scanning {
-            return;
-        }
         let Some(canvas) = p.canvases().get(&c) else {
             self.scanning = false;
+            self.counts.pending = false;
+            self.query_cursor = None;
+            self.query_results.clear();
+            self.counts = Counts::default();
             return;
         };
+        if self.open {
+            self.tick_query(canvas);
+        }
+        if !self.scanning {
+            if self.open && self.counts.pending {
+                self.tick_counts(canvas);
+            }
+            return;
+        }
         let start = self.cursor.map_or(Unbounded, Excluded);
         let mut iter = canvas.nodes().range((start, Unbounded)).peekable();
         for _ in 0..FRAME_NODES {
@@ -289,6 +397,54 @@ mod tests {
         assert_eq!(f.results, results);
         assert_eq!(f.current, Some(NodeId::from_bytes(10u128.to_be_bytes())));
     }
+    #[test]
+    fn tag_query_matches_greek_final_sigma_in_any_case() {
+        let (mut p, c, id) = fixture(1);
+        Change::PutTag { canvas: c, tag: Tag { id, title: "ΟΣ".into(), color: None } }.apply(&mut p).unwrap();
+        let mut filter = TagFilter { open: true, ..TagFilter::default() };
+        filter.tick(&p, c, 1);
+        filter.tick(&p, c, 1);
+        for query in ["ΟΣ", "ος", "οσ"] {
+            filter.query_draft = query.into();
+            filter.update_query();
+            filter.tick(&p, c, 1);
+            assert_eq!(filter.visible_tags(), &[id], "{query}");
+        }
+    }
+
+    #[test]
+    fn an_active_query_and_counts_stay_published_during_revision_refresh() {
+        let (mut p, c, tag) = fixture(1000);
+        let mut f = TagFilter { open: true, ..TagFilter::default() };
+        f.query_draft = "fixture".into();
+        f.update_query();
+        for _ in 0..16 {
+            f.tick(&p, c, 0);
+        }
+        // Use the actual tag label, independent of fixture wording.
+        f.query_draft = label(&p.canvases().get(&c).unwrap().tags().get(&tag).unwrap().title);
+        f.update_query();
+        for _ in 0..16 {
+            f.tick(&p, c, 0);
+        }
+        assert_eq!(f.visible_tags(), &[tag]);
+        let count = f.count(Some(tag));
+        assert!(count.is_some());
+        Change::RemoveNode { canvas: c, id: NodeId::from_bytes(0u128.to_be_bytes()) }.apply(&mut p).unwrap();
+        f.sync(&p, c, 1);
+        assert!(f.indexing && f.query_pending() && f.counts_pending());
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count);
+        f.tick(&p, c, 1);
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count);
+        for _ in 0..16 {
+            f.tick(&p, c, 1);
+        }
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count.map(|n| n - 1));
+    }
+
     #[test]
     fn title_formatting_is_unicode_bounded() {
         let text = "界".repeat(4096);

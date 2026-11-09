@@ -78,6 +78,7 @@ fn f_groups_the_selection_and_the_zone_encloses_it() {
     let before = h.state().session.document().clone();
     let id = field_around_card(&mut h);
     let node = member(&h);
+    assert!(h.query_by_role_and_label(Role::Button, "Move into Shots").is_none(), "the card field submenu closes after moving");
     assert_eq!(canvas(&h).nodes().get(&node).unwrap().field, Some(id));
     assert!(h.state().selection.is_empty(), "the new field is selected instead");
     let rect = canvas(&h).fields().get(&id).unwrap().rect;
@@ -178,9 +179,11 @@ fn collapse_from_the_header_menu_hides_members_until_expanded() {
     assert!(card(&h).is_some());
     let at = header(&h, "Field").left_center() + Vec2::new(60.0, 0.0);
     open_menu(&mut h, at);
+    super::panel_check::menu_evidence(&mut h, "field-context");
     h.get_by_role_and_label(Role::Button, "Collapse field").click();
     h.run();
     h.run();
+    assert!(h.query_by_role_and_label(Role::Button, "Collapse field").is_none(), "the field menu closes after its action");
     assert!(canvas(&h).fields().get(&id).unwrap().collapsed);
     assert!(card(&h).is_none(), "a collapsed field hides its cards");
     h.hover_at(Pos2::new(20.0, 680.0));
@@ -224,6 +227,7 @@ fn card_menu_moves_nodes_into_a_field_and_out_again() {
     open_menu(&mut h, at);
     h.get_by_role_and_label(Role::Button, "Field ⏵").click();
     h.run();
+    super::panel_check::menu_evidence(&mut h, "card-field-submenu");
     h.get_by_role_and_label(Role::Button, "Move into Shots").click();
     h.run();
     assert_eq!(canvas(&h).nodes().get(&node).unwrap().field, Some(id));
@@ -268,7 +272,7 @@ fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().fields.rename.as_ref().map(|(_, title)| title.as_str()), Some(draft.as_str()));
-    assert!(h.state().notice.as_deref().unwrap_or_default().contains("4096"));
+    assert!(h.state().notice().unwrap_or_default().contains("4096"));
 }
 
 #[test]
@@ -446,7 +450,7 @@ fn search_next_expands_a_collapsed_field_to_show_its_match_in_one_undo_step() {
         h.state().search.query,
         h.state().search.results,
         h.state().search.current,
-        h.state().notice
+        h.state().notice()
     );
     assert!(h.state().selection.contains(node), "the match is focused");
     let drawn = card(&h).expect("the match is drawn");
@@ -470,7 +474,7 @@ fn tag_navigation_expands_a_collapsed_field_to_show_its_card() {
     h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
     h.run();
     assert!(!canvas(&h).fields().get(&id).unwrap().collapsed);
-    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice);
+    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice());
     assert!(card(&h).is_some(), "the card is drawn");
 }
 

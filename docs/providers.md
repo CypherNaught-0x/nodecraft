@@ -2,7 +2,13 @@
 
 Model services NodeCraft talks to, how to set them up, and what they can do. Each provider is a
 module in `crates/providers` behind a Cargo feature (CONTRIBUTING.md, "Adding a model or
-provider"). API keys live in the OS keychain (#80), never in project files or logs.
+provider"). Native API keys live in the OS keychain (#80); browser keys stay in that site's
+browser storage. Keys never belong in project files or logs.
+
+The [Future providers close-out](reviews/2026-11-09-future-provider-closeout.md) records the
+2026-11-09 feature/host audit and tracker snapshot. A feature's closed issue means its scoped
+implementation is complete; the table below remains authoritative about supported modes and
+host restrictions. Prices and remote services still need current verification before a paid run.
 
 | Provider | Feature | Auth | Modes | Notes and limits |
 |---|---|---|---|---|
@@ -30,6 +36,14 @@ provider"). API keys live in the OS keychain (#80), never in project files or lo
 | **Mistral** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `mistral` | text → text, tools, streaming | rig's Mistral dialect (#1122), its own content chunks. Catalog `assets/catalog/mistral.toml`: `mistral-large-4` and `mistral-small-2603`, text only for now, quoted at the output rate on `max_tokens` (prices from each model's docs page; mistral.ai/pricing draws its table in the browser). |
 | **Groq** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `groq` | text → text, tools, streaming | rig's Groq dialect (#1122). Catalog `assets/catalog/groq.toml`: `openai/gpt-oss-120b` and `openai/gpt-oss-20b`, usage pricing with no up-front quote (they reason, and Groq's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. |
 | **xAI** (Chat Completions) | `llm` | API key (`Authorization: Bearer`), keychain account `xai` | text → text, tools, streaming | rig's xAI dialect on its Chat Completions route (#1122; xAI calls it legacy, the Responses API is not used). Catalog `assets/catalog/xai.toml`: `grok-4.7` and `grok-4.3`, usage pricing with no up-front quote (xAI's docs don't say `max_tokens` caps reasoning), settled at the per-token rates. xAI counts reasoning apart from `completion_tokens`; settlement counts it as reply tokens (as every OpenAI-dialect endpoint does: the larger of `completion_tokens` and `total_tokens` less `prompt_tokens`). |
+| **Together AI** | `llm` | Bearer key, account `together` | text → text, tools, streaming | Public `/v1/chat/completions`, rig's Together dialect. GPT OSS 120B. No up-front quote; verified usage rates. |
+| **Moonshot** | `llm` | Global bearer key, account `moonshot` | text → text, tools, streaming | Global Chat Completions, rig's Moonshot dialect. Kimi K3. China and Anthropic routes are not used. Unknown usage price. |
+| **Z.AI** | `llm` | General API bearer key, account `zai` | text → text, tools, streaming | General `/api/paas/v4` route, not a coding-plan key. GLM 4.6. No up-front quote; verified usage rates. |
+| **MiniMax text** | `llm` | Global bearer key, account `minimax` | text → text, tools, streaming | Global Chat Completions, MiniMax M3. The fal media models keep using the separate `fal` account. Unknown usage price. |
+| **Perplexity** | `llm` | Bearer key, account `perplexity` | text → text, streaming | Sonar, rig's Perplexity dialect. Tools are refused before sending. No usage-stream option is sent. Unknown usage price, including any search fees. |
+| **Hyperbolic** | `llm` | Bearer key, account `hyperbolic` | text → text, streaming | GLM 5.3 Flash, rig's Hyperbolic dialect. Tools are refused before sending. Unknown usage price. |
+| **Mira** | `llm` | Bearer key, account `mira` | text → text, streaming | Enter a model id from your account's model list on the generic Mira card. Tools are refused; the dialect omits unsupported stream options and accepts bare-string replies. Unknown usage price. |
+| **Cohere** | `llm` | Bearer key, account `cohere` | text → text, tools, streaming | Native `POST /v2/chat` through rig's Cohere wire, Command A. Per-tool strict schemas, images and PDFs are refused. Unknown usage price. |
 | **ComfyUI** | `comfyui` | none locally; optional auth header for servers behind a proxy | whatever the workflow does (image, video, audio, 3D) | The catalog's FLUX.1 [dev] and SDXL cards run a built-in workflow of core nodes (text-to-image at the card's aspect ratio, or image-to-image from an image scaled to about one megapixel, keeping its shape) with the checkpoint chosen on the card; a checkpoint the server doesn't list is named before anything is uploaded. After the server is read, the model picker's ComfyUI group also lists the server's own models by type (`comfy.models.list`, #970). Only Generate image cards get them. A listed checkpoint runs through the FLUX graph when a word in its name starts with `flux`, and through the SDXL graph otherwise. SD 1.x/2.x names and names whose architecture isn't recognised carry a warning that they may fail. Names that hint at video, audio, SD3, inpainting, refiners, FLUX tool models or other model families are shown as unavailable. LoRAs, VAEs, text encoders, diffusion models and upscalers are listed as unavailable, each with its reason, because no built-in workflow loads them on their own. Imported workflow cards are listed by title, and choosing one places a copy. A name the server doesn't list is refused, never replaced (docs/decisions/2026-11-03-comfy-server-models-in-picker.md). A ComfyUI workflow card (#9, model `comfyui.workflow`, free) carries the workflow imported onto it as a `comfy.workflow` text input and its parameter values as a `comfy.values` text input (a JSON object of `<node>.<input>` to a string, number or boolean); a `comfy.outputs` text input names the output nodes it keeps, and the workflow's other output nodes are dropped before queueing; all three are bounded at 1 MiB and checked, with the workflow, before anything is uploaded. `comfy.workflow.import` places a workflow file (API or UI format) as such a card, read against the server's node list that `comfy.nodes.refresh` (palette: Read ComfyUI server nodes) fetches; dropping the file or pasting its JSON on the canvas does the same. Pasted workflow text is titled Pasted workflow because the text clipboard supplies no filename; a file drop keeps its filename. Several servers can be set up at once (#864): each has a name, an address and an optional cap on how many of a run's jobs it takes at once, and one is the default. A ComfyUI card runs on the default unless `comfy.server.use` (the card menu's **ComfyUI server**) names another; a card naming a removed server follows the default. Each server is its own provider instance with its own scheduler lane, so two cards on one canvas run on two machines, and a job restored after a restart goes back to the server it was sent to. In the desktop app the toolbar's **ComfyUI** panel adds, edits, removes and checks servers and picks the default: a check (`comfy.nodes.refresh {server}`) reads a server's nodes and reports its ComfyUI version, first device with free VRAM, and queue (`/system_stats`, `/queue`). Only the default's node list is kept for importing workflows. Changing or removing a server drops only that server's adapter and what was read from it. Other jobs carry an API workflow, `<node>.<input>` value overrides and media inputs (uploaded under content-hash names with the extension the loader lists, e.g. `.mov`, `.mkv`, `.mp3`; a file a loader can't read, such as a sound for `LoadImage`, is refused before anything is uploaded). Video and audio loaders and savers map to Video and Audio, including the video helper suite's `VHS_LoadVideo`, whose upload `/object_info` doesn't flag (#110). Missing custom nodes and models are reported before queueing. Prompt ids are salted per install; retries never queue twice. Only `output` files are results (previews aren't kept), up to 256 MiB per run, the most a run keeps. The returned bytes are sniffed, so an animated WebP lands on an image port. Polling reports queue position and completion; on the desktop and CLI the server's WebSocket (plain `ws://`, opened before each prompt is queued and reopened if lost) adds how far a running prompt is and which node runs. An `https://` server, the browser, or a proxy that refuses upgrades falls back to polling, and a run resumed after a restart shows no fraction until it ends. Servers too old for prompt-scoped `/interrupt` stop whatever runs when you cancel. |
 | **fal.ai** | `fal` | host-supplied key (`Authorization: Key`) | FLUX image/styles, Ideogram image, Wan, Luma Ray and LTX video, Luma Photon image, Kokoro audio, Trellis 3D, ESRGAN upscale, Bria background removal | Explicit live aliases; queue polling/resume, bounded whole-output downloads and best-effort cancellation. Dated estimates for Ideogram, Trellis, style training, image-only Bria and Ray; other quotes are by usage. |
 | **Magnific** | `magnific` | separate `magnific` key (`x-magnific-api-key`) | one image → Precision V2 photo enhancement, 2× or 4× | Native streamed project storage required. Credit-based monetary cost stays unknown and requires consent. Saved task polling, no ambiguous submit replay or remote cancellation; delivery links expire after 30 minutes. See below. |
@@ -1653,6 +1667,10 @@ NODECRAFT_LIVE_ELEVENLABS=1 ELEVENLABS_API_KEY=… \
 
 ## Editing ComfyUI workflow cards
 
+The local Hunyuan3D 2.0/2.1 image-to-mesh presets and imported Mesh outputs are described in
+[ComfyUI 3D workflows](comfyui-3d.md), including required checkpoints, offline fixture scope
+and outstanding live validation.
+
 The card menu's **Edit workflow fields…** (#947) opens media inputs, parameters and results.
 Show or hide fields, edit their names and use Up/Down to reorder them, then Apply fields.
 Cancel leaves the card untouched. Filter fields searches their names and workflow targets.
@@ -1663,18 +1681,28 @@ before disconnecting wires or clearing history after a change of result media ty
 cancel a card's run before editing its fields.
 
 New imports expose image/video/audio upload inputs, prompts (including single-line prompt
-widgets), seeds, steps, CFG and dimensions. Other scalar widgets, such as reference data,
+widgets), seeds, steps, CFG, dimensions, frame count/rate, duration, resolution and aspect ratio.
+Multiline system prompts and reference data are not selected just because they contain text.
+Other scalar widgets, such as reference data,
 model choices and custom settings, can be exposed in the editor. Internally linked inputs stay
 inside the workflow. Compatible core `PreviewImage` nodes become `SaveImage` nodes in the
 imported copy so PBR previews are retained as results; the source workflow file is untouched.
 This conversion requires the server to describe both core nodes with the expected image
 connection and filename widget. Custom or incompatible previews are left unchanged.
 
+Official-template curation is tracked in the [pinned survey](comfy-template-survey.md) (#948).
+That survey distinguishes tested field mappings from candidates still needing node-schema or
+dynamic-input verification. A structural match changes only default field choices; imported
+values, explicit parameter selections, saved mappings and partner-credit warnings remain intact.
+
 Results remain one list port per media type. Selected saver order is saved in the job handle,
 so a resumed local ComfyUI job keeps the same image order. Comfy Cloud also honors that order
 when its response supplies node ids; results without node ids retain the server's order after
 identified results. Older saved handles retain their previous ordering. Renaming a media list
-port writes workflow config version 2, which older NodeCraft builds refuse as unsupported.
+port, or mapping a dotted DynamicCombo child input, writes workflow config version 2, which
+older NodeCraft builds refuse as unsupported. DynamicCombo imports preserve the selected branch
+and its nested dotted fields. Changing a selector requires supplying the new branch's valid
+values; the adapter checks the full effective workflow before sending a generation POST.
 For programmatic editing and explicit disconnection/history flags, see [MCP](mcp.md).
 
 ## Comfy Cloud workflows
@@ -2662,3 +2690,67 @@ original procedural photos/audio and the existing authored blue-and-gold MP4 fix
 these are not HeyGen output or proof of live avatar quality. No paid generation or inference
 probe was performed. The ignored live smoke requires explicit acknowledgement of unknown
 cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in ordinary CI.
+
+## Additional key-only chat endpoints (#1152)
+
+Together, Moonshot, Z.AI, MiniMax text, Perplexity, Hyperbolic, Mira and Cohere use the same
+bounded transport, secret-header handling and uncertain-submit policy as the other chat adapters.
+They never retry a request that may have reached the provider. All entries use usage pricing
+with no up-front quote. Together GPT OSS 120B and Z.AI GLM 4.6 settle at rates checked on the
+vendors' pricing pages on 2026-11-09; the other entries retain unknown prices because their
+current rate tables were unavailable or vary in ways this adapter does not price. A run requires
+explicit unknown-price admission; unpriced token counts do not become an invented dollar charge.
+The pricing references and limitations are recorded in each catalog file.
+
+These additions support text conversations only. Image and document requests are refused before
+sending. Perplexity, Hyperbolic and Mira also refuse tools and tool history instead of silently
+dropping them. Moonshot, Z.AI and MiniMax preserve reasoning content for later tool turns. Cohere
+uses its native wire and bounds native content/tool indices before decoding. Model listing still
+uses the existing compatible endpoint method, with a clear refusal on Cohere's native route; moving
+model discovery to rig and verifying browser CORS availability remain separate work.
+
+The fixture tests make no network requests. To opt into a paid smoke test, set
+`NODECRAFT_LIVE_<PROVIDER>=1` and `<PROVIDER>_API_KEY`; optionally set
+`NODECRAFT_LIVE_<PROVIDER>_MODEL` to replace the catalog default. Providers are `TOGETHER`,
+`MOONSHOT`, `ZAI`, `MINIMAX`, `PERPLEXITY`, `HYPERBOLIC`, `MIRA`, and `COHERE`.
+Mira requires `NODECRAFT_LIVE_MIRA_MODEL` because its model names come from the account.
+The generic card stores the remote name in `mira_model`, separate from the node's `model` selector.
+Each enabled test sends one streamed and one whole request. No live tests run by default.
+
+Hyperbolic requires a current `sk_live_` key and uses `api.hyperbolic.ai/inference/v1`; its old
+`api.hyperbolic.xyz` API is decommissioned. Perplexity says Sonar support ended on 2026-09-27,
+but synchronous and streamed requests continue through reformulation as Agent API requests.
+The adapter keeps the requested Chat Completions compatibility route and its unknown all-in cost.
+
+## Vertex AI chat (`vertex-llm` feature, #1151)
+
+`vertex-llm.gemini-3.8-flash` uses the native Gemini GenerateContent REST wire through
+`LlmClient`, with whole replies, streamed text, images/PDFs and function calls. Paste a Google
+Cloud service-account key file under **google-cloud** in API keys; it is the same compact
+keychain account used by Veo and Gemini images. Enable the Vertex AI API and grant Vertex AI
+User in that account's project. The built-in card uses the global endpoint; custom hosts can
+construct `LlmClient::vertex` with a regional location. Requests always use the account's own
+project and the fixed Google publisher route.
+
+The REST request/reply schemas match Gemini's GenerateContent surface (contents,
+systemInstruction, function declarations/responses, candidates and usageMetadata); the host
+changes the URL and authenticates with a short-lived OAuth token. The account and token never
+enter rig: its wire receives an empty key and `RigHttp` adds a secret Authorization header.
+Keep the function declarations when continuing a tool turn; missing declarations are refused
+before a request rather than silently dropping tool history. Original reply parts keep thought
+signatures for later tool turns. Output usage includes
+thinking tokens. Ambiguous paid requests are never automatically replayed; authorization
+failure drops the cached token for the next explicit request. Server error text is not echoed.
+
+Current Vertex prices were not verified, so this catalog entry reports an unknown cost
+(`by_usage`), without borrowing the separately billed Gemini Developer API prices. Express-mode
+API keys are not supported: the existing service-account path works with the same project/IAM
+setup as other Google Cloud cards and avoids another credential and limited model surface.
+Browser requests remain subject to Google's CORS policy; fixture/wasm checks do not establish
+live browser access. No live call was made during this implementation.
+
+Offline fixtures exercise whole replies, streams, token reuse/refresh, invalid routes, tool
+round trips and signed-part replay. For an explicitly authorized live smoke test, set
+`NODECRAFT_LIVE_VERTEX=1` and `NODECRAFT_LIVE_VERTEX_KEY_FILE` to a service-account JSON file,
+then run the `live_vertex` test in `live_llm` with `http,vertex-llm` enabled. Optional
+`NODECRAFT_LIVE_VERTEX_REGION` and `NODECRAFT_LIVE_VERTEX_MODEL` select the route and model.

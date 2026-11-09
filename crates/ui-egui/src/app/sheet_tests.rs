@@ -168,7 +168,7 @@ fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraft
         if done(h.state()) {
             return;
         }
-        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -625,7 +625,7 @@ fn the_grid_shows_rows_with_results_badged_and_selects_and_sends_them_to_the_can
     let recorded: serde_json::Value = serde_json::from_str(recorded).unwrap();
     assert_eq!(recorded["row"], json!(rows[1]));
     assert_eq!(recorded["generation"], json!(history_of(h.state(), rows[1])[0]));
-    assert_eq!(h.state().notice.as_deref(), Some("Sent 1 result to \"Canvas\"."));
+    assert_eq!(h.state().notice(), Some("Sent 1 result to \"Canvas\"."));
     assert!(h.state().on_sheet(), "the sheet stays open");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
@@ -652,7 +652,7 @@ fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
         Some(history[0]),
         "the older result is active again; history now {:?}, was {history:?}; notice {:?}; 1 of 2 shown {}",
         history_of(h.state(), row),
-        h.state().notice,
+        h.state().notice(),
         h.query_by_label("1 of 2").is_some()
     );
     assert!(h.query_by_label("1 of 2").is_some());
@@ -673,7 +673,7 @@ fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
     let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
     click(&mut h, first);
     press(&mut h, Role::Button, "Export 1");
-    frames_until(&mut h, |app| app.export_pending() && app.notice.is_none());
+    frames_until(&mut h, |app| app.export_pending() && app.notices.is_empty());
     h.run();
     assert!(h.query_by_label_contains("1 media files; 1 ready").is_some(), "only the selected row's active result");
     // The save repaints while its worker writes, so this click is stepped, not settled.
@@ -807,7 +807,7 @@ fn a_document_this_session_can_only_view_takes_no_results() {
     h.run();
     press(&mut h, Role::Button, "Send 1 to canvas");
     assert!(h.state().session.document().canvases().get(&C).unwrap().nodes().is_empty());
-    assert!(h.state().notice.is_some(), "the refusal is shown");
+    assert!(h.state().notice().is_some(), "the refusal is shown");
 }
 
 pub(super) mod batch;
@@ -834,4 +834,25 @@ fn disabled_run_selected_and_cancel_explain_themselves() {
 fn a_sheets_controls_have_names() {
     let h = on_sheet(&["a fox", "an owl"]);
     assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new());
+}
+
+#[test]
+fn escape_dismisses_a_focused_notice_on_a_sheet() {
+    // The sheet draws the notice stack too, so a focused notice takes its Escape there (#1110).
+    let mut h = scene(&[]);
+    open_sheets(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Title").focus();
+    h.run();
+    h.event(egui::Event::Text("Owls".into()));
+    h.run();
+    press(&mut h, Role::Button, "New sheet");
+    assert!(h.state().on_sheet());
+    h.state_mut().notices.error("Sheet problem");
+    h.run();
+    h.get_by_label("Dismiss notice").focus();
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
+    assert!(h.state().on_sheet(), "the Escape went to the notice only");
 }

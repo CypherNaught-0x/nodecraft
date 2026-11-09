@@ -1,0 +1,29 @@
+{
+  "kind": "partial documentation-and-pinned-widget projection, not observed object_info",
+  "upstream_commit": "3c2199b9362457b12b9c60c6cc303501526ebd62",
+  "source_blob": "210c5738cc790abec0d01be0528e7b149d8af89a",
+  "source_file": "templates/video_ltx2_3_i2v.json",
+  "node_class": "ResizeImageMaskNode",
+  "saved_selectors": [
+    "scale dimensions",
+    "scale longer dimension"
+  ],
+  "documented_selectors": [
+    "SCALE_DIMENSIONS",
+    "SCALE_LONGER_DIMENSION"
+  ],
+  "documented_contract": "documented-provenance.json#ResizeImageMaskNode",
+  "scope": "Only these two saved branches are projected. Child names/types/bounds come from current public docs; saved selector spelling/order comes from the verified MIT pin. Neither source proves exact installed server descriptors or live request acceptance.",
+  "legacy_named_widget": {
+    "node_class": "SaveVideo",
+    "source_node": 75,
+    "protocol_version": "0.5.1",
+    "names": [
+      "filename_prefix",
+      "format",
+      "format.codec",
+      "codec"
+    ],
+    "scope": "The verified MIT UI export explicitly names a trailing codec=auto widget. It is not admitted as a current server input: current active values must match named values, and only its exact obsolete scalar suffix may be omitted."
+  }
+}

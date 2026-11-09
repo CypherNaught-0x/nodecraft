@@ -401,7 +401,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| parse(v).ok_or_else(|| "The clips can't be read.".to_owned())) {
                 Ok(listing) => editor.listing = Some((revision, listing)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -445,11 +445,11 @@ impl NodeCraftApp {
         let mut commands: Commands = Vec::new();
         let mut close = false;
         let mut export = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest().cloned();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
-        egui::Modal::new(egui::Id::new("timeline_editor")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("timeline_editor"), "Timeline editor").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             let size = (content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0));
             ui.set_min_size(size);
             ui.set_max_size(size);
@@ -477,7 +477,7 @@ impl NodeCraftApp {
                         commands.push(("edit.undo", json!({})));
                     }
                     if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
+                        crate::notices::inline_notice(ui, &t, notice);
                     }
                 });
             });

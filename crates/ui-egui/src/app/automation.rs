@@ -285,6 +285,13 @@ mod tests {
         h.run();
         assert!(h.state().automation.open);
         assert!(h.query_by_label_contains("Running at").is_none(), "off by default");
+        crate::app::panel_check::escape_panel(&mut h, egui::Id::new("nodecraft.automation"), "automation-off");
+        assert!(!h.state().automation.open);
+        assert!(!fake.borrow().enabled, "Escape closes the view without enabling its server");
+        crate::app::topbar_tests::reveal(&mut h, "Automation");
+        h.get_by_label("Automation").click();
+        h.run();
+        assert!(h.state().automation.open);
         h.get_by_label("Enable MCP server").click();
         h.run();
         assert!(fake.borrow().enabled, "the checkbox dispatched automation.mcp_server_set");
@@ -306,6 +313,9 @@ mod tests {
         h.run();
         assert!(!fake.borrow().enabled);
         h.get_by_label("Off");
+        crate::app::panel_check::close_panel(&mut h, egui::Id::new("nodecraft.automation"), "automation");
+        assert!(!h.state().automation.open);
+        assert!(!fake.borrow().enabled, "closing the panel does not change server settings");
     }
 
     #[test]

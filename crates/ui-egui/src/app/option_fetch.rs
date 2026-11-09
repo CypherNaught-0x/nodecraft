@@ -250,7 +250,7 @@ impl super::NodeCraftApp {
         if let Some(notice) = fetcher.tick(&mut self.session, || settings, ctx) {
             // Cards drawing a list resolve against the new lists (#676).
             self.schemas.forget_listed();
-            self.notice = Some(notice);
+            self.notices.push(crate::notices::NoticeKind::of_report(&notice), notice);
         }
         if fetcher.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

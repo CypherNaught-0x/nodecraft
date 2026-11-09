@@ -245,6 +245,13 @@ pub struct Layout {
     /// The map is drawn: the person shows it and the canvas is big enough (#1115).
     pub map_shown: bool,
 }
+const NAVIGATION_ORDER: egui::Order = egui::Order::Background;
+
+/// The canvas-owned navigation area, shared with quick-add's layer admission.
+pub(crate) fn overlay_layer(ui_id: egui::Id) -> egui::LayerId {
+    egui::LayerId::new(NAVIGATION_ORDER, ui_id.with("navigation_overlay"))
+}
+
 /// The navigation panel at the canvas's bottom right (#1115): `navigation_fraction` of the canvas
 /// width between `navigation_min_width` and `navigation_width`, never wider than the canvas. The
 /// map keeps the default panel's shape and hides below `minimap_hide_width` × `minimap_hide_height`.
@@ -288,10 +295,12 @@ pub struct Navigation {
     pub geometry: Geometry,
     pub drag: Option<Mapping>,
     pub pointer_owned: bool,
+    /// The painted canvas-chrome layer; a covered minimap cannot admit an early pan.
+    layer: Option<egui::LayerId>,
 }
 impl Default for Navigation {
     fn default() -> Self {
-        Self { visible: true, geometry: Geometry::default(), drag: None, pointer_owned: false }
+        Self { visible: true, geometry: Geometry::default(), drag: None, pointer_owned: false, layer: None }
     }
 }
 pub struct OverlayInput<'a> {
@@ -319,23 +328,22 @@ impl Navigation {
     /// Shared with early canvas-key admission: a fresh map press owns the whole frame,
     /// even when a key event precedes that press in the platform's event list.
     pub(crate) fn press_pending(&self, ctx: &egui::Context, viewport: Rect, pan_enabled: bool, t: &Tokens) -> bool {
-        self.visible
-            && pan_enabled
-            && self.drag.is_none()
-            && ctx.input(|i| {
-                // A batch may include movement after the press. The first primary
-                // press owns this frame; later presses cannot transfer that ownership.
-                i.events
-                    .iter()
-                    .find_map(|event| match event {
-                        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
-                        _ => None,
-                    })
-                    .is_some_and(|pos| {
-                        let layout = layout(viewport, self.visible, t);
-                        layout.map_shown && layout.map.contains(pos)
-                    })
+        if !self.visible || !pan_enabled || self.drag.is_some() {
+            return false;
+        }
+        // Read the press first: layer lookup must not re-enter Context inside its input lock.
+        let press = ctx.input(|input| {
+            // A batch may include movement after the press. The first primary press owns
+            // this frame; later presses cannot transfer that ownership.
+            input.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                _ => None,
             })
+        });
+        press.is_some_and(|pos| {
+            let layout = layout(viewport, self.visible, t);
+            layout.map_shown && layout.map.contains(pos) && self.layer.is_some_and(|layer| ctx.layer_id_at(pos) == Some(layer))
+        })
     }
     /// What the minimap draws, in world space: each card the canvas draws (moved by a card drag's
     /// `preview`) and each collapsed field's header (`None`), matching the canvas.
@@ -384,7 +392,10 @@ impl Navigation {
             actions.push(("canvas.pan_to", json!({"x":x,"y":y})));
         }
         let blocked = self.pointer_owned || (!canvas_gesture && pointer.is_some_and(|p| layout.overlay.contains(p)));
-        egui::Area::new(ui.id().with("navigation_overlay")).order(egui::Order::Foreground).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
+        // Canvas chrome stays above the canvas root, while floating tools retain their
+        // controls and scrollbars wherever the two overlap. Menus/questions remain above both.
+        self.layer = Some(overlay_layer(ui.id()));
+        egui::Area::new(ui.id().with("navigation_overlay")).order(NAVIGATION_ORDER).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
             ui.ctx(),
             |ui| {
                 ui.set_min_size(layout.overlay.size());
@@ -394,6 +405,10 @@ impl Navigation {
                     let response =
                         ui.interact(layout.map, ui.id().with("minimap"), if pan_enabled { egui::Sense::click_and_drag() } else { egui::Sense::hover() });
                     response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, pan_enabled, "Minimap: click or drag to pan canvas"));
+                    // Inside the map: its painter clips at the overlay's edge.
+                    if crate::focus::keyboard_focused(ui, &response) {
+                        crate::focus::paint_ring_inside(&painter, layout.map, f32::from(t.panel_radius), t);
+                    }
                     if let Some(mapping) = mapping {
                         for (id, body) in &shapes {
                             let mut rect = mapping.rect(*body);

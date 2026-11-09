@@ -5,7 +5,8 @@ The table tracks completed issues and remaining work across NodeCraft's mileston
 [GitHub milestones](https://github.com/CypherNaught-0x/nodecraft/milestones) for current work.
 
 **Done** counts issues closed as completed. The denominator includes open and declined issues.
-Counts use the GitHub snapshot taken for these close-outs and include close-outs marked complete below.
+Counts use the [2026-11-09 GitHub snapshot](docs/reviews/2026-11-09-future-provider-closeout.md#tracker-snapshot);
+local work has not changed GitHub issue or milestone state.
 M1 and Future providers each have one declined issue (#135 and #28).
 
 | M | Name | Status | Done |
@@ -13,15 +14,15 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 0 | **Skeleton** — workspace, CI, release pipeline, themed canvas | ✅ done | 10/10 |
 | 1 | **Canvas core** — graph, undo, commands, canvas, `.ncraft` | ✅ done | 36/37 |
 | 2 | **Organise** — fields, tags, comments, search, format, router | ✅ done | 14/14 |
-| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948) and close-out (#374) open | 47/49 |
+| 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948), live model catalogs (#1075) and close-out (#374) open | 48/51 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
-| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
-| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
-| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial | 10/16 |
-| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
-| 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 17/17 |
-| — | **Future providers** — separately tracked adapters | 🟡 partial | 26/29 |
+| 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 34/36 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ✅ features complete; documentation refreshed locally, #377 remains open | 13/14 |
+| 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 34/34 |
+| 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker implemented; retained materials (#569) and close-out (#379) open | 10/16 |
+| 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with paid automation consent (#1079) and close-out (#380) open | 9/11 |
+| 10 | **Share & collaborate** — browser, sync, decks | ✅ done with close-out #381 | 20/20 |
+| — | **Future providers** — scoped direct adapters and aggregator routes | ✅ feature batch complete; [close-out evidence](docs/reviews/2026-11-09-future-provider-closeout.md) (#382) | 31/33 |
 
 ComfyUI workflow cards expose prompts and common generation settings on import. Their
 **Edit workflow fields…** dialog saves custom field visibility, names and order without
@@ -68,7 +69,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;
-  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
+  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101), with per-card
+  custom fonts imported on desktop (#548). Masks record their source image and require an
+  explicit refit after an aspect-ratio change of more than 1% (#546). Elements turn
   selected images into a named, reusable subject that prompts mention as `#name`, with a
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
@@ -90,16 +93,24 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   provider-bound handles: the Library and the Share live panel say they work only on the account
   that trained them, exports never write one out as a file, Use on selected card sets a SOUL 2
   card's Soul ID, techniques using one say so in the shared library, and a project opened on
-  another account keeps every setting and refuses the run before paying (#180, #680).
+  another account keeps every setting and refuses the run before paying (#180, #680). SOUL 2
+  image to image takes one required scene image plus an optional ready Soul ID (#1043); the
+  identity never substitutes for that scene input. Elements supply pictures rather than an identity. See the
+  [media editor guide](docs/media-editors.md) for the workflows and host limits.
   An Export to folder card writes the results wired into it into a folder a person chose on the
   card, with a file-name pattern and a keep/number/replace policy, on the background export worker
   with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
   An image card's Image tools menu lists inpaint, expand, remove background, upscale, split into grid or layers, color grade, Make Element and Open in
   3D, greyed with the reason where a tool can't be used, and adds the tool's card wired to the
-  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL) become 3D nodes whose cards show
+  image as one undo step (#103). 3D models (glTF, GLB, OBJ, binary STL, ASCII PLY, static USDZ) become 3D nodes whose cards show
   the model in an orbit viewer drawn with wgpu, shaded, unlit or as a wireframe; Convert 3D
   writes a GLB or OBJ copy (#111), or geometry-only binary STL with bounded read/reopen support
-  (part of #569; see `docs/3d-formats.md`). Built-in 3D cards save their viewer angle, elevation, zoom and
+  or bounded ASCII PLY with RGBA channel data (#1011), or a self-contained static USDA/USDZ
+  triangle profile with linear RGBA and bounded read/reopen support (#1019; parts of #569;
+  see `docs/3d-formats.md`). General USD scenes and retained materials remain separate work.
+  Browser 3D previews decode and prepare models in a dedicated Rust/Wasm worker within
+  the existing 16 MiB per-original storage limit and separate geometry bounds (#1013).
+  Built-in 3D cards save their viewer angle, elevation, zoom and
   shading in the project; a viewer gesture is one undo step and never changes generation inputs
   or existing captures (`mesh.view_set`, #928, part of #569). A custom shader card runs WGSL with declared sliders; its editor
   checks the code as it's typed, has a text model write or fix it through an ordinary, priced
@@ -172,7 +183,8 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   `.ncraft-plugin` package, installs it disabled and, once granted and enabled, a text-action
   package's actions become cards that stop running when the grant is revoked (#172, #173); in
   the browser, packages last only for the session and never run (#823). Built-in image actions
-  run on the CPU: the wgpu path for them (#89) is a tested library the app does not use yet.
+  use wgpu on desktop when available and the CPU reference otherwise (#1058); CLI and browser
+  actions use the CPU.
 - **Black Forest Labs**: desktop Generate image and the CLI use BFL directly (#33, #1060): FLUX.2
   klein 4B and 9B, pro, max and flex text-to-image, quoted by output megapixels from BFL's
   published rates (#1062), and FLUX.1 Kontext pro and max image editing at a published price per
@@ -247,15 +259,22 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   desktop (#721). Check [`docs/providers.md`](docs/providers.md) for adapter-specific limits.
 - **Local actions work in the app, on the CPU.** Image/text action node kinds (#410) recompute on
   a worker after edits (#88); slider drags preview with smaller images before full-size rendering.
-  The browser has no worker threads: it takes a round a few jobs per frame, so drawing goes on
-  between them (#1072), though one heavy action still holds the frame it runs in. Built-in image
+  The browser's local-action pass uses the main thread: it takes a round a few jobs per frame,
+  so drawing goes on between them (#1072), though one heavy action still holds the frame it
+  runs in. Built-in image
   actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
   the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
   (`rust_wasm`) plugin packages are refused at install, as a final decision for this plugin
-  contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
-  whose tracker (#174) is still open. This is not evidence that all paid provider operations or
+  contract (#1071); the follow-up Rust sandbox runtime (#1156) remains open. Provider-operation
+  packages use the scoped broker and explicit grants (#174); this does not make arbitrary module
+  code runnable. This is not evidence that all paid provider operations or
   video/audio actions work in every host.
+- **Media-editor host limits are specific.** Desktop Layer Editor, Mask/Inpaint and Element
+  workflows are implemented. Custom-font picking and persistent cross-project Elements libraries
+  are desktop features; the browser uses saved fonts and a session-only Elements library.
+  Provider identity training and generation need separate quotes, and Soul IDs stay bound to
+  the training account. See [media editing workflows](docs/media-editors.md).
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
@@ -299,7 +318,9 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   service account (#742), as do Google TTS's classic and Gemini voices (#21) and the Gemini
   image models (#47); Seedance 2.5 and
   2.0 make video on BytePlus ModelArk (#18); Kling's own task API makes video and images with a
-  Kling key (#19); most `future` adapters remain tracked separately. ElevenLabs speech (v3,
+  Kling key (#19). The [Future providers batch](docs/reviews/2026-11-09-future-provider-closeout.md)
+  has resolved its feature issues within documented mode and host limits; retired Sora (#28) is
+  not an available adapter. ElevenLabs speech (v3,
   Multilingual v2, Flash v2.5), effects, music and voice changer models (#20) have a Generate
   audio card (#672), account voice choices (#670), and streaming speech playback on desktop
   and in the browser (#671, #875, #1070); the CLI requests streaming previews too and reports
@@ -312,17 +333,34 @@ The honest list, because "it's in the repo" and "you can use it" are different c
 
 The near-term order follows the remaining open issues, not an already-finished wiring checklist:
 
-1. **Finish M3 generation**: ComfyUI workflow field mappings (#948) and the M3 close-out of the
-   README, ROADMAP and docs (#374); do not mistake a tested adapter for a working mode in every host.
-2. **Finish reusable delivery**: complete the remaining M5 work and first signed release (#100),
-   including provider plugins (#174).
-   M4's open follow-ups sit outside a milestone: the Generate confirmation should say which nodes
-   reuse a cached result (#811), and a superseded live action should be cancelled and its work
-   bounded (#596). Using the wgpu path (#89) for built-in image actions, and a button for result
-   caching on model cards, have no issue yet.
-   For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
+1. **Finish M3 generation**: ComfyUI workflow field mappings (#948), live OpenRouter/LiteLLM
+   model catalogs (#1075), and the M3 documentation close-out (#374). Local continuations do not
+   change the tracker snapshot until published; keep supported modes and hosts explicit.
+2. **Finish reusable delivery**: the remaining M5 items are its documentation close-out (#376)
+   and the first signed release (#100). The scoped provider broker (#174), cache-reuse feedback
+   (#811), bounded cancellation of superseded actions (#596), desktop GPU actions (#1058), and
+   the model-card caching switch (#1059) are completed issues, not outstanding prerequisites.
+3. **Complete the remaining milestone evidence**: retained-material 3D work and M8 close-out
+   (#569, #379), and paid-automation consent and M9 close-out (#1079, #380).
+   Follow the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones)
+   for changing priorities. The Future providers feature batch is complete; #382's documentation
+   is prepared locally and no issue or milestone has been closed by this refresh.
 
 ## Milestone log
+
+- **2026-11-09** — M6 feature work is complete: Layer Editor and custom fonts, version-bound
+  masks, Image tools, reusable/exportable Elements and account-bound Soul IDs, including SOUL 2
+  scene-image editing (#1043). The local #377 documentation refresh records the host limits and
+  implementation evidence in the [M6 checklist](docs/plan.md#m6-media-editors). GitHub still has
+  #377 open: the completed-only count is 13/14, excluding the unrelated pull request in the
+  milestone; no remote closure is implied.
+
+- **2026-11-09** — Future providers feature work is complete within the shipped adapters' scoped
+  modes and hosts. The fresh tracker snapshot has 31 completed issues, retired Sora declined,
+  and only documentation close-out #382 open (31/33). BFL editing and megapixel quotes, Pika
+  keyframes, and speech preview delivery on the browser/CLI are documented; HeyGen and Magnific
+  keep unknown-price consent where the rate cannot be established. This local documentation
+  refresh changes no GitHub state and makes no new release or live-provider verification claim.
 
 - **2026-11-06** — a batch inside a technique's own graph fans its technique node out (#1073),
   within the same bounds as a batch on the canvas (1,000 items and 16 batches per chain), every

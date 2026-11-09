@@ -65,6 +65,14 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "mistral" => Some("mistral"),
         "groq" => Some("groq"),
         "xai" => Some("xai"),
+        "together" => Some("together"),
+        "moonshot" => Some("moonshot"),
+        "zai" => Some("zai"),
+        "minimax" => Some("minimax"),
+        "perplexity" => Some("perplexity"),
+        "hyperbolic" => Some("hyperbolic"),
+        "mira" => Some("mira"),
+        "cohere" => Some("cohere"),
         "deepgram" => Some("deepgram"),
         "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
@@ -79,7 +87,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedance" => Some("seedream"),
         "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
-        "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
+        "google-veo" | "google-tts" | "google-gemini-images" | "vertex-llm" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
@@ -308,6 +316,14 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         "mistral" => Arc::new(chat("mistral", Endpoint::mistral, env)?),
         "groq" => Arc::new(chat("groq", Endpoint::groq, env)?),
         "xai" => Arc::new(chat("xai", Endpoint::xai, env)?),
+        "together" => Arc::new(chat("together", Endpoint::together, env)?),
+        "moonshot" => Arc::new(chat("moonshot", Endpoint::moonshot, env)?),
+        "zai" => Arc::new(chat("zai", Endpoint::zai, env)?),
+        "minimax" => Arc::new(chat("minimax", Endpoint::minimax, env)?),
+        "perplexity" => Arc::new(chat("perplexity", Endpoint::perplexity, env)?),
+        "hyperbolic" => Arc::new(chat("hyperbolic", Endpoint::hyperbolic, env)?),
+        "mira" => Arc::new(chat("mira", Endpoint::mira, env)?),
+        "cohere" => Arc::new(chat("cohere", Endpoint::cohere, env)?),
         "azure-openai" => {
             let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {
@@ -336,6 +352,15 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             let auth = bedrock::auth(env.keys, nodecraft_providers::aws::system_seconds())?;
             Arc::new(LlmClient::bedrock_chat(region, auth, env.http.clone()).map_err(adapter_error)?)
         }
+        "vertex-llm" => Arc::new(
+            LlmClient::vertex(
+                "global",
+                &needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?,
+                env.http.clone(),
+                nodecraft_providers::google_cloud::system_clock(),
+            )
+            .map_err(adapter_error)?,
+        ),
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())

@@ -1,0 +1,177 @@
+{
+  "id": "d2a78457-e57e-448b-a5dc-b1c4edbf74a0",
+  "links": [
+    [
+      52,
+      35,
+      0,
+      30,
+      0,
+      "IMAGE"
+    ],
+    [
+      53,
+      11,
+      0,
+      36,
+      0,
+      "IMAGE"
+    ],
+    [
+      55,
+      12,
+      0,
+      36,
+      1,
+      "IMAGE"
+    ],
+    [
+      56,
+      36,
+      0,
+      35,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "nodes": [
+    {
+      "id": 35,
+      "type": "GeminiImage2Node",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 56
+        },
+        {
+          "name": "files",
+          "type": "GEMINI_INPUT_FILES",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            52
+          ]
+        },
+        {
+          "name": "STRING",
+          "type": "STRING",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "Original NodeCraft test prompt.",
+        "gemini-3-pro-image-preview",
+        39494503692700,
+        "randomize",
+        "1:1",
+        "1K",
+        "IMAGE",
+        "Original NodeCraft test prompt."
+      ]
+    },
+    {
+      "id": 12,
+      "type": "LoadImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            55
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "fixture.png",
+        "image"
+      ]
+    },
+    {
+      "id": 36,
+      "type": "BatchImagesNode",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images.image0",
+          "type": "IMAGE",
+          "link": 53
+        },
+        {
+          "name": "images.image1",
+          "type": "IMAGE",
+          "link": 55
+        },
+        {
+          "name": "images.image2",
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            56
+          ]
+        }
+      ],
+      "widgets_values": []
+    },
+    {
+      "id": 11,
+      "type": "LoadImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            53
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "fixture.png",
+        "image"
+      ]
+    },
+    {
+      "id": 30,
+      "type": "SaveImage",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 52
+        }
+      ],
+      "outputs": [],
+      "widgets_values": [
+        "NodeCraft"
+      ]
+    }
+  ],
+  "version": 0.4
+}
