@@ -126,9 +126,23 @@ pub(super) fn check_menu(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what:
     assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
 }
 
+/// Check the actual opening state's controls at both agreed inventory sizes, then restore
+/// the feature fixture's viewport before its dismissal and optional screenshot.
+fn dismissal_sizes(h: &mut Harness<'static, NodeCraftApp>, what: &str) {
+    let original = h.ctx.content_rect().size();
+    for size in [egui::vec2(1000.0, 700.0), egui::vec2(1600.0, 900.0)] {
+        h.set_size(size);
+        h.run_steps(6);
+        check_open_panels(h, &format!("{what} at {size:?}"));
+    }
+    h.set_size(original);
+    h.run_steps(6);
+}
+
 /// Exercise the real shared header control, then prove the panel stopped being drawn.
 /// Callers also assert their own open state/lifecycle cleanup after this returns.
 pub(super) fn close_panel(h: &mut Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    dismissal_sizes(h, what);
     h.run_steps(4);
     menu_evidence(h, what);
     h.get_by_role_and_label(Role::Button, "Close window").click();
@@ -148,6 +162,7 @@ pub(super) fn menu_evidence(h: &mut Harness<'static, NodeCraftApp>, what: &str) 
 /// The tool owns Escape only after the focused editor (if any) has yielded it. The
 /// application-level owner tests exercise the first-press/editor/gesture precedence.
 pub(super) fn escape_panel(h: &mut Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    dismissal_sizes(h, what);
     h.ctx.memory_mut(|memory| {
         if let Some(focused) = memory.focused() {
             memory.surrender_focus(focused);
