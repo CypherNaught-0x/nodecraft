@@ -80,6 +80,29 @@ pub fn shown(ctx: &Context) -> Vec<(Id, egui::Rect)> {
         .collect()
 }
 
+/// Whether this panel was laid out in this or the preceding pass. Opening flags alone do not
+/// make a tool an Escape target: a missing service may have prevented its panel from drawing.
+pub fn recently_shown(ctx: &Context, id: Id) -> bool {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data(|data| data.get_temp::<Shown>(shown_id())).unwrap_or_default().iter().any(|(shown, at)| *shown == id && at.saturating_add(1) >= pass)
+}
+
+fn close_request_id(id: Id) -> Id {
+    id.with("nodecraft.floating.close_request")
+}
+
+/// Requests the same close lifecycle as the header button. The shell first arbitrates Escape
+/// ownership and the frontmost eligible tool; panels never read Escape themselves. A request
+/// expires after this pass, so an absent panel cannot close a later reopening.
+pub fn request_close(ctx: &Context, id: Id) {
+    let pass = ctx.cumulative_pass_nr();
+    ctx.data_mut(|data| data.insert_temp(close_request_id(id), pass));
+}
+
+fn take_close_request(ctx: &Context, id: Id) -> bool {
+    ctx.data_mut(|data| data.remove_temp::<u64>(close_request_id(id))).is_some_and(|at| at == ctx.cumulative_pass_nr())
+}
+
 /// Records a fixed surface drawn in the panel layer this pass (the Shared parameters panel), so
 /// a panel opening over it steps below its header like it does for any open panel.
 pub fn occupy(ctx: &Context, id: Id) {
@@ -160,7 +183,13 @@ impl<'open> Panel<'open> {
         add_header: impl FnOnce(&mut egui::Ui) -> (Rect, H),
         add_contents: impl FnOnce(&mut egui::Ui) -> R,
     ) -> Option<egui::InnerResponse<Option<(H, R)>>> {
-        let Panel { window, id, open, vscroll, .. } = self;
+        let Panel { window, id, mut open, vscroll, .. } = self;
+        if take_close_request(ctx, id)
+            && let Some(open) = open.as_deref_mut()
+        {
+            *open = false;
+            ctx.request_repaint();
+        }
         if open.as_deref() == Some(&false) {
             return None;
         }
@@ -187,7 +216,13 @@ impl<'open> Panel<'open> {
     }
 
     pub fn show<R>(self, ctx: &Context, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> Option<egui::InnerResponse<Option<R>>> {
-        let Panel { window, id, title, open, vscroll, t } = self;
+        let Panel { window, id, title, mut open, vscroll, t } = self;
+        if take_close_request(ctx, id)
+            && let Some(open) = open.as_deref_mut()
+        {
+            *open = false;
+            ctx.request_repaint();
+        }
         if open.as_deref() == Some(&false) {
             return None;
         }
