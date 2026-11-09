@@ -1,6 +1,7 @@
 //! The shared layout check for floating panels (#959): a panel opens inside the floating panel
 //! area, and none of its own on-screen controls crosses another. Panels' own tests call
-//! [`check_open_panels`] once they have opened their panel.
+//! [`check_open_panels`] once they have opened their panel, and questions' tests (the
+//! `floating::question` modals, #1116) [`check_question`].
 use super::*;
 use egui::accesskit::Role;
 use egui_kittest::{Harness, kittest::NodeT};
@@ -21,9 +22,11 @@ fn interactive(role: Role) -> bool {
     )
 }
 
+/// The node's rect in points, for nodes that have bounds. AccessKit's bounding boxes are in
+/// physical pixels, which differ from points at an interface size other than 100 % (#1107) or on
+/// a high-density screen; `Node::rect` converts them.
 fn bounds(node: &egui_kittest::Node<'_>) -> Option<Rect> {
-    let b = node.accesskit_node().bounding_box()?;
-    Some(Rect::from_min_max(Pos2::new(b.x0 as f32, b.y0 as f32), Pos2::new(b.x1 as f32, b.y1 as f32)))
+    node.accesskit_node().bounding_box().map(|_| node.rect())
 }
 
 /// Pairs of the panel's own on-screen controls that cross; a control may share space only with
@@ -92,4 +95,30 @@ pub(super) fn check_open_panels(h: &Harness<'static, NodeCraftApp>, what: &str) 
         let crossing = overlaps(h, id, rect);
         assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
     }
+}
+
+/// A question (`floating::question`, #1116): it is open, lies on the screen, and none of its own
+/// on-screen controls cross another. `what` names the case in a failure. Call it on a settled
+/// harness.
+pub(super) fn check_question(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    let Some(state) = egui::AreaState::load(&h.ctx, id) else { panic!("{what}: the question {id:?} isn't open") };
+    let rect = state.rect();
+    let screen = h.ctx.content_rect();
+    assert!(rect.is_finite() && rect.is_positive(), "{what}: {rect:?} has no size");
+    assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
+    let crossing = overlaps(h, id, rect);
+    assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
+}
+
+/// A menu (the File menu, #1123): it is open, lies on the screen, and none of its own on-screen
+/// controls cross another. `id` is its popup's id; `what` names the case in a failure. Call it on
+/// a settled harness.
+pub(super) fn check_menu(h: &Harness<'static, NodeCraftApp>, id: egui::Id, what: &str) {
+    let Some(state) = egui::AreaState::load(&h.ctx, id) else { panic!("{what}: the menu {id:?} isn't open") };
+    let rect = state.rect();
+    let screen = h.ctx.content_rect();
+    assert!(rect.is_finite() && rect.is_positive(), "{what}: {rect:?} has no size");
+    assert!(screen.expand(1.0).contains_rect(rect), "{what}: {rect:?} leaves the window {screen:?}");
+    let crossing = overlaps(h, id, rect);
+    assert!(crossing.is_empty(), "{what}:\n{}", crossing.join("\n"));
 }

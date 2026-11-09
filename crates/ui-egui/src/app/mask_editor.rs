@@ -286,7 +286,11 @@ impl NodeCraftApp {
                     .response
                     .labelled_by(label.id);
                 let ready = !editor.prompt.trim().is_empty() && chosen.is_some();
-                create = ui.add_enabled(ready, egui::Button::new("Create edit")).on_hover_text("Add a generation card that redraws the masked area").clicked();
+                create = ui
+                    .add_enabled(ready, egui::Button::new("Create edit"))
+                    .on_hover_text("Add a generation card that redraws the masked area")
+                    .on_disabled_hover_text("Describe the edit and choose a model first")
+                    .clicked();
                 close |= ui.button("Close").clicked();
             });
         });

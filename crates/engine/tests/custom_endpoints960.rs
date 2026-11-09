@@ -149,7 +149,7 @@ fn the_default_is_unchanged_when_nothing_is_set() {
     for settings in [ProviderSettings::default(), ProviderSettings { base_urls: [("openai".to_owned(), "  ".into())].into(), ..Default::default() }] {
         let provider = make("openai", &env(&keys, http.clone(), &settings)).unwrap();
         assert_eq!(provider.custom_base_url(), None);
-        assert!(provider.retry_ambiguous_submit(), "OpenAI's own API keeps its retry policy");
+        assert!(!provider.retry_ambiguous_submit(), "a chat request that may have been sent is never resent (#1122)");
         futures::executor::block_on(provider.submit(&job())).unwrap();
         let request = http.0.lock().unwrap().pop().unwrap();
         assert_eq!(request.url, "https://api.openai.com/v1/chat/completions");

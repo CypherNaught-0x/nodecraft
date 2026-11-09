@@ -452,7 +452,7 @@ impl NodeCraftApp {
             }
             _ => 0,
         };
-        let providers_ready = self.providers_ready();
+        let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
         let (mut open_keys, mut open_comfy) = (false, false);
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
@@ -681,7 +681,9 @@ impl NodeCraftApp {
             return intents;
         }
         let above = card::outer_insets(t, self.view.zoom, false).1 * self.view.zoom + t.toolbar_gap + t.toolbar_height;
-        let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
+        // Held below the application row, which spans the canvas's top at most widths (#1115).
+        let top = viewport.top().max(self.topbar_rect().bottom() + t.navigation_gap).min(viewport.bottom());
+        let pos = Pos2::new(screen.left(), (screen.top() - above).max(top));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
         let canvas = self.session.document().canvases().get(&self.canvas);
@@ -716,7 +718,8 @@ impl NodeCraftApp {
                             }
                             let r = ui
                                 .add_enabled(editable(nodecraft_nodes::generation::MODEL), egui::Button::new(&short))
-                                .on_hover_text(format!("Model: {model}. Click to change it."));
+                                .on_hover_text(format!("Model: {model}. Click to change it."))
+                                .on_disabled_hover_text(format!("Model: {model}. It can't be changed here right now."));
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));

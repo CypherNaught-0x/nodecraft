@@ -25,7 +25,7 @@ impl NodeCraftApp {
             Vec2::new(width, t.search_height),
         )
     }
-    fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
+    pub(super) fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
         self.search_context_scoped(ctx, None)
     }
     pub(super) fn search_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> SearchContext {

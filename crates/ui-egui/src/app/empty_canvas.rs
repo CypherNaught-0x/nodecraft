@@ -49,7 +49,7 @@ impl NodeCraftApp {
     }
 
     /// Can this window add nodes? A shared-room viewer who isn't editing gets no prompts to.
-    fn can_add_nodes(&self) -> bool {
+    pub(super) fn can_add_nodes(&self) -> bool {
         let probe = json!({"canvas": self.canvas, "id": NodeId::from_bytes([0; 16]), "kind": "source.text", "pos": {"x": 0.0, "y": 0.0}});
         !matches!(self.session.enabled("node.create", &probe), Err(error) if error.kind == ErrorKind::Forbidden)
     }
@@ -57,15 +57,14 @@ impl NodeCraftApp {
     /// One frame of the first-run guidance: the empty-canvas hint or the sample card's callout,
     /// and the providers flag the cards read.
     pub(super) fn empty_canvas(&mut self, ui: &egui::Ui, viewport: Rect, blocked: bool, t: &Tokens) {
-        // Programmatic and test windows without guidance pay nothing; the cards then assume ready.
-        if !self.guidance {
+        // Clear an earlier editor frame when the window switches to view-only access.
+        // Programmatic windows and viewers get no setup guidance, including card tooltips.
+        if !self.guidance || !self.can_add_nodes() {
+            ui.ctx().data_mut(|data| data.remove::<bool>(providers_ready_id()));
             return;
         }
         let ready = self.providers_ready_cached(ui.ctx());
         ui.ctx().data_mut(|data| data.insert_temp(providers_ready_id(), ready));
-        if !self.can_add_nodes() {
-            return;
-        }
         self.add_node_button(ui.ctx(), viewport, blocked, t);
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         if canvas.nodes().is_empty() {

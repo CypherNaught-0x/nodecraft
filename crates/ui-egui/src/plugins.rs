@@ -531,7 +531,12 @@ impl PluginsPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.update, "It updates an installed package");
             let ready = !self.location.trim().is_empty() && !self.checking();
-            if ui.add_enabled(ready, egui::Button::new("Check")).on_hover_text("See what it is before installing anything").clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new("Check"))
+                .on_hover_text("See what it is before installing anything")
+                .on_disabled_hover_text("Enter the package's file or address first; one check runs at a time")
+                .clicked()
+            {
                 self.check(session);
             }
         });
@@ -602,6 +607,7 @@ impl PluginsPanel {
                         && ui
                             .add_enabled(!self.pending.values().any(|ask| matches!(ask, Ask::Reload)), egui::Button::new("Reload"))
                             .on_hover_text(format!("Install its file {} again, if it changed", row.reload_file.as_deref().unwrap_or_default()))
+                            .on_disabled_hover_text("Another reload is running; wait for it to finish")
                             .clicked()
                     {
                         self.reload(session, id);

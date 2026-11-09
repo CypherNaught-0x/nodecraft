@@ -117,6 +117,15 @@ pub struct AgentPanel {
     pub draft: Option<Draft>,
 }
 
+/// The sidebar's opening width and the range it can be dragged in, for a window `width` wide:
+/// `agent_width` to open, at least `agent_min_width`, at most `agent_max_fraction` of the window
+/// (but never below the minimum, so the sidebar's controls stay usable).
+fn sidebar_width(width: f32, t: &nodecraft_ui_egui::theme::Tokens) -> (f32, egui::Rangef) {
+    let half = if width.is_finite() { width * t.agent_max_fraction } else { t.agent_width };
+    let max = half.max(t.agent_min_width);
+    (t.agent_width.clamp(t.agent_min_width, max), egui::Rangef::new(t.agent_min_width, max))
+}
+
 impl AgentPanel {
     /// The panel over `worker` (or why there is none), starting in the settings' mode.
     pub fn new(worker: Result<Worker, String>, settings: AgentSettings) -> Self {
@@ -334,7 +343,9 @@ impl AgentPanel {
         }
         let t = app.theme.tokens();
         let frame = egui::Frame::NONE.fill(t.panel_fill).stroke(egui::Stroke::new(t.handle_stroke, t.panel_stroke)).inner_margin(t.card_padding);
-        egui::Panel::right("nodecraft-agent").frame(frame).resizable(false).exact_size(t.agent_width).show(ui, |ui| {
+        // Resizable between its narrowest and half the window, so a small window keeps a canvas (#1115).
+        let (default, range) = sidebar_width(ui.max_rect().width(), t);
+        egui::Panel::right("nodecraft-agent").frame(frame).resizable(true).default_size(default).size_range(range).show(ui, |ui| {
             let status = self.agent.status();
             ui.horizontal(|ui| {
                 ui.heading("Agent");

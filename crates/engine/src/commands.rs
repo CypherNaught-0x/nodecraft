@@ -292,7 +292,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 80] = [
+        let groups: [fn() -> Vec<CommandSpec>; 81] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -373,6 +373,7 @@ impl Registry {
             crate::tag_filter_cmds::specs,
             crate::skill_cmds::specs,
             crate::migrate_cmds::specs,
+            crate::ui_scale_cmds::specs,
         ];
         for spec in groups.into_iter().flat_map(|specs| specs()) {
             registry.register(spec)?;

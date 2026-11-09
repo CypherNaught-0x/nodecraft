@@ -219,13 +219,15 @@ pub fn navigate(
         view.pan_by(background.drag_delta());
     }
     let (zoom, pointer, reset, zoom_in, zoom_out) = ui.input(|i| {
+        // With Alt held these keys size the interface instead (#1107, `view.ui_scale.*`).
         let cmd = egui::Modifiers::COMMAND;
+        let zoom_keys = i.modifiers.matches_logically(cmd) && !i.modifiers.alt;
         (
             i.zoom_delta(),
             i.pointer.hover_pos(),
-            i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Num0),
-            i.modifiers.matches_logically(cmd) && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
-            i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Minus),
+            zoom_keys && i.key_pressed(egui::Key::Num0),
+            zoom_keys && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
+            zoom_keys && i.key_pressed(egui::Key::Minus),
         )
     });
     if scroll_navigation == ScrollNavigation::Enabled

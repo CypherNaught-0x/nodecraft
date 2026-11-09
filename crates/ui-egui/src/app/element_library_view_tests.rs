@@ -27,6 +27,18 @@ fn elements(h: &Harness<'static, NodeCraftApp>) -> Vec<Node> {
 }
 
 fn right_click(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
+    // Bring a card placed under the application row into the open canvas below it.
+    let below = h.state().topbar_rect().bottom() + h.state().theme.tokens().navigation_margin;
+    let top = {
+        let app = h.state();
+        let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();
+        let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
+        app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min.y
+    };
+    if top < below {
+        h.state_mut().view.pan.y += below - top;
+        h.run();
+    }
     let pos = {
         let app = h.state();
         let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();

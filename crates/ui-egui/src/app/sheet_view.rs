@@ -415,7 +415,7 @@ impl NodeCraftApp {
         // Capture its owner before constructing even the disabled chrome widget.
         let editor = (self.text_focused || canvas::text_input_focused(ui.ctx())).then(|| ui.ctx().memory(|m| m.focused()).or(self.last_text_focus)).flatten();
         let chrome = self.topbar(ui);
-        if self.topbar.search.is_none()
+        if self.topbar.more.zip(ui.input(|i| i.pointer.interact_pos())).is_some_and(|(more, pointer)| more.contains(pointer))
             && chrome
             && !egui::Popup::is_any_open(ui.ctx())
             && ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
@@ -436,8 +436,6 @@ impl NodeCraftApp {
         self.show_notices(ui, viewport, t);
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
         self.keys_panel(ui.ctx(), t);
         self.queue_panel(ui.ctx(), t);
@@ -579,10 +577,20 @@ impl NodeCraftApp {
                         actions.push(Action::Remove(selected.clone()));
                     }
                     let run = if some { format!("Run {} selected", selected.len()) } else { "Run selected".into() };
-                    if ui.add_enabled(some, egui::Button::new(run)).on_hover_text("Quote the selected rows, then run them").clicked() {
+                    if ui
+                        .add_enabled(some, egui::Button::new(run))
+                        .on_hover_text("Quote the selected rows, then run them")
+                        .on_disabled_hover_text("Select at least one row to run")
+                        .clicked()
+                    {
                         actions.push(Action::Run(selected.clone()));
                     }
-                    if ui.add_enabled(!rows.rows.is_empty(), egui::Button::new("Run all")).on_hover_text("Quote every row, then run them").clicked() {
+                    if ui
+                        .add_enabled(!rows.rows.is_empty(), egui::Button::new("Run all"))
+                        .on_hover_text("Quote every row, then run them")
+                        .on_disabled_hover_text("Add a row to run")
+                        .clicked()
+                    {
                         actions.push(Action::Run(rows.rows.iter().map(|row| row.id).collect()));
                     }
                     let open = self.sheet.template.is_some();
@@ -608,6 +616,7 @@ impl NodeCraftApp {
                     if ui
                         .add_enabled(!chosen.is_empty(), egui::Button::new(place))
                         .on_hover_text("Put the selected rows' results on the canvas as source cards")
+                        .on_disabled_hover_text("Select rows that have finished to send their results")
                         .clicked()
                     {
                         actions.push(Action::Place(chosen.clone()));
@@ -661,6 +670,7 @@ impl NodeCraftApp {
                         if ui
                             .add_enabled(!ids.is_empty(), egui::Button::new("Select shown"))
                             .on_hover_text("Select exactly the rows the filter shows")
+                            .on_disabled_hover_text("No rows match the filter")
                             .clicked()
                         {
                             actions.push(Action::Select(ids));
@@ -805,10 +815,20 @@ impl NodeCraftApp {
             cell(ui, self.row_status(row.id, t));
             ui.allocate_ui_with_layout(Vec2::new(widths.other, height), egui::Layout::left_to_right(egui::Align::Center), |ui| {
                 ui.spacing_mut().item_spacing.x = t.control_gap;
-                if ui.add_enabled(index > 0, egui::Button::new("Up")).on_hover_text("Move this row up").clicked() {
+                if ui
+                    .add_enabled(index > 0, egui::Button::new("Up"))
+                    .on_hover_text("Move this row up")
+                    .on_disabled_hover_text("This row is already first")
+                    .clicked()
+                {
                     actions.push(Action::Move(row.id, index.saturating_sub(1)));
                 }
-                if ui.add_enabled(index < last, egui::Button::new("Down")).on_hover_text("Move this row down").clicked() {
+                if ui
+                    .add_enabled(index < last, egui::Button::new("Down"))
+                    .on_hover_text("Move this row down")
+                    .on_disabled_hover_text("This row is already last")
+                    .clicked()
+                {
                     actions.push(Action::Move(row.id, index.saturating_add(1)));
                 }
                 if ui.button("Run").on_hover_text("Quote this row, then run it").clicked() {
@@ -894,6 +914,7 @@ impl NodeCraftApp {
                 {
                     if crate::history::named(ui.add_enabled(position > 1, egui::Button::new("‹").small()), &format!("Previous result, row {number}"))
                         .on_hover_text("Show this row's older result")
+                        .on_disabled_hover_text("This is the row's oldest result")
                         .clicked()
                     {
                         actions.push(Action::Step(row.id, false));
@@ -901,6 +922,7 @@ impl NodeCraftApp {
                     ui.label(egui::RichText::new(format!("{position} of {}", row.results)).color(t.text_muted));
                     if crate::history::named(ui.add_enabled(position < row.results, egui::Button::new("›").small()), &format!("Next result, row {number}"))
                         .on_hover_text("Show this row's newer result")
+                        .on_disabled_hover_text("This is the row's newest result")
                         .clicked()
                     {
                         actions.push(Action::Step(row.id, true));
@@ -1060,6 +1082,7 @@ impl NodeCraftApp {
                 if ui
                     .add_enabled(fits, egui::Button::new(label))
                     .on_hover_text("Add the rows after the last, copying its model and settings; nothing runs")
+                    .on_disabled_hover_text("Nothing to expand into yet, or the rows wouldn't fit; the line below says which")
                     .clicked()
                 {
                     actions.push(Action::Expand(params));

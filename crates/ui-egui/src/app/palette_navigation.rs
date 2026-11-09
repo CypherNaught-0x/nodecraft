@@ -13,28 +13,36 @@ impl NodeCraftApp {
                 "canvas.fit_selection" => &selected,
                 _ => &toggle,
             };
-            if self.navigation_enabled_with_context(context.clone(), spec.id, &self.palette_command_params(spec.id)).is_ok() {
-                entries.push(palette::Entry {
-                    target: palette::Target::Command(spec.id),
-                    label: spec.label.to_owned(),
-                    shortcut: spec.shortcut.map(str::to_owned),
-                });
+            let params = self.palette_command_params(spec.id);
+            if !palette::takes(&spec, &params) {
+                continue;
+            }
+            match self.navigation_enabled_with_context(context.clone(), spec.id, &params) {
+                Ok(()) => entries.push(palette::Entry::command(&spec, None)),
+                Err(error) if palette::explains(&error) => entries.push(palette::Entry::command(&spec, Some(&error))),
+                Err(_) => {}
             }
         }
+        palette::sort(&mut entries);
         entries
     }
 
-    pub(super) fn dispatch_live_palette_command(&mut self, ctx: &egui::Context, id: &str) {
+    /// Runs a command chosen in the palette; whether it ran.
+    pub(super) fn dispatch_live_palette_command(&mut self, ctx: &egui::Context, id: &str) -> bool {
         if Self::is_navigation_command(id) {
             // The chosen palette is already closed. Relinquish only its query; another editor
             // or an active gesture still refuses the ordinary live navigation dispatch.
             Palette::release_text_focus(ctx);
             self.text_focused = canvas::text_input_focused(ctx);
-            if let Err(error) = self.dispatch_navigation(ctx, id, &self.palette_command_params(id)) {
-                self.notice = Some(error.message);
+            match self.dispatch_navigation(ctx, id, &self.palette_command_params(id)) {
+                Ok(_) => true,
+                Err(error) => {
+                    self.notice = Some(error.message);
+                    false
+                }
             }
         } else {
-            self.dispatch_palette_command(id);
+            self.dispatch_palette_command(id)
         }
     }
 }
