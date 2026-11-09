@@ -64,6 +64,11 @@ Further rules checked by `cargo xtask layers`:
   `craft-ui` and `craft-quit` may be used by `ui-egui` and the apps only, not by `agent` or
   `automation` even though they share its layer.
 - **`media` is standalone:** no workspace dependencies, so it can be published and reused.
+- **The LLM client crate stays in `providers`.** Only `nodecraft-providers` may depend on
+  `rig-core` (or any `rig-*` crate), and no other crate's source may name it (`rig_core`,
+  `rig::`), so none of its types reaches `engine`, `agent` or the shell. Inside `providers`,
+  `rig_http` implements its HTTP trait over our own `Http`, and `llm::openai` (Chat
+  Completions) and `llm::anthropic` (Messages) speak through it ([the decision](decisions/2026-11-06-llm-layer-rig.md), #1122).
 - **Layered consumers use `testkit` and `provider-testkit` as dev-dependencies only.** Apps and
   tooling keep their existing exemption; standalone media permits neither. The provider facade's
   workspace dependencies are restricted to providers and types in every dependency kind,
@@ -251,8 +256,10 @@ over `agent` with `automation`'s tools) and, with `--control`, the control chann
 against the window's live session.
 
 `apps/nodecraft-web` is the browser app: the same `NodeCraftApp` on eframe's `WebRunner`, built
-by trunk (`packaging/web/package.sh`). It is a preview: no browser host provides project storage,
-the keychain or local runs yet, so those commands report *unsupported*.
+by Trunk (`packaging/web/package.sh`). The browser host opens and saves project files through
+pickers or downloads, offers recovery from origin storage, and runs supported providers directly
+with keys stored for that origin. Live sharing uses the browser WebSocket. The browser build
+ships as a preview and follows browser storage, CORS and secure-context limits.
 
 ## The engine/UI seam
 
@@ -478,7 +485,18 @@ other file command is refused as `Busy`, since the document is about to be repla
 its destination is published, an open until its replacement checkpoint is, and the outcome says
 which happened. `FileStatus::operation` gives the kind, phase (`preparing`, `reading`, `writing`,
 `checkpointing`) and whether a cancel was asked for
-(`docs/decisions/2026-10-19-background-open-and-cancel.md`).
+(`docs/decisions/2026-10-19-background-open-and-cancel.md`). `Session::recover_in_background`
+restores work from a kept journal the same way (kind `recover`): the media are copied into this
+session's workspace and the checkpoint written on the runner, changes are refused meanwhile, and a
+cancel or failure before the checkpoint publishes keeps the current project and its journal.
+`Session::dispatch_without_waiting` is dispatch for callers that must not block (the desktop's
+control channel, MCP and agent): where dispatch would wait for a background save, it refuses as
+`Busy` naming `file.cancel` (`docs/decisions/2026-11-04-background-recover-and-close-out.md`).
+`Session::attach_storage` gives a session started without storage its storage later,
+checkpointing the current document there. The desktop uses it after a crash: it starts its window
+without storage while a thread holding the journal's lock keeps the earlier journal aside, then
+attaches the storage once that has settled
+(`docs/decisions/2026-11-05-startup-keep-aside-off-the-ui-thread.md`).
 
 `ProjectStorage::prepare_open_snapshot` returns a typed `PreparedSnapshot`, retaining the previous
 active destination while staging a candidate. Decode/checkpoint failures call `cancel_open`; only
@@ -696,9 +714,10 @@ imposing the archive's smaller manifest ceiling on every edit.
 ## Optional native video sidecar
 
 `media/video` provides the standalone bounded native FFmpeg service described in
-[media-video.md](media-video.md). It depends only on external Rust crates and configured installed
-tools, not workspace layers or FFmpeg bindings. Preview/scrub/render are library APIs; timeline UI
-is separate. Feature-on wasm exposes an Unsupported host setup path.
+[media-video.md](media-video.md). Native app builds enable the library feature and discover
+installed tools. The UI uses the service for card previews and playback, and the engine uses
+it for Timeline and video-action renders. The library depends on external Rust crates and
+invokes FFmpeg and ffprobe as processes. WebAssembly exposes an Unsupported host setup path.
 
 ## Selected-node formatting
 
@@ -840,11 +859,14 @@ connection is the page's `WebSocket`, and the same work runs in the frame, a bat
 Each peer also says where it is (`Presence`: canvas, pointer, selection); the relay names it and
 passes that on, and the app draws the others over the canvas. Presence never enters the document
 ([decision](decisions/2026-10-23-presence.md)).
-`nodecraft-cli relay [--listen <addr>]` hosts the rooms. Nothing in the library crates touches a
+`nodecraft-cli relay [--listen <addr>] [--store <folder>]` hosts the rooms; with a store it keeps
+each room, its links and its media on disk, bounded and expired, so they survive a restart
+([decision](decisions/2026-11-06-relay-room-store.md)). Nothing in the library crates touches a
 socket; the host passes frames. See the [decision](decisions/2026-10-22-crdt-sync.md) for the
 entry schema, the protocol and the limits.
-Assets over 16 MiB travel in parts, paced by the receiver and kept in a `Spool` until whole
-(the desktop's spools to temporary files); see the [decision](decisions/2026-10-23-large-shared-assets.md).
+Desktop transfers for assets over 16 MiB are paced by the receiver and spooled to temporary
+files. Browser peers keep assets within their memory cap. See
+[large shared assets](decisions/2026-10-23-large-shared-assets.md).
 
 ## Custom endpoints (#960)
 

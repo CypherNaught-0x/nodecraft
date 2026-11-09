@@ -140,6 +140,9 @@ pub struct Context<'a> {
     pub services: &'a Services,
     pub phase: Phase,
     pub file: crate::file_cmds::FileStatus,
+    /// How the last save, open or recovery that ran in this session ended (#367), for a client
+    /// whose background operation replied at once (`file.status`).
+    pub file_last: Option<crate::file_cmds::FileOutcome>,
     /// The session's performance recorder, for `perf.report`.
     pub perf: &'a crate::perf::Recorder,
     /// What the session may change (#121).
@@ -289,7 +292,7 @@ impl Registry {
         let mut registry = Self::default();
         // A flat list rather than a chain of iterators: one `Chain` per module nests the
         // iterator type deeper than the compiler's recursion limit.
-        let groups: [fn() -> Vec<CommandSpec>; 79] = [
+        let groups: [fn() -> Vec<CommandSpec>; 81] = [
             crate::graph_cmds::specs,
             crate::node_cmds::specs,
             crate::assist_cmds::specs,
@@ -356,6 +359,7 @@ impl Registry {
             crate::resolve_cmds::specs,
             crate::billing_cmds::specs,
             crate::held_cmds::specs,
+            crate::run_job_cmds::specs,
             crate::share_cmds::specs,
             crate::private_cmds::specs,
             crate::live_cmds::specs,
@@ -369,6 +373,7 @@ impl Registry {
             crate::tag_filter_cmds::specs,
             crate::skill_cmds::specs,
             crate::migrate_cmds::specs,
+            crate::ui_scale_cmds::specs,
         ];
         for spec in groups.into_iter().flat_map(|specs| specs()) {
             registry.register(spec)?;

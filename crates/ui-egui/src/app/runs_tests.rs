@@ -871,6 +871,8 @@ fn the_toolbar_expands_a_result_into_the_viewer() {
     press(&mut h, Role::Button, "Expand");
     assert_eq!(h.state().viewer, Some(N));
     assert!(h.query_by_label("Image").is_some(), "the viewer window is open");
+    h.run();
+    crate::app::panel_check::check_open_panels(&h, "Image viewer");
     h.state_mut().selection.clear();
     let canvas = C;
     h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": N})).unwrap();
@@ -1318,3 +1320,124 @@ fn budgets201_visual() {
 
 mod known_media795;
 mod whole965;
+
+/// Quitting while a save writes (#367): run results that arrived during the save waited for it,
+/// and quitting takes them in once the save has finished, before the journal's state is decided,
+/// so they are in the recovery journal rather than lost with the run host.
+#[test]
+fn quitting_during_a_save_records_the_results_that_waited_for_it() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let dir = tempfile::tempdir().unwrap();
+    // The mock polls with no interval, and every frame takes results in, so the job would finish
+    // before the save starts; its polls wait until the save is held.
+    struct HeldPolls {
+        mock: MockProvider,
+        open: Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl nodecraft_providers::Provider for HeldPolls {
+        fn id(&self) -> &str {
+            nodecraft_providers::Provider::id(&self.mock)
+        }
+        fn submit<'a>(
+            &'a self,
+            job: &'a nodecraft_providers::ProviderJob,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::Submission, nodecraft_providers::ProviderError>> {
+            nodecraft_providers::Provider::submit(&self.mock, job)
+        }
+        fn poll<'a>(
+            &'a self,
+            handle: &'a nodecraft_providers::JobHandle,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<nodecraft_providers::JobProgress, nodecraft_providers::ProviderError>> {
+            if self.open.load(Ordering::SeqCst) {
+                nodecraft_providers::Provider::poll(&self.mock, handle)
+            } else {
+                Box::pin(async { Ok(nodecraft_providers::JobProgress::Running { fraction: None, message: None, partial: None }) })
+            }
+        }
+        fn cancel<'a>(
+            &'a self,
+            handle: &'a nodecraft_providers::JobHandle,
+        ) -> nodecraft_providers::BoxFuture<'a, Result<(), nodecraft_providers::ProviderError>> {
+            nodecraft_providers::Provider::cancel(&self.mock, handle)
+        }
+        fn poll_interval_ms(&self, _: &nodecraft_providers::JobProgress) -> u64 {
+            1
+        }
+    }
+    let mock = MockProvider::new("anthropic", [("claude-opus-5-5".to_owned(), MockModel { polls: 2, ..MockModel::new(MockOutput::Text) })]);
+    let polls_open = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let maker = {
+        let held = Arc::new(HeldPolls { mock: mock.clone(), open: polls_open.clone() });
+        Box::new(move |adapter: &str, _: &nodecraft_engine::settings::ProviderSettings| {
+            if adapter == "anthropic" {
+                Ok(held.clone() as Arc<dyn nodecraft_providers::Provider>)
+            } else {
+                Err(Readiness::NotSetUp("not in this test".into()))
+            }
+        }) as Make
+    };
+    let catalog = GenerationCatalog::builtin().unwrap();
+    let kinds = catalog.registry().unwrap();
+    let mut project = Project::new(ProjectId::from_bytes([94; 16]), "Quit").unwrap();
+    Change::AddCanvas { canvas: Canvas::new(C, "Canvas") }.apply(&mut project).unwrap();
+    let params = [("model".into(), Value::Text("anthropic.claude-opus-5-5".into())), ("prompt".into(), Value::Text("Describe the sea".into()))];
+    let mut card =
+        kinds.get(nodecraft_nodes::generation::TEXT_KIND).unwrap().instantiate_instance(N, Default::default(), &params.into_iter().collect()).unwrap();
+    card.pos = nodecraft_graph::Position { x: 150.0, y: 120.0 };
+    Change::AddNode { canvas: C, node: card }.apply(&mut project).unwrap();
+    let mut services = Services::default();
+    let runs = Runs::with_maker(&mut services, maker).unwrap();
+    let journal = dir.path().join("session.journal");
+    let storage = nodecraft_format::NativeStorage::new(journal.clone()).unwrap();
+    let snapshot = nodecraft_format::Snapshot { project, assets: Default::default(), epoch: 0 };
+    let mut session = Session::with_sendable_storage(snapshot, Box::new(storage)).unwrap().with_services(services);
+    runs.install(&mut session);
+    let mut app = NodeCraftApp::from_session(session, C).unwrap();
+    app.runs = Some(runs);
+    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run();
+    press(&mut h, Role::Button, "Generate");
+    frames_until(&mut h, |app| app.run_confirm.is_some());
+    accept(&mut h);
+    frames_until(&mut h, |_| !mock.requests().is_empty());
+    // ⌘S, held as a slow disk would hold it; the job finishes meanwhile and its result waits.
+    let gate = Arc::new(Gate::default());
+    h.state_mut().session.set_save_runner(gate.clone());
+    let file = dir.path().join("quit.ncraft");
+    assert_eq!(h.state_mut().session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    assert!(node(h.state()).history.is_empty(), "the job is still running when the save starts");
+    polls_open.store(true, Ordering::SeqCst);
+    // Frames go on (the progress window repaints, so step rather than run them to rest).
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let mut frames = 0;
+    while mock.polls() < 2 || frames < 20 {
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_runs(&ctx);
+        h.step();
+        frames += 1;
+        assert!(Instant::now() < deadline, "the provider job never finished");
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(node(h.state()).history.is_empty(), "the result waits for the save");
+    // Quit: the save finishes (on another thread here), then the waiting result is recorded.
+    let releaser = {
+        let gate = gate.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(100));
+            std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+        })
+    };
+    h.state_mut().close_storage();
+    releaser.join().unwrap();
+    assert!(file.is_file(), "the save published");
+    assert_eq!(node(h.state()).history.len(), 1, "the result is recorded, not lost with the run host");
+    let status = h.state().session.file_status();
+    assert!(status.dirty && status.available, "unsaved after the result, so the journal is kept for recovery: {status:?}");
+}

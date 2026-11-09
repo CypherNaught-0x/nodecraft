@@ -135,7 +135,10 @@ impl Grants {
     }
 }
 
-const GRANTS_LIMITS: Limits = Limits { bytes: 1024 * 1024, depth: 4, string_bytes: 256, entries: 2 * MAX_GRANTS, raw_numbers: false };
+/// The most bytes a grants file holds.
+pub const MAX_GRANTS_BYTES: usize = 1024 * 1024;
+
+const GRANTS_LIMITS: Limits = Limits { bytes: MAX_GRANTS_BYTES, depth: 4, string_bytes: 256, entries: 2 * MAX_GRANTS, raw_numbers: false };
 
 pub(crate) fn encode(grants: &Grants) -> Result<String, Error> {
     let s = |t: String| Json::Str(t);

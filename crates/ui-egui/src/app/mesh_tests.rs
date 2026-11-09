@@ -413,6 +413,57 @@ fn mesh569_visual_format_choices() {
     }
 }
 
+/// A click a slow frame can't drop: hovered and settled first, then pressed and released one
+/// frame apart (a kittest `click` sends both in one frame).
+fn click_at(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
+    h.hover_at(pos);
+    h.run();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+}
+
+/// Where `find` puts a control once it stops moving: the cube's preview is made on a worker, and
+/// a card that grows when it lands moves its controls between finding one and clicking it.
+fn settled(h: &mut Harness<'static, NodeCraftApp>, find: impl Fn(&Harness<'static, NodeCraftApp>) -> Option<Rect>) -> Option<Pos2> {
+    let mut last = None;
+    let mut same = 0;
+    for _ in 0..400 {
+        h.run();
+        let now = find(h);
+        if now.is_some() && now == last {
+            same += 1;
+            if same >= 5 {
+                return now.map(|rect| rect.center());
+            }
+        } else {
+            same = 0;
+        }
+        last = now;
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    None
+}
+
+/// Clicks what `find` locates, once it is still, until `done` holds; a few tries, so a click a
+/// slow runner drops is sent again, and a control that never works still fails.
+fn click_until(
+    h: &mut Harness<'static, NodeCraftApp>,
+    what: &str,
+    find: impl Fn(&Harness<'static, NodeCraftApp>) -> Option<Rect>,
+    done: impl Fn(&Harness<'static, NodeCraftApp>) -> bool,
+) {
+    for _ in 0..3 {
+        let Some(at) = settled(h, &find) else { break };
+        click_at(h, at);
+        if done(h) {
+            return;
+        }
+    }
+    panic!("{what}: never took effect");
+}
+
 #[test]
 fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
@@ -431,10 +482,13 @@ fn mesh569_real_format_control_selects_stl_and_undoes_in_both_themes() {
         h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
         h.run_steps(3);
         let original = h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"].clone();
-        h.get_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").click();
-        h.run_steps(2);
-        h.get_by_label("STL (geometry only)").click();
-        h.run_steps(3);
+        let format = |h: &Harness<'static, NodeCraftApp>| h.query_by_role_and_label(egui::accesskit::Role::ComboBox, "Format").map(|node| node.rect());
+        let stl = |h: &Harness<'static, NodeCraftApp>| h.query_by_label("STL (geometry only)").map(|node| node.rect());
+        click_until(&mut h, "opening Format", format, |h| stl(h).is_some());
+        let chosen = |h: &Harness<'static, NodeCraftApp>| {
+            h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"] == Value::Text("stl".into())
+        };
+        click_until(&mut h, "choosing STL", stl, chosen);
         assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&convert].params["format"], Value::Text("stl".into()));
         assert_eq!(h.state().session.document().canvases()[&canvas].nodes()[&source].params["asset"], original);
         h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();

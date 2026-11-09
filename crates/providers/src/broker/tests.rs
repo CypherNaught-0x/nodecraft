@@ -318,7 +318,10 @@ fn a_poll_maps_states_and_keeps_outputs_on_its_origins() {
         panic!("failed")
     };
     assert_eq!(e.kind, ErrorKind::JobFailed);
-    assert!(e.message.len() <= 300 && !e.message.contains('\u{7}'));
+    // The service's words are quoted as its own, cut to 300 bytes, with no control characters.
+    let label = super::plan::untrusted("");
+    assert!(e.message.starts_with(label.trim_end_matches('"')), "{}", e.message);
+    assert!(e.message.len() <= 300 + label.len() && !e.message.contains('\u{7}'));
     assert!(read(json!({"state": "succeeded"})).is_err(), "no status");
 }
 
@@ -394,6 +397,8 @@ fn an_unauthenticated_template_sends_no_credential() {
 }
 
 mod adapter;
+mod concurrency;
+mod memory;
 
 #[test]
 fn a_model_says_what_it_makes_and_what_it_is_called() {

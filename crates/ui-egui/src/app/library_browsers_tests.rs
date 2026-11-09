@@ -173,7 +173,11 @@ fn the_styles_tab_marks_soul_ids_and_the_provider_and_uses_a_style_on_the_select
     open(&mut h, "Styles");
     assert!(h.query_by_label("Soul ID").is_some(), "the Soul ID is marked");
     assert_eq!(h.query_all_by_label("Kept by fal: only that account can use it").count(), 2);
-    assert!(h.query_by_label("Kept by higgsfield: only that account can use it").is_some());
+    // A Soul ID is a handle to one account's identity, not a style kept as a file.
+    assert!(h.query_by_label("Kept by higgsfield: only that account can use it").is_none());
+    assert!(h.query_by_label("Bound to the Higgsfield account that trained it: not a portable file, and not exported").is_some());
+    // The fixture's descriptor names no Higgsfield reference, so no account can check it.
+    assert!(h.query_by_label("Its descriptor is missing or doesn't name a Soul ID; train it again").is_some());
     let uses: Vec<_> = h.query_all_by_label("Use on selected card").collect();
     assert_eq!(uses.len(), 3);
     assert!(uses.iter().all(|button| button.accesskit_node().is_disabled()), "nothing is selected");
@@ -367,4 +371,67 @@ fn a_ticked_asset_is_saved_to_my_library_placed_from_it_and_removed() {
     h.run();
     h.run();
     assert!(h.query_by_label("Holiday photo").is_some(), "the project's own asset stays");
+}
+
+const SOUL_2: NodeId = NodeId::from_bytes([95; 16]);
+const SOUL_ID: &str = "7c9e6679-7425-40de-944b-e07fc1f90ae7";
+
+#[test]
+fn a_soul_id_is_set_on_a_selected_soul_2_card_and_marked_unavailable_on_another_account() {
+    let mut h = harness();
+    crate::app::sharing::tests::with_soul_id(h.state_mut());
+    let on = h.state().canvas;
+    let session = &mut h.state_mut().session;
+    let values = [("model".into(), Value::Text("higgsfield.soul-2".into()))].into();
+    let mut node = session.kinds().get("generation.image").unwrap().instantiate_instance(SOUL_2, BTreeMap::new(), &values).unwrap();
+    node.pos = nodecraft_graph::Position { x: 1400.0, y: 900.0 };
+    session.dispatch("node.add", &json!({"canvas": on, "node": node})).unwrap();
+    h.run();
+    open(&mut h, "Styles");
+    h.state_mut().selection.only(SOUL_2);
+    h.run();
+    h.run();
+    let use_it = h.get_by_label("Use on selected card");
+    assert!(!use_it.accesskit_node().is_disabled(), "SOUL 2 takes a Soul ID: {:?}", h.state().notice);
+    use_it.click();
+    h.run();
+    let card = &canvas(&h).nodes()[&SOUL_2];
+    assert_eq!(card.params.get("custom_reference_id"), Some(&Value::Text(SOUL_ID.into())), "{:?}", h.state().notice);
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+
+    // Another account's list: the Library says it is unavailable here, and won't set it.
+    let mut lists = nodecraft_types::OptionLists::default();
+    let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
+    lists.set(key, vec![nodecraft_types::Choice { value: "0b5d7c2a-8f1e-4c3b-9a6d-2e4f8a1c3b5d".into(), label: "Someone else".into() }]).unwrap();
+    assert!(h.query_by_label_contains("Not checked on this account yet").is_some());
+    let revision = h.state().session.revision();
+    // Only the lists change, as a refresh finishing does: no new revision.
+    h.state_mut().session.swap_resource(Some(lists));
+    assert_eq!(h.state().session.revision(), revision);
+    for _ in 0..4 {
+        h.run();
+    }
+    assert!(h.query_by_label_contains("Unavailable on this account").is_some(), "the identity is marked unavailable on this account");
+    assert!(h.query_by_label_contains("Not checked on this account yet").is_none(), "the stale state is gone");
+    assert!(h.get_by_label("Use on selected card").accesskit_node().is_disabled(), "the verdict follows the lists too");
+}
+
+#[test]
+#[ignore = "manual public-safe capture; SOUL180_RENDER_DIR"]
+fn soul180_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("SOUL180_RENDER_DIR").unwrap());
+    let mut app = NodeCraftApp::headless().unwrap();
+    crate::app::sharing::tests::with_soul_id(&mut app);
+    let mut lists = nodecraft_types::OptionLists::default();
+    let key = nodecraft_types::OptionKey { owner: "higgsfield.soul-2", source: "higgsfield.soul_ids", scope: None };
+    lists.set(key, vec![nodecraft_types::Choice { value: "0b5d7c2a-8f1e-4c3b-9a6d-2e4f8a1c3b5d".into(), label: "Someone else".into() }]).unwrap();
+    app.session.swap_resource(Some(lists));
+    let mut h =
+        Harness::builder().wgpu().with_size(Vec2::new(1200.0, 800.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    add_style(&mut h, INK, "Ink wash", "fal", "flux-1", "inkwash");
+    open(&mut h, "Styles");
+    for _ in 0..4 {
+        h.run();
+    }
+    h.render().unwrap().save(dir.join("soul180-library-styles.png")).unwrap();
 }

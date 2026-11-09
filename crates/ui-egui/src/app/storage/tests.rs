@@ -1,5 +1,5 @@
 use super::*;
-use egui_kittest::Harness;
+use egui_kittest::{Harness, kittest::Queryable};
 use std::path::Path;
 
 /// A temp folder per test, removed when the test ends.
@@ -24,6 +24,20 @@ fn app(dir: &Path, open: Option<PathBuf>) -> NodeCraftApp {
 
 fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
     Harness::builder().with_size(egui::Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
+}
+
+/// Steps frames until no file operation runs or waits on the dialogs.
+fn settle(h: &mut Harness<'static, NodeCraftApp>) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        h.step();
+        if h.state().session.file_status().operation.is_none() && !h.state().files.owns_input() {
+            h.run();
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "the file operation did not settle");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
 }
 
 fn add_text(app: &mut NodeCraftApp, n: u8) {
@@ -61,9 +75,13 @@ fn a_project_path_at_startup_is_opened_and_cmd_s_saves_it() {
         first.close_storage();
     }
     let opened = app(&dir.0.join("two"), Some(file.clone()));
-    assert!(opened.session.document().canvases().values().any(|c| c.nodes().contains_key(&nodecraft_types::NodeId::from_bytes([60; 16]))));
+    let has_60 =
+        |app: &NodeCraftApp| app.session.document().canvases().values().any(|c| c.nodes().contains_key(&nodecraft_types::NodeId::from_bytes([60; 16])));
+    assert!(!has_60(&opened), "the file opens with the first frame, not before the window exists");
     let mut h = harness(opened);
-    h.run();
+    settle(&mut h);
+    assert!(has_60(h.state()), "{:?}", h.state().notice);
+    assert!(h.state().notice.is_none());
     add_text(h.state_mut(), 61);
     assert!(h.state().session.file_status().dirty);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
@@ -141,10 +159,17 @@ fn launching_without_edits_never_keeps_a_journal() {
 #[test]
 fn a_bad_startup_path_keeps_saving_working_and_says_why() {
     let dir = Scratch::new("badpath");
-    let (session, _, _, error) =
-        NodeCraftApp::storage_session(StorageSetup { recovery: dir.0.join("recovery"), open: Some(dir.0.join("missing.ncraft")) }).unwrap();
-    assert!(error.is_some(), "the open failure is reported");
-    assert!(session.file_status().available, "and the window can still save");
+    let mut h = harness(app(&dir.0, Some(dir.0.join("missing.ncraft"))));
+    settle(&mut h);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "missing.ncraft couldn't be opened: the selected project cannot be found or inspected; choose another file. The new project is open instead and can be saved."
+        ),
+        "the open failure is reported"
+    );
+    assert!(h.state().session.file_status().available, "and the window can still save");
+    assert!(h.state().session.file_status().location.is_none());
 }
 
 #[test]
@@ -284,4 +309,205 @@ fn quitting_during_a_background_open_cancels_it_and_keeps_the_open_project() {
     assert_eq!(app.session.document(), &before, "the cancelled open replaced nothing");
     assert_eq!(app.session.file_status().location, Some(nodecraft_format::StorageLocation::Path(current)));
     assert!(app.session.file_status().operation.is_none());
+}
+
+/// A saved project at `dir/<name>` holding a Text node `n`, written by a session of its own.
+fn saved_project(dir: &Path, name: &str, n: u8) -> PathBuf {
+    let file = dir.join(name);
+    let mut seed = app(&dir.join(format!("seed-{name}")), None);
+    add_text(&mut seed, n);
+    seed.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+    seed.close_storage();
+    file
+}
+fn holds(app: &NodeCraftApp, n: u8) -> bool {
+    app.session.document().canvases().values().any(|c| c.nodes().contains_key(&nodecraft_types::NodeId::from_bytes([n; 16])))
+}
+/// The startup open's job, which the first frame hands to the runner.
+fn held_job(runner: &Held) -> nodecraft_engine::save_runner::SaveJob {
+    runner.0.lock().unwrap().take().expect("the first frame started the open on the runner")
+}
+
+#[test]
+fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while_it_is_held() {
+    let dir = Scratch::new("startup-progress367");
+    let file = saved_project(&dir.0, "big.ncraft", 90);
+    let mut app = app(&dir.0, Some(file.clone()));
+    let runner = Arc::new(Held::default());
+    app.session.set_save_runner(runner.clone());
+    let starter = app.session.document().clone();
+    let mut h = harness(app);
+    h.step();
+    // The very first frame already shows the open, before it has read anything.
+    assert!(h.query_by_label("Opening project…").is_some(), "progress shows from the first frame");
+    assert!(h.query_by_label("Cancel").is_some());
+    assert_eq!(h.state().window_title(), "Untitled • (opening…) — NodeCraft");
+    assert!(runner.0.lock().unwrap().is_some(), "the open waits on the runner, not the frame");
+    // While the runner holds the open, the event pump keeps running and asking for frames.
+    let first = h.ctx.cumulative_frame_nr();
+    for _ in 0..30 {
+        h.step();
+        assert!(h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay <= std::time::Duration::from_millis(16));
+    }
+    assert_eq!(h.ctx.cumulative_frame_nr(), first + 30, "frames advanced while the open was held");
+    assert!(h.query_by_label("Opening project…").is_some());
+    assert_eq!(h.state().session.document(), &starter, "nothing is replaced until the open settles");
+    // Input belongs to the progress window: a shortcut doesn't reach the canvas behind it.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
+    h.key_press(egui::Key::Delete);
+    h.step();
+    assert_eq!(h.state().session.document(), &starter);
+    held_job(&runner).run();
+    settle(&mut h);
+    assert!(holds(h.state(), 90), "the file is open: {:?}", h.state().notice);
+    assert!(h.state().notice.is_none());
+    assert!(h.query_by_label("Opening project…").is_none());
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file.clone())));
+    assert_eq!(h.state().files.projects.recent(), vec![file.to_str().unwrap()]);
+    assert_eq!(h.state().canvas, crate::app::sheet_view::home_canvas(h.state().session.document()).unwrap());
+}
+
+#[test]
+fn cancelling_the_startup_open_keeps_the_new_project_and_says_so() {
+    let dir = Scratch::new("startup-cancel367");
+    let file = saved_project(&dir.0, "big.ncraft", 91);
+    let mut app = app(&dir.0, Some(file.clone()));
+    let runner = Arc::new(Held::default());
+    app.session.set_save_runner(runner.clone());
+    let starter = app.session.document().clone();
+    let mut h = harness(app);
+    h.step();
+    h.get_by_label("Cancel").click();
+    // The modal button sees the press in one frame and the release in the next.
+    h.step();
+    h.step();
+    assert!(h.state().session.file_status().operation.is_some_and(|operation| operation.cancel_requested));
+    assert!(h.query_by_label_contains("Cancelling").is_some(), "the window says the step finishes first");
+    held_job(&runner).run();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &starter, "the cancelled open replaced nothing");
+    assert_eq!(h.state().notice.as_deref(), Some("Opening big.ncraft was cancelled; the new project is open instead."));
+    let status = h.state().session.file_status();
+    assert!(status.available && status.location.is_none() && status.operation.is_none());
+    assert!(h.state().files.projects.recent().is_empty());
+    // The window works on: the file can still be opened by hand.
+    h.state_mut().session.dispatch("file.open", &json!({"location": file.to_str().unwrap(), "discard_dirty": true})).unwrap();
+    assert!(holds(h.state(), 91));
+}
+
+#[test]
+fn a_startup_open_the_runner_refuses_runs_inline_and_still_opens() {
+    struct Refuses;
+    impl nodecraft_engine::save_runner::SaveRunner for Refuses {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            Err(job)
+        }
+    }
+    let dir = Scratch::new("startup-refused367");
+    let file = saved_project(&dir.0, "small.ncraft", 92);
+    let mut app = app(&dir.0, Some(file));
+    app.session.set_save_runner(Arc::new(Refuses));
+    let mut h = harness(app);
+    h.step();
+    assert!(holds(h.state(), 92), "opened inline in the first frame: {:?}", h.state().notice);
+    assert!(!h.state().files.owns_input());
+    settle(&mut h);
+    assert!(h.state().notice.is_none());
+}
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_startup_open367_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("startup-evidence367");
+    let file = saved_project(&dir.0, "Public-forest.ncraft", 93);
+    let mut app = app(&dir.0, Some(file));
+    let runner = Arc::new(Held::default());
+    app.session.set_save_runner(runner.clone());
+    let mut h = harness(app);
+    h.step();
+    h.render().unwrap().save(output.join("startup-first-frame.png")).unwrap();
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    h.render().unwrap().save(output.join("startup-cancelling.png")).unwrap();
+    held_job(&runner).run();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("startup-cancelled-notice.png")).unwrap();
+}
+
+#[test]
+fn a_command_before_the_first_frame_is_refused_while_the_startup_open_runs_and_never_dropped() {
+    let dir = Scratch::new("startup-race367");
+    let file = saved_project(&dir.0, "raced.ncraft", 94);
+    // As the desktop shell does: the startup open starts first in the frame's logic, then the
+    // control channel, MCP and the agent are pumped.
+    let mut first = app(&dir.0, Some(file.clone()));
+    let runner = Arc::new(Held::default());
+    first.session.set_save_runner(runner.clone());
+    first.begin_startup_open();
+    let canvas = first.canvas;
+    let node = nodecraft_graph::Node::new(nodecraft_types::NodeId::from_bytes([95; 16]), "source.text");
+    let error = first.session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap_err();
+    assert_eq!(error.kind, ErrorKind::Busy);
+    assert!(error.message.contains("still opening") && error.message.contains("file.cancel"), "{}", error.message);
+    held_job(&runner).run();
+    let mut h = harness(first);
+    settle(&mut h);
+    assert!(holds(h.state(), 94), "the file opened: {:?}", h.state().notice);
+    // A host that edits before starting the open: the edit is kept, not opened over.
+    let dir = Scratch::new("startup-race-kept367");
+    let file = saved_project(&dir.0, "kept.ncraft", 96);
+    let mut second = app(&dir.0, Some(file));
+    add_text(&mut second, 97);
+    let edited = second.session.document().clone();
+    let mut h = harness(second);
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &edited, "the edit survives");
+    assert!(!holds(h.state(), 96));
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some("kept.ncraft wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.")
+    );
+}
+
+/// A project file in a format version this build doesn't know, as a newer NodeCraft would write.
+fn future_format(path: &Path) {
+    use std::io::Write;
+    let mut zip = zip::ZipWriter::new(std::fs::File::create(path).unwrap());
+    let stored = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Stored);
+    zip.start_file("project.json", stored).unwrap();
+    zip.write_all(br#"{"version":99,"epoch":1,"project":{}}"#).unwrap();
+    zip.finish().unwrap();
+}
+
+#[test]
+fn a_newer_format_at_startup_keeps_the_advice_to_update() {
+    let dir = Scratch::new("startup-future367");
+    let file = dir.0.join("future.ncraft");
+    future_format(&file);
+    let mut h = harness(app(&dir.0, Some(file)));
+    settle(&mut h);
+    assert_eq!(
+        h.state().notice.as_deref(),
+        Some(
+            "future.ncraft couldn't be opened: unsupported project format version; update NodeCraft or use a compatible exporter. The new project is open instead and can be saved."
+        )
+    );
+}
+
+/// #1121: while the recovery journal needs a checkpoint every edit is refused first, before its
+/// parameters are read; the palette still lists no command that needs parameters.
+#[test]
+fn a_recovery_that_needs_saving_lists_no_command_needing_parameters_in_the_palette() {
+    let dir = Scratch::new("palette1121");
+    let mut app = app(&dir.0, None);
+    add_text(&mut app, 72);
+    let file = dir.0.join("p.ncraft");
+    app.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap()})).unwrap();
+    app.close_storage();
+    assert!(app.session.file_status().recovery_required);
+    assert_eq!(app.session.enabled("node.add", &json!({})).unwrap_err().kind, ErrorKind::Conflict, "the edit check comes first");
+    crate::app::palette1121_tests::lists_no_command_needing_parameters(&app);
 }

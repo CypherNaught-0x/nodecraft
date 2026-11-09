@@ -6,6 +6,8 @@ use super::*;
 use nodecraft_graph::{Generation, ItemTag, Missing};
 use nodecraft_types::ItemId;
 
+/// The Batch items panel's id.
+pub(super) const BATCH_REVIEW_ID: &str = "nodecraft.batch_review";
 /// Longest label shown for one item's value.
 const MAX_LABEL_CHARS: usize = 40;
 /// Longest text shown for the item being reviewed; the rest is on the card.
@@ -147,7 +149,15 @@ fn item_value(node: &Node, index: usize) -> Option<&Value> {
 
 /// The review of `node`'s active result, labelled with its batches' current items. `None` when
 /// the result wasn't fanned out or its items don't match its outputs.
-pub(crate) fn review(canvas: &Canvas, kinds: &nodecraft_nodes::Registry, node: &Node) -> Option<Review> {
+///
+/// `canvases` are the project's: a result fanned by a batch inside a technique (#1073) names the
+/// batch by its inlined id, so its labels are read from the canvas with its techniques inlined.
+pub(crate) fn review(
+    canvases: &std::collections::BTreeMap<nodecraft_types::CanvasId, Canvas>,
+    canvas: &Canvas,
+    kinds: &nodecraft_nodes::Registry,
+    node: &Node,
+) -> Option<Review> {
     let generation = active(node).filter(|_| reviewable(node))?;
     let Some(Value::List(values)) = generation.outputs.first() else { return None };
     if values.len() != generation.items.len() {
@@ -156,7 +166,11 @@ pub(crate) fn review(canvas: &Canvas, kinds: &nodecraft_nodes::Registry, node: &
     let missing: BTreeMap<usize, Missing> =
         generation.incomplete.iter().flat_map(|incomplete| &incomplete.missing).filter_map(|m| Some((usize::try_from(m.item).ok()?, m.why))).collect();
     let shape: Vec<NodeId> = generation.items.first()?.iter().map(|key| key.batch).collect();
-    let axes: Vec<Axis> = shape.iter().enumerate().map(|(index, batch)| axis(canvas, kinds, *batch, index, &generation.items)).collect();
+    // Inline only when a batch isn't on the canvas: one inside a technique node's version.
+    let expanded =
+        shape.iter().any(|batch| !canvas.nodes().contains_key(batch)).then(|| nodecraft_exec::technique::expand(canvases, canvas, kinds).ok()).flatten();
+    let labelled: &Canvas = expanded.as_ref().map_or(canvas, |expanded| &*expanded.canvas);
+    let axes: Vec<Axis> = shape.iter().enumerate().map(|(index, batch)| axis(labelled, kinds, *batch, index, &generation.items)).collect();
     let items = generation
         .items
         .iter()
@@ -241,6 +255,10 @@ impl NodeCraftApp {
     /// The batch items review window, while open.
     pub(super) fn batch_review_window(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(mut open_review) = self.batch_review.take() else { return };
+        // Escape closes it; the shell takes the key before the canvas reads it (`tool_escape`).
+        if std::mem::take(&mut self.tool_escape) == Some(super::ToolEscape::Batch) {
+            return;
+        }
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         let Some(node) = canvas.nodes().get(&open_review.node) else { return };
         let title = crate::card::title(node, self.session.kinds().get(&node.kind).ok().map(|kind| kind.descriptor()));
@@ -248,7 +266,7 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let fresh = open_review.cache.as_ref().is_some_and(|c| c.canvas == self.canvas && c.generation == generation && c.revision == revision);
         if !fresh {
-            let review = review(canvas, self.session.kinds(), node).map(std::sync::Arc::new);
+            let review = review(self.session.document().canvases(), canvas, self.session.kinds(), node).map(std::sync::Arc::new);
             open_review.cache = Some(Cached { canvas: self.canvas, generation, revision, review });
         }
         let review = open_review.cache.as_ref().and_then(|cached| cached.review.clone());
@@ -275,19 +293,15 @@ impl NodeCraftApp {
         let running = self.runs.as_ref().is_some_and(|runs| runs.is_running(self.canvas, open_review.node));
         let mut open = true;
         let mut pick = None;
-        let frame =
-            egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius);
-        egui::Window::new("Batch items")
-            .id(egui::Id::new("nodecraft.batch_review"))
+        // A tool the person works in beside the canvas: a floating review panel (#1116).
+        crate::floating::panel(ctx, "Batch items", egui::Id::new(BATCH_REVIEW_ID), crate::floating::Home::CenterTop, t)
             .open(&mut open)
-            .constrain_to(self.viewport)
             .default_width(t.batch_review_width)
-            .collapsible(false)
-            .frame(frame)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label(egui::RichText::new(&title).strong());
                 if running {
-                    ui.label(egui::RichText::new("Running: these are the results from before; they update when it finishes.").color(t.accent));
+                    ui.label(egui::RichText::new("Running: these are the results from before; they update when it finishes.").color(t.accent_text));
                 }
                 let Some(review) = &review else {
                     ui.label(egui::RichText::new("This card's result wasn't made per batch item. Run it with a batch wired in.").color(t.text_muted));

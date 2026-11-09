@@ -5,7 +5,7 @@ use nodecraft_types::ProjectId;
 use std::sync::Arc;
 
 const MAX_TEXT: usize = 1536;
-const MAX_REASON: usize = 512;
+pub(super) const MAX_REASON: usize = 512;
 const MALFORMED: &str = "The staleness report could not be displayed safely.";
 
 pub(super) struct StaleSnapshot {
@@ -33,21 +33,23 @@ impl StaleSnapshot {
             && app.session.document().canvases().contains_key(&app.canvas)
     }
 }
-fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
+pub(super) fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
     if text.len().checked_add(value.len()).is_none_or(|n| n > MAX_TEXT) {
         return Err(MALFORMED);
     }
     text.push_str(value);
     Ok(())
 }
-fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
+/// Appends `value` with control and bidirectional-override characters blanked, within `MAX_TEXT`.
+pub(super) fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
     for c in value.chars() {
         let c = if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c };
         append(text, c.encode_utf8(&mut [0; 4]))?;
     }
     Ok(())
 }
-fn kind(value: &str) -> Option<&'static str> {
+/// The error kinds the report may name; anything else is refused.
+pub(super) fn kind(value: &str) -> Option<&'static str> {
     Some(match value {
         "invalid_input" => "invalid_input",
         "unsupported" => "unsupported",
@@ -115,37 +117,46 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
-    /// Run changed (⌘/Ctrl+Enter) or Run workflow (#965), from the shortcut or the palette:
+    /// Run changed (Command+Enter) or Run workflow (#965), from the shortcut or the palette:
     /// quotes the run and shows its confirmation, or says there is nothing to run.
-    pub(super) fn run_whole_command(&mut self, id: &str) {
+    /// Whether it ran: false when it was refused (and the notice says why).
+    pub(super) fn run_whole_command(&mut self, id: &str) -> bool {
         let kind = if id == "run.workflow" { super::generate::RunKind::Workflow } else { super::generate::RunKind::Changed };
-        if let Err(error) = self.request_whole(kind) {
-            self.notice = Some(error.message);
+        match self.request_whole(kind) {
+            Ok(_) => true,
+            Err(error) => {
+                self.notice = Some(error.message);
+                false
+            }
         }
     }
     pub(super) fn palette_command_params(&self, id: &str) -> serde_json::Value {
         if matches!(id, "canvas.stale" | "run.changed" | "run.workflow") { json!({"canvas": self.canvas}) } else { json!({}) }
     }
-    pub(super) fn dispatch_palette_command(&mut self, id: &str) {
+    /// Runs a command chosen in the palette; whether it ran (the notice says why not).
+    pub(super) fn dispatch_palette_command(&mut self, id: &str) -> bool {
         // A run of the whole canvas opens its price confirmation; nothing starts from here.
         if matches!(id, "run.changed" | "run.workflow") {
-            self.run_whole_command(id);
-            return;
+            return self.run_whole_command(id);
         }
         // The review is read a page at a time in its panel.
         #[cfg(not(target_arch = "wasm32"))]
         if id == "usage.ownership" || id == "usage.unresolved" {
-            self.open_ownership_review();
-            return;
+            return self.open_ownership_review();
         }
         let stamp = (id == "canvas.stale").then(|| StaleSnapshot::capture(self));
         let result = self.session.dispatch(id, &self.palette_command_params(id));
         let Some(mut stamp) = stamp else {
-            match result {
-                Ok(_) => self.notice = None,
-                Err(error) => self.notice = Some(error.message),
-            }
-            return;
+            return match result {
+                Ok(_) => {
+                    self.notice = None;
+                    true
+                }
+                Err(error) => {
+                    self.notice = Some(error.message);
+                    false
+                }
+            };
         };
         self.stale_snapshot = None;
         let outcome = match result {
@@ -158,7 +169,7 @@ impl NodeCraftApp {
                 let mut message = String::new();
                 if message.try_reserve_exact(MAX_TEXT).is_err() {
                     self.notice = Some(MALFORMED.into());
-                    return;
+                    return false;
                 }
                 let _ = append(&mut message, "Staleness check failed (");
                 let category = match error.kind {
@@ -190,15 +201,19 @@ impl NodeCraftApp {
                     let _ = normalized(&mut message, c.encode_utf8(&mut [0; 4]));
                 }
                 self.notice = Some(message);
-                return;
+                return false;
             }
         };
         match outcome {
             Ok(text) => {
                 stamp.text = text;
                 self.stale_snapshot = Some(stamp);
+                true
             }
-            Err(message) => self.notice = Some(message.into()),
+            Err(message) => {
+                self.notice = Some(message.into());
+                false
+            }
         }
     }
     pub(super) fn show_notices(&mut self, ui: &egui::Ui, viewport: Rect, t: &Tokens) {

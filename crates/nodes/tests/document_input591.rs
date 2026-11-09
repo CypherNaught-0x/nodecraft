@@ -26,6 +26,7 @@ fn model(document: Option<DocumentUse>) -> GenerationModel {
         audio: None,
         edit: None,
         document,
+        reads: None,
     };
     GenerationModel {
         style_family: None,

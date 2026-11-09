@@ -1,0 +1,87 @@
+# Amazon Bedrock, OpenAI-compatible Chat Completions on bedrock-runtime, checked 2026-11-03:
+# https://docs.aws.amazon.com/bedrock/latest/userguide/inference-chat-completions.html
+# https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html
+# https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html
+# Both cards list Chat Completions on bedrock-runtime with these exact model ids, text only,
+# a 128K context and 16K max output tokens. Prices are published per Region and service tier
+# (https://aws.amazon.com/bedrock/pricing/ lists Standard rates for one Region only), so no
+# universal rate is assumed: ByUsage requires explicit unknown-price admission.
+[[model]]
+id = "bedrock.gpt-oss-120b"
+provider = "bedrock"
+provider_model = "openai.gpt-oss-120b-1:0"
+label = "GPT OSS 120B (Bedrock)"
+description = "Open-weight text reasoning with gpt-oss-120b in your AWS Region. Usage pricing through Amazon Bedrock."
+latency_s = 15
+quality = 4
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Reasoning uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "16000" }
+default = { type = "unsigned", value = "2048" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "bedrock.gpt-oss-120b"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Reasoning uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "16000" }
+default = { type = "unsigned", value = "2048" }
+
+[[model]]
+id = "bedrock.gpt-oss-20b"
+provider = "bedrock"
+provider_model = "openai.gpt-oss-20b-1:0"
+label = "GPT OSS 20B (Bedrock)"
+description = "Smaller, faster open-weight text model gpt-oss-20b in your AWS Region. Usage pricing through Amazon Bedrock."
+latency_s = 8
+quality = 3
+pricing = { type = "by_usage", currency = "USD" }
+
+[[model.modes]]
+id = "text-to-text"
+output = "text"
+inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+
+[[model.params.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Reasoning uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "16000" }
+default = { type = "unsigned", value = "2048" }
+
+[model.parameter_contract]
+version = { major = 1, minor = 0 }
+namespace = "bedrock.gpt-oss-20b"
+owner = "model"
+
+[[model.parameter_contract.rules]]
+param = "max_tokens"
+unit = "tokens"
+meaning = "max_output_tokens"
+affects = { cost = true }
+
+[[model.parameter_contract.schema.params]]
+name = "max_tokens"
+label = "Max output tokens"
+description = "Requested completion limit. Reasoning uses part of the output allowance."
+control = { type = "unsigned", min = "1", max = "16000" }
+default = { type = "unsigned", value = "2048" }

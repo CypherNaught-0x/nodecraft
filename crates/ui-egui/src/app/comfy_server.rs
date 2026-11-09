@@ -121,7 +121,12 @@ impl NodeCraftApp {
                         } else {
                             "Check"
                         };
-                        if ui.add_enabled(edited || !waiting, egui::Button::new(label)).on_hover_text(format!("Check {}", row.name)).clicked() {
+                        if ui
+                            .add_enabled(edited || !waiting, egui::Button::new(label))
+                            .on_hover_text(format!("Check {}", row.name))
+                            .on_disabled_hover_text("Checking; wait for the server to answer")
+                            .clicked()
+                        {
                             asked = Some(if edited { Asked::Save(row.clone()) } else { Asked::Check(row.name.clone()) });
                         }
                     });

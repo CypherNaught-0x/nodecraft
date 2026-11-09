@@ -522,10 +522,20 @@ mod reqwest_impl {
                 on_chunk(&chunk)?;
             }
         }
+        // The browser's `fetch` delivers the body as a stream too (#1070), under the same cap.
         #[cfg(target_arch = "wasm32")]
         {
-            let body = read_body(response, cap).await?;
-            on_chunk(&body)?;
+            use futures::StreamExt as _;
+            let mut chunks = std::pin::pin!(response.bytes_stream());
+            let mut total = 0usize;
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.map_err(|e| network(&e))?;
+                total = total.saturating_add(chunk.len());
+                if total > cap {
+                    return Err(too_large(cap));
+                }
+                on_chunk(&chunk)?;
+            }
         }
         Ok(HttpResponse { status, headers, body: Vec::new() })
     }

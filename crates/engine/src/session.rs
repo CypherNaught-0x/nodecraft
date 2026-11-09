@@ -159,9 +159,30 @@ struct PendingOpen {
 enum PendingFile {
     Save(PendingSave),
     Open(PendingOpen),
+    /// Recovered work being restored (#367); it replaces the document as an open does.
+    Recover(PendingOpen),
+}
+impl PendingFile {
+    /// Why a change is refused while this runs, when it replaces the document: the change would
+    /// be lost or land on the wrong project.
+    fn replacing(&self) -> Option<Error> {
+        match self {
+            Self::Save(_) => None,
+            Self::Open(_) => Some(opening()),
+            Self::Recover(_) => Some(Error::new(ErrorKind::Busy, "recovered work is still being restored; wait for it, or cancel it with file.cancel")),
+        }
+    }
 }
 fn opening() -> Error {
     Error::new(ErrorKind::Busy, "a project is still opening; wait for it, or cancel it with file.cancel")
+}
+/// Why a change is refused while the host holds the session for storage (#1053).
+const KEEPING_ASIDE: &str = "NodeCraft is still keeping the last session's unsaved work safe; try again once it finishes, which the window shows";
+
+/// Refusal for a change that would wait for a background save, from a caller that must not
+/// block (#367): the control channel, MCP and the agent dispatch on the UI thread.
+fn still_saving() -> Error {
+    Error::new(ErrorKind::Busy, "the project is still being saved; try again when the save finishes, or cancel it with file.cancel")
 }
 
 /// Owns the document and is its only command mutation path. Read access is immutable.
@@ -189,8 +210,14 @@ pub struct Session {
     persistence: Option<crate::persistence::Persistence>,
     save_runner: Option<Arc<dyn crate::save_runner::SaveRunner>>,
     exports: crate::export_job::Exports,
-    /// A background save or open still running: what to finish once it has.
+    /// A background save, open or recovery still running: what to finish once it has.
     pending: Option<PendingFile>,
+    /// Set for the length of [`Self::dispatch_without_waiting`]: a change refuses rather than
+    /// waits for a background save.
+    never_wait: bool,
+    /// Set by the host while it makes storage safe to take over (#1053): every change is
+    /// refused as `Busy` until [`Self::attach_storage`] or the host lifts it.
+    storage_hold: bool,
     /// The outcome of a background save that an edit waited for, until the host polls it.
     settled: Option<Result<Value, Error>>,
     status_revision: u64,
@@ -251,6 +278,8 @@ impl Session {
             save_runner: None,
             exports: Default::default(),
             pending: None,
+            never_wait: false,
+            storage_hold: false,
             settled: None,
             status_revision: 0,
             admission_identity: identity,
@@ -446,6 +475,53 @@ impl Session {
     pub fn with_sendable_storage(snapshot: Snapshot, storage: Box<dyn ProjectStorage + Send>) -> Result<Self, Error> {
         Self::with_store(snapshot, crate::persistence::Store::Sendable(storage), None)
     }
+    /// Host lifecycle boundary (#1053): gives a session started without storage the storage it
+    /// may now take over, checkpointing the current document and its assets there as
+    /// [`Self::with_sendable_storage`] would. The desktop starts its window without storage
+    /// while an earlier session's journal is kept aside, since this checkpoint replaces that
+    /// journal. Edits already made stay, and stay undoable; the project is untitled and unsaved.
+    /// Refused when the session already has storage.
+    pub fn attach_storage(&mut self, storage: Box<dyn ProjectStorage + Send>) -> Result<(), Error> {
+        if self.persistence.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
+        }
+        // No origin: the document keeps its identity, so nothing is migrated.
+        let prepared = Self::prepare_storage(storage, Snapshot { project: self.document.clone(), assets: self.assets.clone(), epoch: 0 })?;
+        self.attach_prepared(prepared)
+    }
+    /// [`Self::attach_storage`]'s disk work, done on another thread (#367): checkpoints
+    /// `snapshot` (the document a held session shows, and its assets) into `storage`, so the UI
+    /// thread only installs the result with [`Self::attach_prepared`]. That checkpoint replaces
+    /// the storage's journal, as attaching does.
+    pub fn prepare_storage(storage: Box<dyn ProjectStorage + Send>, snapshot: Snapshot) -> Result<PreparedStorage, Error> {
+        snapshot.project.validate()?;
+        let project = snapshot.project.clone();
+        let asset_hashes: Vec<nodecraft_types::Blake3> = snapshot.assets.hashes().copied().collect();
+        let mut storage = storage;
+        let (opening, document) = crate::persistence::Persistence::open_in(storage.as_mut(), snapshot, None)?;
+        if document.migration.is_some() || document.snapshot.project.id() != project.id() {
+            return Err(Error::new(ErrorKind::Internal, "attaching storage changed the project's identity"));
+        }
+        Ok(PreparedStorage { storage, opening, project, asset_hashes, assets: document.snapshot.assets })
+    }
+    /// Installs storage [`Self::prepare_storage`] checkpointed, when this session still shows
+    /// exactly the document and assets it was prepared from (a held session can't change). A
+    /// session that changed meanwhile is refused rather than given a checkpoint without its
+    /// changes; the storage, and its lock, go with the refusal.
+    pub fn attach_prepared(&mut self, prepared: PreparedStorage) -> Result<(), Error> {
+        if self.persistence.is_some() {
+            return Err(Error::new(ErrorKind::Conflict, "this session already has project storage"));
+        }
+        let hashes: Vec<nodecraft_types::Blake3> = self.assets.hashes().copied().collect();
+        if prepared.project != self.document || prepared.asset_hashes != hashes {
+            return Err(Error::new(ErrorKind::Conflict, "the project changed while its storage was prepared"));
+        }
+        self.assets = prepared.assets;
+        self.persistence = Some(crate::persistence::Persistence::assemble(crate::persistence::Store::Sendable(prepared.storage), prepared.opening));
+        self.storage_hold = false;
+        self.status_revision = self.status_revision.saturating_add(1);
+        Ok(())
+    }
     fn with_store(snapshot: Snapshot, storage: crate::persistence::Store, origin: Option<StorageLocation>) -> Result<Self, Error> {
         // All constructor failures, including entropy, precede durable checkpointing.
         snapshot.project.validate()?;
@@ -461,6 +537,17 @@ impl Session {
         session.assets = snapshot.assets;
         session.persistence = Some(persistence);
         Ok(session)
+    }
+    /// The disk-space inventory a save to `location` (or the current file) would be checked
+    /// against, and the free space reported for it (#367): what hosts can show before saving,
+    /// and what calibration compares with real writes. `None` when nothing would be checked.
+    pub fn save_space(
+        &mut self,
+        location: Option<StorageLocation>,
+    ) -> Result<Option<(nodecraft_format::space::SpaceInventory, nodecraft_format::space::SpaceProbe)>, Error> {
+        let roots = self.retained_assets()?;
+        let Some(storage) = self.persistence.as_mut() else { return Ok(None) };
+        storage.next_save_inventory(&self.document, &self.assets, &roots, location)
     }
     pub fn assets(&self) -> &AssetStore {
         &self.assets
@@ -510,7 +597,10 @@ impl Session {
                 Ok(serde_json::json!({"saved":true,"recovery_ready":ready,"read_only":self.file_status().read_only}))
             }
             (crate::persistence::Settled::Opened(snapshot), Some(PendingFile::Open(pending))) => Ok(self.install(*snapshot, pending)),
-            (crate::persistence::Settled::Opened(_), _) => Err(Error::new(ErrorKind::Internal, "an open finished without the session waiting for it")),
+            (crate::persistence::Settled::Recovered(document), Some(PendingFile::Recover(pending))) => Ok(self.restored(*document, pending)),
+            (crate::persistence::Settled::Opened(_) | crate::persistence::Settled::Recovered(_), _) => {
+                Err(Error::new(ErrorKind::Internal, "an open finished without the session waiting for it"))
+            }
         });
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
@@ -522,10 +612,28 @@ impl Session {
     /// [`Self::poll_file`]; a later save's outcome replaces an earlier one, since it describes
     /// the file as it now is. During a background open it refuses instead: the document is
     /// about to be replaced, so the change would be lost or land on the wrong project.
+    ///
+    /// Inside [`Self::dispatch_without_waiting`] a save still writing refuses too (`Busy`, naming
+    /// `file.cancel`) instead of blocking the caller for as long as the disk takes; one that has
+    /// finished is settled at once, as here.
     pub(crate) fn settle_for_edit(&mut self) -> Result<(), Error> {
-        match self.pending {
+        if self.storage_hold {
+            return Err(Error::new(ErrorKind::Busy, KEEPING_ASIDE));
+        }
+        match &self.pending {
             None => Ok(()),
-            Some(PendingFile::Open(_)) => Err(opening()),
+            Some(pending @ (PendingFile::Open(_) | PendingFile::Recover(_))) => Err(pending.replacing().unwrap_or_else(opening)),
+            Some(PendingFile::Save(_)) if self.never_wait => match self.settle_file(false) {
+                Some(outcome) => {
+                    self.settled = Some(outcome);
+                    Ok(())
+                }
+                None if self.file_status().operation.is_some() => Err(still_saving()),
+                None => {
+                    self.pending = None;
+                    Ok(())
+                }
+            },
             Some(PendingFile::Save(_)) => {
                 match self.settle_file(true) {
                     Some(outcome) => self.settled = Some(outcome),
@@ -600,11 +708,22 @@ impl Session {
     pub fn file_status(&self) -> crate::file_cmds::FileStatus {
         self.persistence.as_ref().map(|p| p.status(self.state)).unwrap_or(crate::file_cmds::FileStatus {
             dirty: true,
-            unavailable_reason: Some(
-                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder.",
-            ),
+            unavailable_reason: Some(if self.storage_hold {
+                KEEPING_ASIDE
+            } else {
+                "Project storage is not configured for this session. Reopen NodeCraft in a desktop window with a writable settings folder."
+            }),
             ..Default::default()
         })
+    }
+    /// Host lifecycle boundary (#1053): while `held`, the session is waiting for storage the
+    /// host is making safe to take over, and every change, from any surface, is refused as
+    /// `Busy` saying so; reads still answer. [`Self::attach_storage`] lifts it.
+    pub fn hold_for_storage(&mut self, held: bool) {
+        if self.storage_hold != held {
+            self.storage_hold = held;
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
     }
     /// Host observation of this adopted document; not inferred from ids, paths or revisions.
     pub fn document_lineage(&self) -> DocumentLineage {
@@ -625,8 +744,35 @@ impl Session {
     /// session's journal, checkpointing it at once. It is unsaved at `location` (the earlier
     /// session's file, or untitled), history starts fresh, and the change is published like an
     /// open (`file.recover`, a synthetic lifecycle event id, not a registered command).
-    /// Refused once this session has edits of its own: they'd be lost.
+    /// Refused once this session has edits of its own: they'd be lost. Runs inline; see
+    /// [`Self::recover_in_background`] for the host's window.
     pub fn recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<(), Error> {
+        match self.begin_recover(snapshot, location, false)? {
+            crate::persistence::Started::Done(()) => Ok(()),
+            crate::persistence::Started::Started => Err(Error::new(ErrorKind::Internal, "an inline recovery was left running")),
+        }
+    }
+    /// [`Self::recover`] on the save runner (#367): the recovered media are copied into this
+    /// session's workspace and the checkpoint written there, so the window keeps drawing.
+    /// Returns `{"recovered":false,"recovering":true}` while it runs ([`Self::poll_file`] gives
+    /// `{"recovered":true,...}` or the error once it has settled), or `{"recovered":true,...}`
+    /// when it ran inline (no runner, or a storage that can't be lent). Until it settles every
+    /// change, run, file command and another recovery is refused as `Busy` naming `file.cancel`;
+    /// `file.cancel` stops it until its checkpoint is published, keeping the current project and
+    /// its journal. Nothing here touches the copy the work was recovered from: the host keeps it
+    /// until the recovered work is saved.
+    pub fn recover_in_background(&mut self, snapshot: Snapshot, location: Option<StorageLocation>) -> Result<Value, Error> {
+        let before = self.file_status();
+        let started = self.begin_recover(snapshot, location, true);
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+        Ok(match started? {
+            crate::persistence::Started::Done(()) => serde_json::json!({"recovered":true,"read_only":false}),
+            crate::persistence::Started::Started => serde_json::json!({"recovered":false,"recovering":true}),
+        })
+    }
+    fn begin_recover(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, background: bool) -> Result<crate::persistence::Started<()>, Error> {
         self.settle_for_edit()?;
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "recovering would discard this session's changes"));
@@ -634,7 +780,43 @@ impl Session {
         if !self.file_status().available {
             return Err(Error::new(ErrorKind::Unsupported, "project storage is not available"));
         }
-        self.replace_untouched(snapshot, location, "file.recover", true)
+        snapshot.project.validate()?;
+        let revision = self.revision.checked_add(1).ok_or_else(|| Error::new(ErrorKind::Overflow, "document revision overflow"))?;
+        let next = self.execution.next()?;
+        let pending = PendingOpen { revision, next, identity: Arc::new(()) };
+        self.reserve_event()?;
+        let runner = if background { self.save_runner.clone() } else { None };
+        let context = self.assets.context().clone();
+        let before = self.file_status();
+        let storage = self.persistence.as_mut().ok_or_else(|| Error::new(ErrorKind::Unsupported, "project storage is not configured"))?;
+        let started = storage.recover(snapshot, location, context, runner.as_deref())?;
+        Ok(match started {
+            crate::persistence::Started::Done(document) => {
+                self.restored(document, pending);
+                if self.file_status() != before {
+                    self.status_revision = self.status_revision.saturating_add(1);
+                }
+                crate::persistence::Started::Done(())
+            }
+            crate::persistence::Started::Started => {
+                self.pending = Some(PendingFile::Recover(pending));
+                crate::persistence::Started::Started
+            }
+        })
+    }
+    /// Publishes recovered work: the new document, fresh history (a migrated identity keeps its
+    /// receipt step) and the recovery's authority, as `file.recover`.
+    fn restored(&mut self, document: project_identity::OpenedDocument, pending: PendingOpen) -> Value {
+        let project_identity::OpenedDocument { snapshot, migration } = document;
+        self.document = snapshot.project;
+        self.assets = snapshot.assets;
+        self.undo = migration.map_or_else(History::default, |migration| migration.history);
+        self.redo = History::default();
+        self.gesture = None;
+        self.state = pending.revision;
+        self.file_lifecycle.replaced(Arc::clone(&pending.identity));
+        self.publish(pending.revision, "file.recover", pending.next, pending.identity);
+        serde_json::json!({"recovered":true,"read_only":false})
     }
     /// Host boundary for joining a shared project (#698): replaces the document with `project`,
     /// the empty start a joiner takes the shared project in from ([`crate::collab::joining`]).
@@ -645,7 +827,7 @@ impl Session {
         if self.can_undo() || self.can_redo() {
             return Err(Error::new(ErrorKind::Conflict, "joining would discard this session's changes"));
         }
-        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 }, None, "share.adopt", false)
+        self.replace_untouched(Snapshot { project, assets: AssetStore::default(), epoch: 0 })
     }
     /// Host boundary for a joiner's first catch-up (#714): replaces the empty start
     /// [`Self::adopt_joined`] opened with `project`, the shared project, in one step rather than
@@ -665,26 +847,16 @@ impl Session {
             return Err(Error::new(ErrorKind::NotFound, "a shared card names an asset that hasn't arrived"));
         }
         // Checked when it was made, away from the window.
-        self.replace_valid(Snapshot { project, assets: self.assets.clone(), epoch: 0 }, None, "share.adopt", false)
+        self.replace_valid(Snapshot { project, assets: self.assets.clone(), epoch: 0 })
     }
-    fn replace_untouched(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str, migrate: bool) -> Result<(), Error> {
+    fn replace_untouched(&mut self, snapshot: Snapshot) -> Result<(), Error> {
         snapshot.project.validate()?;
-        self.replace_valid(snapshot, location, command, migrate)
+        self.replace_valid(snapshot)
     }
-    fn replace_valid(&mut self, snapshot: Snapshot, location: Option<StorageLocation>, command: &'static str, migrate: bool) -> Result<(), Error> {
-        // Live sharing must retain the room's identity. Only local recovery migrates it.
-        let document = if migrate && snapshot.project.id() == project_identity::LEGACY {
-            let scope = match (self.persistence.as_mut(), location.as_ref()) {
-                // The original drive/folder may be gone after a crash. Keep the legacy pooled
-                // identity if its scope cannot be established; this must not block recovery.
-                (Some(storage), Some(location)) => storage.project_identity_scope(location).ok(),
-                _ => None,
-            };
-            project_identity::prepare(snapshot, scope)?
-        } else {
-            project_identity::OpenedDocument { snapshot, migration: None }
-        };
-        let project_identity::OpenedDocument { mut snapshot, migration } = document;
+    /// Replaces the document with a joiner's shared project (#698, #714), keeping the room's
+    /// identity. Its media are already in this workspace, so nothing is copied; recovery has a
+    /// path of its own ([`Self::begin_recover`]).
+    fn replace_valid(&mut self, mut snapshot: Snapshot) -> Result<(), Error> {
         snapshot.assets = snapshot.assets.in_context(
             self.assets.context().clone(),
             &nodecraft_format::asset_source::TransferCancel::default(),
@@ -696,16 +868,16 @@ impl Session {
         self.reserve_event()?;
         let before = self.file_status();
         if let Some(storage) = self.persistence.as_mut() {
-            storage.adopt_recovered(&snapshot, location)?;
+            storage.adopt_recovered(&snapshot, None)?;
         }
         self.document = snapshot.project;
         self.assets = snapshot.assets;
-        self.undo = migration.map_or_else(History::default, |migration| migration.history);
+        self.undo = History::default();
         self.redo = History::default();
         self.gesture = None;
         self.state = revision;
         self.file_lifecycle.replaced(Arc::clone(&identity));
-        self.publish(revision, command, next, identity);
+        self.publish(revision, "share.adopt", next, identity);
         if self.file_status() != before {
             self.status_revision = self.status_revision.saturating_add(1);
         }
@@ -837,6 +1009,7 @@ impl Session {
             services: &self.services,
             phase,
             file: self.file_status(),
+            file_last: self.persistence.as_ref().and_then(crate::persistence::Persistence::last),
             execution: &self.execution,
             perf: &self.perf,
             access: &self.access,
@@ -862,8 +1035,10 @@ impl Session {
                 | Effect::CancelExport { .. }
                 | Effect::Elements { .. }
                 | Effect::Assets { .. } => Ok(()),
-                // Dispatch refuses everything else until the open settles.
-                _ if matches!(self.pending, Some(PendingFile::Open(_))) => Err(opening()),
+                // Dispatch refuses everything else until the open (or recovery) settles.
+                _ if self.pending.as_ref().is_some_and(|pending| pending.replacing().is_some()) => {
+                    Err(self.pending.as_ref().and_then(PendingFile::replacing).unwrap_or_else(opening))
+                }
                 effect @ (Effect::Edit { .. } | Effect::Undo | Effect::Redo) => self.prepare(effect).map(|_| ()),
                 // Images still in the library are checked when they are copied in.
                 Effect::Place { media, changes, result, .. } if media.iter().all(|hash| self.assets.contains(hash)) => {
@@ -908,7 +1083,7 @@ impl Session {
         let effect = Self::describe(&spec, &self.context(Phase::Dispatch), params)?;
         let impact = crate::impact::Impact::of(&effect)?;
         // As dispatch: only pure reads go past an open.
-        if matches!(self.pending, Some(PendingFile::Open(_)))
+        if let Some(refusal) = self.pending.as_ref().and_then(PendingFile::replacing)
             && !matches!(
                 effect,
                 Effect::None { .. }
@@ -922,7 +1097,7 @@ impl Session {
                     | Effect::Assets { .. }
             )
         {
-            return Err(opening());
+            return Err(refusal);
         }
         match effect {
             Effect::Edit { .. } | Effect::Undo | Effect::Redo => {
@@ -950,6 +1125,49 @@ impl Session {
             if let Some(metric) = crate::perf::Metric::of_command(id) {
                 self.perf.record_since(metric, start);
             }
+        }
+        result
+    }
+    /// [`Self::dispatch`] for a caller that must never block on the disk (#367): the control
+    /// channel, MCP and the in-canvas agent, which the desktop answers on its UI thread. Where
+    /// dispatch would wait for a background save still writing, this refuses as `Busy` naming
+    /// `file.cancel`; a save that has already finished is settled first, as dispatch would.
+    /// Reads, and everything else, behave exactly as in dispatch.
+    pub fn dispatch_without_waiting(&mut self, id: &str, params: &Value) -> Result<Value, Error> {
+        self.never_wait = true;
+        let result = self.dispatch(id, params);
+        self.never_wait = false;
+        result
+    }
+    /// Settles a background save that has already finished, without waiting for one that hasn't;
+    /// its outcome is kept for [`Self::poll_file`]. For a host about to judge what a command may
+    /// do (`enabled`) from the file's state, which a finished save has changed.
+    pub fn settle_finished(&mut self) {
+        if !matches!(self.pending, Some(PendingFile::Save(_))) {
+            return;
+        }
+        let before = self.file_status();
+        if let Some(outcome) = self.settle_file(false) {
+            self.settled = Some(outcome);
+        }
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
+        }
+    }
+    /// For a caller about to change the document by other means than [`Self::dispatch`] that
+    /// must not block on the disk either (a host command that edits, say): settles a background
+    /// save that has finished, and refuses as [`Self::dispatch_without_waiting`] does while one
+    /// is still writing. Nothing else is checked here.
+    pub fn settle_without_waiting(&mut self) -> Result<(), Error> {
+        if !matches!(self.pending, Some(PendingFile::Save(_))) {
+            return Ok(());
+        }
+        let before = self.file_status();
+        self.never_wait = true;
+        let result = self.settle_for_edit();
+        self.never_wait = false;
+        if self.file_status() != before {
+            self.status_revision = self.status_revision.saturating_add(1);
         }
         result
     }
@@ -1055,7 +1273,7 @@ impl Session {
         };
         // A run would start on the project being replaced, so only pure reads, and the Elements
         // library (which never touches the project), go past an open.
-        if matches!(self.pending, Some(PendingFile::Open(_)))
+        if let Some(refusal) = self.pending.as_ref().and_then(PendingFile::replacing)
             && !matches!(
                 effect,
                 Effect::None { .. }
@@ -1069,7 +1287,10 @@ impl Session {
                     | Effect::Assets { .. }
             )
         {
-            return Err(opening());
+            return Err(refusal);
+        }
+        if !reads && self.storage_hold {
+            return Err(Error::new(ErrorKind::Busy, KEEPING_ASIDE));
         }
         if !reads && self.pending.is_some() {
             // The save's outcome can change what this command may do: decide again after it.
@@ -2012,3 +2233,15 @@ mod admission_tests;
 
 #[cfg(test)]
 mod clipboard_tests;
+
+/// Project storage checkpointed off the UI thread for a session to take over (#367): see
+/// [`Session::prepare_storage`].
+pub struct PreparedStorage {
+    storage: Box<dyn ProjectStorage + Send>,
+    opening: crate::persistence::Opening,
+    /// The document and assets it was checkpointed from, to check the session against.
+    project: nodecraft_graph::Project,
+    asset_hashes: Vec<nodecraft_types::Blake3>,
+    /// Those assets, moved into the storage's context.
+    assets: nodecraft_format::AssetStore,
+}

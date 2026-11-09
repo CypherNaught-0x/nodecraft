@@ -8,7 +8,7 @@ use crate::{
 use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use nodecraft_graph::{Node, Position};
 use nodecraft_nodes::NodeDescriptor;
-use nodecraft_types::{Integer, Modality, Number, ParamControl, Unsigned, Value};
+use nodecraft_types::{Integer, Modality, NodeId, Number, ParamControl, Unsigned, Value};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet},
@@ -84,6 +84,8 @@ pub enum Intent {
     Variations(u64),
     /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
     VariationCards(bool),
+    /// Reuse an identical earlier result instead of running again, or run fresh each time (#1059).
+    Cache(bool),
     /// Choose a folder whose files replace the ones this Folder card holds.
     ImportFolder,
     /// Choose the folder an Export to folder card writes into (#746): a person's grant.
@@ -238,6 +240,45 @@ pub struct CardView<'a> {
     /// The name of the folder a person chose for an Export to folder card (#746), when one is
     /// chosen in this window. View state: the project never holds it.
     pub export_folder: Option<String>,
+    /// The canvas and node kinds, so each port can name what it is connected to for screen
+    /// readers (#1109). Without them a port names only itself and its card.
+    pub links: Option<PortLinks<'a>>,
+}
+
+/// The titles wired to each port, keyed by node, side and port name, in input order.
+pub type PeerTitles = BTreeMap<(NodeId, Side, String), Vec<String>>;
+
+/// What a card's ports read to name their connections (#1109).
+#[derive(Clone, Copy)]
+pub struct PortLinks<'a> {
+    pub canvas: &'a nodecraft_graph::Canvas,
+    pub kinds: &'a nodecraft_nodes::Registry,
+    /// Built from the edges once per frame, the first time a port is named: only while
+    /// AccessKit asks for names, so nothing is spent on it otherwise.
+    pub peers: &'a std::cell::OnceCell<PeerTitles>,
+}
+
+impl PortLinks<'_> {
+    /// A card's title as its own heading shows it.
+    pub fn title(&self, node: &Node) -> String {
+        title(node, self.kinds.get(&node.kind).ok().map(|kind| kind.descriptor()))
+    }
+
+    /// The titles of the cards wired to `port` of `node` on `side`, in input order for an input.
+    pub fn peers(&self, node: NodeId, side: Side, port: &str) -> Vec<String> {
+        let map = self.peers.get_or_init(|| {
+            let mut edges: Vec<_> = self.canvas.edges().values().collect();
+            edges.sort_by_key(|edge| edge.order);
+            let mut map = PeerTitles::new();
+            for edge in edges {
+                let (Some(from), Some(to)) = (self.canvas.nodes().get(&edge.from.node), self.canvas.nodes().get(&edge.to.node)) else { continue };
+                map.entry((to.id, Side::Input, edge.to.port.clone())).or_default().push(self.title(from));
+                map.entry((from.id, Side::Output, edge.from.port.clone())).or_default().push(self.title(to));
+            }
+            map
+        });
+        map.get(&(node, side, port.to_owned())).cloned().unwrap_or_default()
+    }
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -287,6 +328,7 @@ pub fn show(
         outdated,
         variations,
         export_folder,
+        links,
     } = card;
     let (images, video, audio, mesh) =
         if crate::text_preview::eligible(descriptor) { ((Vec::new(), 0), None, None, None) } else { (images, video, audio, mesh) };
@@ -361,7 +403,7 @@ pub fn show(
     } else {
         t.card_stroke
     };
-    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(t.stroke_hairline / view.zoom, stroke), StrokeKind::Inside);
 
     {
         let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
@@ -585,7 +627,13 @@ pub fn show(
                                 };
                                 let preview: String = current.chars().take(t.preview_chars).collect();
                                 ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
-                                if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
+                                if ui
+                                    .add_enabled(editable, egui::Button::new("Change model…"))
+                                    .labelled_by(label.id)
+                                    .on_hover_text(&preview)
+                                    .on_disabled_hover_text(format!("{preview}\n\nThe model can't be changed here right now"))
+                                    .clicked()
+                                {
                                     intents.push(Intent::Model);
                                 }
                             } else {
@@ -631,7 +679,10 @@ pub fn show(
         let radius = t.port_radius.max(t.port_min_radius / view.zoom);
         ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
         let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, inputs.len()), ui.id().with(("in", &port.name)), Sense::drag());
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
+        r.widget_info(|| port_info(links, node, Side::Input, port, descriptor));
+        if r.has_focus() {
+            focus_ring(&ui, c, radius, view.zoom, t);
+        }
         let hint = if node.inputs.iter().any(|saved| saved == port) {
             port.name.clone()
         } else {
@@ -648,7 +699,10 @@ pub fn show(
             ui.painter().line_segment([c - arm, c + arm], Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
         }
         let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, node.outputs.len()), ui.id().with(("out", &port.name)), Sense::drag());
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
+        r.widget_info(|| port_info(links, node, Side::Output, port, descriptor));
+        if r.has_focus() {
+            focus_ring(&ui, c, radius, view.zoom, t);
+        }
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
     Some(CardResponse { response, context, save_hit, intents, ports })
@@ -670,10 +724,28 @@ fn export_controls(ui: &mut egui::Ui, folder: Option<&str>, intents: &mut Vec<In
         if ui.button(choose).on_hover_text("Pick the folder this card writes into; it stays on this computer, never in the project").clicked() {
             intents.push(Intent::ChooseExportFolder);
         }
-        if ui.add_enabled(folder.is_some(), egui::Button::new("Export")).on_hover_text("Write the wired results into the chosen folder").clicked() {
+        if ui
+            .add_enabled(folder.is_some(), egui::Button::new("Export"))
+            .on_hover_text("Write the wired results into the chosen folder")
+            .on_disabled_hover_text("Choose a folder first")
+            .clicked()
+        {
             intents.push(Intent::Export);
         }
     });
+}
+
+/// The keyboard focus ring around a port (#1109), outside the drop ring's gap.
+fn focus_ring(ui: &egui::Ui, center: Pos2, radius: f32, zoom: f32, t: &Tokens) {
+    ui.painter().circle_stroke(center, radius + t.drop_ring_gap / zoom, Stroke::new(t.port_focus_width / zoom, t.accent));
+}
+
+/// A port's accessible name (#1109): "Image output of Generate 1", or "Prompt input of Text 2,
+/// connected to Text 1". Ports are buttons: Enter or Space starts a keyboard connection.
+fn port_info(links: Option<PortLinks<'_>>, node: &Node, side: Side, port: &nodecraft_graph::Port, descriptor: Option<&NodeDescriptor>) -> egui::WidgetInfo {
+    let owner = title(node, descriptor);
+    let peers = links.map(|links| links.peers(node.id, side, &port.name)).unwrap_or_default();
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, noodle::port_label(side, port, &owner, &peers))
 }
 
 // At overview zoom, and for additive migration input previews, screen-sized hit targets can
@@ -895,10 +967,10 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
             }
         }
         _ => {
-            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(t.stroke_hairline, t.waveform));
         }
     }
-    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    painter.vline(playhead, bars.y_range(), Stroke::new(t.stroke_medium, t.text));
     let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.set_clip_rect(controls.intersect(ui.clip_rect()));
     let name = if *playing { "Pause sound" } else { "Play sound" };

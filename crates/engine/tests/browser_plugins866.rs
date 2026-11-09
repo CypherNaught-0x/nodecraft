@@ -1,8 +1,8 @@
 //! The browser's plugin store with the example packages (#866). The browser build registers a
 //! session-only store over `MemoryBackend` (`ui-egui`'s `App::register_session_plugins`, wasm only);
-//! this builds the same service the same way, natively, so it runs in CI. The repository has no
-//! wasm-bindgen-test runner, so the wasm binary itself isn't exercised here; `cargo xtask wasm`
-//! only checks that it builds.
+//! this builds the same service the same way. It runs natively in every CI leg, and the same
+//! tests run compiled to WebAssembly in a headless browser (#1038, `tests/browser_plugins_wasm.rs`,
+//! `cargo xtask browser`).
 //!
 //! The examples are packed from their bytes as compiled into the test, as the browser has no
 //! folder to read; natively the test also checks it packs every file the folders hold.
@@ -39,6 +39,8 @@ fn browser() -> (Session, PickedPackage) {
     (session, picked)
 }
 
+/// Natively only: the browser has no folders to read.
+#[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn the_compiled_in_examples_are_every_file_in_their_folders() {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples/plugins");
@@ -62,7 +64,8 @@ fn the_compiled_in_examples_are_every_file_in_their_folders() {
     }
 }
 
-#[test]
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
 fn the_examples_import_into_the_browser_store_and_only_data_is_enabled() {
     let (mut s, picked) = browser();
     for (name, files) in [("palette.ncraft-plugin", PALETTE), ("shout.ncraft-plugin", SHOUT)] {
@@ -95,4 +98,19 @@ fn the_examples_import_into_the_browser_store_and_only_data_is_enabled() {
     let states: Vec<String> =
         s.dispatch("plugins.list", &json!({})).unwrap()["packages"].as_array().unwrap().iter().map(|p| p["state"].as_str().unwrap().to_owned()).collect();
     assert_eq!(states, ["enabled", "disabled"]);
+}
+
+/// A new session's store holds nothing: the browser keeps packages for its session only.
+#[cfg_attr(not(target_arch = "wasm32"), test)]
+#[cfg_attr(target_arch = "wasm32", wasm_bindgen_test::wasm_bindgen_test)]
+fn a_fresh_browser_session_starts_empty() {
+    let (mut first, picked) = browser();
+    let location = picked.put("palette.ncraft-plugin", packed(PALETTE)).unwrap();
+    let dry = first.dispatch("plugins.import", &json!({"location": location, "dry_run": true})).unwrap();
+    first.dispatch("plugins.import", &json!({"location": location, "digest": dry["digest"]})).unwrap();
+    assert_eq!(first.dispatch("plugins.list", &json!({})).unwrap()["packages"].as_array().map(Vec::len), Some(1));
+    let (mut fresh, _) = browser();
+    let list = fresh.dispatch("plugins.list", &json!({})).unwrap();
+    assert_eq!(list["session_only"], true);
+    assert_eq!(list["packages"], json!([]), "{list}");
 }

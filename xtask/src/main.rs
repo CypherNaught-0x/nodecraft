@@ -3,9 +3,11 @@
 //! Pure Rust (std + serde_json). External tools (`cargo`) are invoked through
 //! `std::process::Command`.
 
+mod browser;
 mod decisions;
 mod layers;
 mod perf;
+mod shared_target;
 mod test_layout;
 mod test_step;
 mod update_feed;
@@ -26,6 +28,8 @@ commands:
   layers          enforce the crate dependency layering (docs/architecture.md), and that every
                   integration test file is built
   wasm            cargo check --target wasm32-unknown-unknown for the wasm-safe crates
+  browser         run the browser tests compiled to wasm32 in a headless browser (needs
+                  wasm-bindgen-test-runner at Cargo.lock's wasm-bindgen version, and chromedriver)
   catalog-check   validate assets/catalog/*.toml and that each file is built in (docs/catalog.md)
   decisions       check docs/decisions/: one dated file per decision, none in decisions.md
   ci [--quick [--base REF]]
@@ -38,12 +42,20 @@ commands:
   slow-tests [--threshold SECS]
                   time every test and regenerate the slow-test list in .config/nextest.toml
                   (default 5 seconds)
+  shared -- <cargo args>
+                  run an explicit Cargo command in the shared build directory (needs
+                  NODECRAFT_SHARED_TARGET). Use `shared --clean` to remove an owned cache.
   version [set X.Y.Z[-pre]]
                   print the workspace version, or set it (Cargo.toml + Cargo.lock)
   update-key <secret file>
                   make an update signing key pair: the public key goes in packaging/update-key.pub
   update-feed <artifact folder> <version>
                   write and sign the release's update feed (NODECRAFT_UPDATE_SIGNING_KEY)
+
+NODECRAFT_SHARED_TARGET=<absolute dir> makes ci, wasm, catalog-check, slow-tests and shared
+build in one directory shared by every checkout: one build at a time, and the workspace
+crates rebuilt whenever a different checkout builds (docs/development.md, \"Sharing one build
+directory\").
 ";
 
 fn main() -> ExitCode {
@@ -57,8 +69,24 @@ fn main() -> ExitCode {
             }
         };
     let rest: Vec<&str> = args.iter().skip(1).map(String::as_str).collect();
+    // Held until main returns: the shared build directory stays locked for the whole command.
+    let shared = match args.first().map(String::as_str) {
+        Some("ci" | "wasm" | "browser" | "catalog-check" | "slow-tests") => match share() {
+            Ok(guard) => guard,
+            Err(error) => {
+                eprintln!("error: {error}");
+                return ExitCode::FAILURE;
+            }
+        },
+        _ => None,
+    };
     let result = match args.first().map(String::as_str) {
+        Some("shared") => root().and_then(|root| cmd_shared(&root, &rest)),
         Some("perf") => {
+            if rest.first() == Some(&"collect") && shared_target::inherited() {
+                eprintln!("error: perf collect needs an isolated target. Run it outside a shared command.");
+                return ExitCode::from(3);
+            }
             return match root().and_then(|root| perf::run(&root, &rest)) {
                 Ok(code) => ExitCode::from(code),
                 Err(error) => {
@@ -67,12 +95,13 @@ fn main() -> ExitCode {
                 }
             };
         }
-        Some(command @ ("layers" | "wasm" | "ci" | "catalog-check" | "decisions" | "slow-tests" | "version" | "update-key" | "update-feed")) => root()
-            .and_then(|root| {
+        Some(command @ ("layers" | "wasm" | "browser" | "ci" | "catalog-check" | "decisions" | "slow-tests" | "version" | "update-key" | "update-feed")) => {
+            root().and_then(|root| {
                 eprintln!("xtask workspace: {}", root.display());
                 match command {
                     "layers" => cmd_layers(&root),
                     "wasm" => cmd_wasm(&root),
+                    "browser" => browser::run(&root),
                     "ci" => cmd_ci(&root, &rest),
                     "catalog-check" => cmd_catalog_check(&root),
                     "decisions" => decisions::check(&root),
@@ -81,12 +110,17 @@ fn main() -> ExitCode {
                     "update-feed" => update_feed::feed(&root, &rest),
                     _ => version::run(&root, &rest),
                 }
-            }),
+            })
+        }
         Some("-h" | "--help" | "help") | None => {
             print!("{USAGE}");
             Ok(())
         }
         Some(other) => Err(format!("unknown command `{other}`\n\n{USAGE}")),
+    };
+    let result = match shared {
+        Some(guard) => guard.finish(result),
+        None => result,
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -106,12 +140,95 @@ pub fn root() -> Result<PathBuf, String> {
 pub fn cargo(root: &Path) -> Command {
     let mut c = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
     c.current_dir(root);
+    shared_target::configure(&mut c);
+    shared_target::cargo_options(&mut c, root);
     c
+}
+
+fn cargo_task(root: &Path, subcommand: &str, args: &[&str]) -> Command {
+    let Some(executable) = shared_target::extension(subcommand) else {
+        let mut command = cargo(root);
+        command.arg(subcommand).args(args);
+        return command;
+    };
+    let mut command = Command::new(executable);
+    command.current_dir(root).arg(subcommand);
+    shared_target::configure(&mut command);
+    match (subcommand, args) {
+        ("clippy", ["--version" | "-V" | "--help" | "-h"]) => {
+            command.args(args);
+        }
+        ("clippy", _) => {
+            shared_target::cargo_options(&mut command, root);
+            command.args(args);
+        }
+        ("nextest", [operation @ ("run" | "list" | "archive"), rest @ ..]) => {
+            command.arg(operation);
+            shared_target::cargo_options(&mut command, root);
+            command.args(rest);
+        }
+        _ => {
+            command.args(args);
+        }
+    }
+    command
+}
+
+/// Locks and routes into the shared build directory when `NODECRAFT_SHARED_TARGET` is set.
+fn share() -> Result<Option<shared_target::Guard>, String> {
+    let Some(shared) = shared_target::configured()? else { return Ok(None) };
+    let root = root()?;
+    shared_target::acquire(&root, &shared, &member_names(&root)?).map(Some)
+}
+
+/// The workspace's own package names: the artifacts a shared directory must never reuse across
+/// checkouts.
+fn member_names(root: &Path) -> Result<std::collections::BTreeSet<String>, String> {
+    let meta = metadata(root)?;
+    let packages = meta.get("packages").and_then(serde_json::Value::as_array).ok_or("cargo metadata omitted packages")?;
+    packages
+        .iter()
+        .map(|p| p.get("name").and_then(serde_json::Value::as_str).map(String::from).ok_or_else(|| "cargo metadata omitted a package name".to_string()))
+        .collect()
+}
+
+/// `cargo xtask shared -- <cargo args>` and `cargo xtask shared --clean`.
+fn cmd_shared(root: &Path, args: &[&str]) -> Result<(), String> {
+    const USAGE: &str = "usage: cargo xtask shared -- <cargo args> | cargo xtask shared --clean";
+    if shared_target::inherited() {
+        return Err("shared needs a separate invocation outside the managed command".into());
+    }
+    let shared = shared_target::configured()?.ok_or_else(|| format!("{} is not set\n{USAGE}", shared_target::ENV))?;
+    match args {
+        ["--clean"] => shared_target::clean(root, &shared),
+        ["--", subcommand, cargo_args @ ..] => {
+            if let Some(why) = shared_target::refused_argument(subcommand, cargo_args) {
+                return Err(format!("refused: {why}"));
+            }
+            let guard = shared_target::acquire(root, &shared, &member_names(root)?)?;
+            let c = cargo_task(root, subcommand, cargo_args);
+            let result = run(c, &format!("cargo {subcommand} {}", cargo_args.join(" ")));
+            guard.finish(result)
+        }
+        _ => Err(USAGE.into()),
+    }
 }
 
 fn run(mut cmd: Command, what: &str) -> Result<(), String> {
     eprintln!("$ {what}");
-    let status = cmd.status().map_err(|e| format!("{what}: failed to spawn: {e}"))?;
+    let mut child = cmd.spawn().map_err(|e| format!("{what}: failed to spawn: {e}"))?;
+    let status = child.wait().map_err(|e| {
+        shared_target::interrupted_child();
+        format!("{what}: failed to wait for child: {e}")
+    })?;
+    // On Windows an externally terminated process can report an ordinary nonzero code.
+    #[cfg(windows)]
+    let uncertain = !status.success();
+    #[cfg(not(windows))]
+    let uncertain = status.code().is_none();
+    if uncertain {
+        shared_target::interrupted_child();
+    }
     if status.success() { Ok(()) } else { Err(format!("{what}: exited with {status}")) }
 }
 
@@ -147,6 +264,14 @@ fn cmd_layers(root: &Path) -> Result<(), String> {
     println!();
     if violations.is_empty() {
         println!("OK: {} crates, no layering violations.", crates.len());
+        let rig = layers::rig_mentions(root)?;
+        if !rig.is_empty() {
+            return Err(format!(
+                "the LLM client crate is named outside nodecraft-providers, or by a public item of it (its types stay inside it): {}",
+                rig.join(", ")
+            ));
+        }
+        println!("OK: the LLM client crate is used only inside nodecraft-providers.");
         test_layout::check(root)
     } else {
         println!("{} violation(s):", violations.len());
@@ -218,16 +343,15 @@ fn cmd_ci(root: &Path, args: &[&str]) -> Result<(), String> {
         _ => return Err("usage: cargo xtask ci [--quick [--base REF]]".into()),
     };
     type Step<'a> = (&'static str, Box<dyn Fn() -> Result<(), String> + 'a>);
-    let cargo_step = |args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
+    let cargo_step = |command: &'static str, args: &'static [&'static str]| -> Box<dyn Fn() -> Result<(), String> + '_> {
         Box::new(move || {
-            let mut c = cargo(root);
-            c.args(args);
-            run(c, &format!("cargo {}", args.join(" ")))
+            let c = cargo_task(root, command, args);
+            run(c, &format!("cargo {command} {}", args.join(" ")))
         })
     };
     let mut steps: Vec<Step<'_>> = vec![
-        ("fmt", cargo_step(&["fmt", "--all", "--", "--check"])),
-        ("clippy", cargo_step(&["clippy", "--workspace", "--all-targets", "--features", PROVIDER_FEATURES, "--", "-D", "warnings"])),
+        ("fmt", cargo_step("fmt", &["--all", "--", "--check"])),
+        ("clippy", cargo_step("clippy", &["--workspace", "--all-targets", "--features", PROVIDER_FEATURES, "--", "-D", "warnings"])),
         (
             "test",
             match quick {

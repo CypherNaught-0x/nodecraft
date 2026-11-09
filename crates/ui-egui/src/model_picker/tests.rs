@@ -193,6 +193,50 @@ fn azure_deployment_is_selectable_with_an_unknown_usage_price() {
 }
 
 #[test]
+fn bedrock_models_are_selectable_with_an_unknown_usage_price() {
+    let catalog = Catalog::builtin().unwrap();
+    let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Text).with_inline_prompt(), |_| Ok(())).unwrap();
+    picker.set_query("Bedrock").unwrap();
+    let state = View { catalog, picker, outcome: Outcome::Open };
+    let mut h = Harness::builder().with_size(egui::vec2(1000.0, 650.0)).build_ui_state(
+        |ui, state: &mut View| {
+            if state.outcome == Outcome::Open {
+                state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK);
+            }
+        },
+        state,
+    );
+    h.run();
+    for id in ["bedrock.gpt-oss-120b", "bedrock.gpt-oss-20b"] {
+        assert_eq!(price_label(h.state().catalog.get(id).unwrap()), "Usage based (USD)");
+    }
+    h.get_by_label("GPT OSS 20B (Bedrock)").click();
+    h.run();
+    assert_eq!(h.state().outcome, Outcome::Chosen("bedrock.gpt-oss-20b".into()));
+}
+
+#[test]
+#[ignore = "manual public-safe picker capture; BEDROCK46_RENDER_DIR"]
+fn bedrock46_picker_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("BEDROCK46_RENDER_DIR").unwrap());
+    for before in [true, false] {
+        let builtin = Catalog::builtin().unwrap();
+        // The only picker change is the Bedrock catalog rows; the before omits exactly those.
+        let catalog = Catalog::from_models(builtin.models().filter(|model| !before || model.provider != "bedrock").cloned()).unwrap();
+        let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Text).with_inline_prompt(), |_| Ok(())).unwrap();
+        picker.set_query("GPT OSS").unwrap();
+        let state = View { catalog, picker, outcome: Outcome::Open };
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_size(egui::vec2(1000.0, 650.0))
+            .build_ui_state(|ui, state: &mut View| state.outcome = state.picker.show(ui.ctx(), &state.catalog, &crate::theme::DARK), state);
+        crate::theme::apply(&h.ctx, crate::theme::ThemeKind::Dark);
+        h.run();
+        h.render().unwrap().save(dir.join(if before { "bedrock46-before.png" } else { "bedrock46-after.png" })).unwrap();
+    }
+}
+
+#[test]
 #[ignore = "manual public-safe picker capture; AZURE45_RENDER_DIR"]
 fn azure45_picker_visual() {
     let dir = std::path::PathBuf::from(std::env::var_os("AZURE45_RENDER_DIR").unwrap());

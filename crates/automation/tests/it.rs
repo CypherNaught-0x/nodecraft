@@ -10,6 +10,8 @@ mod command_host;
 mod comments;
 #[path = "document606.rs"]
 mod document606;
+#[path = "file_race367.rs"]
+mod file_race367;
 #[path = "layout.rs"]
 mod layout;
 #[path = "mcp.rs"]

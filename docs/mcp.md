@@ -83,6 +83,12 @@ app to local agents is the person's call); `automation.mcp_server_status {}` ret
 `{enabled, state, url, error}`, never the token, and agents may read it. Elsewhere (the CLI, the
 browser) both are refused as unsupported.
 
+The window's interface size (#1107) is open to agents too, through MCP bridged to the app:
+`view.ui_scale.increase {}`, `view.ui_scale.decrease {}`, `view.ui_scale.reset {}` and
+`view.ui_scale.set {percent: 80..=200}` each return `{percent, previous}`, change only how large
+the person's panels and dialogs are drawn, and are remembered in the app's settings. They are
+live-only (`mcp::LIVE_ONLY`): a standalone session lists them as not ready and refuses them.
+
 ## Bridge to the running app
 
 ```sh
@@ -121,8 +127,13 @@ menus and shortcuts are unaffected.
 
 Limits: the check happens when the command arrives. A program that can change the folders
 themselves (swap a folder for a link between the check and the write) isn't guarded against.
-`file.cancel` cancels any background save or open, including one the person started outside the
-folders. Opening checks that the project's folder is writable for recovery, which briefly creates
+`file.cancel` cancels any background save, open or recovery, including one the person started
+outside the folders. In the desktop app a save or open asked for through MCP
+runs in the background whatever `background` says: it replies `{saving:true}` or `{opening:true}`
+at once. While any save or open is still running (the agent's or the person's), another file
+command or a command that would change the project is refused as `busy`, naming `file.cancel`,
+rather than held until the disk finishes. `file.status` (read-only, no path) tells when it has
+finished and, if it failed, why; retry once it is done (see `docs/control.md`). Opening checks that the project's folder is writable for recovery, which briefly creates
 a file there, even in a `--read-root` folder. A save or open that the disk plainly can't hold is
 refused with `busy` before anything is written; the message gives the sizes needed and free.
 
@@ -199,14 +210,22 @@ own provider records (#325), as does `usage.resolve_charge` for what a reconcile
 (#332), and `usage.resolve_unresolved` for what an ordinary unresolved charge was billed (#298);
 agents can still review those charges with `usage.ownership`, `usage.unsettled` and
 `usage.unresolved`. `run.held_discard` lets a held paid result go for good (#369); agents can list held
-results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`. The
+results with `run.held` and retry or place them with `run.held_retry` and `run.held_place`.
+Agents follow the host's jobs with `run.jobs` and stop one with `run.cancel` (#167). `run.jobs`
+gives state, queue position and progress where the provider says, `may_be_billed` (it reached the
+provider and wasn't proven refused, finished or not: count these when tallying spend) and
+`may_have_been_charged` (it ended without a kept result, failed or cancelled, and may still be
+billed). Neither command spends money. A job not yet sent is cancelled as asked; one already sent is
+cancelled only with `accept_loss: true`, since a cancel is no refund: its result may be billed and
+lost, and getting it again means paying again. A provider that can't stop it is followed to its end.
+Standalone `nodecraft-cli mcp` runs no jobs; connect to the app with `--bridge`. The
 `plugins.*` changes (import, update, reload, enable, disable, rollback, uninstall, prune) read package files
 and decide what extends the app, like installing software, so only a person runs them; agents can
 see what is installed with `plugins.list` (#172), which names a package's reload file only by its
 file name (`reload_file`), never its folders. Granting a text action package the right to run,
 or revoking it (`plugins.grant`, `plugins.revoke`, #173), is the person's yes or no as well; a package that asks for capabilities is granted only the
 digest, capabilities and origins `plugins.rights` showed (#174), which agents may read to explain a
-grant before a person gives it. Worker-backed hosts return an opaque pending
+grant before a person gives it; its `key_origins` says which of those origins receive a key. Worker-backed hosts return an opaque pending
 ID; agents may read its retained envelope with `plugins.result` and acknowledge a terminal result
 with `plugins.forget`. These two commands do not acquire files or mutate packages. In the browser
 (#823) `plugins.list` also answers `session_only: true`: packages last only for the session, are
@@ -341,7 +360,7 @@ JSON-RPC 2.0. Batches aren't accepted, since MCP removed them in 2025-06-18.
 (`nodecraft --control`). They are navigation (`canvas.fit_all`, `canvas.fit_selection`,
 `canvas.minimap_toggle`, `canvas.prompt_overlays_toggle`, `canvas.pan_to`), search (`canvas.search_*`), the tag filter
 (`canvas.tag_filter_*`), the discussions panel (`canvas.comments_toggle`, `comment.open`) and
-Format selection (`canvas.auto_format`). `canvas.fit_selection` also accepts an optional `nodes`
+Format selection (`canvas.auto_format`) and the interface size (`view.ui_scale.*`, #1107). `canvas.fit_selection` also accepts an optional `nodes`
 list (2..=MAX_CHANGES unique IDs on the shown canvas); it frames those cards, using collapsed
 field headers for hidden cards, without changing the person's selection. Without it, the command
 frames the selection. Format selection takes an optional `nodes` list, so an agent can arrange

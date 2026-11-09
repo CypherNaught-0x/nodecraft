@@ -4,13 +4,19 @@
 //! the template's origins on the service's word. The credential goes only to the API origin
 //! ([`authorize`]); outputs are fetched from the output origins without it. The service is
 //! unknown to the host, so no reply proves a submit created nothing: once the paid request is
-//! sent, every failure may hide a billed job, and an ambiguous submit is retried automatically
-//! only when the template names an idempotency header for the key.
+//! sent, every failure may hide a billed job. An ambiguous submit is never sent again
+//! automatically: a template's idempotency header is the publisher's claim, which the host can't
+//! check, so the job ends with a possible charge recorded and the person decides.
+//!
+//! The template's `limits.concurrency` bounds what it is sent at once twice: the most of one
+//! run's jobs it holds ([`Provider::max_jobs_at_once`], the scheduler lane's cap), and the most
+//! requests in flight to it from every run and restored job together ([`RequestGate`]).
 
 use std::sync::Arc;
 
 use nodecraft_types::Money;
 
+use super::gate::{ByteBudget, RequestGate};
 use super::plan::{authorize, plan_cancel, plan_poll, plan_submit, read_poll, read_submit};
 use super::template::Template;
 use crate::secrets::Secret;
@@ -19,10 +25,15 @@ use crate::{
     SubmitContext,
 };
 
-/// The most bytes one output download may hold.
-pub const MAX_OUTPUT_BYTES: usize = 256 * 1024 * 1024;
+/// The most bytes one output download may hold. A plugin's service is the publisher's, so this
+/// is lower than for built-in adapters: images and short clips fit.
+pub const MAX_OUTPUT_BYTES: usize = 64 * 1024 * 1024;
 /// The most bytes all of one job's downloads may hold together.
-pub const MAX_JOB_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_JOB_BYTES: usize = 64 * 1024 * 1024;
+/// The most bytes the downloads of all of one package's jobs hold in memory at once (two jobs'
+/// worth); a job waits for room before its first download, then holds it until its outputs are
+/// handed over.
+pub const MAX_PACKAGE_BYTES: usize = 2 * MAX_JOB_BYTES;
 const DOWNLOAD_TIMEOUT_MS: u64 = 300_000;
 const REDACTED: &str = "[redacted]";
 
@@ -30,9 +41,29 @@ fn unsupported(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::UnsupportedInput, message)
 }
 
+/// The store's grants couldn't be read just now: transient, so it is asked again.
+fn unreadable(then: &str) -> ProviderError {
+    ProviderError::new(ErrorKind::Busy, format!("the plugin store's grants can't be read right now; {then}"))
+}
+
 fn malformed(message: impl Into<String>) -> ProviderError {
     ProviderError::new(ErrorKind::Malformed, message)
 }
+
+/// What the host knows, right before a request, of the grant a broker runs under.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Standing {
+    Granted,
+    /// Revoked, disabled, updated or removed: nothing more is sent, not even a poll.
+    Withdrawn,
+    /// The store couldn't be read just now (a lock, a file being replaced). Nothing new is
+    /// sent; a job already sent is followed again shortly rather than given up, since it may be
+    /// billed and its result is still wanted.
+    Unknown,
+}
+
+/// Asked right before each request.
+pub type StandingCheck = Arc<dyn Fn() -> Standing + Send + Sync>;
 
 /// A plugin's provider, run by the host from its template. Constructing it sends nothing.
 pub struct Broker {
@@ -41,7 +72,11 @@ pub struct Broker {
     key: Option<Secret>,
     http: Arc<dyn Http>,
     /// Whether the grant it runs under still stands; asked right before a paid request.
-    granted: Arc<dyn Fn() -> bool + Send + Sync>,
+    granted: StandingCheck,
+    /// Slots for the template's requests at once, shared with every broker for this provider.
+    gate: Arc<RequestGate>,
+    /// Bytes its jobs' downloads may hold at once, shared with its package's other providers.
+    bytes: Arc<ByteBudget>,
 }
 
 impl Broker {
@@ -57,12 +92,48 @@ impl Broker {
             (Some(_), None) => return Err(ProviderError::new(ErrorKind::Auth, "this plugin provider needs an API key; add it in Settings")),
             (None, _) => None,
         };
-        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| true) })
+        let gate = RequestGate::new(concurrency(&template));
+        let bytes = ByteBudget::new(MAX_PACKAGE_BYTES);
+        Ok(Self { id: id.into(), template, key, http, granted: Arc::new(|| Standing::Granted), gate, bytes })
+    }
+
+    /// This broker sending through `gate`, shared with the brokers built for the same provider
+    /// before it, so a rebuilt broker (a new key, say) adds no slots. A gate of another size is
+    /// not this template's and is ignored.
+    pub fn gated(self, gate: Arc<RequestGate>) -> Self {
+        if gate.size() != concurrency(&self.template) {
+            return self;
+        }
+        Self { gate, ..self }
+    }
+
+    /// This broker's downloads counted against `budget`, shared with its package's other
+    /// providers. A budget that can't hold one job's outputs is not this host's and is ignored.
+    pub fn budgeted(self, budget: Arc<ByteBudget>) -> Self {
+        if budget.size() < MAX_JOB_BYTES {
+            return self;
+        }
+        Self { bytes: budget, ..self }
+    }
+
+    /// The byte budget its downloads count against.
+    pub fn byte_budget(&self) -> &Arc<ByteBudget> {
+        &self.bytes
+    }
+
+    /// The gate its requests go through.
+    pub fn gate(&self) -> &Arc<RequestGate> {
+        &self.gate
     }
 
     /// This broker sending a paid request only while `granted` says its grant stands.
     pub fn granted(self, granted: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
-        Self { granted, ..self }
+        self.standing(Arc::new(move || if granted() { Standing::Granted } else { Standing::Withdrawn }))
+    }
+
+    /// This broker asking `check` what stands before each request.
+    pub fn standing(self, check: StandingCheck) -> Self {
+        Self { granted: check, ..self }
     }
 
     fn key(&self) -> &str {
@@ -89,13 +160,22 @@ impl Broker {
         let Some(key) = &self.key else { return false };
         let escaped = serde_json::to_string(key.expose()).unwrap_or_default();
         let escaped = escaped.get(1..escaped.len().saturating_sub(1)).unwrap_or_default();
-        [key.expose(), escaped].iter().any(|k| !k.is_empty() && body.windows(k.len()).any(|w| w == k.as_bytes()))
+        // A linear scan per form: outputs may be tens of MiB, so no window-by-window compare.
+        [key.expose(), escaped].iter().any(|k| !k.is_empty() && memchr::memmem::find(body, k.as_bytes()).is_some())
     }
 
     /// An error for a non-2xx reply. A reply that echoes the credential is not quoted at all, so
     /// not even the part of it an excerpt would cut keeps.
     fn status_error(&self, reply: &HttpResponse) -> ProviderError {
-        let mut error = ProviderError::from_status(reply.status, if self.echoes(&reply.body) { b"" } else { &reply.body });
+        let echoed = self.echoes(&reply.body);
+        let mut error = ProviderError::from_status(reply.status, if echoed { b"" } else { &reply.body });
+        // The reply is the service's own text: quote it as such (#174 review), unless it repeated
+        // the key, when none of it is quoted.
+        error.message = if echoed {
+            format!("HTTP {}: its reply repeated your key, so it isn't quoted", reply.status)
+        } else {
+            format!("HTTP {}: {}", reply.status, super::plan::untrusted(&crate::error::excerpt(&reply.body)))
+        };
         if (300..400).contains(&reply.status) {
             error = ProviderError::new(
                 ErrorKind::Malformed,
@@ -108,25 +188,32 @@ impl Broker {
 
     /// Sends `request` to the API origin with the credential, while the grant stands.
     async fn api(&self, request: HttpRequest) -> Result<HttpResponse, ProviderError> {
-        self.still_granted()?;
         let request = authorize(&self.template, request, self.key())?;
+        let _slot = self.gate.acquire().await;
+        self.still_granted()?;
         self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))
     }
 
     /// Refuses once the grant is withdrawn: a job sent before then is no longer followed, so
     /// the plugin reaches no origin, with or without the credential, after that.
     fn still_granted(&self) -> Result<(), ProviderError> {
-        if (self.granted)() {
-            return Ok(());
+        match (self.granted)() {
+            Standing::Granted => Ok(()),
+            Standing::Withdrawn => Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; the host no longer contacts its service")),
+            Standing::Unknown => Err(unreadable("this is tried again")),
         }
-        Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; the host no longer contacts its service"))
     }
 
     async fn create(&self, job: &ProviderJob, context: Option<&SubmitContext>) -> Result<Submission, ProviderError> {
         let request = authorize(&self.template, plan_submit(&self.template, job)?, self.key())?;
+        // Waiting for a slot comes first: a wait given up has sent nothing, and the grant is
+        // asked again after it.
+        let slot = self.gate.acquire().await;
         // The last moment the job can still be refused without being sent.
-        if !(self.granted)() {
-            return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent"));
+        match (self.granted)() {
+            Standing::Granted => {}
+            Standing::Withdrawn => return Err(ProviderError::new(ErrorKind::Auth, "this plugin's grant was withdrawn; nothing was sent")),
+            Standing::Unknown => return Err(unreadable("nothing was sent")),
         }
         // Everything local is done. This service has no documented list of replies that create
         // no job, so from here every failure may hide one it bills.
@@ -138,7 +225,10 @@ impl Broker {
             e.message = format!("{}; the job may have been accepted and billed", e.message);
             e
         };
-        let reply = self.http.send_no_redirect(request).await.map_err(billed)?;
+        let reply = self.http.send_no_redirect(request).await.map_err(billed);
+        // The downloads that follow take slots of their own.
+        drop(slot);
+        let reply = reply?;
         if !reply.is_success() {
             return Err(billed(self.status_error(&reply)));
         }
@@ -191,6 +281,10 @@ impl Broker {
 
     /// `done` with every link fetched into bytes; no output may carry the credential.
     async fn fetch(&self, done: Completed) -> Result<Completed, ProviderError> {
+        // Room for the whole job, taken before anything is fetched and kept until the outputs
+        // are handed over. The budget counts reply bytes once; while one output is copied into the
+        // shared buffer it is briefly held twice, so the true peak is up to one output more.
+        let _room = if done.outputs.iter().any(|o| matches!(o, Output::Url { .. })) { Some(self.bytes.acquire_many(MAX_JOB_BYTES).await) } else { None };
         let mut outputs = Vec::with_capacity(done.outputs.len());
         let mut budget = MAX_JOB_BYTES;
         for output in done.outputs {
@@ -212,26 +306,36 @@ impl Broker {
         if !self.template.origins().any(|o| o.holds(&parsed)) || !parsed.username().is_empty() || parsed.password().is_some() {
             return Err(malformed("an output link in the provider's reply is outside its template's origins"));
         }
-        self.still_granted()?;
         let request = HttpRequest::get(parsed.as_str()).max_response_bytes(MAX_OUTPUT_BYTES.min(*budget)).timeout_ms(DOWNLOAD_TIMEOUT_MS);
-        let reply = self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e))?;
+        let slot = self.gate.acquire().await;
+        self.still_granted()?;
+        let reply = self.http.send_no_redirect(request).await.map_err(|e| self.scrub(e));
+        drop(slot);
+        let reply = reply?;
         if !reply.is_success() {
             let mut error = ProviderError::new(ErrorKind::Server, format!("the plugin provider's output download failed (HTTP {})", reply.status));
             error.retry_after_ms = retry_after(&reply).filter(|n| *n <= 3_600_000);
             return Err(error);
         }
-        if reply.body.len() > MAX_OUTPUT_BYTES {
-            return Err(malformed("the plugin provider's output is larger than 256 MiB"));
+        let body = reply.body;
+        if body.len() > MAX_OUTPUT_BYTES {
+            return Err(malformed("the plugin provider's output is larger than 64 MiB"));
         }
-        *budget = budget.checked_sub(reply.body.len()).ok_or_else(|| malformed("the plugin provider's outputs for one job are larger than 512 MiB"))?;
+        *budget = budget.checked_sub(body.len()).ok_or_else(|| malformed("the plugin provider's outputs for one job are larger than 64 MiB"))?;
         // A link on the API origin may serve what the credential let it see.
-        if self.echoes(&reply.body) {
+        if self.echoes(&body) {
             return Err(malformed("an output the plugin provider served carries the credential"));
         }
         // Not quoted when it isn't media: the body is the service's, and may echo anything.
-        let sniffed = nodecraft_media::sniff(&reply.body).ok_or_else(|| malformed("the plugin provider's output is not a known media type"))?;
-        Ok(Output::Bytes { mime: sniffed.mime.to_owned(), bytes: Arc::from(&reply.body[..]) })
+        let mime = nodecraft_media::sniff(&body).ok_or_else(|| malformed("the plugin provider's output is not a known media type"))?.mime.to_owned();
+        // The reply is moved in, so its buffer is freed as soon as the shared copy exists.
+        Ok(Output::Bytes { mime, bytes: Arc::<[u8]>::from(body) })
     }
+}
+
+/// The template's requests at once, as a count.
+fn concurrency(template: &Template) -> usize {
+    usize::try_from(template.limits.concurrency).unwrap_or(1).max(1)
 }
 
 fn retry_after(reply: &HttpResponse) -> Option<u64> {
@@ -243,10 +347,16 @@ impl Provider for Broker {
         &self.id
     }
 
-    /// Only a template that sends the job's idempotency key lets an ambiguous submit be sent
-    /// again: the service then answers with the job it may already have.
+    /// Never: a template that names an idempotency header only says its service deduplicates by
+    /// the key. A service that ignores it would bill a resent job again while the budget counted
+    /// one, so an ambiguous submit ends the job as possibly charged instead (#174).
     fn retry_ambiguous_submit(&self) -> bool {
-        self.template.idempotency.is_some()
+        false
+    }
+
+    /// The template's `limits.concurrency`: a run holds no more of its jobs at once.
+    fn max_jobs_at_once(&self) -> Option<usize> {
+        Some(concurrency(&self.template))
     }
 
     fn submit<'a>(&'a self, job: &'a ProviderJob) -> BoxFuture<'a, Result<Submission, ProviderError>> {

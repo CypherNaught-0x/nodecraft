@@ -27,7 +27,8 @@ fn open_palette(h: &mut Harness<'static, NodeCraftApp>, query: &str) {
 
 fn offers(h: &mut Harness<'static, NodeCraftApp>, id: &'static str) -> bool {
     let ctx = h.ctx.clone();
-    h.state_mut().live_palette_entries(&ctx).iter().any(|entry| entry.target == palette::Target::Command(id))
+    // Offered to run: one that can't run now is listed greyed with its reason (#1121).
+    h.state_mut().live_palette_entries(&ctx).iter().any(|entry| entry.target == palette::Target::Command(id) && entry.available())
 }
 
 #[test]

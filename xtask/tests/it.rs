@@ -6,5 +6,7 @@
 mod arguments;
 #[path = "perf.rs"]
 mod perf;
+#[path = "shared_target.rs"]
+mod shared_target;
 #[path = "workspace.rs"]
 mod workspace;

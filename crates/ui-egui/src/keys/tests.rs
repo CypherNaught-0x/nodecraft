@@ -206,6 +206,49 @@ fn azure_quick_pick_stores_the_separate_provider_account() {
 }
 
 #[test]
+fn bedrock_quick_pick_stores_the_separate_provider_account() {
+    let store = Arc::new(MemoryStore::default());
+    let mut h = harness(sync_state(Arc::clone(&store), &[]));
+    h.run();
+    h.get_by_label("bedrock").click();
+    h.run();
+    type_into(&mut h, "Key", KEY);
+    h.get_by_label("Save").click();
+    h.run();
+    assert!(store.get(&Account::new("bedrock").unwrap()).unwrap().is_some());
+    assert!(store.get(&Account::new("openai").unwrap()).unwrap().is_none());
+    assert!(h.state().panel.key.is_empty());
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
+}
+
+/// AWS access keys for Bedrock (#1163) are quick picks of their own, each with a hint saying
+/// what goes there; saving one stores that account alone.
+#[test]
+fn bedrock_aws_credential_quick_picks_store_their_own_accounts() {
+    let store = Arc::new(MemoryStore::default());
+    let mut h = harness(sync_state(Arc::clone(&store), &[]));
+    h.run();
+    for account in ["bedrock:aws-access-key-id", "bedrock:aws-secret-access-key", "bedrock:aws-session-token"] {
+        h.get_by_label(account).click();
+        h.run();
+        assert!(h.query_by_label_contains("Bedrock signs with it").is_some() == (account == "bedrock:aws-access-key-id"), "{account}");
+        type_into(&mut h, "Key", KEY);
+        h.get_by_label("Save").click();
+        h.run();
+        assert!(store.get(&Account::new(account).unwrap()).unwrap().is_some(), "{account}");
+        assert!(h.state().panel.key.is_empty());
+    }
+    assert!(store.get(&Account::new("bedrock").unwrap()).unwrap().is_none(), "the API key account is untouched");
+    h.get_by_label("bedrock:aws-expiration").click();
+    h.run();
+    assert!(h.query_by_label_contains("RFC 3339").is_some());
+    h.get_by_label("bedrock").click();
+    h.run();
+    assert!(h.query_by_label_contains("the API key wins").is_some());
+    assert!(h.query_by_label_contains("abcdefghij").is_none());
+}
+
+#[test]
 fn bad_input_is_reported_without_echoing_the_key() {
     let mut h = harness(sync_state(Arc::new(MemoryStore::default()), &[]));
     h.run();

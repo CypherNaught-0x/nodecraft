@@ -286,7 +286,11 @@ impl NodeCraftApp {
                     .response
                     .labelled_by(label.id);
                 let ready = !editor.prompt.trim().is_empty() && chosen.is_some();
-                create = ui.add_enabled(ready, egui::Button::new("Create edit")).on_hover_text("Add a generation card that redraws the masked area").clicked();
+                create = ui
+                    .add_enabled(ready, egui::Button::new("Create edit"))
+                    .on_hover_text("Add a generation card that redraws the masked area")
+                    .on_disabled_hover_text("Describe the edit and choose a model first")
+                    .clicked();
                 close |= ui.button("Close").clicked();
             });
         });
@@ -437,7 +441,7 @@ fn paint_area(
     // The stroke in progress, and the brush under the pointer.
     let painter = ui.painter().with_clip_rect(frame);
     if let Some(stroke) = &editor.stroke {
-        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(0.6) } else { t.mask_overlay };
+        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(t.dim) } else { t.mask_overlay };
         let points: Vec<Pos2> = stroke.points.iter().map(|p| at(p[0] * frame_w, p[1] * frame_h)).collect();
         for pair in points.windows(2) {
             if let [a, b] = pair {

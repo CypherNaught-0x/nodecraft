@@ -489,3 +489,47 @@ fn a_link_holder_who_was_shown_is_gone_for_the_rest_when_the_link_runs_out() {
     let out = room.expire(100);
     assert_eq!(out, vec![Out::Close(10, Frame::Refused("the share link has expired".into())), Out::Send(1, Frame::Gone(10))]);
 }
+
+/// A room stored by a relay and restored after a restart (#1068) holds the same document, links
+/// and assets; what doesn't check out is left out, and an unreadable document refuses the room.
+#[test]
+fn a_restored_room_holds_what_was_stored_and_nothing_that_does_not_check_out() {
+    let mut room = Room::new();
+    let (sharer, _) = Mirror::share(&project()).unwrap();
+    room.join(1);
+    let update = sharer.update_for(&Mirror::join().state_vector().unwrap()).unwrap();
+    room.handle(1, Frame::Step2(update));
+    room.handle(1, Frame::LinkPut { hash: [9; 32], grant: grant(Role::Comment, "Ana") });
+    let bytes = b"image".to_vec();
+    let hash = *blake3::hash(&bytes).as_bytes();
+    room.handle(1, Frame::AssetPut { hash, bytes: bytes.clone() });
+    let document = room.document().unwrap();
+    let links: Vec<([u8; 32], Grant)> = room.links().map(|(hash, grant)| (*hash, grant.clone())).collect();
+    let assets: Vec<([u8; 32], Vec<u8>)> = room.assets().map(|(hash, bytes)| (*hash, bytes.to_vec())).collect();
+    assert_eq!(links.len(), 1);
+    assert_eq!(assets.len(), 1);
+
+    // An owner bad link and a tampered asset are dropped; the rest comes back.
+    let owner = Grant { role: Role::Owner, name: "Mallory".into(), expires: None };
+    let tampered = ([3; 32], b"not what it says".to_vec());
+    let mut restored = Room::restore(&document, links.into_iter().chain([([4; 32], owner)]), assets.into_iter().chain([tampered])).unwrap();
+    assert!(restored.is_empty(), "nobody is in a restored room");
+    assert_eq!(restored.links().map(|(hash, _)| *hash).collect::<Vec<_>>(), vec![[9; 32]]);
+    assert_eq!(restored.assets().map(|(hash, _)| *hash).collect::<Vec<_>>(), vec![hash]);
+    assert_eq!(restored.grant(&[9; 32]).map(|grant| grant.role), Some(Role::Comment));
+    // A late joiner through the link gets the whole project.
+    let out = restored.join_link(2, [9; 32], 0);
+    assert!(matches!(sent(&out, 2).first(), Some(Frame::Welcome { role: Role::Comment, .. })), "{out:?}");
+    let mut joiner = Mirror::join();
+    restored.join(3);
+    let out = restored.handle(3, Frame::Step1(joiner.state_vector().unwrap()));
+    let [Frame::Step2(update)] = sent(&out, 3)[..] else { panic!("{out:?}") };
+    joiner.receive(update).unwrap();
+    assert_eq!(joiner.materialize().unwrap().unwrap().project, project());
+    let out = restored.handle(3, Frame::AssetGet(vec![hash]));
+    assert_eq!(out, vec![Out::Send(3, Frame::AssetPut { hash, bytes })]);
+
+    // A document that isn't an update refuses the room; an empty one is a new room.
+    assert!(Room::restore(b"not an update", [], []).is_err());
+    assert!(Room::restore(&[], [], []).is_ok_and(|room| room.links().next().is_none()));
+}

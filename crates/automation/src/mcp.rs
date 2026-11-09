@@ -65,10 +65,27 @@ pub const LIVE_ONLY: &[&str] = &[
     "canvas.tag_filter_set",
     "canvas.tag_filter_next",
     "canvas.tag_filter_previous",
+    // The window's interface size (#1107): session-local view state, remembered per installation.
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
 ];
 const NEEDS_LIVE_APP: &str = "needs the running app's canvas: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`";
 const NEEDS_USAGE_LOG: &str = "needs the running app's usage log: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` has no usage log";
 const USAGE_READ_COMMANDS: &[&str] = &["usage.export_csv", "usage.ownership", "usage.unsettled", "usage.unresolved"];
+const NEEDS_LIVE_RUNS: &str =
+    "needs the running app's runs: run `nodecraft --control` and connect with `nodecraft-cli mcp --bridge`; standalone `nodecraft-cli mcp` runs no jobs";
+/// The run host's job commands (#167), which only a host that runs jobs can answer.
+const RUN_JOB_COMMANDS: &[&str] = &["run.jobs", "run.cancel"];
+
+/// `error`, made actionable when it says the host has no run jobs to show or cancel.
+fn no_runs(id: &str, error: Error) -> Error {
+    if RUN_JOB_COMMANDS.contains(&id) && error.kind == ErrorKind::Unsupported && error.message == "this host runs no jobs" {
+        return Error::new(ErrorKind::Unsupported, format!("{id} {NEEDS_LIVE_RUNS}"));
+    }
+    error
+}
 
 /// Commands an agent may see and run.
 pub const AGENT_COMMANDS: &[&str] = &[
@@ -77,6 +94,8 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "file.save",
     "file.save_as",
     "file.cancel",
+    // Read-only, names no path: how a background save or open the agent asked for went (#367).
+    "file.status",
     "node.add",
     "node.create",
     "node.create_connected",
@@ -161,6 +180,12 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "app.update_status",
     // Where the desktop app's built-in server listens; never its token (#116).
     "automation.mcp_server_status",
+    // The window's interface size (#1107): view state of this installation, never the document
+    // (LIVE_ONLY: they run only where a window is).
+    "view.ui_scale.increase",
+    "view.ui_scale.decrease",
+    "view.ui_scale.reset",
+    "view.ui_scale.set",
     "history.select",
     "history.previous",
     "history.next",
@@ -213,6 +238,10 @@ pub const AGENT_COMMANDS: &[&str] = &[
     "run.held",
     "run.held_retry",
     "run.held_place",
+    // Seeing and stopping jobs never spends money (#167): an agent that can start a paid run can
+    // stop it. A cancel is no refund, and run.jobs says when a job may still be billed.
+    "run.jobs",
+    "run.cancel",
     "share.links",
     "share.link_revoke",
     "share.stop",
@@ -579,6 +608,8 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
                     entry["not_ready_because"] =
                         if USAGE_READ_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "required host capability is unavailable" {
                             json!(NEEDS_USAGE_LOG)
+                        } else if RUN_JOB_COMMANDS.contains(&s.id) && e.kind == ErrorKind::Unsupported && e.message == "this host runs no jobs" {
+                            json!(NEEDS_LIVE_RUNS)
                         } else {
                             json!(e.message)
                         };
@@ -592,7 +623,7 @@ pub(crate) fn command_list<H: crate::commands::CommandHost + ?Sized>(host: &mut 
 
 pub(crate) fn command_run<H: crate::commands::CommandHost + ?Sized>(host: &mut H, args: Map<String, Value>) -> Result<Value, Error> {
     let (id, params) = admitted(host, args)?;
-    let result = host.dispatch(&id, &params)?;
+    let result = host.dispatch(&id, &params).map_err(|e| no_runs(&id, e))?;
     Ok(json!({"result": result, "revision": host.session().revision()}))
 }
 

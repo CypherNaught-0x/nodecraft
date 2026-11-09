@@ -137,6 +137,9 @@ impl ModelDescriptor {
         if (reads.timestamps || reads.speakers) && !takes(Modality::Audio) && !takes(Modality::Video) {
             return Err(invalid(id, &format!("mode `{}`: timestamps and speaker labels need an audio or video input", mode.id)));
         }
+        if (!reads.video_types.is_empty() || reads.video_bytes.is_some()) && !takes(Modality::Video) {
+            return Err(invalid(id, &format!("mode `{}`: `video_types` and `video_bytes` need a video input", mode.id)));
+        }
         Ok(())
     }
 
@@ -257,6 +260,24 @@ impl ModelDescriptor {
                 return Err(invalid(id, "pricing per source second needs every mode to edit the same source"));
             }
             self.validate_choice_prices(param, prices)?;
+        }
+        if let Pricing::PerOutputMegapixel { width, height, first, additional } = &self.pricing {
+            // Two distinct, always-shown unsigned settings with defaults, which every mode sends:
+            // otherwise a quote would be refused, or count the wrong area.
+            let usable = |name: &str| {
+                self.params.params.iter().any(|spec| {
+                    spec.name == name && matches!(spec.control, ParamControl::Unsigned { .. }) && spec.default.is_some() && spec.visible_if.is_none()
+                }) && self.modes.iter().all(|mode| mode.params.as_ref().is_none_or(|names| names.iter().any(|sent| sent == name)))
+            };
+            if width == height || !usable(width) || !usable(height) {
+                return Err(invalid(
+                    id,
+                    "pricing by output megapixels reads its width and height from two unsigned settings with defaults, always shown and sent by every mode",
+                ));
+            }
+            if first.0.micros == 0 || first.0.currency != additional.0.currency {
+                return Err(invalid(id, "the first megapixel's price is above zero, and both prices are in one currency"));
+            }
         }
         if let Pricing::PerUnit { unit, count, default_count, .. } = &self.pricing {
             self.validate_count(*unit, count.as_deref(), *default_count)?;

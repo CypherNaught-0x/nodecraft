@@ -23,29 +23,34 @@ pub(super) enum StyleAction {
 
 /// The style items of `node`'s context menu: "New image card with this style" on a trained Train
 /// style card, "Use style" on a card that takes styles, nothing otherwise.
-pub(super) fn menu(ui: &mut egui::Ui, canvas: &Canvas, catalog: Option<&GenerationCatalog>, node: &Node) -> Option<StyleAction> {
+pub(super) fn menu(
+    ui: &mut egui::Ui,
+    canvas: &Canvas,
+    catalog: Option<&GenerationCatalog>,
+    assets: &nodecraft_format::AssetStore,
+    node: &Node,
+) -> Option<StyleAction> {
     if node.kind == nodecraft_nodes::generation::STYLE_KIND {
-        let r = ui
-            .add_enabled(style_cmds::trained(node), egui::Button::new("New image card with this style"))
-            .on_disabled_hover_text("Run this card to train its style first");
+        let why = style_cmds::unready(assets, node).unwrap_or_else(|| "Run this card to train its style first".into());
+        let r = ui.add_enabled(style_cmds::trained(assets, node), egui::Button::new("New image card with this style")).on_disabled_hover_text(why);
         if r.clicked() {
             ui.close();
             return Some(StyleAction::Card(node.id));
         }
         return None;
     }
-    use_menu(ui, canvas, catalog, node).map(|style| StyleAction::Use { target: node.id, style })
+    use_menu(ui, canvas, catalog, assets, node).map(|style| StyleAction::Use { target: node.id, style })
 }
 
 /// The "Use style" submenu of `node`'s context menu, for a card whose model can take a style;
 /// the chosen Train style card, if any.
-fn use_menu(ui: &mut egui::Ui, canvas: &Canvas, catalog: Option<&GenerationCatalog>, node: &Node) -> Option<NodeId> {
+fn use_menu(ui: &mut egui::Ui, canvas: &Canvas, catalog: Option<&GenerationCatalog>, assets: &nodecraft_format::AssetStore, node: &Node) -> Option<NodeId> {
     if !style_cmds::takes_styles(node) {
         return None;
     }
     let mut chosen = None;
     ui.menu_button("Use style", |ui| {
-        let offers = style_cmds::offers(canvas, catalog, node);
+        let offers = style_cmds::offers(canvas, catalog, assets, node);
         if offers.is_empty() {
             ui.add_enabled(false, egui::Button::new("No Train style cards on this canvas"));
         }

@@ -25,7 +25,7 @@ impl NodeCraftApp {
             Vec2::new(width, t.search_height),
         )
     }
-    fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
+    pub(super) fn search_context(&mut self, ctx: &egui::Context) -> SearchContext {
         self.search_context_scoped(ctx, None)
     }
     pub(super) fn search_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> SearchContext {
@@ -442,7 +442,7 @@ mod tests {
     #[test]
     fn click_toolbar_button_opens_search_and_focuses_input() {
         let mut h = harness();
-        let label = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+        let label = &crate::shortcut::with_shortcut(&h.ctx, "Search", "Command+F");
         crate::app::topbar_tests::reveal(&mut h, label);
         h.get_by_role_and_label(Role::Button, label).click();
         h.run();

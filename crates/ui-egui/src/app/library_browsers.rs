@@ -170,6 +170,12 @@ struct StyleEntry {
     identity: bool,
     trigger: Option<String>,
     kept_by: Option<String>,
+    /// For a Soul ID: listed, unlisted or unchecked against the account last fetched.
+    #[serde(default)]
+    available: Option<String>,
+    /// Why it isn't ready: not trained yet, or its file is missing.
+    #[serde(default)]
+    reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -178,6 +184,9 @@ struct Page<T> {
     entries: Vec<T>,
     total: usize,
     offset: usize,
+    /// Styles only: SOUL 2 cards in the project that name a Soul ID.
+    #[serde(default)]
+    soul_id_uses: usize,
 }
 
 enum Listing {
@@ -194,6 +203,8 @@ struct Key {
     params: String,
     project: ProjectId,
     revision: u64,
+    /// The Soul ID list in use: a refresh installs a new one without a new revision.
+    lists: Option<nodecraft_types::OptionListId>,
 }
 
 /// The browsers' filters and the page last listed.
@@ -264,7 +275,7 @@ pub(super) struct ImportReport {
 }
 
 /// What the style verdicts were checked against.
-type VerdictKey = (ProjectId, u64, CanvasId, Option<NodeId>);
+type VerdictKey = (ProjectId, u64, Option<nodecraft_types::OptionListId>, CanvasId, Option<NodeId>);
 /// Per style card: the card it can go into, or why not.
 type Verdicts = std::collections::HashMap<NodeId, Result<NodeId, String>>;
 
@@ -598,7 +609,13 @@ impl NodeCraftApp {
             }
             Tab::Styles => ("library.styles", json!({"offset": offset, "limit": PAGE})),
         };
-        let key = Key { command, params: format!("{params}#{stamp}"), project: self.session.document().id(), revision: self.session.revision() };
+        let key = Key {
+            command,
+            params: format!("{params}#{stamp}"),
+            project: self.session.document().id(),
+            revision: self.session.revision(),
+            lists: nodecraft_engine::soul_ids::lists_stamp(self.session.option_lists()),
+        };
         if self.library.browsers.listed.as_ref().is_some_and(|(old, _)| *old == key) {
             return;
         }
@@ -783,7 +800,7 @@ pub(super) fn show(
     }
     let mut ticks = Vec::new();
     let mut offset = *browsers.offset();
-    let key = (session.document().id(), session.revision(), canvas, selected);
+    let key = (session.document().id(), session.revision(), nodecraft_engine::soul_ids::lists_stamp(session.option_lists()), canvas, selected);
     if browsers.verdicts.as_ref().is_none_or(|(old, _)| *old != key) {
         browsers.verdicts = Some((key, Default::default()));
     }
@@ -922,22 +939,51 @@ pub(super) fn show(
             if page.total == 0 {
                 ui.label(egui::RichText::new("No trained styles yet. Add a Train style card and run it.").color(t.text_muted));
             }
+            if page.soul_id_uses > 0 {
+                let cards = if page.soul_id_uses == 1 { "1 SOUL 2 card names".to_owned() } else { format!("{} SOUL 2 cards name", page.soul_id_uses) };
+                ui.label(egui::RichText::new(format!("{cards} a Soul ID: it runs only on the Higgsfield account that trained it")).small().color(t.text_muted));
+            }
             for entry in &page.entries {
                 let name = if !entry.title.trim().is_empty() { entry.title.as_str() } else { entry.trainer.as_deref().unwrap_or("Train style") };
                 ui.horizontal(|ui| {
                     ui.label(egui::RichText::new(sheet_view::line(name)).color(t.text));
                     if entry.identity {
-                        ui.label(egui::RichText::new("Soul ID").small().color(t.accent)).on_hover_text("A trained identity, picked on SOUL 2 cards");
+                        ui.label(egui::RichText::new("Soul ID").small().color(t.accent_text)).on_hover_text("A trained identity, picked on SOUL 2 cards");
                     }
                 });
                 let mut facts = vec![sheet_view::line(&entry.canvas_title)];
                 facts.extend(entry.family.iter().map(|family| format!("for {family}")));
                 facts.extend(entry.trigger.iter().filter(|t| !t.trim().is_empty()).map(|trigger| format!("trigger “{}”", sheet_view::line(trigger))));
                 if !entry.ready {
-                    facts.push("not trained yet".into());
+                    facts.push(entry.reason.as_deref().map_or_else(|| "not trained yet".to_owned(), sheet_view::line));
                 }
                 ui.label(egui::RichText::new(facts.join(" · ")).small().color(t.text_muted));
-                if let Some(provider) = &entry.kept_by {
+                if entry.identity {
+                    // A handle to one account's identity, never a file to hand on (#180).
+                    ui.label(
+                        egui::RichText::new("Bound to the Higgsfield account that trained it: not a portable file, and not exported")
+                            .small()
+                            .color(t.text_muted),
+                    );
+                    match entry.available.as_deref() {
+                        Some("unlisted") => {
+                            ui.label(
+                                egui::RichText::new(
+                                    "Unavailable on this account: cards keep it, but runs are refused until you use the account that trained it",
+                                )
+                                .small()
+                                .color(t.danger),
+                            );
+                        }
+                        Some("unreadable") => {
+                            ui.label(egui::RichText::new("Its descriptor is missing or doesn't name a Soul ID; train it again").small().color(t.danger));
+                        }
+                        Some("unchecked") => {
+                            ui.label(egui::RichText::new("Not checked on this account yet; Refresh option lists checks it").small().color(t.text_muted));
+                        }
+                        _ => {}
+                    }
+                } else if let Some(provider) = &entry.kept_by {
                     ui.label(egui::RichText::new(format!("Kept by {}: only that account can use it", sheet_view::line(provider))).small().color(t.text_muted));
                 }
                 if entry.canvas == canvas {
@@ -957,6 +1003,7 @@ pub(super) fn show(
                         .clone();
                     let button = ui.add_enabled(verdict.is_ok(), egui::Button::new("Use on selected card"));
                     let button = match &verdict {
+                        Ok(_) if entry.identity => button.on_hover_text("Set the selected SOUL 2 card's Soul ID to this one; one undo step. It doesn't run."),
                         Ok(_) => button.on_hover_text("Wire this style into the selected card's style input; one undo step. It doesn't run."),
                         Err(why) => button.on_disabled_hover_text(why.as_str()),
                     };

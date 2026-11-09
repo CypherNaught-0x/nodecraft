@@ -7,6 +7,10 @@
 # the reply (adaptive thinking counts as output and toward max_tokens). Input tokens are billed on
 # top and are NOT in the quote, except a wired PDF's counted pages, estimated at the mode's
 # `tokens_per_page` and the input rate (#591); the run's measured usage is what the provider charges.
+# Reading (checked 2026-11-03, models overview comparison table): every model here has a 1M-token
+# context window and 128K max output on the synchronous Messages API, declared as `reads` on each
+# text mode. A card's prompt (1 MiB at most) can't come near these windows, so an over-long
+# request is refused by the API itself; the planner's own check only matters for small windows.
 # These models reject sampling parameters (temperature, top_p), so none is offered.
 # max_tokens: 1..128000 (synchronous Messages API max output); the Messages API requires a value,
 # and the default 16000 matches the adapter's DEFAULT_MAX_TOKENS.
@@ -29,6 +33,7 @@ usage = { input = "0.004 USD", output = "0.02 USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -36,6 +41,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -46,6 +52,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 [[model.params.params]]
 name = "max_tokens"
@@ -90,6 +97,7 @@ usage = { input = "0.002 USD", output = "0.01 USD" }
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -97,6 +105,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -107,6 +116,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 [[model.params.params]]
 name = "max_tokens"
@@ -153,6 +163,7 @@ usage = { input = "0.0001 USD", output = "0.0005 USD", long = { above = 100000, 
 id = "text-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 16 images (PNG, JPEG, GIF, WebP) with the prompt: the adapter's MAX_IMAGES cap, under
 # both APIs' per-request limits. Images are billed as input tokens, on top of the quote.
@@ -160,6 +171,7 @@ inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true 
 id = "image-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "image", modality = "image", min = 1, max = 16 }]
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 # Reads up to 5 PDFs with the prompt, as documents: each page's text and picture (#591). At most
 # 100 pages a request, the APIs' document limit. The quote adds 5000 input tokens a page, a high
@@ -170,6 +182,7 @@ id = "document-to-text"
 output = "text"
 inputs = [{ role = "prompt", modality = "text", min = 1, max = 1, inline = true }, { role = "document", modality = "document", min = 1, max = 5 }]
 document = { role = "document", max_pages = 100, tokens_per_page = 5000 }
+reads = { context_tokens = 1000000, max_output_tokens = 128000 }
 
 [[model.params.params]]
 name = "max_tokens"

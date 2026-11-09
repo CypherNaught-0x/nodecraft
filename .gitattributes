@@ -5,3 +5,5 @@ crates/plugin/fixtures/** -text
 examples/plugins/** -text
 # PLY's golden layout is byte-exact; tests create CRLF/bare-CR variants explicitly.
 crates/media/src/mesh/fixtures/original-rgba.ply -text
+# AWS SigV4 test vectors are signed byte for byte (#1163): never convert line endings.
+crates/providers/src/aws/fixtures/** -text

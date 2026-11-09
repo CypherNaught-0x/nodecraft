@@ -294,7 +294,7 @@ impl NodeCraftApp {
             painter.rect_filled(viewport, 0.0, t.marquee_fill);
             // On a sheet (#163) dropped files are sources to wire into rows, never rows.
             let hint = if self.on_sheet() { "Drop to add as sources for the rows' references" } else { "Drop to add as nodes" };
-            painter.text(viewport.center(), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(t.body_size * 1.5), t.text);
+            painter.text(viewport.center(), egui::Align2::CENTER_CENTER, hint, egui::FontId::proportional(t.heading_size), t.text);
         }
         if ui.input(|i| i.raw.dropped_files.is_empty()) {
             return;
