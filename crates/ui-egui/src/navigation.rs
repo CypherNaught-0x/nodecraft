@@ -321,23 +321,22 @@ impl Navigation {
     /// Shared with early canvas-key admission: a fresh map press owns the whole frame,
     /// even when a key event precedes that press in the platform's event list.
     pub(crate) fn press_pending(&self, ctx: &egui::Context, viewport: Rect, pan_enabled: bool, t: &Tokens) -> bool {
-        self.visible
-            && pan_enabled
-            && self.drag.is_none()
-            && ctx.input(|i| {
-                // A batch may include movement after the press. The first primary
-                // press owns this frame; later presses cannot transfer that ownership.
-                i.events
-                    .iter()
-                    .find_map(|event| match event {
-                        egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
-                        _ => None,
-                    })
-                    .is_some_and(|pos| {
-                        let layout = layout(viewport, self.visible, t);
-                        layout.map_shown && layout.map.contains(pos) && self.layer.is_some_and(|layer| ctx.layer_id_at(pos) == Some(layer))
-                    })
+        if !self.visible || !pan_enabled || self.drag.is_some() {
+            return false;
+        }
+        // Read the press first: layer lookup must not re-enter Context inside its input lock.
+        let press = ctx.input(|input| {
+            // A batch may include movement after the press. The first primary press owns
+            // this frame; later presses cannot transfer that ownership.
+            input.events.iter().find_map(|event| match event {
+                egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, .. } => Some(*pos),
+                _ => None,
             })
+        });
+        press.is_some_and(|pos| {
+            let layout = layout(viewport, self.visible, t);
+            layout.map_shown && layout.map.contains(pos) && self.layer.is_some_and(|layer| ctx.layer_id_at(pos) == Some(layer))
+        })
     }
     /// What the minimap draws, in world space: each card the canvas draws (moved by a card drag's
     /// `preview`) and each collapsed field's header (`None`), matching the canvas.

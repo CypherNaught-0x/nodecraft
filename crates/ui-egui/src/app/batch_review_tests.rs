@@ -24,11 +24,15 @@ fn batch(session: &Session, id: NodeId, title: &str, text: &str, x: f32) -> Node
 /// Subjects (a fox, an owl) × times (at dawn, at night) crossed into a text card whose last
 /// combination failed; `pairs` lists which combinations the result holds, in order.
 fn project(pairs: &[(usize, usize)], failed: Option<usize>) -> (Session, CanvasId) {
+    project_with_times(pairs, failed, "at dawn\nat night")
+}
+
+fn project_with_times(pairs: &[(usize, usize)], failed: Option<usize>, times: &str) -> (Session, CanvasId) {
     let canvas = CanvasId::from_bytes([9; 16]);
     let scratch = Session::new(Project::new(ProjectId::from_bytes([8; 16]), "Scratch").unwrap()).unwrap();
     let mut project = Project::new(ProjectId::from_bytes([7; 16]), "Review").unwrap();
     Change::AddCanvas { canvas: Canvas::new(canvas, "Canvas") }.apply(&mut project).unwrap();
-    for node in [batch(&scratch, SUBJECTS, "Subjects", "a fox\nan owl", -300.0), batch(&scratch, TIMES, "Times", "at dawn\nat night", 300.0)] {
+    for node in [batch(&scratch, SUBJECTS, "Subjects", "a fox\nan owl", -300.0), batch(&scratch, TIMES, "Times", times, 300.0)] {
         Change::AddNode { canvas, node }.apply(&mut project).unwrap();
     }
     let listed = |id: NodeId| {
@@ -303,7 +307,10 @@ fn dialogs1116_an_unfocused_tag_filter_leaves_escape_to_the_review() {
 fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
     use egui::accesskit::Role;
     for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
-        let (session, canvas) = project(&CROSS, Some(3));
+        // Three columns put a broad cell interior under Fit all, clear of the grid
+        // scrollbar's expanded hit target at the content's right edge.
+        let pairs = [(0, 0), (0, 2), (0, 1), (1, 0), (1, 1), (1, 2)];
+        let (session, canvas) = project_with_times(&pairs, Some(5), "at dawn\nat night\nat noon");
         let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
         app.theme = theme;
         app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
@@ -316,7 +323,7 @@ fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
             app,
         );
         h.run_steps(8);
-        let cell = h.get_by_role_and_label(Role::Button, "fox night").rect();
+        let cell = h.get_by_role_and_label(Role::Button, "fox noon").rect();
         let fit = h.get_by_role_and_label(Role::Button, "Fit all").rect();
         let overlap = cell.intersect(fit);
         // Probe the edge previously occupied by the overlaid toolbar, not only its label.
@@ -332,6 +339,13 @@ fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
             h.step();
         }
         h.run_steps(4);
+        eprintln!(
+            "after pointer cell={:?} view={:?}->{:?} item={}",
+            h.get_by_role_and_label(Role::Button, "fox noon").rect(),
+            before_view,
+            h.state().view,
+            h.state().batch_review.as_ref().unwrap().item
+        );
         assert_eq!(h.state().batch_review.as_ref().unwrap().item, 1, "the actual grid cell receives the pointer");
         assert_eq!(h.state().view, before_view, "choosing a batch item never fits the canvas");
         assert_eq!(h.state().session.document(), &before_document);
@@ -342,7 +356,7 @@ fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
         assert_eq!(h.ctx.layer_id_at(bottom.center()), Some(crate::floating::layer(egui::Id::new("nodecraft.batch_review"))));
         h.get_by_role_and_label(Role::Button, "Failed").click();
         h.run_steps(4);
-        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 3, "the last grid item remains selectable");
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 5, "the last grid item remains selectable");
         assert_eq!(h.state().view, before_view);
         assert_eq!(h.state().session.document(), &before_document);
     }
