@@ -376,7 +376,11 @@ impl Browser {
     pub fn fault_for_conformance(&mut self, fault: Fault) -> Result<(), Error> {
         let active = self.active.as_mut().ok_or(Error::Unavailable)?;
         match fault {
-            Fault::Timeout => active.deadline = -1.0,
+            Fault::Timeout => {
+                // This probe represents an unanswered request, not a completed background job.
+                active.inbox.borrow_mut().take();
+                active.deadline = -1.0;
+            }
             Fault::MessageError => {
                 let event = Event::new("messageerror").map_err(|_| Error::Unavailable)?;
                 active.guard.worker.dispatch_event(&event).map_err(|_| Error::Unavailable)?;
