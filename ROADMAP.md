@@ -16,7 +16,7 @@ M1 and Future providers each have one declined issue (#135 and #28).
 | 3 | **Generation** — exec, queue, cost, catalog, providers | 🟡 partial with template mappings (#948) and close-out (#374) open | 47/49 |
 | 4 | **Actions** — image/text actions, GPU, live recompute | ✅ done | 14/14 |
 | 5 | **Batch & Techniques** — batch, app mode, library, CLI, release | 🟡 partial with the Batch node complete (#92) and signed release pending (#100) | 28/34 |
-| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | 🟡 partial with provider-trained references (#180) and close-out (#377) open; SOUL 2 scene images (#1043) in review | 11/14 |
+| 6 | **Media editors** — Layer Editor, Mask/Inpaint, Elements | ✅ features complete; documentation refreshed locally, #377 remains open | 13/14 |
 | 7 | **Video & audio** — playback, Timeline, FFmpeg, providers | ✅ done with close-out #378 | 31/31 |
 | 8 | **3D & documents** — viewer, capture, PDF, providers | 🟡 partial; bounded PLY/USDZ and browser preview worker implemented; retained materials (#569) and close-out (#379) open | 10/16 |
 | 9 | **Agent & automation** — MCP, control, agent, serve | 🟡 HTTP serve with signed webhooks (#117), with close-out (#380) open | 7/8 |
@@ -68,7 +68,9 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   A mask editor paints brush masks over an image, expands its canvas and wires an inpaint or
   outpaint generation card from a prompt (#102).
   A Layer Editor card composites its wired images with text and shape layers into one frame;
-  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101). Elements turn
+  its full-screen editor moves, resizes, rotates, snaps and aligns layers (#101), with per-card
+  custom fonts imported on desktop (#548). Masks record their source image and require an
+  explicit refit after an aspect-ratio change of more than 1% (#546). Elements turn
   selected images into a named, reusable subject that prompts mention as `#name`, with a
   generated reference sheet (#104), and are saved to an Elements library every project shares,
   placed from it and updated from it (#552), even when placed under another name. A library
@@ -90,7 +92,10 @@ Run it: `cargo run -p nodecraft`. What the window actually does:
   provider-bound handles: the Library and the Share live panel say they work only on the account
   that trained them, exports never write one out as a file, Use on selected card sets a SOUL 2
   card's Soul ID, techniques using one say so in the shared library, and a project opened on
-  another account keeps every setting and refuses the run before paying (#180, #680).
+  another account keeps every setting and refuses the run before paying (#180, #680). SOUL 2
+  image to image takes one required scene image plus an optional ready Soul ID (#1043); the
+  identity never substitutes for that scene input. Elements supply pictures rather than an identity. See the
+  [media editor guide](docs/media-editors.md) for the workflows and host limits.
   An Export to folder card writes the results wired into it into a folder a person chose on the
   card, with a file-name pattern and a keep/number/replace policy, on the background export worker
   with Cancel; the card never runs with the canvas (#746, completing #98's batch export).
@@ -262,6 +267,11 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
   video/audio actions work in every host.
+- **Media-editor host limits are specific.** Desktop Layer Editor, Mask/Inpaint and Element
+  workflows are implemented. Custom-font picking and persistent cross-project Elements libraries
+  are desktop features; the browser uses saved fonts and a session-only Elements library.
+  Provider identity training and generation need separate quotes, and Soul IDs stay bound to
+  the training account. See [media editing workflows](docs/media-editors.md).
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in
   words, with the selection and @-mentioned nodes as context. `crates/agent` runs the model's tool
   calls over the MCP tools, judging each one first (`Session::impact`): assist mode asks before any
@@ -329,6 +339,13 @@ The near-term order follows the remaining open issues, not an already-finished w
    For the changing priority order, use the [open milestone issues](https://github.com/CypherNaught-0x/nodecraft/milestones).
 
 ## Milestone log
+
+- **2026-11-09** — M6 feature work is complete: Layer Editor and custom fonts, version-bound
+  masks, Image tools, reusable/exportable Elements and account-bound Soul IDs, including SOUL 2
+  scene-image editing (#1043). The local #377 documentation refresh records the host limits and
+  implementation evidence in the [M6 checklist](docs/plan.md#m6-media-editors). GitHub still has
+  #377 open: the completed-only count is 13/14, excluding the unrelated pull request in the
+  milestone; no remote closure is implied.
 
 - **2026-11-06** — a batch inside a technique's own graph fans its technique node out (#1073),
   within the same bounds as a batch on the canvas (1,000 items and 16 batches per chain), every

@@ -774,6 +774,39 @@ follow-up). M3 is still open, so its checklist waits for its own close-out (#374
 - [x] Exit criterion: colour grade, blur and crop chains preview live in the desktop app (#88).
 - [x] Close the M4 documentation follow-up (#375).
 
+### M6 media editors
+
+M6's feature work is complete. The following checklist records implementation and host wiring;
+its documentation close-out (#377) is prepared locally, while the GitHub issue remains open.
+The 2026-11-09 issue snapshot has 13 completed issues out of 14, with #377 the only open issue.
+
+- [x] Layer Editor: wired image layers, transforms, alignment, visibility, locking, ordering,
+  text and shapes, rendered by the same compositor used by the editor (#101); custom per-card
+  fonts imported on desktop and retained with copied cards and Techniques (#548).
+- [x] Mask/Inpaint and outpaint: brush strokes, canvas margins and a command that creates a
+  correctly wired generation card (#102). Source-image bindings warn on changed content and
+  require an explicit refit after an aspect-ratio change of more than 1% (#546).
+- [x] Image tools add supported remove-background, upscale, expand, split, grade, Element and
+  3D cards through commands, with disabled reasons for unavailable tools (#103).
+- [x] Elements: up to eight reference images, generated sheets and compatible prompt mentions
+  (#104); save/place/update across desktop projects (#552), with rename, provenance, sharing
+  flags and explicit bundle import/export (#765).
+- [x] Provider-trained identities remain account-bound, distinguishable from portable reference
+  images and LoRAs, including Library/Share/export behaviour (#180). Higgsfield Soul ID training
+  (#680) and SOUL 2 image-to-image with its required scene image (#1043) are implemented with
+  readiness checks and fixture contracts; paid live training is not a CI requirement.
+- [x] Exit criterion: composite → downstream image workflow and Element reference workflows are
+  wired in the app. Evidence includes the [Layer Editor UI tests](../crates/ui-egui/src/app/layer_editor_tests.rs),
+  [compositor execution tests](../crates/engine/tests/layers101.rs),
+  [mask UI tests](../crates/ui-egui/src/app/mask_editor_tests.rs),
+  [quoted mask execution tests](../crates/engine/tests/mask_edit102.rs),
+  [Element UI tests](../crates/ui-egui/src/app/elements_tests.rs),
+  [Element library UI tests](../crates/ui-egui/src/app/element_library_view_tests.rs) and
+  [reference-routing tests](../crates/exec/src/mentions/tests.rs). These deterministic proofs
+  establish editing, wiring and planning; they do not establish live output from every paid model.
+- [x] Local documentation close-out (#377): current workflows and platform limits are in
+  [media-editors.md](media-editors.md). No GitHub issue or milestone state is changed by this refresh.
+
 ### M7 video and audio
 
 M7's feature and exit-criterion checklist:

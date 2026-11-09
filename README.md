@@ -57,8 +57,10 @@ the inputs, settings and connections beside the work instead of hiding them in a
   model can write or fix one through an ordinary priced card. The Plugins panel checks, installs
   and grants `.ncraft-plugin` packages; a granted text-action package adds its actions as cards.
 - **Compose and finish**: a Layer Editor combines wired images, text and shapes; Mask/Inpaint
-  paints masks and prepares inpaint/outpaint cards. Image tools add wired action cards in one
-  undo step. Elements keep named image references reusable across projects.
+  paints masks, checks whether their source changed, and prepares inpaint/outpaint cards. Image
+  tools add wired action cards in one undo step. Elements keep named image references reusable
+  across projects; provider-trained Soul IDs remain bound to their Higgsfield account. See
+  [media editing workflows](docs/media-editors.md) for fonts, masks, Elements and their limits.
 - **Work with video and sound**: scrub video cards, play sound cards and render a Timeline with
   picture tracks, fades, crossfades, mixed audio and captions. The Timeline can export its edit
   and source media as FCPXML in a ZIP. Native playback and rendering use installed
@@ -280,7 +282,7 @@ and checklists for adding commands, node kinds and providers.
 | M3 | Generation engine, providers, history, cost | desktop host wired; remaining modes and issues open |
 | M4 | Actions, live recompute, custom shaders | done: local actions, result reuse, shader cards and text-action plugins work |
 | M5 | Batch, Techniques, CLI, first release | partial; reuse surfaces shipped in part, first signed release open |
-| M6 | Layer and mask editors, Elements | partial |
+| M6 | Layer and mask editors, Elements | features complete; documentation refreshed locally, #377 remains open |
 | M7 | Video and audio playback, Timeline, providers | done. Four clips with fades and sound render through the Timeline |
 | M8 | 3D viewer, capture, PDF, providers | partial |
 | M9 | Agent, MCP, control, serve | desktop agent and command-line automation available with follow-up work open |
