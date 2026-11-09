@@ -208,16 +208,18 @@ fn shared_close_requests_expire_and_never_execute_the_tool_body() {
     let id = egui::Id::new("test.closable.tool");
     let t = crate::theme::ThemeKind::Dark.tokens();
     let mut open = true;
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let ctx = ui.ctx();
         crate::floating::request_close(ctx, id);
         crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t)
             .open(&mut open)
             .show(ctx, |_| panic!("a close request cannot run a tool action"));
     });
     assert!(!open, "the caller receives its ordinary closed flag");
-    let _ = ctx.run(egui::RawInput::default(), |ctx| crate::floating::request_close(ctx, id));
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| crate::floating::request_close(ui.ctx(), id));
     open = true;
-    let _ = ctx.run(egui::RawInput::default(), |ctx| {
+    let _ = ctx.run_ui(egui::RawInput::default(), |ui| {
+        let ctx = ui.ctx();
         crate::floating::panel(ctx, "Example tool", id, crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |_| ());
     });
     assert!(open, "an unrendered close request cannot close a later reopening");
