@@ -30,7 +30,12 @@ fn long_notices1110_keep_details_and_controls_inside_small_windows() {
             // Scroll within the details. Reading a long error neither discards it nor runs its action.
             let at = label.rect().min + egui::vec2(5.0, 5.0);
             h.hover_at(at);
-            h.event(egui::Event::MouseWheel { unit: egui::MouseWheelUnit::Point, delta: egui::vec2(0.0, -10_000.0), modifiers: egui::Modifiers::NONE });
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: egui::vec2(0.0, -10_000.0),
+                modifiers: egui::Modifiers::NONE,
+            });
             h.run_steps(5);
             assert_eq!(h.state().notice(), Some(text.as_str()));
             if let Some(folder) = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE") {
