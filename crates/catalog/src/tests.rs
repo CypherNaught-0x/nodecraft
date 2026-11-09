@@ -475,6 +475,7 @@ fn the_picker_enables_models_that_take_what_is_wired_and_explains_the_rest() {
             ("tripo.image-to-3d", false),
             ("tripo.multiview-to-3d", false),
             ("tripo.text-to-3d", false),
+            ("vertex-llm.gemini-3.8-flash", false),
             ("xai.grok-4.7", false),
             ("xai.grok-4.3", false)
         ]
@@ -1333,4 +1334,28 @@ default = { type = "unsigned", value = "1024" }"#;
     ] {
         assert!(Catalog::from_toml(&model(&pricing, height)).is_err(), "{pricing} with {height:?}");
     }
+}
+
+#[test]
+fn vertex_chat_catalog_keeps_cloud_pricing_unknown_and_caps_output_tokens() {
+    let catalog = Catalog::builtin().unwrap();
+    assert!(catalog.get("vertex-llm.gemini-2.5-flash").is_none(), "retired Cloud model is not offered");
+    let model = catalog.get("vertex-llm.gemini-3.8-flash").unwrap();
+    assert_eq!(model.provider, "vertex-llm");
+    assert_eq!(model.provider_model, "gemini-3.8-flash");
+    assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD });
+    assert!(model.usage.is_none(), "Vertex prices are distinct from the Gemini Developer API");
+    let defaults = model.effective_params(&ParamValues::new(), true).unwrap();
+    assert_eq!(defaults.get("max_tokens"), Some(&Value::Integer(nodecraft_types::Integer(4096))));
+    assert_eq!(model.quote(&defaults).unwrap(), None);
+    for count in [1, 65536] {
+        let params = ParamValues::from([("max_tokens".into(), Value::Integer(nodecraft_types::Integer(count)))]);
+        assert_eq!(model.quote(&params).unwrap(), None);
+    }
+    for count in [0, 65537] {
+        let params = ParamValues::from([("max_tokens".into(), Value::Integer(nodecraft_types::Integer(count)))]);
+        assert!(model.quote(&params).is_err());
+    }
+    assert!(Wiring::new(Modality::Text).with_inline_prompt().fit(model).is_ok());
+    assert!(Wiring::new(Modality::Image).with_inline_prompt().fit(model).is_err());
 }

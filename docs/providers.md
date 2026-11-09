@@ -2662,3 +2662,36 @@ original procedural photos/audio and the existing authored blue-and-gold MP4 fix
 these are not HeyGen output or proof of live avatar quality. No paid generation or inference
 probe was performed. The ignored live smoke requires explicit acknowledgement of unknown
 cost, a fal key and user-supplied photo/video plus WAV paths; it never runs in ordinary CI.
+
+## Vertex AI chat (`vertex-llm` feature, #1151)
+
+`vertex-llm.gemini-3.8-flash` uses the native Gemini GenerateContent REST wire through
+`LlmClient`, with whole replies, streamed text, images/PDFs and function calls. Paste a Google
+Cloud service-account key file under **google-cloud** in API keys; it is the same compact
+keychain account used by Veo and Gemini images. Enable the Vertex AI API and grant Vertex AI
+User in that account's project. The built-in card uses the global endpoint; custom hosts can
+construct `LlmClient::vertex` with a regional location. Requests always use the account's own
+project and the fixed Google publisher route.
+
+The REST request/reply schemas match Gemini's GenerateContent surface (contents,
+systemInstruction, function declarations/responses, candidates and usageMetadata); the host
+changes the URL and authenticates with a short-lived OAuth token. The account and token never
+enter rig: its wire receives an empty key and `RigHttp` adds a secret Authorization header.
+Keep the function declarations when continuing a tool turn; missing declarations are refused
+before a request rather than silently dropping tool history. Original reply parts keep thought
+signatures for later tool turns. Output usage includes
+thinking tokens. Ambiguous paid requests are never automatically replayed; authorization
+failure drops the cached token for the next explicit request. Server error text is not echoed.
+
+Current Vertex prices were not verified, so this catalog entry reports an unknown cost
+(`by_usage`), without borrowing the separately billed Gemini Developer API prices. Express-mode
+API keys are not supported: the existing service-account path works with the same project/IAM
+setup as other Google Cloud cards and avoids another credential and limited model surface.
+Browser requests remain subject to Google's CORS policy; fixture/wasm checks do not establish
+live browser access. No live call was made during this implementation.
+
+Offline fixtures exercise whole replies, streams, token reuse/refresh, invalid routes, tool
+round trips and signed-part replay. For an explicitly authorized live smoke test, set
+`NODECRAFT_LIVE_VERTEX=1` and `NODECRAFT_LIVE_VERTEX_KEY_FILE` to a service-account JSON file,
+then run the `live_vertex` test in `live_llm` with `http,vertex-llm` enabled. Optional
+`NODECRAFT_LIVE_VERTEX_REGION` and `NODECRAFT_LIVE_VERTEX_MODEL` select the route and model.

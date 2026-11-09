@@ -79,7 +79,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedance" => Some("seedream"),
         "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
-        "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
+        "google-veo" | "google-tts" | "google-gemini-images" | "vertex-llm" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
@@ -336,6 +336,15 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             let auth = bedrock::auth(env.keys, nodecraft_providers::aws::system_seconds())?;
             Arc::new(LlmClient::bedrock_chat(region, auth, env.http.clone()).map_err(adapter_error)?)
         }
+        "vertex-llm" => Arc::new(
+            LlmClient::vertex(
+                "global",
+                &needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?,
+                env.http.clone(),
+                nodecraft_providers::google_cloud::system_clock(),
+            )
+            .map_err(adapter_error)?,
+        ),
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())

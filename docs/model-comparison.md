@@ -173,9 +173,13 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+| `vertex-llm.gemini-3.8-flash` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash) | 2026-11-09 |
 | `xai.grok-4.3` | [Documentation](https://docs.x.ai/developers/pricing) | 2026-11-08 |
 | `xai.grok-4.7` | [Documentation](https://docs.x.ai/developers/models) | 2026-11-08 |
 
 MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
 Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
 scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).
+
+The Vertex chat catalog offers Gemini 3.8 Flash on the global route. Google's Cloud documentation
+marks Gemini 2.5 Flash retired on 2026-10-20; Gemini Developer API availability is separate.

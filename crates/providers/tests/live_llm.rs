@@ -231,3 +231,19 @@ async fn live_groq() {
 async fn live_xai() {
     live_vendor("XAI", Endpoint::xai, "grok-4.3").await;
 }
+
+/// Explicitly opt-in: one streamed request in the service account's own project, billed there.
+#[cfg(feature = "vertex-llm")]
+#[tokio::test(flavor = "current_thread")]
+async fn live_vertex() {
+    if !enabled("VERTEX") {
+        return;
+    }
+    let file = std::env::var("NODECRAFT_LIVE_VERTEX_KEY_FILE").unwrap();
+    let secret = nodecraft_providers::google_cloud::compact(&std::fs::read_to_string(file).unwrap()).unwrap();
+    let region = std::env::var("NODECRAFT_LIVE_VERTEX_REGION").unwrap_or_else(|_| "global".into());
+    let model = std::env::var("NODECRAFT_LIVE_VERTEX_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".into());
+    let client = LlmClient::vertex(&region, &secret, Arc::new(ReqwestHttp::new().unwrap()), nodecraft_providers::google_cloud::system_clock()).unwrap();
+    let reply = client.chat_stream(&ask(&model), &mut |_| {}).await.unwrap();
+    assert!(reply.text.to_lowercase().contains("pong"));
+}
