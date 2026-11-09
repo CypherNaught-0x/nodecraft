@@ -190,7 +190,7 @@ impl NodeCraftApp {
         let result = self.session.dispatch("library.save_assets", &json!({"items": items}))?;
         self.library.browsers.clear_picks();
         self.library.browsers.saved_stamp = self.library.browsers.saved_stamp.wrapping_add(1);
-        self.notice = Some(saved_summary(&result));
+        self.notices.success(saved_summary(&result));
         Ok(())
     }
 
@@ -220,7 +220,7 @@ impl NodeCraftApp {
     pub(super) fn repair_saved(&mut self) -> Result<(), Error> {
         let result = self.session.dispatch("library.repair_saved", &json!({}))?;
         self.library.browsers.saved_stamp = self.library.browsers.saved_stamp.wrapping_add(1);
-        self.notice = Some(if result["repaired"] == true {
+        self.notices.success(if result["repaired"] == true {
             let (entries, kept) = (result["entries"].as_u64().unwrap_or_default(), result["kept"].as_u64().unwrap_or_default());
             let kept = if kept > 0 { format!("; {kept} it can't use were kept") } else { String::new() };
             format!(
@@ -239,7 +239,7 @@ impl NodeCraftApp {
         self.library.browsers.clear_picks();
         self.library.browsers.saved_stamp = self.library.browsers.saved_stamp.wrapping_add(1);
         let removed = result["removed"].as_u64().unwrap_or_default();
-        self.notice = Some(if removed == 1 { "Removed 1 file from My library.".into() } else { format!("Removed {removed} files from My library.") });
+        self.notices.success(if removed == 1 { "Removed 1 file from My library.".into() } else { format!("Removed {removed} files from My library.") });
         Ok(())
     }
 }

@@ -92,7 +92,8 @@ pub enum Runtime {
     /// provider broker sends itself, with the host's credentials, transport, quote and budget.
     /// Nothing foreign executes; it reaches the network only under a grant of its capabilities.
     ProviderOperations { schema: u32 },
-    /// A sandboxed module (a later phase; the contract fixes its shape now).
+    /// A module package: it parses, so it gets a precise refusal, but never installs under this
+    /// contract (#1071, `docs/decisions/2026-11-06-module-packages-refused.md`).
     RustWasm { module: InventoryPath },
 }
 

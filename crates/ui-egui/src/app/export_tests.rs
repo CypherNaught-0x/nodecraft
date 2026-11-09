@@ -55,7 +55,7 @@ pub(super) fn finish(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     while h.state().export_pending() {
         h.step();
-        assert!(std::time::Instant::now() < deadline, "export completes: {:?}", h.state().notice);
+        assert!(std::time::Instant::now() < deadline, "export completes: {:?}", h.state().notice());
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     h.run();
@@ -75,11 +75,11 @@ fn the_chip_menu_exports_a_result_where_the_dialog_says() {
 
     export(&mut h, None);
     assert!(!path.exists(), "a cancelled dialog writes nothing");
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 
     export(&mut h, Some(path.clone()));
-    assert_eq!(std::fs::read(&path).unwrap(), png, "{:?}", h.state().notice);
-    assert_eq!(h.state().notice.as_deref(), Some("Exported take.png."));
+    assert_eq!(std::fs::read(&path).unwrap(), png, "{:?}", h.state().notice());
+    assert_eq!(h.state().notice(), Some("Exported take.png."));
     // The dialog asked before replacing, so a file there is replaced.
     std::fs::write(&path, b"older").unwrap();
     export(&mut h, Some(path.clone()));
@@ -88,7 +88,7 @@ fn the_chip_menu_exports_a_result_where_the_dialog_says() {
 
     // A folder that went away says so instead of writing elsewhere.
     export(&mut h, Some(dir.path().join("gone").join("take.png")));
-    assert_eq!(h.state().notice.as_deref(), Some("the export folder doesn't exist"));
+    assert_eq!(h.state().notice(), Some("the export folder doesn't exist"));
 }
 
 #[test]
@@ -166,13 +166,13 @@ fn saving_every_item_numbers_them_in_a_folder_past_files_already_there() {
         finish(h);
     };
     save_all(&mut h);
-    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(h.state().notice(), Some("Exported 2 files."));
     assert_eq!(std::fs::read(dir.path().join("result-1.png")).unwrap(), png);
     assert_eq!(std::fs::read(dir.path().join("result-2.png")).unwrap(), b"mine", "a folder pick never replaces a file");
     assert_eq!(std::fs::read(dir.path().join("result-3.png")).unwrap(), png);
     // Saving into the same folder again adds files after the ones there.
     save_all(&mut h);
-    assert_eq!(h.state().notice.as_deref(), Some("Exported 2 files."));
+    assert_eq!(h.state().notice(), Some("Exported 2 files."));
     assert_eq!(std::fs::read(dir.path().join("result-5.png")).unwrap(), png);
     assert_eq!(super::export::numbered("clip", 3), "clip-3");
 }
@@ -333,7 +333,7 @@ fn a_pending_export_keeps_canvas_keys_live_and_its_real_cancel_button_preserves_
         runner.0.lock().unwrap().take().unwrap().run();
         finish(&mut h);
         assert_eq!(std::fs::read(&path).unwrap(), b"existing file");
-        assert_eq!(h.state().notice.as_deref(), Some("Export cancelled; no file was written."));
+        assert_eq!(h.state().notice(), Some("Export cancelled; no file was written."));
         assert_eq!(h.state().session.revision(), revision + 1, "Cancel never leaks a canvas edit");
     }
 }

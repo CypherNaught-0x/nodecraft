@@ -65,6 +65,8 @@ pub mod openai_images;
 mod provider;
 #[cfg(feature = "replicate")]
 pub mod replicate;
+#[cfg(feature = "llm")]
+mod rig_http;
 #[cfg(feature = "runway")]
 pub mod runway;
 pub mod secrets;

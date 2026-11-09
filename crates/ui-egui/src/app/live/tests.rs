@@ -97,7 +97,7 @@ fn a_failing_action_is_reported_once_and_not_retried_until_an_edit() {
         .unwrap();
     let mut h = Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     settle(&mut h, |app| app.live.failed.contains_key(&split));
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("separator")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("separator")));
     let revision = h.state().session.revision();
     for _ in 0..20 {
         h.step();
@@ -492,12 +492,12 @@ fn update_card_brings_an_older_card_to_its_plugins_version() {
     assert!(h.query_by_label_contains("This card needs").is_none(), "its plugin is installed, at another version");
     h.get_by_label("Update card").click();
     // The click starts a live round whose worker repaints when it ends (#791).
-    settle(&mut h, |app| app.notice.is_some());
+    settle(&mut h, |app| app.notice().is_some());
     h.step();
     let node = h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&shout).unwrap().clone();
     assert_eq!(node.inputs.iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["phrase"]);
     assert_eq!(PluginLock::of(&node).unwrap().version, "1.1.0");
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Updated the card.") && n.contains("words")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Updated the card.") && n.contains("words")), "{:?}", h.state().notice());
     assert!(h.query_by_label("Update card").is_none(), "a current card offers no update");
 }
 

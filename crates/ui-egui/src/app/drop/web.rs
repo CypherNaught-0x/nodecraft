@@ -102,7 +102,7 @@ impl NodeCraftApp {
             return;
         };
         if !pending.current(self) {
-            self.notice = Some("The document changed while reading files; nothing was added. Drop them again.".into());
+            self.notices.warning("The document changed while reading files; nothing was added. Drop them again.");
             return;
         }
         let other_owner = crate::canvas::text_input_focused(ctx)
@@ -119,7 +119,7 @@ impl NodeCraftApp {
             || self.comments.drag.is_some()
             || self.comments.gesture_cancelled;
         if !other_owner && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
-            self.notice = Some("File reading was cancelled; nothing was added.".into());
+            self.notices.info("File reading was cancelled; nothing was added.");
             return;
         }
         if !pending.done() {
@@ -127,14 +127,14 @@ impl NodeCraftApp {
             // The deadline limits an unfinished read, not already-completed bytes.
             let now = ctx.input(|i| i.time);
             if !now.is_finite() || !pending.deadline.is_finite() || now >= pending.deadline {
-                self.notice = Some("The browser didn't finish reading files; nothing was added. Drop them again.".into());
+                self.notices.error("The browser didn't finish reading files; nothing was added. Drop them again.");
                 return;
             }
             self.web_drop = Some(pending);
             return;
         }
         let Ok(reads) = pending.reads.try_borrow() else {
-            self.notice = Some("File reading failed unexpectedly; nothing was added.".into());
+            self.notices.error("File reading failed unexpectedly; nothing was added.");
             return;
         };
         let mut skipped = pending.skipped.clone();
@@ -165,7 +165,7 @@ impl NodeCraftApp {
                 ids::node_id(self.session.document(), ("drop", self.session.revision(), index, pending.position.x.to_bits(), pending.position.y.to_bits()))
                     .filter(|id| !new_ids.contains(id));
             let Some(id) = fresh else {
-                self.notice = Some("Couldn't allocate node ids; try again.".into());
+                self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                 return;
             };
             new_ids.push(id);
@@ -193,9 +193,9 @@ impl NodeCraftApp {
                 }
                 skipped.append(&mut imported.skipped);
                 imported.skipped = skipped;
-                self.notice = imported.notice();
+                self.notices.set(crate::notices::NoticeKind::Warning, imported.notice());
             }
-            Err(e) => self.notice = Some(e.message),
+            Err(e) => self.notices.report(e),
         }
     }
 
@@ -203,7 +203,7 @@ impl NodeCraftApp {
     #[cfg(target_arch = "wasm32")]
     pub(super) fn start_web_drop(&mut self, ctx: &egui::Context, files: &[egui::DroppedFileHandle], position: Position, step: f32) {
         if self.web_drop.is_some() {
-            self.notice = Some("File reading is still finishing. Try again in a moment.".into());
+            self.notices.warning("File reading is still finishing. Try again in a moment.");
             return;
         }
         let admissions = admit(files.iter().take(MAX_FILES).map(|file| file.web_file().map(|f| f.size())));
@@ -252,7 +252,7 @@ impl NodeCraftApp {
             deadline: ctx.input(|i| i.time) + READ_SECONDS,
             _readers: readers,
         });
-        self.notice = Some("Reading dropped files…".into());
+        self.notices.info("Reading dropped files…");
     }
 }
 

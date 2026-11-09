@@ -122,7 +122,7 @@ impl NodeCraftApp {
     pub(super) fn run_whole_command(&mut self, id: &str) {
         let kind = if id == "run.workflow" { super::generate::RunKind::Workflow } else { super::generate::RunKind::Changed };
         if let Err(error) = self.request_whole(kind) {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
     pub(super) fn palette_command_params(&self, id: &str) -> serde_json::Value {
@@ -144,8 +144,8 @@ impl NodeCraftApp {
         let result = self.session.dispatch(id, &self.palette_command_params(id));
         let Some(mut stamp) = stamp else {
             match result {
-                Ok(_) => self.notice = None,
-                Err(error) => self.notice = self.notices.error(error.message),
+                Ok(_) => self.notices.clear(),
+                Err(error) => self.notices.report(error),
             }
             return;
         };
@@ -159,7 +159,7 @@ impl NodeCraftApp {
             Err(error) => {
                 let mut message = String::new();
                 if message.try_reserve_exact(MAX_TEXT).is_err() {
-                    self.notice = self.notices.error(MALFORMED);
+                    self.notices.error(MALFORMED);
                     return;
                 }
                 let _ = append(&mut message, "Staleness check failed (");
@@ -191,7 +191,7 @@ impl NodeCraftApp {
                     bytes += c.len_utf8();
                     let _ = normalized(&mut message, c.encode_utf8(&mut [0; 4]));
                 }
-                self.notice = self.notices.error(message);
+                self.notices.error(message);
                 return;
             }
         };
@@ -200,7 +200,7 @@ impl NodeCraftApp {
                 stamp.text = text;
                 self.stale_snapshot = Some(stamp);
             }
-            Err(message) => self.notice = self.notices.with_action(notices::NoticeKind::Error, message, "Check again", "canvas.stale"),
+            Err(message) => self.notices.error(message),
         }
     }
     pub(super) fn show_notices(&mut self, ui: &egui::Ui, viewport: Rect, t: &Tokens) {
@@ -209,42 +209,41 @@ impl NodeCraftApp {
         {
             self.stale_snapshot = Some(snapshot);
         }
-        // A change of the latest-message slot made without the typed helpers still shows (#1110).
-        self.notices.sync(&self.notice);
         let hidden = self
             .editors
             .values()
             .any(|editor| editor.hidden_dirty)
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
+        let escape = self.notice_escape.take();
         // A pending drop shows its own progress in this corner.
         if (!self.notices.is_empty() || hidden.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
-            self.notices.begin(ui.ctx(), &mut self.notice);
             let mut dismiss_check = false;
-            let mut shown = notices::Shown::default();
+            let mut action = None;
             let notice_id = ui.id().with("notice");
             let previous_size = egui::AreaState::load(ui.ctx(), notice_id).map(|state| state.rect().size());
+            let width = t.notice_width.min((viewport.width() - 2.0 * t.card_padding).max(0.0));
             let area = egui::Area::new(notice_id)
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                        ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
-                        shown = self.notices.show(ui, t);
-                        // The hidden-draft reminder is a standing state, not a message: it shows
-                        // when no notice is up, and its button stays either way.
-                        if let Some(hidden) = hidden
-                            && self.notices.is_empty()
-                        {
-                            ui.label(hidden);
-                        }
-                        if hidden.is_some() && ui.button("Discard drafts").clicked() {
-                            self.editors.clear();
-                        }
-                        if let Some(snapshot) = &self.stale_snapshot {
-                            ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
-                            dismiss_check = ui.small_button("Dismiss check").clicked();
-                        }
-                    });
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = t.control_gap;
+                    action = self.notices.show(ui, t, escape).action;
+                    if hidden.is_some() || self.stale_snapshot.is_some() {
+                        crate::theme::panel_frame(t).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if let Some(hidden) = hidden {
+                                ui.add(egui::Label::new(hidden).wrap());
+                                if ui.button("Discard drafts").clicked() {
+                                    self.editors.clear();
+                                }
+                            }
+                            if let Some(snapshot) = &self.stale_snapshot {
+                                ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
+                                dismiss_check = ui.small_button("Dismiss check").clicked();
+                            }
+                        });
+                    }
                 });
             // A changed bottom-anchored area needs a settled frame before its controls are hit-tested.
             if previous_size != Some(area.response.rect.size()) {
@@ -253,20 +252,14 @@ impl NodeCraftApp {
             if dismiss_check {
                 self.stale_snapshot = None;
             }
-            for id in shown.dismissed {
-                self.notices.dismiss(id, &mut self.notice);
-            }
-            if let Some((id, command)) = shown.action {
-                self.notices.dismiss(id, &mut self.notice);
-                self.dispatch_live_palette_command(ui.ctx(), command);
+            if let Some(command) = action {
+                self.run_palette_command(ui.ctx(), &command);
             }
             for (open, id) in [(self.palette.is_some(), "quick_add_palette"), (self.turn_into.is_some(), "turn_into_menu")] {
                 if open {
                     ui.ctx().move_to_top(egui::LayerId::new(egui::Order::Foreground, egui::Id::new(id)));
                 }
             }
-        } else {
-            self.notices.idle();
         }
     }
 }

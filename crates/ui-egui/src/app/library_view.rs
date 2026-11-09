@@ -506,8 +506,8 @@ impl NodeCraftApp {
             self.library.listed = None;
         }
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = self.notices.error(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

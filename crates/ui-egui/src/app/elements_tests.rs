@@ -50,7 +50,7 @@ fn the_menu_makes_one_element_from_the_selected_images_in_reading_order() {
     h.get_by_label("Make Element from selection").click();
     h.run();
     let made = canvas(&h).nodes().values().find(|n| n.kind == nodecraft_nodes::element::ID).expect("an Element").clone();
-    assert_eq!(nodecraft_nodes::element::name(&made), Some("element"), "{:?}", h.state().notice);
+    assert_eq!(nodecraft_nodes::element::name(&made), Some("element"), "{:?}", h.state().notice());
     let mut wires: Vec<_> = canvas(&h).edges().values().filter(|e| e.to.node == made.id).collect();
     wires.sort_by_key(|e| e.order);
     assert_eq!(wires.iter().map(|e| e.from.node).collect::<Vec<_>>(), vec![LEFT, RIGHT], "left to right");

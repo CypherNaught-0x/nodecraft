@@ -234,7 +234,7 @@ fn unscoped_palette_helpers_never_grant_live_navigation_capabilities() {
             "{id} cannot be offered by the unscoped palette filter"
         );
         h.state_mut().dispatch_palette_command(id);
-        assert!(h.state().notice.is_some(), "raw palette dispatch also refuses {id}");
+        assert!(h.state().notice().is_some(), "raw palette dispatch also refuses {id}");
     }
     assert!(h.state().navigation.visible, "minimap stayed visible");
     assert!(h.state().prompt_overlays, "overlays stayed visible");

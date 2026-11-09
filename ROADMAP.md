@@ -252,7 +252,8 @@ The honest list, because "it's in the repo" and "you can use it" are different c
   actions run on the GPU in the desktop app when there is one, the CPU reference otherwise (#1058);
   the CLI and the browser use the CPU. Custom shaders need a GPU. Result caching for
   model cards is switched on the card (#1059). Module
-  (`rust_wasm`) plugin packages are refused at install; provider-template plugins are M5 work
+  (`rust_wasm`) plugin packages are refused at install, as a final decision for this plugin
+  contract: NodeCraft runs no code a package ships (#1071); provider-template plugins are M5 work
   whose tracker (#174) is still open. This is not evidence that all paid provider operations or
   video/audio actions work in every host.
 - **The in-canvas agent works in the desktop app.** Cmd+/ opens the agent sidebar (#114): ask in

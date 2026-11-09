@@ -480,7 +480,7 @@ impl NodeCraftApp {
             }
         }
         if let Some(said) = said {
-            self.notice = Some(said);
+            self.notices.error(said);
         }
     }
 
@@ -497,7 +497,7 @@ impl NodeCraftApp {
                         {
                             shared.live = false;
                         }
-                        self.notice = Some(format!("Couldn't share live: {}", error.message));
+                        self.notices.error(format!("Couldn't share live: {}", error.message));
                     }
                 }
                 Ask::Join(link) => {
@@ -506,7 +506,7 @@ impl NodeCraftApp {
                     #[cfg(target_arch = "wasm32")]
                     let result = self.join_here(ctx, link);
                     if let Err(error) = result {
-                        self.notice = Some(format!("Couldn't join: {}", error.message));
+                        self.notices.error(format!("Couldn't join: {}", error.message));
                     }
                 }
                 Ask::Stop => {
@@ -566,7 +566,7 @@ impl NodeCraftApp {
             live.status = report.status;
             live.dirty |= report.dirty;
             if let Some(notice) = report.notices.into_iter().last() {
-                self.notice = Some(notice);
+                self.notices.error(notice);
             }
             plans.extend(report.plan);
         }
@@ -675,7 +675,7 @@ impl NodeCraftApp {
         if let Some((id, params)) = command
             && let Err(error) = self.session.dispatch(id, &params)
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
 }

@@ -571,11 +571,11 @@ impl NodeCraftApp {
     pub(super) fn layer_dispatch(&mut self, command: &str, params: &Json) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 true
             }
             Err(error) => {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -601,7 +601,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| serde_json::from_value::<Listing>(v).map_err(|_| "The layers can't be read.".to_owned())) {
                 Ok(listing) => editor.listing = Some((revision, listing)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -658,7 +658,7 @@ impl NodeCraftApp {
 
         let mut commands: Commands = Vec::new();
         let mut close = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest_text().map(str::to_owned);
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
@@ -727,7 +727,7 @@ impl NodeCraftApp {
         };
         let lineage = editor.picking_lineage.take();
         if !lineage.as_ref().is_some_and(|lineage| self.session.is_current_document(lineage)) {
-            self.notice = Some("Another project opened; choose the font file again.".into());
+            self.notices.warning("Another project opened; choose the font file again.");
             return false;
         }
         match picking.poll(ctx) {
@@ -736,10 +736,10 @@ impl NodeCraftApp {
                 editor.picking_lineage = lineage;
             }
             Polled::Cancelled => {}
-            Polled::Failed(message) => self.notice = Some(message),
+            Polled::Failed(message) => self.notices.error(message),
             Polled::Read(layer, bytes) => {
                 if layer.as_ref().is_some_and(|id| !listing.layers.iter().any(|layer| &layer.id == id && matches!(&layer.content, Content::Text { .. }))) {
-                    self.notice = Some("The text layer changed while the font was loading; choose the font file again.".into());
+                    self.notices.warning("The text layer changed while the font was loading; choose the font file again.");
                     return false;
                 }
                 match match &editor.target {
@@ -751,13 +751,13 @@ impl NodeCraftApp {
                     Ok(name) => {
                         editor.font_files.forget_missing();
                         self.deck_thumbnails.forget_missing_fonts();
-                        self.notice = None;
+                        self.notices.clear();
                         if let Some(layer) = layer {
                             commands.push(update(editor, &layer, json!({"content": {"font": name}})));
                         }
                         return true;
                     }
-                    Err(error) => self.notice = self.notices.error(error.message),
+                    Err(error) => self.notices.report(error),
                 }
             }
         }

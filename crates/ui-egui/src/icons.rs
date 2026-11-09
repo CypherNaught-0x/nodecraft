@@ -142,10 +142,10 @@ impl Icon {
             Self::Cloud => "Providers",
             Self::Plug => "Automation",
             Self::Info => "Information",
-            Self::Success => "Success",
+            Self::Success => "Done",
             Self::Warning => "Warning",
             Self::Error => "Error",
-            Self::Close => "Dismiss",
+            Self::Close => "Close",
         }
     }
 

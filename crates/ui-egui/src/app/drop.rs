@@ -74,11 +74,11 @@ impl NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     pub(super) fn adopt_clipboard_files(&mut self, files: ClipboardFiles, target: super::paste_media::Target) {
         if !target.current(self) {
-            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            self.notices.warning("The document changed while reading the clipboard; nothing was added. Paste again.");
             return;
         }
         if self.drop_acquisition.pending.is_some() || self.drop_pointer_owned() {
-            self.notice = Some("File reading is already in progress; paste again after it finishes.".into());
+            self.notices.warning("File reading is already in progress; paste again after it finishes.");
             return;
         }
         self.drop_acquisition.pending = Some(Pending {
@@ -91,7 +91,7 @@ impl NodeCraftApp {
             position: target.position,
             step: target.step,
         });
-        self.notice = Some("Reading copied files…".into());
+        self.notices.info("Reading copied files…");
     }
     pub(super) fn drop_pointer_owned(&self) -> bool {
         #[cfg(not(target_arch = "wasm32"))]
@@ -106,13 +106,13 @@ impl NodeCraftApp {
     #[cfg(not(target_arch = "wasm32"))]
     fn import_drop(&mut self, batch: native::Batch, pending: &Pending, movies: &[nodecraft_engine::import::ProbedMovie]) {
         if !pending.current(self) || batch.check().is_err() {
-            self.notice = Some("The pending drop no longer belongs to this document; nothing was added.".into());
+            self.notices.warning("The pending drop no longer belongs to this document; nothing was added.");
             return;
         }
         let mut incoming = Vec::new();
         let mut new_ids = Vec::new();
         if incoming.try_reserve_exact(batch.files.len()).is_err() || new_ids.try_reserve_exact(batch.files.len()).is_err() {
-            self.notice = Some(native::Failure::Allocation.message().into());
+            self.notices.error(native::Failure::Allocation.message());
             return;
         }
         for (index, file) in batch.files.iter().enumerate() {
@@ -120,14 +120,14 @@ impl NodeCraftApp {
                 ids::node_id(self.session.document(), ("drop", self.session.revision(), index, pending.position.x.to_bits(), pending.position.y.to_bits()))
                     .filter(|id| !new_ids.contains(id));
             let Some(id) = fresh else {
-                self.notice = Some("Couldn't allocate node ids; try again.".into());
+                self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                 return;
             };
             new_ids.push(id);
             incoming.push(Incoming { name: &file.name, bytes: &file.bytes });
         }
         if !pending.current(self) || batch.check().is_err() {
-            self.notice = Some("The pending drop expired or changed document; nothing was added.".into());
+            self.notices.warning("The pending drop expired or changed document; nothing was added.");
             return;
         }
         let t = self.theme.tokens();
@@ -145,9 +145,9 @@ impl NodeCraftApp {
                 if !imported.nodes.is_empty() {
                     self.selection.replace(imported.nodes.iter().copied().collect());
                 }
-                self.notice = batch.skipped.notice(&imported);
+                self.notices.set(crate::notices::NoticeKind::Warning, batch.skipped.notice(&imported));
             }
-            Err(e) => self.notice = Some(e.message),
+            Err(e) => self.notices.report(e),
         }
         // The raw payload and occupied process slot end only after synchronous import returns.
     }
@@ -206,7 +206,7 @@ impl NodeCraftApp {
                                         })
                                 });
                                 let cancel = button.clicked() && release_inside;
-                                if let Some(notice) = &self.notice {
+                                if let Some(notice) = self.notices.latest_text() {
                                     ui.label(notice);
                                 }
                                 cancel
@@ -216,7 +216,7 @@ impl NodeCraftApp {
                 self.drop_acquisition.rect = shown.response.rect;
                 if shown.inner {
                     self.drop_acquisition.pending = None;
-                    self.notice = Some(native::Failure::Cancelled.message().into());
+                    self.notices.info(native::Failure::Cancelled.message());
                 }
                 ui.ctx().request_repaint_after(std::time::Duration::from_millis(50));
             }
@@ -233,20 +233,20 @@ impl NodeCraftApp {
             }
             if let Some(mut pending) = self.drop_acquisition.pending.take() {
                 if !pending.current(self) {
-                    self.notice = Some("The document changed while reading files; nothing was added. Drop them again.".into());
+                    self.notices.warning("The document changed while reading files; nothing was added. Drop them again.");
                 } else if self.drop_acquisition.pointer_owned {
                     // A press belongs to this control through release. Do not remove Cancel
                     // underneath a held gesture just because the worker became ready.
                     match pending.ticket.check() {
                         Ok(()) => self.drop_acquisition.pending = Some(pending),
-                        Err(e) => self.notice = Some(e.message().into()),
+                        Err(e) => self.notices.error(e.message()),
                     }
                 } else {
                     let failed = if pending.probe.is_none() {
                         match pending.ticket.poll() {
                             native::Poll::Pending => false,
                             native::Poll::Failed(e) => {
-                                self.notice = Some(e.message().into());
+                                self.notices.error(e.message());
                                 true
                             }
                             native::Poll::Ready(batch) => {
@@ -300,7 +300,7 @@ impl NodeCraftApp {
             return;
         }
         if self.comments.drag.is_some() || self.comments.gesture_cancelled {
-            self.notice = Some("Finish moving the discussion pin before dropping files.".into());
+            self.notices.warning("Finish moving the discussion pin before dropping files.");
             return;
         }
         #[cfg(target_arch = "wasm32")]
@@ -315,7 +315,7 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         {
             if self.drop_pointer_owned() {
-                self.notice = Some("Drop onto the canvas after releasing the file-reading control.".into());
+                self.notices.error("Drop onto the canvas after releasing the file-reading control.");
                 return;
             }
             // A dropped folder becomes a Folder card, or refills the one it is dropped on.
@@ -334,7 +334,7 @@ impl NodeCraftApp {
             let ticket = match ticket {
                 Ok(ticket) => ticket,
                 Err(e) => {
-                    self.notice = Some(e.message().into());
+                    self.notices.error(e.message());
                     return;
                 }
             };
@@ -349,7 +349,7 @@ impl NodeCraftApp {
                 position: Position { x: world.x, y: world.y },
                 step: t.card_width + t.card_padding * 4.0,
             });
-            self.notice = None;
+            self.notices.clear();
             ui.ctx().request_repaint();
         }
     }

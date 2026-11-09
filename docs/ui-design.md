@@ -48,7 +48,7 @@ Stroke widths, a few sizes and egui's small text are tokens too (#1124): `stroke
 clips; `heading_size` (19.5) for the drop hint and `display_size` (24) for an empty deck slide's
 message; `inset` (2) between a thumbnail and its outline and for a swatch's corners; `dim` (0.6) for
 a fill drawn dimmed behind what is being edited; and `badge_text_ratio` (1.2) for the number in an
-input-order badge. `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
+input-order badge. `notice_edge` (3) and `notice_width` (380) size the notice stack (#1110). `theme::apply` sets egui's `TextStyle::Small` to `label_size` (10.5), so
 `.small()` hints are never below a card label. `theme::panel_frame(t)` is the one framed-group
 recipe (`panel_fill`, hairline `panel_stroke`, `panel_radius`, `card_padding`). A `theme.rs` test
 fails on any literal `Stroke::new(<number>, …)` outside the theme and tests.
@@ -129,7 +129,9 @@ selected border more visible than the resting one, in both themes.
 | Drag from a connected input | pick up its (last) noodle: drop it on another input to reroute (`edge.rewire`), or on empty canvas to disconnect |
 | Drag from an unconnected input | compatible outputs get a ring. Drop on an output to connect, or on empty canvas to choose a compatible upstream node. Its output side lands at the drop point; creation and connection are one `node.create_connected` undo step. Escape cancels without editing |
 | Escape while dragging a noodle | drop it without changing anything |
-| Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses |
+| Tab to a port, then Enter or Space | connect from the keyboard (#1109). Ports are focusable buttons named for screen readers, such as **Image output of Generate 1** or **Prompt input of Text 2, connected to Text 1**, with an `accent` focus ring. Enter or Space starts a pending connection and moves focus to the first port on screen that would accept it, drawn as a noodle with rings on every accepting port. Tab / Shift+Tab or the arrow keys cycle those ports, left to right then top to bottom, using the drag's rules: same modality, list into list, no loops, no duplicates. Enter or Space connects with `edge.connect`, or `edge.rewire` when it replaces a single input's noodle, one undo step each, and focus goes back to the starting port. An output starts a new noodle, a connected input picks up its last one to reroute it (the choice starts where it lands now), and an unconnected input chooses an upstream output. Escape cancels without editing and is consumed, so it clears no selection and reaches no other handler; a pointer press, a text field or menu taking the keyboard, or undo removing an end also cancels it. Like a drag, it reaches cards drawn on screen |
+| Shift+Delete or Shift+Backspace on a focused port | remove its connection with `edge.disconnect`: an input's last noodle, or an output's only one (an output feeding several says to focus the input instead) |
+| Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses. Every noodle is also an AccessKit node named **Image from A to B · reference** (its media, cards and the input it lands on) and marked when selected, so screen readers can list connections (#1109) |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
 | Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
@@ -301,7 +303,7 @@ inset, 6-point corner radius and 12-point gap from node decorations. Open bubble
 as fill with canvas-colour count text; resolved bubbles use panel fill, a primary-text outline and
 checkmark. The active bubble adds a second outline. The local Show resolved checkbox explicitly
 uses the primary-text stroke for both its unchecked boundary and checked glyph in both themes.
-The Comments entry shares the application row with Search; both move into More when the row does not fit. Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
+The Comments entry shares the application row with Search; they are the last entries to move into More when the row does not fit (#1115). Its discussion panel opens below the row, or below the search panel when search is open. The panel stays clear of bottom navigation when there is room; in cramped viewports it may overlap, with foreground discussion clicks explicitly excluded from minimap-pan admission. Since the map hides itself in short canvases (#1115), the panel no longer overlaps the map. Tags stay on the left; with both panels open their widths share the viewport. Node-attached markers overlapping a card or its output handle are displayed to the card's right with the bubble's ring and gap outside the actual bounds. At viewport edges, projected markers try the left, above or below the card while keeping their full ring reachable and clear of both port-hit strips. A viewport-filling card can use a safe interior position; if no safe position fits, protecting wire interaction takes priority over pin visibility. New node-attached anchors use zoom-independent world offsets, and markers follow live field-drag previews. Existing safe off-card offsets and free-canvas pins stay where placed. These display adjustments never rewrite stored anchors. Minimap admission uses the discussion panel's actual painted bounds, so unused space below a short panel remains interactive. A selected marker behind the Comments panel moves beside it with a leader; its stored anchor stays fixed. Pin dragging retains that display offset through the gesture, so release publishes only the actual world-space drag delta.
 
 ## Minimap and fit navigation
 
@@ -310,6 +312,15 @@ the current viewport. Its toolbar keeps Fit all, Fit selected, the map toggle an
 reset discoverable. Map visibility, pan and zoom are session-local view state, never project data or
 undo entries. Default map size is 320×160 points, with a 30-point toolbar, 16-point outer margin
 and 6-point gaps; these dimensions and the 24-point fit padding are theme tokens.
+
+In smaller windows (#1115) the panel takes a third of the canvas width (`navigation_fraction`),
+between `navigation_min_width` (240 points, room for the toolbar's labels) and `navigation_width`,
+and the map keeps the 320×160 shape. Each toolbar button gets its label's width plus an equal share
+of what is left. Below a canvas of `minimap_hide_width` × `minimap_hide_height` (720×480 points)
+the map hides itself, leaving Fit all, Fit selected and the zoom badge; Hide map is left out then,
+since there is no map to hide. Shift+M still records the choice for when the window grows. At the
+desktop's smallest window (640×400) and at 800×520 the panel covers at most a quarter of the canvas
+(`small_windows1115_tests`).
 
 Fit resolves actual instance geometry for every node, including offscreen nodes, and includes titles,
 unsaved labels and handles. Every instance hook and node payload is checked; identical borrowed descriptors share successful
@@ -509,8 +520,10 @@ page shows on a light window; the current thumbnail is outlined in the accent co
 
 ## Agent sidebar
 
-The agent sidebar (#114, Cmd+/) is a right panel `agent_width` (360 screen points) wide; the canvas
-takes the rest of the window. Its header shows the mode (Assist/Auto) and Clear, then a muted line
+The agent sidebar (#114, Cmd+/) is a right panel that opens `agent_width` (360 screen points) wide;
+the canvas takes the rest of the window. Its left edge drags it between `agent_min_width` (280
+points) and `agent_max_fraction` (half) of the window, so a small window keeps half its width for
+the canvas (#1115); the sidebar never goes below its minimum. Its header shows the mode (Assist/Auto) and Clear, then a muted line
 with the model and what auto mode has accepted of its budget; notices use `danger`. Steps waiting
 for approval show what they would do (read, change the project, run and its price) with Approve
 and Decline; Esc or Cancel stops the agent while it works.
@@ -547,13 +560,17 @@ Browser server settings add Providers, and a selected Technique adds Open as app
 uses the same token-based height, padding, hover, active and disabled styling. Queue counts
 appear beside its label and remain in its accessible name; unavailable services stay disabled.
 
-If the measured row does not fit, one More menu contains the same entries, icons, states and
-order. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+If the measured row does not fit, entries move into one More menu from the row's right (#1115):
+first the navigation, activity and service entries from the right, then the entry of an open panel
+(kept in the row while others go), then Comments, then Search. More sits after the entries the row
+keeps, before Search and Comments, and lists only what moved, with the same icons, states and
+order. Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, they move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
 entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
 reserved left slot; Format selection reserves the next slot when present, with the Tags panel
 below both controls. Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
-[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md).
+[layout and ownership decision](decisions/2026-10-27-unified-top-bar.md) and the
+[small-window decision](decisions/2026-11-08-small-window-layout.md).
 
 ## Starter templates in the Techniques panel
 
@@ -683,20 +700,80 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   `panel_cascade` (44) until every open panel's title and close button stay visible.
 - Position, size and stacking are view state in egui memory, never document changes or undo steps.
 
+**Dialogs: questions and tools** (#1116, [decision](decisions/2026-11-08-dialogs-question-or-tool.md)):
+
+- A **question** the person must answer before continuing (a confirmation, a rename) is a modal
+  built by `floating::question`: centred over a dimmed window, in the shared panel frame
+  (`theme::panel_frame`), no wider or taller than the window less its margins. **Enter** takes its
+  primary action and **Escape** cancels; it reads both with `floating::answer_keys` before it is
+  drawn, consuming them, and is drawn before any canvas handler, so neither key also reaches the
+  canvas. Only a fresh press counts: key repeats never answer, and Enter answers only after it has
+  been released since the question opened (an Enter held in the step before can't also answer
+  it). With one of its buttons focused (Tab), Enter presses that button, so a focused Cancel
+  cancels. A question whose only action loses work answers Enter with nothing (browser Unsaved
+  changes: **Discard and open** takes a click). Clicking the dimmed backdrop cancels too. Screen
+  readers see it as a `Dialog` named by its title.
+- A **tool** the person works alongside is a floating panel (`floating::panel`); the fixed Shared
+  parameters panel is `floating::pinned`. Escape closes the frontmost of Workflow fields and Batch
+  items, taken before the canvas reads it, but only when no other Escape owner is active: a
+  question, a popup, quick-add or Turn into, a text field (Escape leaves it first), the keyboard
+  connect flow, Search, Discussions, the Tag filter, any drag or gesture, or a browser file read
+  each take Escape first and the tool stays open. Choose a model and Project files close on
+  Escape too.
+- Nothing uses a raw `egui::Window`: `floating.rs` is the only place that builds one (inside
+  `panel` and `pinned`), and `floating::tests::no_raw_windows_outside_floating` fails on a new one
+  elsewhere in non-test code.
+
 | Surface | Kind | Moves | Resizes | Dismiss |
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
-| Custom shader, Image viewer, PDF reader, Charges to review | floating panel (viewer/review) | header | right/bottom edges, corner | close button |
-| Project files (File menu) | floating window, not yet on `floating::panel` | header | no | close button or File |
+| Custom shader, Image viewer, PDF reader, Charges to review, Batch items, Workflow fields, Choose a model | floating panel (viewer/review/tool) | header | right/bottom edges, corner | close button or Escape |
+| Project files (File menu) | floating panel, opening below the File button (#1123 makes it a menu) | header | right/bottom edges, corner | close button, File or Escape |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
 | More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
-| Model preview changed, Review model change, Model choice unavailable, Choose a model, Workflow fields, Rename field, Unsaved changes (browser) | dialog, above panels | header (Unsaved changes stays centred) | all but Rename field and Unsaved changes | its buttons |
-| Notice, update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
+| Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
+| Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
+| Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
+| Notice | notice stack (#1110) | no | no | its close button, Escape while it holds the focus, or a timeout (not errors) |
+| Update banner, pending drop, folder import, library import, background export | notice | no | no | its own button |
+
+**Notices** (#1110, [decision](decisions/2026-11-08-typed-notices.md)) are view state in
+`notices.rs`: a stack in the bottom-left corner, the newest three shown (`MAX_NOTICES`). A new
+notice always goes on top; room is made by dropping the oldest passing notice, never a sticky
+one, and the ones it covers are counted on a "N more notices below" line (sticky ones bounded at
+32). The same text again refreshes the one shown instead of stacking a copy. Each is an **Info**, **Success**, **Warning** or **Error** notice in the
+shared panel frame, `notice_width` (380) wide or the window less its margins, with a
+`notice_edge` (3) stripe down its left side and an icon in its kind's colour (`text_muted`,
+`accent`, `stale`, `danger`; Tabler info-circle, circle-check, alert-triangle, alert-circle), so
+colour is never the only cue. Its text is `text`.
+
+- **Errors and run warnings stay until dismissed** (sticky); the others go after 6 s on screen,
+  counted in egui time. The clock stops while the pointer is over a notice or one of its buttons
+  has the keyboard focus, and while the stack isn't drawn.
+- **Dismiss** with the close button (**Dismiss notice**), or **Escape** while that button (or the
+  notice's action button) has the keyboard focus and the stack was drawn the frame before. The
+  notice takes Escape early, with the tools (`take_tool_escape`; on a sheet, before its table),
+  and only when no other Escape owner is active; without the focus, Escape
+  goes where it did before (it clears the selection).
+- An optional **action** button runs a command id as the palette would.
+- Each notice's text is an AccessKit **live region**: polite for information and successes,
+  assertive for warnings and errors, described by its kind.
+- Engine errors map to a kind in one place, `NoticeKind::of_error` (a `Busy` refusal is a
+  warning; provider, budget, key and network failures are errors), and run events in
+  `NoticeKind::of_run`. Code reports with `notices.report(error)`, `error`, `warning`, `success`
+  or `info`. `clear`, after an action has succeeded, removes only passing notices; a sticky one
+  goes when dismissed, or when the code that raised it with an owner (`report_for`, `error_for`)
+  settles it: a card's edit, a connection, a save or an export that later succeeds, or any
+  document change for an id allocation or canvas-space error.
+- Views without the corner (a deck being edited or presented, an app form) show the newest as one
+  line with `notices::inline_notice`. An error bound to a control (a card's parameter, the model
+  picker's choice) is `notices::inline_error`: the error icon, then `danger` text.
 
 The generation and Save result toolbars draw in the panel order while their card is selected;
-they follow the card, so they are not clamped or cascaded.
+they follow the card, so they are not clamped or cascaded, except that the generation toolbar of a
+card under the application row stays below the row (#1115).
 
 ## Menu and panel inventory (#959, in progress)
 
@@ -710,6 +787,8 @@ on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) cr
 control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
 tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
 again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+Questions (`floating::question`, #1116) get `panel_check::check_question`: open, on the screen,
+and no crossing controls inside their `Dialog` node.
 
 | Surface | Opens from | Kind | Covered by |
 |---|---|---|---|
@@ -722,10 +801,23 @@ again closes it. Only the state a panel opens in is checked, nothing scrolled or
 | Share | top bar | floating panel | `sharing::tests` (with the layout check, idle and live, at 1000 × 700 and 1600 × 900) |
 | PDF reader | a PDF card's menu, Read PDF… | floating panel | `reader_tests` (with the layout check) |
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
+| Batch items | a fanned card's menu, Review items… | floating panel | `batch_review_tests` (with the layout check; at 640 × 400 with Escape) |
+| Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | floating panel | `comfy_mapping::tests` (with the layout check; at 640 × 400 with Escape) |
+| Project files | the File button (top left) | floating panel | `file_dialogs::tests` (with the layout check, at 1000 × 700 and 1600 × 900), `small_windows1115_tests` (640 × 400, below the File button, Escape) |
+| Choose a model | a card's Change model… | floating panel | `models::comfy970_tests` (with the layout check, while searching), `models::tests` (640 × 400, Escape; a failed choice shows at its top) |
+| Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
+| Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
+| Review model change, Model preview changed | the model picker, after a choice | question | `models::tests` (with the question check; at 640 × 400, Enter applies or refreshes, Escape cancels) |
+| Unsaved changes (browser) | File, Open… over unsaved changes | question | `web_files::tests` (on screen at 640 × 400, Escape keeps the project, Enter does nothing) |
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
-| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus) |
+| More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |
 | Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+
+Since #1116 there are no windows outside `floating.rs`: questions are modals sized to the window,
+tools are floating panels clamped to the panel area.
+`small_windows1115_tests` opens Techniques, Budgets, API keys and Project files at 640 × 400,
+800 × 520 and 1440 × 900 with the layout checks.
 
 **Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
 The API keys panel sits past the window's right edge for its first placement frames at 1000 px
@@ -733,39 +825,14 @@ and settles inside once laid out; the checks run after placement settles. The im
 past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
 its shape, so the panel fits (`floating::body_room`).
 
-**Not yet reviewed or covered:** Provider servers (browser only), Batch items, Workflow fields, Project files, the model
-picker, Rename field, model-change windows, every modal (app mode, deck editor and presenter, tag
+**Not yet reviewed or covered:** Provider servers (browser only), every modal (app mode, deck editor and presenter, tag
 definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
 the update banner, card and field context menus, the inspector and bulk panels, notices, and the
 Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
 states, tokens), before-and-after screenshots, and Escape closing a floating panel are open too.
-Escape is left for its own change: several canvas and dialog handlers read Escape without
-consuming it, so a panel close needs them fixed first.
-
-### Notices
-
-A notice says what just happened (#1110). It has one of four kinds, and colour is never its only
-cue: each kind has its own icon and a coloured edge `notice_edge` wide.
-
-| Kind | Icon | Edge | Stays | Screen reader (AccessKit live region) |
-|---|---|---|---|---|
-| Information | `Info` | `text_muted` | 6 s while visible | polite |
-| Success | `Success` | `accent` | 6 s while visible | polite |
-| Warning | `Warning` | `stale` | 6 s while visible | polite |
-| Error | `Error` | `danger` | until dismissed | assertive |
-
-Up to three show at once, newest on top, in the bottom-left notice area (above the staleness
-check and the hidden-draft reminder). A timed notice's clock waits while the pointer is over it
-or one of its buttons has focus. Every notice has a close button (AccessKit "Dismiss notice";
-Escape dismisses the focused one) and may carry one command button, which runs its command by id
-as the palette would (a staleness check that lost its context offers **Check again**). The same
-message again moves to the top instead of showing twice. Notices are view state.
-
-In code, `NodeCraftApp::notice` stays the latest message; `self.notice = self.notices.error(…)`
-(or `success`, `warning`, `notify(kind, …)`, `with_action`) queues a typed notice and keeps the
-slot in step. A slot change made any other way shows as information that follows the slot until
-it changes. An error that belongs to one control (a card's parameter) is not a notice: it uses
-`feedback::inline_error`, the `Error` icon beside the message in `danger`.
+The dialogs migrated in #1116 consume their Escape (each test checks the canvas selection
+survives it); the remaining top-bar panels still close only by their button, since several canvas
+handlers read Escape without consuming it.
 
 ## Saving results
 
@@ -820,11 +887,6 @@ them and one attribution row per file. See the [choice and comparison](decisions
 | `More` | `dots.svg` | application menu overflow |
 | `Apps` | `apps.svg` | Open as app |
 | `Cloud` | `cloud.svg` | browser Providers |
-| `Info` | `info-circle.svg` | information notice |
-| `Success` | `circle-check.svg` | success notice |
-| `Warning` | `alert-triangle.svg` | warning notice |
-| `Error` | `alert-circle.svg` | error notice, inline control error |
-| `Close` | `x.svg` | a notice's dismiss button |
 
 Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
 keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which

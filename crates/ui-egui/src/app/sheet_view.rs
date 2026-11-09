@@ -402,6 +402,10 @@ impl NodeCraftApp {
     /// A frame on a sheet: the table and the floating controls, without the node graph's input.
     pub(super) fn sheet_frame(&mut self, ui: &mut egui::Ui, viewport: Rect, blocked: bool) {
         let t = self.theme.tokens();
+        // A focused notice's Escape, before the table's editors and popups could read it (#1110).
+        if !blocked && !self.text_focused && !canvas::text_input_focused(ui.ctx()) && !egui::Popup::is_any_open(ui.ctx()) {
+            self.take_notice_escape(ui.ctx());
+        }
         if !blocked {
             self.sheet_keys(ui);
         }
@@ -415,7 +419,7 @@ impl NodeCraftApp {
         // Capture its owner before constructing even the disabled chrome widget.
         let editor = (self.text_focused || canvas::text_input_focused(ui.ctx())).then(|| ui.ctx().memory(|m| m.focused()).or(self.last_text_focus)).flatten();
         let chrome = self.topbar(ui);
-        if self.topbar.search.is_none()
+        if self.topbar.more.zip(ui.input(|i| i.pointer.interact_pos())).is_some_and(|(more, pointer)| more.contains(pointer))
             && chrome
             && !egui::Popup::is_any_open(ui.ctx())
             && ui.input(|i| i.pointer.any_pressed() || i.pointer.any_released())
@@ -459,7 +463,7 @@ impl NodeCraftApp {
         let (save_as, save, open) =
             ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
         if (save || save_as || open) && self.commit_sheet_drafts() {
-            self.notice = self.file_shortcut(ui.ctx(), save, save_as);
+            self.file_shortcut(ui.ctx(), save, save_as);
         }
         if canvas::text_input_focused(ui.ctx()) {
             return;
@@ -470,7 +474,7 @@ impl NodeCraftApp {
             })
         });
         if let Some(command) = command {
-            self.notice = self.session.dispatch(command, &json!({})).err().map(|error| error.message);
+            self.notices.outcome(self.session.dispatch(command, &json!({})));
         }
     }
 
@@ -1303,7 +1307,7 @@ impl NodeCraftApp {
         match result {
             Ok(()) => true,
             Err(error) => {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -1358,7 +1362,7 @@ impl NodeCraftApp {
         let skipped = placed["skipped"].as_array().map_or(0, Vec::len);
         let cards = if count == 1 { "1 result".to_owned() } else { format!("{count} results") };
         let title = if title.trim().is_empty() { "the canvas".to_owned() } else { format!("\"{title}\"") };
-        self.notice = Some(match skipped {
+        self.notices.success(match skipped {
             0 => format!("Sent {cards} to {title}."),
             1 => format!("Sent {cards} to {title}; 1 had nothing to send."),
             n => format!("Sent {cards} to {title}; {n} had nothing to send."),
@@ -1368,7 +1372,7 @@ impl NodeCraftApp {
 
     fn dispatch_sheet(&mut self, id: &str, params: Json) -> Result<(), Error> {
         self.session.dispatch(id, &params)?;
-        self.notice = None;
+        self.notices.clear();
         Ok(())
     }
 

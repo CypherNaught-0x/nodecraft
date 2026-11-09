@@ -406,12 +406,12 @@ impl NodeCraftApp {
         if let Some((tags, untagged)) = filter
             && let Err(e) = self.dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":tags,"untagged":untagged}))
         {
-            self.notice = Some(e.message);
+            self.notices.report(e);
         }
         if let Some(action) = action
             && let Err(e) = self.dispatch_tag_filter(&ctx, action, &json!({}))
         {
-            self.notice = Some(e.message);
+            self.notices.report(e);
         }
         self.apply_tag_frame(&ctx);
         ui.input(|i| i.pointer.interact_pos()).is_some_and(|p| rect.contains(p) && ctx.layer_id_at(p) == Some(area.response.layer_id))
@@ -460,7 +460,7 @@ mod tests {
         assert!(h.state().tag_owns_focus(&ctx));
         h.event(egui::Event::Key { key: egui::Key::F, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
         h.run();
-        assert!(h.state().search.open, "{:?}", h.state().notice);
+        assert!(h.state().search.open, "{:?}", h.state().notice());
         assert_eq!(ctx.memory(|m| m.focused()), Some(h.state().search_input_id()));
     }
     #[test]
@@ -813,7 +813,7 @@ mod tests {
             h.state().tag_filter.current,
             h.state().tag_filter.frame_request,
             h.state().search.current,
-            h.state().notice
+            h.state().notice()
         );
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_close", &json!({})).unwrap();
         h.run();
@@ -824,7 +824,7 @@ mod tests {
             h.state().tag_filter.current,
             h.state().tag_filter.frame_request,
             h.state().search.current,
-            h.state().notice
+            h.state().notice()
         );
         h.state_mut().tag_filter.set(BTreeSet::new(), false);
         h.state_mut().tag_filter.set(BTreeSet::new(), true);

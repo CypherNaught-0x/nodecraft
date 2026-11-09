@@ -32,8 +32,7 @@ impl NodeCraftApp {
     }
     fn pick_results_folder(&mut self, params: Value) {
         if !cfg!(all(unix, not(target_arch = "wasm32"))) {
-            self.notice =
-                Some("Secure folder saving is currently available on macOS and Linux; export individual results with Save as on this platform.".into());
+            self.notices.warning("Secure folder saving is currently available on macOS and Linux; export individual results with Save as on this platform.");
             return;
         }
         self.pick_export(Target::Results(params), "");
@@ -58,7 +57,7 @@ impl NodeCraftApp {
                     preview: Ok(preview),
                 })
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
     pub(in crate::app) fn results_watch(&self) -> Option<ExportWatch> {
@@ -191,7 +190,7 @@ impl NodeCraftApp {
         if let Some(id) = cancel
             && let Err(error) = self.session.dispatch("export.cancel", &json!({"id":id}))
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         if start && let State::Preview { host, params, .. } = &state {
             if let Some(runner) = &self.exports.runner {
@@ -203,7 +202,7 @@ impl NodeCraftApp {
                         state = State::Working(watch);
                     }
                 }
-                Err(error) => self.notice = self.notices.error(error.message),
+                Err(error) => self.notices.report(error),
             }
         }
         if let State::Working(watch) = &state

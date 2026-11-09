@@ -183,7 +183,7 @@ impl NodeCraftApp {
             None => Ok(()),
         };
         if let Err(error) = done {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
 

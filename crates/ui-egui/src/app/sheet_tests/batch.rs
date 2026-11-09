@@ -464,7 +464,7 @@ fn saving_an_unchanged_name_just_closes_the_field() {
     let revision = h.state().session.revision();
     press(&mut h, Role::Button, "Rename");
     press(&mut h, Role::Button, "Save name");
-    assert!(h.state().sheet.renaming.is_none() && h.state().notice.is_none());
+    assert!(h.state().sheet.renaming.is_none() && h.state().notices.is_empty());
     assert_eq!(h.state().session.revision(), revision, "nothing was renamed");
 }
 

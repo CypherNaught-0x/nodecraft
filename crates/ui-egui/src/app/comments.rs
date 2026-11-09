@@ -180,7 +180,7 @@ impl NodeCraftApp {
     pub(super) fn compose_on_node(&mut self, ctx: &egui::Context, node: NodeId, owner: Option<egui::Id>) {
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let Some(rect) = self.navigation.geometry.rects.get(&node) else {
-            self.notice = Some("Node geometry is unavailable; use a canvas pin instead.".into());
+            self.notices.warning("Node geometry is unavailable; use a canvas pin instead.");
             return;
         };
         let t = self.theme.tokens();
@@ -192,7 +192,7 @@ impl NodeCraftApp {
         let right = if outputs { t.handle_radius + card::PORT_HIT } else { 0.0 };
         let offset = Position { x: size.x + right + t.comment_marker_gap + t.comment_marker_ring, y: size.y * 0.5 };
         if let Err(error) = self.dispatch_comments_scoped(ctx, "comment.compose", &json!({"node":node,"pos":offset}), owner) {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
     fn begin_draft(&mut self, ctx: &egui::Context, target: Target, anchor: Option<(Option<NodeId>, Position)>) -> Result<(), Error> {
@@ -269,7 +269,7 @@ impl NodeCraftApp {
             match self.comments.allocate_comment(self.session.document()) {
                 Ok(id) => Some(id),
                 Err(error) => {
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                     return;
                 }
             }
@@ -280,7 +280,7 @@ impl NodeCraftApp {
             return;
         };
         if draft.text.len() > draft.limit() {
-            self.notice = Some("Message exceeds its UTF-8 byte limit.".into());
+            self.notices.error("Message exceeds its UTF-8 byte limit.");
             return;
         }
         let target = draft.target;
@@ -309,7 +309,7 @@ impl NodeCraftApp {
                 self.comments.drafts.remove(&key);
                 self.comments.editing = None;
                 self.comments.active = Some(new_id.unwrap_or_else(|| target.root()));
-                self.notice = None;
+                self.notices.clear();
                 ctx.memory_mut(|m| m.surrender_focus(egui::Id::new("discussion_edit").with(key)));
             }
             Err(error) => {
@@ -321,7 +321,7 @@ impl NodeCraftApp {
     }
     fn discussion_action(&mut self, ctx: &egui::Context, action: Action) {
         if !matches!(action, Action::Cancel | Action::Close | Action::Discard(_)) && self.discussion_context(ctx, None).blocked {
-            self.notice = Some("Finish the active editor, popup or gesture before using discussion controls.".into());
+            self.notices.warning("Finish the active editor, popup or gesture before using discussion controls.");
             return;
         }
         let mut result = Ok(());
@@ -435,7 +435,7 @@ impl NodeCraftApp {
             }
         }
         if let Err(error) = result {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         ctx.request_repaint();
     }
@@ -475,7 +475,7 @@ impl NodeCraftApp {
             let pos =
                 self.view.to_world(self.viewport.min, ctx.pointer_hover_pos().filter(|pos| self.viewport.contains(*pos)).unwrap_or(self.viewport.center()));
             if let Err(error) = self.dispatch_comments(&ctx, "comment.compose", &json!({"pos":{"x":pos.x,"y":pos.y}})) {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
             }
         }
         let available = !self.discussion_context(&ctx, None).blocked;
@@ -705,7 +705,7 @@ impl NodeCraftApp {
                     .dispatch("comment.move", &json!({"canvas":self.canvas,"id":drag.id,"node":drag.node,"pos":drag.pos,"expected_revision":drag.revision}))
                 {
                     Ok(_) => self.comments.placement = Some((drag.id, drag.pos, drag.offset)),
-                    Err(error) => self.notice = self.notices.error(error.message),
+                    Err(error) => self.notices.report(error),
                 }
             }
         }
@@ -851,7 +851,7 @@ impl NodeCraftApp {
                                         if !root.resolved && ui.button("Reply").clicked() {
                                             match self.comments.allocate_comment(self.session.document()) {
                                                 Ok(id) => action = Some(Action::Edit(Target::NewReply(root.id, id))),
-                                                Err(error) => self.notice = self.notices.error(error.message),
+                                                Err(error) => self.notices.report(error),
                                             }
                                         }
                                         if let Some(id) = self.comments.message {
@@ -1178,7 +1178,7 @@ mod tests {
             h.state().session.revision(),
             1,
             "notice={:?}, draft errors={:?}",
-            h.state().notice,
+            h.state().notice(),
             h.state().comments.drafts.values().map(|draft| draft.error.as_deref()).collect::<Vec<_>>()
         );
         let id = h.state().comments.active.unwrap();
@@ -1339,7 +1339,7 @@ mod more_tests {
         h.state_mut().discussion_action(&ctx, Action::Note);
         crate::ids::FAIL_ENTROPY.with(|flag| flag.set(false));
         assert!(result.is_err());
-        assert!(h.state().notice.as_ref().unwrap().contains("randomness"));
+        assert!(h.state().notice().unwrap().contains("randomness"));
         assert_eq!(h.state().session.document(), &document);
         assert_eq!((h.state().session.revision(), h.state().session.can_undo(), h.state().session.can_redo()), history);
         assert_eq!(h.state().comments.drafts.get(&key).unwrap().text, "Retain draft on allocation failure");
@@ -1586,10 +1586,10 @@ mod more_tests {
         h.input_mut().dropped_files.push(Arc::new(UnreadDrop));
         h.step();
         assert!(h.state().comments.drag.is_some());
-        assert_eq!(h.state().notice.as_deref(), Some("Finish moving the discussion pin before dropping files."));
+        assert_eq!(h.state().notice(), Some("Finish moving the discussion pin before dropping files."));
         let tokens = *h.state().theme.tokens();
         h.state_mut().split_grid(NodeId::from_bytes([3; 16]), 2, 2, &tokens);
-        assert_eq!(h.state().notice.as_deref(), Some("Finish moving the discussion pin before splitting an image."));
+        assert_eq!(h.state().notice(), Some("Finish moving the discussion pin before splitting an image."));
         assert_eq!(h.state().session.document(), &before);
         h.event(egui::Event::Key { key: egui::Key::T, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
         h.step();
@@ -1663,7 +1663,7 @@ mod more_tests {
         h.run();
         let stored = &h.state().session.document().canvases().get(&canvas).unwrap().comments().get(&id).unwrap().text;
         assert_eq!(stored.len(), text.len());
-        assert!(stored == &("Y".to_owned() + text.get(1..).unwrap()), "same-size Save must preserve the unseen tail; notice={:?}", h.state().notice);
+        assert!(stored == &("Y".to_owned() + text.get(1..).unwrap()), "same-size Save must preserve the unseen tail; notice={:?}", h.state().notice());
     }
     #[test]
     fn session_replacement_invalidates_draft_identity_and_pin_cache_even_at_same_ids_and_revision() {

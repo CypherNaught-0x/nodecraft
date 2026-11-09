@@ -401,7 +401,7 @@ impl NodeCraftApp {
             match listed.and_then(|v| parse(v).ok_or_else(|| "The clips can't be read.".to_owned())) {
                 Ok(listing) => editor.listing = Some((revision, listing)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -445,7 +445,7 @@ impl NodeCraftApp {
         let mut commands: Commands = Vec::new();
         let mut close = false;
         let mut export = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest_text().map(str::to_owned);
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);

@@ -178,8 +178,13 @@ impl NodeCraftApp {
             }
             _ => return Err(Error::new(ErrorKind::InvalidInput, "unknown navigation intent")),
         }
-        if matches!(id, "canvas.fit_all" | "canvas.fit_selection") && self.notice.as_deref().is_none_or(|notice| notice == FIT_CLAMP_NOTICE) {
-            self.notice = clamped.then(|| FIT_CLAMP_NOTICE.into());
+        // The fit owns only its own notice: it shows it or takes it back, and leaves others.
+        if matches!(id, "canvas.fit_all" | "canvas.fit_selection") {
+            if clamped {
+                self.notices.warning(FIT_CLAMP_NOTICE);
+            } else {
+                self.notices.dismiss_text(FIT_CLAMP_NOTICE);
+            }
         }
         if self.view != previous_view || self.navigation.visible != previous_visibility || self.prompt_overlays != previous_overlays {
             ctx.request_repaint();
@@ -240,7 +245,7 @@ impl NodeCraftApp {
                 })
             {
                 if let Err(error) = self.dispatch_navigation(ui.ctx(), spec.id, &json!({})) {
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                 }
                 break;
             }
@@ -288,7 +293,7 @@ impl NodeCraftApp {
                 let home = self.home();
                 self.view.reset(self.viewport, home);
             } else if let Err(error) = self.dispatch_navigation(ui.ctx(), id, &params) {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
             }
         }
         blocked
@@ -443,14 +448,15 @@ mod tests {
     fn fits_and_toggle_preserve_unrelated_notice_and_clear_owned_notice() {
         let mut h = harness();
         let ctx = h.ctx.clone();
-        h.state_mut().notice = Some("Provider failed earlier".into());
+        h.state_mut().notices.error("Provider failed earlier");
         for id in ["canvas.fit_all", "canvas.minimap_toggle"] {
             h.state_mut().dispatch_navigation(&ctx, id, &json!({})).unwrap();
-            assert_eq!(h.state().notice.as_deref(), Some("Provider failed earlier"));
+            assert_eq!(h.state().notice(), Some("Provider failed earlier"));
         }
-        h.state_mut().notice = Some(FIT_CLAMP_NOTICE.into());
+        h.state_mut().notices.warning(FIT_CLAMP_NOTICE);
         h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).unwrap();
-        assert!(h.state().notice.is_none());
+        // The fit takes back only its own notice (#1110).
+        assert_eq!(h.state().notices.iter().map(|notice| notice.text.as_str()).collect::<Vec<_>>(), ["Provider failed earlier"]);
     }
     #[test]
     fn fit_commands_shortcuts_and_toggle_preserve_document_history() {
@@ -490,7 +496,7 @@ mod tests {
     fn minimap_click_drag_freezes_mapping_and_never_selects_or_moves_nodes() {
         let mut h = harness();
         let original = h.state().session.document().clone();
-        h.state_mut().notice = Some("Provider failed earlier".into());
+        h.state_mut().notices.error("Provider failed earlier");
         h.state_mut().selection.only(NodeId::from_bytes([3; 16]));
         let selection = h.state().selection.clone();
         let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
@@ -509,7 +515,7 @@ mod tests {
         assert!((f64::from(center.y) - expected.1).abs() < 0.01);
         button(&mut h, to, false);
         assert!(h.state().navigation.drag.is_none());
-        assert_eq!(h.state().notice.as_deref(), Some("Provider failed earlier"));
+        assert_eq!(h.state().notice(), Some("Provider failed earlier"));
         assert_eq!(h.state().selection, selection);
         assert_eq!(h.state().session.document(), &original);
         assert_eq!(h.state().session.revision(), 0);
@@ -689,11 +695,13 @@ mod tests {
         assert!(!h.state().session.can_undo());
     }
     #[test]
-    fn small_viewport_can_hide_map_and_fit_enabled_matches_dispatch_padding() {
+    fn small_viewport_hides_its_map_and_fit_enabled_matches_dispatch_padding() {
         let mut h = Harness::builder().with_size(Vec2::new(1000.0, 240.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
         let ctx = h.ctx.clone();
-        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_err());
-        assert!(h.state_mut().dispatch_navigation(&ctx, "canvas.fit_all", &json!({})).is_err());
+        // Too short for the map (#1115): it hides itself, so Fit has the canvas above the toolbar.
+        assert!(h.state().navigation.visible);
+        assert!(!crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map_shown);
+        assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_ok());
         h.state_mut().dispatch_navigation(&ctx, "canvas.minimap_toggle", &json!({})).unwrap();
         assert!(!h.state().navigation.visible);
         assert!(h.state_mut().navigation_enabled(&ctx, "canvas.fit_all", &json!({})).is_ok());

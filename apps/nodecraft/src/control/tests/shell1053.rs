@@ -55,7 +55,7 @@ fn a_control_request_during_the_keep_aside_is_refused_and_the_focus_endpoint_sta
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
     while h.state().app.keeping_aside() || h.state().storage_window.is_none() {
         h.step();
-        assert!(std::time::Instant::now() < deadline, "the keep-aside never settled: {:?}", h.state().app.notice);
+        assert!(std::time::Instant::now() < deadline, "the keep-aside never settled: {:?}", h.state().app.notice());
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
     let shell = h.state();

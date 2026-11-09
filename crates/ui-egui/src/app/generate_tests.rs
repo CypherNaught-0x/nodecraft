@@ -256,6 +256,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     prompt_overlay: true,
                     variations: Default::default(),
                     export_folder: None,
+                    links: None,
                 };
                 *body = card::show(ui, &CanvasView::default(), &node, card, &mut editor, false, &theme::DARK).unwrap().response.rect;
             },
@@ -313,7 +314,7 @@ fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
     press(&mut h, Role::Button, &accept);
     assert_eq!(runs.lock().unwrap().len(), 1, "exactly one accepted run reaches the host");
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 }
 
 #[test]
@@ -459,7 +460,7 @@ fn without_run_resources_generate_reports_why_instead_of_spending() {
     h.run();
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none());
-    assert!(h.state().notice.is_some(), "the person is told why nothing ran");
+    assert!(h.state().notice().is_some(), "the person is told why nothing ran");
 
     // The counter steps the model's own image count, found by its meaning tag.
     press(&mut h, Role::Button, "More images");
@@ -685,7 +686,7 @@ fn improve_prompt_adds_a_wired_text_card_and_selects_it() {
         h.render().unwrap().save(dir.join("assist582-before.png")).unwrap();
     }
     press(&mut h, Role::Button, "Improve prompt");
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     if let Some(dir) = &shots {
         h.render().unwrap().save(dir.join("assist582-after.png")).unwrap();
     }

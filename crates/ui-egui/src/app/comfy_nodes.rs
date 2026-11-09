@@ -283,7 +283,7 @@ impl super::NodeCraftApp {
         };
         let store = &self.store;
         if let Some(notice) = fetcher.tick(&mut self.session, || store.as_ref().map(|store| store.get().providers.clone()).unwrap_or_default()) {
-            self.notice = Some(notice);
+            self.notices.push(crate::notices::NoticeKind::of_report(&notice), notice);
         }
         if fetcher.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));

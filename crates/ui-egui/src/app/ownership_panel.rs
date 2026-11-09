@@ -190,10 +190,10 @@ impl NodeCraftApp {
     pub(super) fn open_ownership_review(&mut self) {
         match self.ownership_listings() {
             Ok((groups, unsettled, unresolved)) => {
-                self.notice = None;
+                self.notices.clear();
                 self.ownership = Some(OwnershipReview { groups, unsettled, unresolved, group: None, resolving: None });
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -207,7 +207,7 @@ impl NodeCraftApp {
     fn refresh_ownership(&mut self, review: &mut OwnershipReview) {
         match self.ownership_listings() {
             Ok((groups, unsettled, unresolved)) => (review.groups, review.unsettled, review.unresolved) = (groups, unsettled, unresolved),
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -249,7 +249,7 @@ impl NodeCraftApp {
         match action {
             Action::Review(session, currency) => match self.load_group(session, currency, 0) {
                 Ok(group) => review.group = Some(group),
-                Err(error) => self.notice = self.notices.error(error.message),
+                Err(error) => self.notices.report(error),
             },
             Action::Back => {
                 review.group = None;
@@ -306,7 +306,7 @@ impl NodeCraftApp {
                             if let Some(runs) = &self.runs {
                                 runs.sync_usage(&mut self.session);
                             }
-                            self.notice = Some(format!(
+                            self.notices.success(format!(
                                 "Recorded which total holds {} of session {}. Nothing was settled or refunded.",
                                 charges(count(&record, "/charges")),
                                 short(&group.session)
@@ -366,7 +366,7 @@ impl NodeCraftApp {
                             if let Some(runs) = &self.runs {
                                 runs.sync_usage(&mut self.session);
                             }
-                            self.notice = Some(match text(&record, "/outcome") {
+                            self.notices.success(match text(&record, "/outcome") {
                                 "settled" => format!("Settled the charge {} at {}.", text(&record, "/key"), text(&record, "/cost/text")),
                                 _ => format!("Released the charge {}; it no longer counts toward any total.", text(&record, "/key")),
                             });

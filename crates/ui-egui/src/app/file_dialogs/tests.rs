@@ -113,7 +113,7 @@ fn clean_open_palette_and_cancel_use_only_ui_picker_boundary() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     // The same UI dispatch used by a chosen palette entry obtains a location.
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
@@ -174,7 +174,7 @@ fn cancelled_or_failed_save_never_continues_the_dirty_open() {
         settle(&mut h);
         assert_eq!(h.state().session.document(), &expected);
         assert!(h.state().session.file_status().dirty);
-        assert_eq!(h.state().notice.is_some(), bad.is_some());
+        assert_eq!(h.state().notice().is_some(), bad.is_some());
     }
 }
 #[test]
@@ -210,7 +210,7 @@ fn late_picker_after_edits_or_replacement_and_duplicate_requests_never_dispatch(
         ready.set(true);
         h.step();
         assert_eq!(h.state().session.document(), &expected);
-        assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+        assert!(h.state().notice().unwrap().contains("changed"));
         assert!(h.state().files.pending.is_none());
     }
 }
@@ -312,7 +312,7 @@ fn dirty_confirmation_invalidates_before_discard_after_a_new_edit() {
     h.step();
     assert_eq!(h.state().session.document(), &expected);
     assert!(h.state().files.pending.is_none());
-    assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+    assert!(h.state().notice().unwrap().contains("changed"));
 }
 #[test]
 fn missing_recent_is_retained_until_explicit_menu_removal() {
@@ -326,7 +326,7 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     settle(&mut h);
     h.get_by_label("missing-public.ncraft").click();
     settle(&mut h);
-    assert!(h.state().notice.is_some());
+    assert!(h.state().notice().is_some());
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
     settle(&mut h);
@@ -368,7 +368,7 @@ fn actual_native_save_error_keeps_dirty_work_and_does_not_open_target() {
     assert_eq!(h.state().session.document(), &expected);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(source)));
     assert!(h.state().session.file_status().dirty);
-    assert!(h.state().notice.is_some());
+    assert!(h.state().notice().is_some());
 }
 #[test]
 fn read_only_settings_never_turn_successful_save_into_failed_or_claim_persistence() {
@@ -390,7 +390,7 @@ fn read_only_settings_never_turn_successful_save_into_failed_or_claim_persistenc
     settle(&mut h);
     assert!(target.is_file());
     assert!(!h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("could not be saved"));
+    assert!(h.state().notice().unwrap().contains("could not be saved"));
     assert_eq!(std::fs::read_to_string(config.join("config.toml")).unwrap(), text);
 }
 #[test]
@@ -430,7 +430,7 @@ fn uncommitted_text_draft_is_not_silently_saved_or_replaced() {
     settle(&mut h);
     assert_eq!(calls.get(), 0);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.as_deref().unwrap().contains("field edits"));
+    assert!(h.state().notice().unwrap().contains("field edits"));
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn picker_errors_and_panics_leave_the_document_unchanged_and_release_the_slot() 
         settle(&mut h);
         assert_eq!(h.state().session.document(), &original);
         assert!(h.state().files.pending.is_none());
-        assert!(h.state().notice.is_some());
+        assert!(h.state().notice().is_some());
         let target = dir.file("after-error.ncraft");
         stub(h.state_mut(), vec![Some(target.clone())]);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
@@ -579,7 +579,7 @@ fn correction407_supported_replacement_keeps_picker_slot_and_recents() {
     ready.set(true);
     settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+    assert!(h.state().notice().unwrap().contains("changed"));
     assert_eq!(dropped.get(), 1);
     assert!(h.state().files.pending.is_none());
     h.state_mut().begin_file("file.open", &ctx);
@@ -817,7 +817,7 @@ fn selected_save_as_waits_for_publication_before_recents_and_open_or_failure() {
             assert_eq!(h.state().session.document(), &expected);
             assert!(h.state().session.file_status().dirty);
             assert!(h.state().files.projects.recent().is_empty());
-            assert!(h.state().notice.is_some());
+            assert!(h.state().notice().is_some());
         } else {
             assert_eq!(nodecraft_format::decode(&std::fs::read(&source).unwrap()).unwrap().project, expected);
             assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target.clone())));
@@ -1062,7 +1062,7 @@ fn storage968_actual_journal_conflict_retains_startup_reason_and_focus_action() 
     let (mut second, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
     assert!(!owns);
     assert!(second.storage_owner_blocked());
-    let startup = second.notice.clone().unwrap();
+    let startup = second.notice().map(str::to_owned).unwrap();
     assert!(startup.contains("recovery location is already in use"));
     assert!(startup.contains("Another NodeCraft window"));
     let focused = Rc::new(Cell::new(0));
@@ -1078,9 +1078,9 @@ fn storage968_actual_journal_conflict_retains_startup_reason_and_focus_action() 
     let mut h = harness(second);
     settle(&mut h);
     let ctx = h.ctx.clone();
-    h.state_mut().notice = None;
+    h.state_mut().notices.clear();
     h.state_mut().begin_file("file.save", &ctx);
-    assert_eq!(h.state().notice.as_deref(), Some(startup.as_str()));
+    assert_eq!(h.state().notice(), Some(startup.as_str()));
     settle(&mut h);
     h.get_by_label("Focus the other window").click();
     settle(&mut h);
@@ -1104,7 +1104,7 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     let mut h = harness(app);
     // The startup open runs in the background from the first frame (#367).
     settle(&mut h);
-    let notice = h.state().notice.clone().unwrap();
+    let notice = h.state().notice().map(str::to_owned).unwrap();
     assert!(
         notice.starts_with("broken.ncraft couldn't be opened: ")
             && notice.ends_with(". The new project is open instead and can be saved.")
@@ -1112,7 +1112,7 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
         "one cause, one piece of advice: {notice}"
     );
     assert!(h.state().session.file_status().available);
-    h.state_mut().notice = None;
+    h.state_mut().notices.clear();
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1127,16 +1127,16 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     let setup = storage::StorageSetup { recovery: folder.join("journal"), open: None };
     let (mut failed, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
     assert!(!owns);
-    let startup = failed.notice.clone().unwrap();
+    let startup = failed.notice().map(str::to_owned).unwrap();
     assert!(startup.contains("recovery folder can't be created"));
     assert!(!failed.storage_owner_blocked());
     let ctx = egui::Context::default();
     failed.begin_file("file.open", &ctx);
-    assert_eq!(failed.notice.as_deref(), Some(startup.as_str()));
+    assert_eq!(failed.notice(), Some(startup.as_str()));
     let (mut missing, _, _) =
         NodeCraftApp::from_storage_setup(Default::default(), None, "No settings folder is available. Restart after fixing access.").unwrap();
     missing.begin_file("file.save_as", &ctx);
-    assert_eq!(missing.notice.as_deref(), Some("No settings folder is available. Restart after fixing access."));
+    assert_eq!(missing.notice(), Some("No settings folder is available. Restart after fixing access."));
     let mut closed = dir.app("closed");
     closed.session.close_recovery(true).unwrap();
     assert!(!closed.session.file_status().available);
@@ -1144,7 +1144,7 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     assert!(reason.contains("Recovery was closed"));
     assert!(reason.contains("reopen NodeCraft"));
     closed.begin_file("file.open", &ctx);
-    assert_eq!(closed.notice.as_deref(), Some(reason));
+    assert_eq!(closed.notice(), Some(reason));
     assert_eq!(closed.session.dispatch("file.save", &json!({})).unwrap_err().message, reason);
     let mut h = harness(closed);
     settle(&mut h);
@@ -1157,8 +1157,8 @@ fn storage968_replacement_does_not_reuse_an_old_failure_reason() {
     let replacement = nodecraft_engine::Session::new(app.session.document().clone()).unwrap();
     app.replace_session(replacement, app.canvas).unwrap();
     app.begin_file("file.open", &egui::Context::default());
-    assert!(!app.notice.as_deref().unwrap().contains("Old startup reason"));
-    assert!(app.notice.as_deref().unwrap().contains("not configured"));
+    assert!(!app.notice().unwrap().contains("Old startup reason"));
+    assert!(app.notice().unwrap().contains("not configured"));
 }
 
 #[test]
@@ -1248,7 +1248,7 @@ fn cancelling_a_held_open_keeps_the_current_project_and_its_file() {
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(initial)));
     assert!(!h.state().session.file_status().dirty);
-    assert_eq!(h.state().notice.as_deref(), Some("Opening target.ncraft was cancelled; the current project is unchanged."));
+    assert_eq!(h.state().notice(), Some("Opening target.ncraft was cancelled; the current project is unchanged."));
     assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
     // The current project still journals and saves.
     add(h.state_mut(), 93);
@@ -1280,7 +1280,7 @@ fn cancelling_a_held_save_leaves_the_previous_file_byte_for_byte() {
     assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the file is unchanged");
     assert_eq!(h.state().session.document(), &edited, "and the edits are still open");
     assert!(h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice);
+    assert!(h.state().notice().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice());
     // Saving again afterwards writes the edits.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     h.step();
@@ -1340,4 +1340,20 @@ fn render_file367_progress_evidence() {
     runner.run();
     settle(&mut h);
     h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
+}
+
+/// The Project files window opens on the screen with no crossing controls at the two window
+/// sizes the panels are checked at (#959).
+#[test]
+fn project_files_keeps_its_layout_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let dir = Scratch::new("layout959");
+        let mut app = dir.app("layout");
+        app.files.menu_open = true;
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        settle(&mut h);
+        h.run();
+        crate::app::panel_check::check_open_panels(&h, &format!("Project files at {size:?}"));
+    }
 }

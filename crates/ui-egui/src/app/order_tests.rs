@@ -72,7 +72,7 @@ fn dropping_a_badge_back_on_its_own_place_changes_nothing() {
     wire_drag(&mut h, second, second + Vec2::new(2.0, 2.0));
     assert_eq!(order(&h), [edge(1), edge(2), edge(3)]);
     assert!(!h.state().session.can_undo());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
 }
 
 #[test]

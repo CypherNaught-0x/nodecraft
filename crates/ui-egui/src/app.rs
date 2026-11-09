@@ -376,6 +376,9 @@ mod key_account_tests;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod key_changes;
 mod key_endpoints;
+mod key_wiring;
+#[cfg(test)]
+mod key_wiring_tests;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
@@ -395,7 +398,6 @@ mod mesh_saved;
 mod metrics;
 mod models;
 mod navigation;
-mod notices;
 mod option_fetch;
 mod order;
 #[cfg(not(target_arch = "wasm32"))]
@@ -425,6 +427,8 @@ mod search;
 mod shader_editor;
 mod sharing;
 mod sheet_view;
+#[cfg(test)]
+mod small_windows1115_tests;
 mod split;
 mod stale;
 mod stale_badges;
@@ -446,6 +450,7 @@ mod web_clipboard;
 #[cfg(any(test, target_arch = "wasm32"))]
 mod web_files;
 mod wire_body;
+mod wire_rules;
 #[cfg(test)]
 mod wiring951_tests;
 pub(crate) use export::card_unavailable as card_export_unavailable;
@@ -489,9 +494,8 @@ pub struct NodeCraftApp {
     #[cfg(any(test, target_arch = "wasm32"))]
     web_recovery: Option<web_journal::WebRecovery>,
     pub viewport: Rect,
-    pub notice: Option<String>,
-    /// What the canvas shows for `notice` and the typed notices beside it (#1110); view state.
-    notices: notices::Notices,
+    /// The bottom-left notice stack (#1110): view state, newest on top.
+    pub notices: crate::notices::Notices,
     stale_snapshot: Option<stale::StaleSnapshot>,
     /// Which cards show a stale badge, as of a revision (#211).
     stale_badges: Option<stale_badges::StaleBadges>,
@@ -520,6 +524,10 @@ pub struct NodeCraftApp {
     painted: BTreeMap<NodeId, Rect>,
     input_ports: input_ports::Cache,
     wiring: Option<Wiring>,
+    /// A connection started from the keyboard (#1109), separate from a pointer drag.
+    key_wiring: Option<key_wiring::KeyWiring>,
+    /// Port handles drawn this frame, and last frame's, which the keyboard reads first.
+    port_widgets: key_wiring::PortWidgets,
     /// The input order badge being dragged: its list input and edge.
     reordering: Option<(crate::order::Input, EdgeId)>,
     palette: Option<Palette>,
@@ -638,6 +646,12 @@ pub struct NodeCraftApp {
     comfy_nodes: Option<comfy_nodes::ComfyNodesFetcher>,
     /// View-only draft of an existing workflow card's field selection (#947).
     comfy_mapping: Option<comfy_mapping::Editor>,
+    /// The tool panel this frame's Escape closes, taken before the canvas reads keys (#1116).
+    tool_escape: Option<ToolEscape>,
+    /// The document revision when the last frame began, to settle `CANVAS_ADD` notices (#1110).
+    notice_revision: u64,
+    /// The notice whose button held the focus when Escape was pressed this frame (#1110).
+    notice_escape: Option<u64>,
     /// The ComfyUI server's address and its check (#9).
     #[cfg(not(target_arch = "wasm32"))]
     comfy_server: comfy_server::ComfyServerPanel,
@@ -685,6 +699,11 @@ impl NodeCraftApp {
                 self.fields.selected = None;
             }
         }
+    }
+
+    /// The newest notice's text, if any (#1110).
+    pub fn notice(&self) -> Option<&str> {
+        self.notices.latest_text()
     }
 
     pub fn new(ctx: &egui::Context) -> Result<Self, Error> {
@@ -802,7 +821,9 @@ impl NodeCraftApp {
             job.after.runs = runs.take();
             job.after.runs_journal = runs_journal.clone();
         }
-        app.notice = app.notice.or(plugin_problem);
+        if let Some(problem) = plugin_problem {
+            app.notices.error(problem);
+        }
         app.plugins = plugins;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
@@ -839,7 +860,7 @@ impl NodeCraftApp {
             if let Some(first) = problems.first() {
                 log::warn!("template cache: {}", problems.join("; "));
                 let told = format!("Some downloaded templates were skipped: {first}. Clear them from Techniques → Starter templates.");
-                app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{notice} {told}")));
+                app.notices.warning(told);
             }
         }
         app.comfy_nodes = comfy_nodes;
@@ -883,7 +904,9 @@ impl NodeCraftApp {
         if let Some(updates) = &mut updates
             && let Some(told) = updates.after_update.take()
         {
-            app.notice = Some(app.notice.map_or(told.clone(), |notice| format!("{told} {notice}")));
+            // A finished update is good news; one that didn't install says why.
+            let kind = if told.starts_with("NodeCraft is updated") { crate::notices::NoticeKind::Success } else { crate::notices::NoticeKind::Error };
+            app.notices.push(kind, told);
         }
         app.updates = updates;
         app.sharing = sharing;
@@ -994,7 +1017,7 @@ impl NodeCraftApp {
             })
             .inspect_err(|error| log::warn!("templates unavailable: {}", error.message))
             .ok();
-        app.notice = provider_notice.clone();
+        app.notices.set(crate::notices::NoticeKind::Error, provider_notice.clone());
         app.browser_providers = Some(browser_providers::BrowserProviders::new(providers, provider_notice));
         // Recovery is a safety net, not a save: leaving with unsaved work still asks first.
         web_files::guard_unload(Rc::clone(&app.web_files.unsaved));
@@ -1111,7 +1134,7 @@ impl NodeCraftApp {
 
     /// ⌘S, ⇧⌘S and ⌘O in the browser (#118).
     #[cfg(target_arch = "wasm32")]
-    fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) -> Option<String> {
+    fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) {
         let id = if save_as {
             "file.save_as"
         } else if save {
@@ -1119,9 +1142,8 @@ impl NodeCraftApp {
         } else {
             "file.open"
         };
-        self.notice = None;
+        self.notices.clear();
         self.web_file(id, ctx);
-        self.notice.take()
     }
 
     /// After a project replaced the document: its first canvas, nothing selected or edited.
@@ -1228,8 +1250,7 @@ impl NodeCraftApp {
             #[cfg(any(test, target_arch = "wasm32"))]
             web_recovery: None,
             viewport: Rect::NOTHING,
-            notice: None,
-            notices: notices::Notices::default(),
+            notices: crate::notices::Notices::default(),
             stale_snapshot: None,
             stale_badges: None,
             mask_badges: None,
@@ -1251,6 +1272,8 @@ impl NodeCraftApp {
             painted: BTreeMap::new(),
             input_ports: input_ports::Cache::default(),
             wiring: None,
+            key_wiring: None,
+            port_widgets: Default::default(),
             reordering: None,
             palette: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1324,6 +1347,9 @@ impl NodeCraftApp {
             #[cfg(not(target_arch = "wasm32"))]
             comfy_nodes: None,
             comfy_mapping: None,
+            tool_escape: None,
+            notice_revision: 0,
+            notice_escape: None,
             #[cfg(not(target_arch = "wasm32"))]
             comfy_server: comfy_server::ComfyServerPanel::default(),
             #[cfg(not(target_arch = "wasm32"))]
@@ -1367,6 +1393,13 @@ impl NodeCraftApp {
     }
     /// One frame of the canvas, timed for performance capture when it's running (#151).
     pub fn show(&mut self, ui: &mut egui::Ui) {
+        // A document change since last frame means additions work again: an earlier "couldn't
+        // allocate an id" or "no canvas space" error is settled (#1110).
+        let revision = self.session.revision();
+        if revision != self.notice_revision {
+            self.notice_revision = revision;
+            self.notices.settle(crate::notices::CANVAS_ADD);
+        }
         let started = self.frame_started(ui.ctx().current_pass_index() == 0);
         self.show_frame(ui);
         self.commit_mesh_views(ui.ctx(), false);
@@ -1474,6 +1507,8 @@ impl NodeCraftApp {
             self.centred = true;
         }
         let mut model_blocks = self.model_overlay(ui);
+        // Questions own the keyboard before any canvas handler reads it (#1116).
+        model_blocks |= self.rename_window(ui.ctx());
         model_blocks |= self.text_previews.overlay(ui.ctx(), t);
         // Before the price confirmation, which a run from the form opens on top of it.
         model_blocks |= self.app_overlay(ui);
@@ -1489,6 +1524,9 @@ impl NodeCraftApp {
             ui.ctx().options_mut(|o| o.input_options.surrender_focus_on = surrender_focus_on);
             return;
         }
+        // Tool panels drawn later in the frame close on Escape; the key is taken here, before
+        // any canvas handler reads it (#1116).
+        self.tool_escape = self.take_tool_escape(ui.ctx(), model_blocks || file_owns_input || file_menu_owns_input);
         let bulk_enabled = !model_blocks
             && !file_owns_input
             && !file_menu_owns_input
@@ -1522,10 +1560,10 @@ impl NodeCraftApp {
                 }
             };
             match result {
-                Ok(()) => self.notice = None,
+                Ok(()) => self.notices.clear(),
                 Err(error) => {
                     self.bulk.failed(error.message.clone());
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                 }
             }
         }
@@ -1557,13 +1595,34 @@ impl NodeCraftApp {
             let (save_as, save, open) =
                 ui.input_mut(|i| (consume_shortcut(i, "Command+Shift+S"), consume_shortcut(i, "Command+S"), consume_shortcut(i, "Command+O")));
             if save || save_as || open {
-                self.notice = self.file_shortcut(ui.ctx(), save, save_as);
+                self.file_shortcut(ui.ctx(), save, save_as);
             }
         }
         #[cfg(not(target_arch = "wasm32"))]
         if self.files.owns_input() {
             self.clear_file_input(ui.ctx());
         }
+        // The keyboard connect flow (#1109) reads a focused port's keys before any other canvas
+        // handler, so its Enter, Tab, arrows and Escape act once and reach nothing else.
+        let key_wiring_live = !model_blocks
+            && !file_owns_input
+            && !file_menu_owns_input
+            && !recovery_owns_input
+            && !bulk_blocks
+            && !comments_blocks
+            && !search_blocks
+            && !tag_blocks
+            && !drop_blocks
+            && !self.drop_pointer_owned()
+            && !canvas::text_input_focused(ui.ctx())
+            && !egui::Popup::is_any_open(ui.ctx())
+            && self.palette.is_none()
+            && self.turn_into.is_none()
+            && self.drag.is_none()
+            && self.marquee.is_none()
+            && !self.keys.open
+            && !self.browser_providers.as_ref().is_some_and(|providers| providers.open);
+        self.key_wiring_keys(ui.ctx(), key_wiring_live);
         // Canvas keys yield to text fields and to the open palette (whose query may lose focus)
         // or "Turn into" menu (whose letters pick kinds).
         if !model_blocks
@@ -1591,9 +1650,9 @@ impl NodeCraftApp {
             };
             if let Some(command) = command {
                 if let Err(error) = self.session.dispatch(command, &json!({})) {
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                 } else {
-                    self.notice = None;
+                    self.notices.clear();
                     // Invalid drafts remain view state across unrelated undo/redo.
                 }
             }
@@ -1640,7 +1699,7 @@ impl NodeCraftApp {
                 )
             });
             if overlays && let Err(error) = self.dispatch_navigation(ui.ctx(), "canvas.prompt_overlays_toggle", &json!({})) {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
             }
             if delete && let Some(canvas) = self.session.document().canvases().get(&self.canvas) {
                 // Drop ids an undo or canvas switch removed, so they don't fail the delete.
@@ -1694,7 +1753,7 @@ impl NodeCraftApp {
             });
             if copy || cut || duplicate {
                 match self.selection_payload() {
-                    Err(error) => self.notice = self.notices.error(error.message),
+                    Err(error) => self.notices.report(error),
                     Ok(None) => {}
                     Ok(Some(payload)) => {
                         if duplicate {
@@ -1704,21 +1763,21 @@ impl NodeCraftApp {
                                 self.cut_payload(ui.ctx(), payload, text);
                             } else {
                                 ui.ctx().copy_text(text);
-                                self.notice = None;
+                                self.notices.clear();
                             }
                         }
                     }
                 }
             }
             match pasted {
-                Some(Err(())) => self.notice = Some("The clipboard holds more than 16 MiB; nothing was pasted.".into()),
+                Some(Err(())) => self.notices.error("The clipboard holds more than 16 MiB; nothing was pasted."),
                 Some(Ok(text)) => match self.paste_target(ui, t) {
                     Some(centre) => match clipboard::parse(&text) {
                         clipboard::Parsed::Nodes(payload) => self.paste(payload, centre),
-                        clipboard::Parsed::Unreadable(why) => self.notice = Some(format!("Can't paste these nodes: {why}.")),
+                        clipboard::Parsed::Unreadable(why) => self.notices.error(format!("Can't paste these nodes: {why}.")),
                         clipboard::Parsed::Text => self.paste_plain_text(ui, t, text, centre),
                     },
-                    None => self.notice = Some("There is no unobscured canvas space for this paste.".into()),
+                    None => self.notices.error_for(crate::notices::CANVAS_ADD, "There is no unobscured canvas space for this paste."),
                 },
                 None => {}
             }
@@ -1866,6 +1925,8 @@ impl NodeCraftApp {
                 canvas.edges().values().filter(|edge| edge.to.port == nodecraft_nodes::generation::PROMPT).map(|edge| edge.to.node).collect();
             let connected_wires = card::connected::incoming(canvas);
             let element_names = elements::names(canvas);
+            // Who each port is wired to, named once per frame if a screen reader asks (#1109).
+            let port_peers = std::cell::OnceCell::new();
             self.mention_cache.refresh(self.session.revision(), self.canvas, canvas, kinds);
             let mention_cards = &self.mention_cache.cards;
             let mention_blocked = &self.mention_cache.blocked;
@@ -2036,6 +2097,7 @@ impl NodeCraftApp {
                         mesh,
                         outdated,
                         export_folder: export_folders.get(&node.id).cloned(),
+                        links: Some(card::PortLinks { canvas, kinds, peers: &port_peers }),
                         variations: card::generate::Variations {
                             cards: canvas.variation_cards(),
                             alike: nodecraft_exec::variations::requested(node) > 1
@@ -2341,7 +2403,7 @@ impl NodeCraftApp {
                             self.next_gesture = serial;
                             self.drag = Some(Drag { id: node.id, gesture: format!("canvas-drag-{serial}"), pos: node.pos });
                         } else {
-                            self.notice = Some("Too many drag gestures; reopen the project to continue.".into());
+                            self.notices.error("Too many drag gestures; reopen the project to continue.");
                             self.drag = None;
                         }
                     }
@@ -2349,6 +2411,7 @@ impl NodeCraftApp {
                         pan += r.drag_delta() * self.view.zoom;
                     }
                     for (side, port, r) in &result.ports {
+                        self.port_widgets.push(r.id, *side, Endpoint { node: node.id, port: port.clone() });
                         if overlay_blocks {
                             continue;
                         }
@@ -2358,46 +2421,13 @@ impl NodeCraftApp {
                         if !r.drag_started_by(egui::PointerButton::Primary) {
                             continue;
                         }
-                        let mut proposed = match side {
-                            Side::Output => node.outputs.iter().find(|p| p.name == *port).map(|p| Wiring {
-                                anchor: Endpoint { node: node.id, port: port.clone() },
-                                side: Side::Output,
-                                port_type: p.port_type,
-                                moving: None,
-                            }),
-                            // Grabbing a connected input picks up its last noodle to reroute it.
-                            Side::Input => {
-                                let to = Endpoint { node: node.id, port: port.clone() };
-                                match noodle::into_port(canvas, &to).last() {
-                                    Some(edge) => canvas.nodes().get(&edge.from.node).and_then(|source| {
-                                        source.outputs.iter().find(|p| p.name == edge.from.port).map(|source| Wiring {
-                                            anchor: edge.from.clone(),
-                                            side: Side::Output,
-                                            port_type: source.port_type,
-                                            moving: Some(edge.id),
-                                        })
-                                    }),
-                                    None => self.input_ports.get(node).iter().find(|p| p.name == *port).map(|input| Wiring {
-                                        anchor: to,
-                                        side: Side::Input,
-                                        port_type: input.port_type,
-                                        moving: None,
-                                    }),
-                                }
-                            }
-                        };
-                        if let Some(wiring) = &mut proposed
-                            && wiring.side == Side::Output
-                        {
-                            match nodecraft_engine::turn_into_cmds::output_type(canvas, self.session.kinds(), &wiring.anchor) {
-                                Ok(port_type) => wiring.port_type = port_type,
-                                Err(error) => {
-                                    self.notice = self.notices.error(error.message);
-                                    proposed = None;
-                                }
+                        match wire_rules::begin(canvas, self.session.kinds(), &self.input_ports, node, *side, port) {
+                            Ok(proposed) => self.wiring = proposed,
+                            Err(message) => {
+                                self.notices.error(message);
+                                self.wiring = None;
                             }
                         }
-                        self.wiring = proposed;
                     }
                     // A Choice popup can close while producing its parameter intent over the
                     // overlay. Preserve its ownership from frame start, without admitting moves.
@@ -2463,7 +2493,8 @@ impl NodeCraftApp {
             {
                 self.wiring = None;
             }
-            let moving = self.wiring.as_ref().and_then(|w| w.moving);
+            let moving = self.wiring.as_ref().and_then(|w| w.moving).or_else(|| self.key_wiring_moving());
+            self.edge_accessibility(ui.ctx(), canvas, &curves, viewport.min);
             // Widened by the halo so noodles just outside the edge still paint their stroke.
             let visible = self.view.visible_world(viewport).expand((t.wire_width_selected + t.wire_halo) / self.view.zoom);
             // Diagnostic-only: do not read options or flatten again while capture is off.
@@ -2518,6 +2549,7 @@ impl NodeCraftApp {
             } else {
                 self.reordering = None;
             }
+            self.key_wiring_paint(ui, canvas, t);
             if let Some(wiring) = &self.wiring
                 && let Some(pointer) = ui.input(|i| i.pointer.interact_pos())
             {
@@ -2527,8 +2559,9 @@ impl NodeCraftApp {
                     self.palette = None;
                     self.turn_into = turn_into;
                 }
-                if notice.is_some() {
-                    self.notice = notice;
+                // A refused drop changes nothing and says why.
+                if let Some(notice) = notice {
+                    self.notices.warning(notice);
                 }
             }
             match query {
@@ -2591,7 +2624,7 @@ impl NodeCraftApp {
         self.pdf_reader(ui.ctx());
         if let Some(action) = tag_action {
             if let Err(error) = self.apply_tag_action(action) {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
             }
             ui.ctx().request_repaint();
         }
@@ -2603,7 +2636,7 @@ impl NodeCraftApp {
         if let Some((id, server)) = comfy_server_request
             && let Err(error) = self.use_comfy_server(id, server)
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         // Cards were painted before this frame's selection changes; show them without waiting for input.
         if let Some(node) = comfy_mapping_request {
@@ -2660,8 +2693,11 @@ impl NodeCraftApp {
         }
         if let Some((command, params)) = wire_command {
             match self.session.dispatch(command, &params) {
-                Ok(_) => self.notice = None,
-                Err(error) => self.notice = self.notices.error(error.message),
+                Ok(_) => {
+                    self.notices.clear();
+                    self.notices.settle("wire");
+                }
+                Err(error) => self.notices.report_for("wire", error),
             }
         }
         if let Some((mode, owner)) = layout_mode {
@@ -2673,7 +2709,7 @@ impl NodeCraftApp {
         if let Some(id) = intents.iter().find_map(|(id, intent)| matches!(intent, Intent::Model).then_some(*id))
             && let Err(error) = self.open_model_picker(self.canvas, vec![id], self.session.revision())
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         for (id, intent) in intents {
             // A model-opening click can make a text draft lose focus in this same pass.
@@ -2715,7 +2751,7 @@ impl NodeCraftApp {
                     self.pick_folder(folder_import::Target::Existing(id));
                     #[cfg(target_arch = "wasm32")]
                     {
-                        self.notice = Some("Importing a folder needs the desktop app for now.".into());
+                        self.notices.warning("Importing a folder needs the desktop app for now.");
                     }
                     continue;
                 }
@@ -2742,14 +2778,13 @@ impl NodeCraftApp {
                 // After this pass's edits above it, so a prompt submitted with Cmd+Enter is quoted.
                 Intent::Generate => {
                     if let Err(error) = self.request_generate(id) {
-                        self.notice = self.notices.error(error.message);
+                        self.notices.report(error);
                     }
                     continue;
                 }
             };
-            match self.session.dispatch(command, &params) {
-                Ok(_) => {
-                    self.notice = None;
+            match self.card_edit(id, command, &params) {
+                Ok(()) => {
                     if let Some(target) = editing
                         && let Some(editor) = self.editors.get_mut(&id)
                     {
@@ -2757,7 +2792,6 @@ impl NodeCraftApp {
                     }
                 }
                 Err(error) => {
-                    self.notice = Some(error.message.clone());
                     if let Some(target) = editing
                         && let Some(editor) = self.editors.get_mut(&id)
                     {
@@ -2770,13 +2804,13 @@ impl NodeCraftApp {
         if let Some(id) = refresh
             && let Err(error) = self.request_run(id, generate::RunKind::Refresh)
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         if !ui.input(|i| i.pointer.primary_down())
             && let Some(drag) = self.drag.take()
             && let Err(error) = self.session.dispatch("node.move", &json!({"canvas":self.canvas,"id":drag.id,"pos":drag.pos,"gesture":drag.gesture}))
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
         if !ui.input(|i| i.pointer.primary_down()) {
             self.marquee = None;
@@ -2805,24 +2839,11 @@ impl NodeCraftApp {
                     // The report is for reading elsewhere: put it on the clipboard.
                     Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
-                        self.notify(notices::NoticeKind::Success, "Performance report copied to the clipboard.");
+                        self.notices.success("Performance report copied to the clipboard.");
                     }
-                    Err(error) => self.notice = self.notices.error(error.message),
+                    Err(error) => self.notices.report(error),
                 },
-                palette::Outcome::Chosen(palette::Target::Command(id)) => {
-                    #[cfg(not(target_arch = "wasm32"))]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
-                        self.begin_file(id, ui.ctx());
-                    } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
-                    }
-                    #[cfg(target_arch = "wasm32")]
-                    if matches!(id, "file.open" | "file.save" | "file.save_as") {
-                        self.web_file(id, ui.ctx());
-                    } else {
-                        self.dispatch_live_palette_command(ui.ctx(), id);
-                    }
-                }
+                palette::Outcome::Chosen(palette::Target::Command(id)) => self.run_palette_command(ui.ctx(), id),
             }
         }
         if let Some(mut open) = self.turn_into.take() {
@@ -2917,6 +2938,109 @@ impl NodeCraftApp {
         })
     }
 
+    /// Which open tool panel this frame's Escape closes: the frontmost of Workflow fields and
+    /// Batch items, when nothing else owns the key. Every other Escape owner comes first: a
+    /// question, a popup, the quick-add palette or Turn into, a text field (Escape leaves it
+    /// first), the keyboard connect flow, Search (unless something blocks it), Discussions, the
+    /// Tag filter while it has the focus, any drag or gesture (card, box, wire, reorder, field,
+    /// comment pin, minimap, a slider) and a browser file read. The key is consumed, so the
+    /// canvas doesn't also act on it.
+    /// Runs command `id` as the palette does: the file commands through their pickers, the
+    /// rest through the live dispatch. A notice's action button (#1110) uses it too.
+    pub(super) fn run_palette_command(&mut self, ctx: &egui::Context, id: &str) {
+        #[cfg(not(target_arch = "wasm32"))]
+        if matches!(id, "file.open" | "file.save" | "file.save_as") {
+            self.begin_file(id, ctx);
+        } else {
+            self.dispatch_live_palette_command(ctx, id);
+        }
+        #[cfg(target_arch = "wasm32")]
+        if matches!(id, "file.open" | "file.save" | "file.save_as") {
+            self.web_file(id, ctx);
+        } else {
+            self.dispatch_live_palette_command(ctx, id);
+        }
+    }
+
+    /// Dispatches card `id`'s own edit (`command`). Its error is owned by the card and command,
+    /// so a later successful edit of the same kind takes it back (#1110).
+    pub(super) fn card_edit(&mut self, id: NodeId, command: &str, params: &serde_json::Value) -> Result<(), Error> {
+        let owner = format!("{command} {id}");
+        match self.session.dispatch(command, params) {
+            Ok(_) => {
+                self.notices.clear();
+                self.notices.settle(&owner);
+                Ok(())
+            }
+            Err(error) => {
+                self.notices.report_for(owner, error.clone());
+                Err(error)
+            }
+        }
+    }
+
+    /// A notice takes Escape only while one of its buttons has the keyboard focus (egui has
+    /// already dropped that focus for this press, so it is last frame's) and the stack was drawn
+    /// last frame. Callers check the other Escape owners first.
+    fn take_notice_escape(&mut self, ctx: &egui::Context) -> bool {
+        if let Some(notice) = self.notices.focused(ctx)
+            && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+        {
+            self.notice_escape = Some(notice);
+            return true;
+        }
+        false
+    }
+
+    fn take_tool_escape(&mut self, ctx: &egui::Context, blocked: bool) -> Option<ToolEscape> {
+        #[cfg(any(test, target_arch = "wasm32"))]
+        let reading = self.web_drop.is_some();
+        #[cfg(not(any(test, target_arch = "wasm32")))]
+        let reading = false;
+        // Search and the Tag filter take Escape only when they can: open Search not blocked by
+        // something else, a Tag filter holding the keyboard focus.
+        let search = self.search.open && !self.search_context(ctx).blocked;
+        let owned = blocked
+            || self.text_focused
+            || canvas::text_input_focused(ctx)
+            || egui::Popup::is_any_open(ctx)
+            || ctx.dragged_id().is_some()
+            || self.palette.is_some()
+            || self.turn_into.is_some()
+            || self.key_wiring.is_some()
+            || search
+            || self.comments.open
+            || self.comments.drag.is_some()
+            || self.comments.gesture_cancelled
+            || self.tag_owns_focus(ctx)
+            || self.drag.is_some()
+            || self.marquee.is_some()
+            || self.wiring.is_some()
+            || self.reordering.is_some()
+            || self.fields.drag.is_some()
+            || self.navigation.pointer_owned
+            || self.navigation.drag.is_some()
+            || self.drop_pointer_owned()
+            || reading;
+        if owned {
+            return None;
+        }
+        // A notice takes Escape before any tool.
+        if self.take_notice_escape(ctx) {
+            return None;
+        }
+        let open = [
+            self.comfy_mapping.as_ref().map(|editor| (ToolEscape::Mapping, editor.panel_id())),
+            self.batch_review.as_ref().map(|_| (ToolEscape::Batch, egui::Id::new(batch_review::BATCH_REVIEW_ID))),
+        ];
+        let front = ctx.memory(|m| {
+            let order: Vec<egui::LayerId> = m.layer_ids().collect();
+            open.into_iter().flatten().max_by_key(|(_, id)| order.iter().position(|layer| *layer == crate::floating::layer(*id)))
+        });
+        let (tool, _) = front?;
+        ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)).then_some(tool)
+    }
+
     /// What every plan §2.1 canvas letter yields to, so that quick-add (#267) and the prompt
     /// overlays' `H` (#321) cannot drift apart. Each term is a reader of state only: nothing here
     /// consumes an event, so a refused letter stays unconsumed for whoever does own it.
@@ -3005,7 +3129,7 @@ impl NodeCraftApp {
         if let Some(runs) = &mut self.runs
             && let Err(error) = runs.forget_adapters(&mut self.session)
         {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
 
@@ -3101,7 +3225,7 @@ impl NodeCraftApp {
     }
     /// Delete the selection (nodes, noodles and the selected field) in one undo step, skipping
     /// ids an undo already removed. A deleted field's cards stay.
-    fn dispatch_delete(&mut self) {
+    pub(super) fn dispatch_delete(&mut self) {
         let Some(canvas) = self.session.document().canvases().get(&self.canvas) else { return };
         let nodes: Vec<NodeId> = self.selection.nodes().iter().copied().filter(|id| canvas.nodes().contains_key(id)).collect();
         let edges: Vec<EdgeId> = self.selection.edges().iter().copied().filter(|id| canvas.edges().contains_key(id)).collect();
@@ -3111,11 +3235,11 @@ impl NodeCraftApp {
         }
         match self.session.dispatch("canvas.delete", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges, "fields": fields})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.clear();
                 self.fields.selected = None;
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -3151,16 +3275,16 @@ impl NodeCraftApp {
             |n| payload_rect(&self.session, n, self.theme.tokens()),
             self.session.revision(),
         ) else {
-            self.notice = Some("Couldn't prepare the cut roundtrip; copy fewer nodes or check their stored data.".into());
+            self.notices.error("Couldn't prepare the cut roundtrip; copy fewer nodes or check their stored data.");
             return;
         };
         match self.session.dispatch_clipboard_cut(&json!({"canvas":self.canvas,"nodes":nodes}), &json!({"canvas":self.canvas,"nodes":pasted,"edges":edges})) {
             Ok(_) => {
                 ctx.copy_text(text);
                 self.selection.clear();
-                self.notice = None;
+                self.notices.clear();
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
     /// Paste copied nodes centred on `centre` (one undo step) and select them.
@@ -3168,16 +3292,16 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let placed = clipboard::place(self.session.document(), self.canvas, payload, centre, |n| payload_rect(&self.session, n, t), self.session.revision());
         let Some((nodes, edges)) = placed else {
-            self.notice = Some("Couldn't prepare the pasted nodes; copy fewer nodes or check their stored data.".into());
+            self.notices.error("Couldn't prepare the pasted nodes; copy fewer nodes or check their stored data.");
             return;
         };
         let pasted: std::collections::BTreeSet<NodeId> = nodes.iter().map(|n| n.id).collect();
         match self.session.dispatch("canvas.paste", &json!({"canvas": self.canvas, "nodes": nodes, "edges": edges})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.replace(pasted);
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -3196,7 +3320,7 @@ impl NodeCraftApp {
                 let canvas = document.canvases().get(&self.canvas)?;
                 let source = canvas.nodes().get(&id)?;
                 let Some(node) = ids::node_id(document, ("extract", id, generation, self.session.revision())) else {
-                    self.notice = Some("Couldn't find a free id for the extracted result".into());
+                    self.notices.error("Couldn't find a free id for the extracted result");
                     return None;
                 };
                 let mut params = json!({"canvas": self.canvas, "id": id, "generation": generation, "node": node, "pos": source.pos});
@@ -3209,7 +3333,7 @@ impl NodeCraftApp {
                 let extracted = match self.session.preview_created_node("history.extract", &params, node) {
                     Ok(extracted) => extracted,
                     Err(error) => {
-                        self.notice = self.notices.error(error.message);
+                        self.notices.report(error);
                         return None;
                     }
                 };
@@ -3274,13 +3398,13 @@ impl NodeCraftApp {
                 let id = node.id;
                 match self.session.dispatch("canvas.paste", &json!({"canvas": self.canvas, "nodes": [node]})) {
                     Ok(_) => {
-                        self.notice = None;
+                        self.notices.clear();
                         self.selection.only(id);
                     }
-                    Err(error) => self.notice = self.notices.error(error.message),
+                    Err(error) => self.notices.report(error),
                 }
             }
-            Err(message) => self.notice = Some(message),
+            Err(message) => self.notices.error(message),
         }
     }
 
@@ -3334,24 +3458,24 @@ impl NodeCraftApp {
         let pos = nodecraft_graph::Position { x: world.x - t.card_width * 0.5, y: world.y - t.card_min_height * 0.5 };
         let seed = (kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
         let Some(id) = ids::node_id(self.session.document(), seed) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         // Keep id allocation stable, but center the actual default card, not the old baseline.
         let size = match self.creation_size(kind, id, pos, None, t) {
             Ok(size) => size,
             Err(error) => {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
                 return;
             }
         };
         let pos = nodecraft_graph::Position { x: world.x - size.x * 0.5, y: world.y - size.y * 0.5 };
         match self.session.dispatch("node.create", &json!({"canvas": self.canvas, "id": id, "kind": kind, "pos": pos})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(id);
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -3369,7 +3493,7 @@ impl NodeCraftApp {
                     .or_else(|| self.input_ports.get(node).iter().find(|port| port.name == menu.anchor.port).map(|port| port.port_type))
             });
             let Some(current) = current else {
-                self.notice = Some("That input changed or was removed. Drag a new connection to continue.".into());
+                self.notices.warning("That input changed or was removed. Drag a new connection to continue.");
                 return;
             };
             current
@@ -3384,7 +3508,7 @@ impl NodeCraftApp {
             match current {
                 Ok(port_type) => port_type,
                 Err(error) => {
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                     return;
                 }
             }
@@ -3394,19 +3518,19 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("turn-into", kind, self.session.revision(), pos.x.to_bits(), pos.y.to_bits());
         let (Some(id), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         let (size, anchor) = match self.creation_geometry(kind, id, pos, Some((menu.side, port_type)), t) {
             Ok(geometry) => geometry,
             Err(error) => {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
                 return;
             }
         };
         let pos = if menu.side == Side::Input {
             let Some(anchor) = anchor else {
-                self.notice = Some("That node's compatible port is unavailable.".into());
+                self.notices.error("That node's compatible port is unavailable.");
                 return;
             };
             nodecraft_graph::Position { x: menu.world.x - anchor.x, y: menu.world.y - anchor.y }
@@ -3418,10 +3542,10 @@ impl NodeCraftApp {
         params[if menu.side == Side::Input { "to" } else { "from" }] = json!(menu.anchor);
         match self.session.dispatch("node.create_connected", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(id);
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -3478,31 +3602,8 @@ impl NodeCraftApp {
         else {
             return (None, None, None);
         };
-        // Nodes that already feed the source: connecting into any of them would close a loop.
-        let feeding = selection::upstream(canvas, &[wiring.anchor.node].into_iter().collect());
-        // Inputs this output already feeds (other than the noodle being moved), built once so
-        // each candidate input is a set lookup rather than a scan of every edge.
-        let fed: std::collections::BTreeSet<(NodeId, &str)> =
-            canvas.edges().values().filter(|e| e.from == wiring.anchor && Some(e.id) != wiring.moving).map(|e| (e.to.node, e.to.port.as_str())).collect();
-        let accepts = |node: &Node, input: &nodecraft_graph::Port| -> Result<(), String> {
-            if node.id == wiring.anchor.node {
-                Err("A node can't connect to itself.".into())
-            } else if !noodle::compatible(wiring.port_type, input.port_type) {
-                Err(if wiring.port_type.modality == input.port_type.modality {
-                    "A list output needs a list input.".into()
-                } else {
-                    let mut from = noodle::modality_phrase(wiring.port_type.modality).chars();
-                    let from: String = from.next().map(|c| c.to_uppercase().chain(from).collect()).unwrap_or_default();
-                    format!("{from} output can't connect to {} input.", noodle::modality_phrase(input.port_type.modality))
-                })
-            } else if feeding.contains(&node.id) {
-                Err("That connection would create a loop.".into())
-            } else if fed.contains(&(node.id, input.name.as_str())) {
-                Err("These ports are already connected.".into())
-            } else {
-                Ok(())
-            }
-        };
+        let rules = wire_rules::IntoInputs::new(canvas, wiring);
+        let accepts = |node: &Node, input: &nodecraft_graph::Port| rules.accepts(node, input);
         let world = self.view.to_world(origin, pointer);
         let reach = card::PORT_HIT / self.view.zoom + t.port_radius;
         let on_canvas = self.viewport.contains(pointer) && ui.ctx().layer_id_at(pointer).is_none_or(|layer| layer == ui.layer_id());
@@ -3563,30 +3664,9 @@ impl NodeCraftApp {
         if let Err(message) = accepts(node, input) {
             return (None, Some(message), None);
         }
-        let to = Endpoint { node: node.id, port: input.name.clone() };
-        let occupants: Vec<_> = noodle::into_port(canvas, &to).into_iter().filter(|e| Some(e.id) != wiring.moving).collect();
-        if wiring.moving.is_some_and(|id| canvas.edges().get(&id).is_some_and(|e| e.to == to)) {
-            return (None, None, None);
-        }
-        let mut replace: Vec<EdgeId> = wiring.moving.into_iter().collect();
-        let order = if input.port_type.many {
-            match noodle::next_order(canvas, &to, wiring.moving) {
-                Some(order) => order,
-                None => return (None, Some("This input can't take more connections.".into()), None),
-            }
-        } else {
-            // A single input swaps its current noodle for the new one, in the same undo step.
-            replace.extend(occupants.first().map(|e| e.id));
-            0
-        };
-        let Some(id) = wiring.moving.or_else(|| noodle::new_edge_id(self.session.document(), &wiring.anchor, &to, self.session.revision())) else {
-            return (None, Some("Couldn't allocate a connection id; try again.".into()), None);
-        };
-        let edge = json!({"id": id, "from": wiring.anchor, "to": to, "order": order});
-        if replace.is_empty() {
-            (Some(("edge.connect", json!({"canvas": self.canvas, "edge": edge}))), None, None)
-        } else {
-            (Some(("edge.rewire", json!({"canvas": self.canvas, "edge": edge, "replace": replace}))), None, None)
+        match self.connect_into(canvas, wiring, node, input) {
+            Ok(command) => (command, None, None),
+            Err(message) => (None, Some(message), None),
         }
     }
 }
@@ -3684,6 +3764,13 @@ impl NodeCraftApp {
         }
         self.live.stop(deadline);
     }
+}
+
+/// A tool panel Escape can close (#1116).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ToolEscape {
+    Mapping,
+    Batch,
 }
 
 impl eframe::App for NodeCraftApp {
@@ -3875,8 +3962,6 @@ mod centering_tests;
 #[cfg(test)]
 mod names1118_tests;
 #[cfg(test)]
-mod notices1110_tests;
-#[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod text_card_tests;
@@ -3910,6 +3995,8 @@ mod stale_tests;
 
 #[cfg(test)]
 mod floating957_tests;
+#[cfg(test)]
+mod notices1110_tests;
 #[cfg(test)]
 mod router949_tests;
 #[cfg(test)]

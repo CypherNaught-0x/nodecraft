@@ -330,7 +330,7 @@ impl super::NodeCraftApp {
         };
         let settings = self.store.as_ref().map(|store| store.get().updates.clone()).unwrap_or_default();
         if let Some(notice) = checker.tick(&mut self.session, &settings) {
-            self.notice = Some(notice);
+            self.notices.push(crate::notices::NoticeKind::of_report(&notice), notice);
         }
         let busy = self.runs.as_ref().is_some_and(|runs| runs.is_busy() || runs.has_waiting());
         if checker.tick_install(&mut self.session, busy) {
@@ -407,7 +407,7 @@ impl super::NodeCraftApp {
             // Failures show in the banner; a refusal (busy, nothing ready) becomes the notice.
             Chosen::Command(id) => {
                 if let Err(error) = self.session.dispatch(id, &json!({})) {
-                    self.notice = self.notices.error(error.message);
+                    self.notices.report(error);
                 }
             }
             Chosen::Dismiss(version) => {
@@ -415,18 +415,20 @@ impl super::NodeCraftApp {
                     Some(store) => {
                         store.update(|settings| settings.updates.dismissed = Some(version));
                     }
-                    None => self.notice = Some(UNSAVED.into()),
+                    None => self.notices.warning(UNSAVED),
                 }
                 self.close_update_banner();
             }
             Chosen::StopChecking => {
-                self.notice = Some(match &mut self.store {
+                match &mut self.store {
                     Some(store) => {
                         store.update(|settings| settings.updates.check = false);
-                        "NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.".into()
+                        self.notices.info("NodeCraft won't check for updates at startup. Check for Updates… in the palette still checks.");
                     }
-                    None => UNSAVED.into(),
-                });
+                    None => {
+                        self.notices.warning(UNSAVED);
+                    }
+                }
                 self.close_update_banner();
             }
         }

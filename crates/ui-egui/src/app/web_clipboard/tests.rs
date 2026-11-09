@@ -37,7 +37,7 @@ fn a_browser_png_paste_uses_the_desktop_import_and_one_undo_step() {
     gesture(&mut h);
     h.run();
     assert_eq!(calls.get(), 1);
-    assert_eq!(count(&h), old + 1, "{:?}", h.state().notice);
+    assert_eq!(count(&h), old + 1, "{:?}", h.state().notice());
     let selected = h.state().selection.nodes();
     assert_eq!(selected.len(), 1);
     let id = selected.iter().next().unwrap();
@@ -46,7 +46,7 @@ fn a_browser_png_paste_uses_the_desktop_import_and_one_undo_step() {
     let world = h.state().view.to_world(h.state().viewport.min, egui::pos2(600.0, 300.0));
     let rect = super::super::payload_rect(&h.state().session, node, h.state().theme.tokens());
     assert!((rect.center() - world).length() < 1.0, "browser PNG uses the current payload centering");
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -71,10 +71,10 @@ fn a_completed_read_survives_a_browser_clipboard_frame_after_the_deadline() {
     h.input_mut().time = Some(deadline + READ_SECONDS);
     h.step();
     assert!(h.ctx.input(|i| i.time) > deadline);
-    assert_eq!(count(&h), old + 1, "completed PNG must survive the delayed frame: {:?}", h.state().notice);
+    assert_eq!(count(&h), old + 1, "completed PNG must survive the delayed frame: {:?}", h.state().notice());
     assert!(h.state().web_paste.pending.is_none());
     assert!(!h.state().web_paste.busy.get());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -90,7 +90,7 @@ fn denied_missing_and_malformed_browser_images_refuse_without_a_mutation() {
         h.run();
         assert_eq!(calls.get(), 1);
         assert_eq!(h.state().session.document(), &before);
-        assert!(h.state().notice.is_some());
+        assert!(h.state().notice().is_some());
         assert!(!h.state().session.can_undo());
     }
 }
@@ -171,7 +171,7 @@ fn an_unsettled_permission_times_out_without_replacement_requests_or_blocking_ca
     assert!(h.state().web_paste.busy.get());
     gesture(&mut h);
     assert_eq!(calls.get(), 1, "an unresolved permission request is never replaced by another one");
-    assert_eq!(h.state().notice.as_deref(), Some(READING));
+    assert_eq!(h.state().notice(), Some(READING));
     let old = count(&h);
     h.hover_at(egui::pos2(600.0, 300.0));
     h.key_press(egui::Key::T);

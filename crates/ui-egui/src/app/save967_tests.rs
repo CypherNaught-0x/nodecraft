@@ -45,12 +45,15 @@ fn image() -> Vec<u8> {
 
 fn card_point(h: &Harness<'static, NodeCraftApp>) -> Pos2 {
     let rect = h.state().view.rect_to_screen(h.state().viewport.min, *h.state().painted.get(&NODE).unwrap());
+    // The canvas below the application row, which can cover a card's top.
+    let viewport = h.state().viewport;
+    let below = Rect::from_min_max(Pos2::new(viewport.left(), viewport.top().max(h.state().topbar_rect().bottom())), viewport.max);
     let top = rect.left_top() + Vec2::splat(3.0);
-    if h.state().viewport.contains(top) {
+    if below.contains(top) {
         top
     } else {
         // A tall 3D card can extend above the viewport. Avoid its edge port hit targets.
-        rect.intersect(h.state().viewport).left_top() + Vec2::splat(2.0 * h.state().theme.tokens().card_padding)
+        rect.intersect(below).left_top() + Vec2::splat(2.0 * h.state().theme.tokens().card_padding)
     }
 }
 
@@ -103,7 +106,7 @@ fn save967_each_media_card_writes_only_the_chosen_bytes() {
         assert!(h.query_by_label("Save to folder…").is_some(), "{kind} context at {point:?}, popup {}", egui::Popup::is_any_open(&h.ctx));
         h.get_by_label("Save as…").click();
         finish_file(&mut h);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{kind}: {:?}", h.state().notice);
+        assert_eq!(std::fs::read(&path).unwrap(), bytes, "{kind}: {:?}", h.state().notice());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1, "no sidecars or siblings: {kind}");
         assert_eq!(h.state().session.document(), &before);
     }
@@ -156,7 +159,11 @@ fn save967_preview_menus_cover_audio_video_and_interactive_mesh() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("chosen.bin");
         h.state_mut().exports.answer = Some(path.clone());
-        h.get_by_label(label).click_secondary();
+        // The preview's part below the application row, which can cover a tall card's top.
+        let viewport = h.state().viewport;
+        let below = Rect::from_min_max(Pos2::new(viewport.left(), viewport.top().max(h.state().topbar_rect().bottom())), viewport.max);
+        let at = h.get_by_label(label).rect().intersect(below).center();
+        secondary(&mut h, at);
         h.run();
         h.get_by_label("Save as…").click();
         finish_file(&mut h);

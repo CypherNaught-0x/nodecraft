@@ -27,7 +27,7 @@ impl NodeCraftApp {
         let mut success = true;
         for (id, canvas, state) in pending {
             if let Err(error) = self.session.dispatch("mesh.view_set", &json!({"canvas":canvas,"id":id,"view":state})) {
-                self.notice = self.notices.error(error.message);
+                self.notices.report(error);
                 success = false;
                 if let Some(view) = self.mesh_views.get_mut(&id) {
                     view.discard();

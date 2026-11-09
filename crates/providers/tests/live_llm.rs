@@ -1,7 +1,8 @@
 //! Opt-in live smoke tests against real APIs. They cost a few tokens and never run in CI:
 //! `NODECRAFT_LIVE_OPENAI=1 OPENAI_API_KEY=… cargo test -p nodecraft-providers --test live_llm`
 //! (likewise `NODECRAFT_LIVE_ANTHROPIC=1 ANTHROPIC_API_KEY=…`, `NODECRAFT_LIVE_OLLAMA=1`,
-//! `NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=…`).
+//! `NODECRAFT_LIVE_BEDROCK=1 BEDROCK_API_KEY=… BEDROCK_REGION=…`, and `NODECRAFT_LIVE_DEEPSEEK`,
+//! `_MISTRAL`, `_GROQ`, `_XAI` with `<PROVIDER>_API_KEY`).
 
 #![cfg(all(feature = "http", feature = "llm", not(target_arch = "wasm32")))]
 
@@ -130,4 +131,42 @@ async fn live_bedrock46() {
     assert!(!streamed.text.trim().is_empty(), "{streamed:?}");
     let whole = client.chat(&request).await.unwrap();
     assert!(!whole.text.trim().is_empty(), "{whole:?}");
+}
+
+/// `NODECRAFT_LIVE_DEEPSEEK=1 DEEPSEEK_API_KEY=…`, `NODECRAFT_LIVE_MISTRAL=1 MISTRAL_API_KEY=…`,
+/// `NODECRAFT_LIVE_GROQ=1 GROQ_API_KEY=…`, `NODECRAFT_LIVE_XAI=1 XAI_API_KEY=…` (#1122): one short
+/// paid chat each, streamed and then whole, on a catalog model (or `NODECRAFT_LIVE_<P>_MODEL`).
+async fn live_vendor(provider: &str, endpoint: fn(ApiKey) -> Endpoint, default_model: &str) {
+    if !enabled(provider) {
+        return;
+    }
+    let key = ApiKey::new(std::env::var(format!("{provider}_API_KEY")).unwrap());
+    let model = std::env::var(format!("NODECRAFT_LIVE_{provider}_MODEL")).unwrap_or_else(|_| default_model.into());
+    let client = LlmClient::new(endpoint(key), Arc::new(ReqwestHttp::new().unwrap()));
+    // Reasoning counts against the cap, so leave room for the answer.
+    let request = ChatRequest { max_tokens: Some(1024), ..ask(&model) };
+    let streamed = client.chat_stream(&request, &mut |_| {}).await.unwrap();
+    assert!(!streamed.text.trim().is_empty(), "{streamed:?}");
+    let whole = client.chat(&request).await.unwrap();
+    assert!(!whole.text.trim().is_empty(), "{whole:?}");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_deepseek() {
+    live_vendor("DEEPSEEK", Endpoint::deepseek, "deepseek-flash").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_mistral() {
+    live_vendor("MISTRAL", Endpoint::mistral, "mistral-small-2603").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_groq() {
+    live_vendor("GROQ", Endpoint::groq, "openai/gpt-oss-20b").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_xai() {
+    live_vendor("XAI", Endpoint::xai, "grok-4.3").await;
 }

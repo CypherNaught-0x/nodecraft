@@ -55,6 +55,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `deepgram.nova-3` | [Documentation](https://developers.deepgram.com/docs/pre-recorded-audio) | 2026-10-27 |
+| `deepseek.flash` | [Documentation](https://api-docs.deepseek.com/quick_start/pricing) | 2026-11-08 |
+| `deepseek.v4-pro` | [Documentation](https://api-docs.deepseek.com/quick_start/pricing) | 2026-11-08 |
 | `elevenlabs.flash-v2-5` | [Documentation](https://elevenlabs.io/docs/overview/models) | 2026-10-27 |
 | `elevenlabs.multilingual-v2` | [Documentation](https://elevenlabs.io/docs/overview/models) | 2026-10-27 |
 | `elevenlabs.music` | [Documentation](https://elevenlabs.io/docs/api-reference/music/compose) | 2026-10-27 |
@@ -126,6 +128,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `google-veo.veo-3.1` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
 | `google-veo.veo-3.1-fast` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
 | `google-veo.veo-3.1-lite` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
+| `groq.gpt-oss-120b` | [Documentation](https://console.groq.com/docs/models) | 2026-11-08 |
+| `groq.gpt-oss-20b` | [Documentation](https://console.groq.com/docs/models) | 2026-11-08 |
 | `higgsfield.genjutsu-motion-transfer` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/motion-transfer) | 2026-10-27 |
 | `higgsfield.genjutsu-object-swap` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/object-swap) | 2026-10-27 |
 | `higgsfield.genjutsu-restyle` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/restyle) | 2026-10-27 |
@@ -144,6 +148,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `meshy.retexture` | [Documentation](https://docs.meshy.ai/en/api/retexture) | 2026-10-27 |
 | `meshy.retexture-image` | [Documentation](https://docs.meshy.ai/en/api/retexture) | 2026-10-27 |
 | `meshy.text-to-3d` | [Documentation](https://docs.meshy.ai/en/api/text-to-3d) | 2026-10-27 |
+| `mistral.large-4` | [Documentation](https://docs.mistral.ai/models/mistral-large-4-0) | 2026-11-08 |
+| `mistral.small-4` | [Documentation](https://docs.mistral.ai/models/mistral-small-4-0-26-03) | 2026-11-08 |
 | `openai-audio.mini-tts` | [Documentation](https://developers.openai.com/api/docs/deprecations) | 2026-10-27 |
 | `openai-audio.transcribe` | [Documentation](https://developers.openai.com/api/docs/models/gpt-transcribe) | 2026-10-27 |
 | `openai-images.flare` | [Documentation](https://developers.openai.com/api/docs/guides/image-prompting) | 2026-10-27 |
@@ -167,6 +173,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+| `xai.grok-4.3` | [Documentation](https://docs.x.ai/developers/pricing) | 2026-11-08 |
+| `xai.grok-4.7` | [Documentation](https://docs.x.ai/developers/models) | 2026-11-08 |
 
 MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
 Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact

@@ -22,6 +22,7 @@ fn mapping947_real_checkbox_apply_and_undo_change_an_existing_card_without_reimp
     let mut h = Harness::builder().with_size(egui::Vec2::new(1100.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
     h.run();
     assert!(h.query_by_label("Workflow fields").is_some());
+    crate::app::panel_check::check_open_panels(&h, "Workflow fields");
     h.get_by_label("Show 2.strength").click();
     h.run();
     h.get_by_label("Apply fields").click();
@@ -111,4 +112,22 @@ fn mapping947_visual_evidence() {
         h.run();
         h.render().unwrap().save(folder.join(format!("after-{name}.png"))).unwrap();
     }
+}
+
+/// #1116: Workflow fields is a tool, a floating panel kept in the panel area at 640 × 400;
+/// Escape closes it without saving and doesn't also clear the canvas selection.
+#[test]
+fn dialogs1116_workflow_fields_is_a_panel_on_screen_and_escape_closes_only_it() {
+    let mut app = app();
+    app.selection.only(N);
+    let before = app.session.document().clone();
+    let mut h = Harness::builder().with_size(egui::Vec2::new(640.0, 400.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    h.run_steps(6);
+    assert!(h.query_by_label("Choose what appears on this card.").is_some());
+    crate::app::panel_check::check_open_panels(&h, "Workflow fields at 640 × 400");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().comfy_mapping.is_none());
+    assert_eq!(*h.state().session.document(), before);
+    assert!(h.state().selection.nodes().contains(&N), "Escape closed the panel without reaching the canvas");
 }

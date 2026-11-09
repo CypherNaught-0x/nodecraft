@@ -83,7 +83,7 @@ impl NodeCraftApp {
             None => Ok(()),
         };
         if let Err(error) = result {
-            self.notice = self.notices.error(error.message);
+            self.notices.report(error);
         }
     }
 

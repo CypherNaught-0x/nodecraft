@@ -131,11 +131,19 @@ fn composed_node_anchor_is_world_only_at_every_zoom() {
     }
 }
 
+/// A short window used to give the discussion panel the space over the minimap. Since the map
+/// hides itself in a canvas too short to leave the panel room above it (#1115), the panel and the
+/// navigation panel never share space; the map still pans with Search and Discussions open.
 #[test]
-fn minimap_whitespace_below_actual_short_discussion_panel_still_pans() {
-    for (pixels_per_point, one_thread) in [(1.0, false), (2.0, false), (1.0, true), (2.0, true)] {
+fn small_windows_keep_discussions_clear_of_the_minimap_which_still_pans() {
+    for (size, pixels_per_point, one_thread) in [
+        (Vec2::new(760.0, 520.0), 1.0, false),
+        (Vec2::new(760.0, 520.0), 2.0, true),
+        (Vec2::new(420.0, 360.0), 1.0, false),
+        (Vec2::new(420.0, 360.0), 2.0, true),
+    ] {
         let mut h = Harness::builder()
-            .with_size(Vec2::new(420.0, 360.0))
+            .with_size(size)
             .with_pixels_per_point(pixels_per_point)
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), NodeCraftApp::headless().unwrap());
         if one_thread {
@@ -145,16 +153,20 @@ fn minimap_whitespace_below_actual_short_discussion_panel_still_pans() {
                 .dispatch("comment.create", &json!({"canvas":canvas,"id":CommentId::from_bytes([107;16]),"text":"One thread","pos":{"x":-1000,"y":-1000}}))
                 .unwrap();
         }
+        h.state_mut().search.open = true;
         h.state_mut().comments.open = true;
         h.run();
-        let actual = h.ctx.memory(|m| m.area_rect(egui::Id::new("discussions_panel"))).unwrap();
-        let map = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map;
-        let at = Pos2::new(map.center().x, map.bottom() - 8.0);
-        assert!(h.state().discussion_rect().contains(at) && !actual.contains(at), "actual={actual:?}, map={map:?}");
+        let layout = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens());
+        let panel = h.state().discussion_rect();
+        assert!(!panel.intersects(layout.overlay), "{size:?}: discussions {panel:?} cross navigation {:?}", layout.overlay);
+        if !layout.map_shown {
+            continue;
+        }
         let before = h.state().view;
+        let at = Pos2::new(layout.map.center().x, layout.map.bottom() - 8.0);
         pointer(&mut h, at, true);
         pointer(&mut h, at, false);
-        assert_ne!(h.state().view, before, "unpainted panel budget must not steal minimap clicks");
+        assert_ne!(h.state().view, before, "{size:?}: the minimap pans");
     }
 }
 
@@ -224,7 +236,7 @@ fn selected_badge_beside_right_panel_does_not_fall_back_over_the_node_preview() 
     let from = h.get_by_role_and_label(Role::Button, &label).rect().center();
     h.get_by_role_and_label(Role::Button, &label).click();
     h.run();
-    assert_eq!(h.state().comments.active, Some(id), "notice={:?}, from={from:?}", h.state().notice);
+    assert_eq!(h.state().comments.active, Some(id), "notice={:?}, from={from:?}", h.state().notice());
     let shown = h.get_by_role_and_label(Role::Button, &label).rect();
     let body = h.state().view.rect_to_screen(h.state().viewport.min, h.state().navigation.geometry.rects[&node]);
     assert!(!shown.intersects(body));
@@ -242,7 +254,12 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
             h.run();
             let button = h.state().comments_toolbar_rect();
             let app = h.state();
-            assert!((button.right() - (app.viewport.right() - app.theme.tokens().navigation_margin)).abs() < 1.0);
+            // At the row's right end, inside its frame (#1115 keeps Comments in a narrow row).
+            let right = app.viewport.right() - app.theme.tokens().navigation_margin;
+            assert!(
+                button.right() <= right + 1.0 && button.right() >= right - app.theme.tokens().navigation_gap - app.theme.tokens().handle_stroke - 1.0,
+                "{button:?} at {size:?}"
+            );
             assert!(app.topbar_rect().contains_rect(button));
             if search {
                 assert!(app.search_rect().top() >= app.topbar_rect().bottom() + app.theme.tokens().navigation_gap - 1.0);
@@ -252,7 +269,7 @@ fn right_chrome_stacks_below_search_and_stays_disjoint_from_tags_at_small_sizes(
             h.get_by_role_and_label(Role::Button, "Comments").click();
             h.run();
             assert_eq!(h.state().view, view, "Comments click must not also pan the minimap");
-            assert!(h.state().comments.open, "real right-side button must own its click: size={size:?}, search={search}, notice={:?}", h.state().notice);
+            assert!(h.state().comments.open, "real right-side button must own its click: size={size:?}, search={search}, notice={:?}", h.state().notice());
             h.state_mut().tag_filter.open = true;
             h.run();
             let panel = h.state().discussion_rect();
@@ -493,7 +510,7 @@ fn projected_node_pin_click_cancel_drag_and_undo_keep_the_original_offset_contra
             Some(id),
             "zoom={zoom}, ppp={pixels_per_point}, viewport={:?}, notice={:?}, from={from:?}",
             h.state().viewport,
-            h.state().notice
+            h.state().notice()
         );
         assert_eq!(h.state().session.document(), &original);
         for cancel in [true, false] {

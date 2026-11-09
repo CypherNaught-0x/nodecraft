@@ -115,9 +115,20 @@ pub struct Tokens {
     pub comment_marker_gap: f32,
     pub comment_marker_radius: u8,
     pub comments_button_width: f32,
-    /// The agent sidebar's width (#114).
+    /// The agent sidebar's width (#114): where it opens, and the narrowest it can be dragged.
+    /// It never takes more than `agent_max_fraction` of the window (#1115).
     pub agent_width: f32,
+    pub agent_min_width: f32,
+    pub agent_max_fraction: f32,
+    /// The navigation panel's (minimap and its toolbar) widest, and its narrowest: enough for
+    /// the toolbar's labels. Between them it takes `navigation_fraction` of the canvas width,
+    /// and the map keeps its `navigation_width` : `minimap_height` shape (#1115).
     pub navigation_width: f32,
+    pub navigation_min_width: f32,
+    pub navigation_fraction: f32,
+    /// Below this canvas width or height the map hides itself, leaving the toolbar (#1115).
+    pub minimap_hide_width: f32,
+    pub minimap_hide_height: f32,
     pub minimap_height: f32,
     pub navigation_toolbar_height: f32,
     pub navigation_margin: f32,
@@ -182,6 +193,9 @@ pub struct Tokens {
     /// The ring around inputs that accept the noodle being dragged: gap outside the port, width.
     pub drop_ring_gap: f32,
     pub drop_ring_width: f32,
+    /// The `accent` ring around a port with keyboard focus, which is also where a keyboard
+    /// connection would land (#1109), in screen points.
+    pub port_focus_width: f32,
     /// The prompt composer on a generation card (#83): its fill, and the submit arrow's size.
     pub prompt_fill: Color32,
     pub submit_size: f32,
@@ -234,9 +248,10 @@ pub struct Tokens {
     pub dim: f32,
     /// A number inside a round badge, as a fraction of the badge's radius (input order badges).
     pub badge_text_ratio: f32,
-    /// Width of the coloured edge on a notice (#1110): `danger` for errors, `stale` for warnings,
-    /// `accent` for successes and `text_muted` for information, beside the kind's icon.
+    /// The coloured edge on a notice's left side, in its kind's colour (#1110).
     pub notice_edge: f32,
+    /// The width of the bottom-left notice stack, before it is fitted to the window.
+    pub notice_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -324,7 +339,13 @@ pub const DARK: Tokens = Tokens {
     comment_marker_radius: 6,
     comments_button_width: 110.0,
     agent_width: 360.0,
+    agent_min_width: 280.0,
+    agent_max_fraction: 0.5,
     navigation_width: 320.0,
+    navigation_min_width: 240.0,
+    navigation_fraction: 1.0 / 3.0,
+    minimap_hide_width: 720.0,
+    minimap_hide_height: 480.0,
     minimap_height: 160.0,
     navigation_toolbar_height: 30.0,
     navigation_margin: 16.0,
@@ -369,6 +390,7 @@ pub const DARK: Tokens = Tokens {
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
+    port_focus_width: 2.5,
     prompt_fill: Color32::from_rgb(0x1a, 0x1a, 0x1d),
     submit_size: 28.0,
     mention_fill: Color32::from_rgb(0x23, 0x36, 0x2d),
@@ -400,6 +422,7 @@ pub const DARK: Tokens = Tokens {
     dim: 0.6,
     badge_text_ratio: 1.2,
     notice_edge: 3.0,
+    notice_width: 380.0,
 };
 
 pub const LIGHT: Tokens = Tokens {

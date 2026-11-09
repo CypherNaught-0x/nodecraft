@@ -110,7 +110,7 @@ impl NodeCraftApp {
                     let first = page_param(found, "first", 1).saturating_sub(1);
                     self.reader = Some(Reader::new(source, Some(node), u32::try_from(first).unwrap_or(0)));
                 }
-                None => self.notice = Some("Connect a PDF to this node to choose its pages.".into()),
+                None => self.notices.info("Connect a PDF to this node to choose its pages."),
             }
         }
     }
@@ -312,7 +312,7 @@ impl NodeCraftApp {
             },
             ask => {
                 let Some(id) = ids::node_id(document, ("pdf_reader", node, revision, page)) else {
-                    self.notice = Some("Couldn't allocate a node id; try again.".into());
+                    self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
                     return;
                 };
                 match ask {
@@ -332,12 +332,12 @@ impl NodeCraftApp {
         };
         match result {
             Ok(made) => {
-                self.notice = None;
+                self.notices.clear();
                 if let Some(made) = made {
                     self.selection.only(made);
                 }
             }
-            Err(error) => self.notice = self.notices.error(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

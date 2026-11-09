@@ -100,8 +100,8 @@ fn malformed_undrawn_tall_cards_use_renderer_placeholder() {
         let before = h.state().session.document().clone();
         let v = h.state().view;
         let o = h.state().viewport.min;
-        let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 15.0));
-        let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 45.0));
+        let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 90.0));
+        let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 120.0));
         assert!(tall.intersects(Rect::from_two_pos(v.to_world(o, from), v.to_world(o, to))));
         hold(&mut h, from, to);
         assert!(h.state().selection.is_empty(), "{failure}: empty space below placeholder selected malformed card");
@@ -114,7 +114,7 @@ fn repeated_undrawn_admission_is_reused_during_marquee() {
     let (mut h, calls, tall) = fixture("params");
     let v = h.state().view;
     let o = h.state().viewport.min;
-    hold(&mut h, v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 15.0)), v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 45.0)));
+    hold(&mut h, v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 90.0)), v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 120.0)));
     assert!(h.state().marquee.is_some());
     assert!(calls.load(Ordering::SeqCst) > 0);
     calls.store(0, Ordering::SeqCst);
@@ -185,8 +185,8 @@ fn marquee_release_and_escape_release_retained_geometry() {
         let (mut h, _, tall) = fixture("params");
         let v = h.state().view;
         let o = h.state().viewport.min;
-        let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 15.0));
-        let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 45.0));
+        let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 90.0));
+        let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 120.0));
         hold(&mut h, from, to);
         assert!(h.state().marquee_geometry.len() > 0);
         if cancel {
@@ -278,8 +278,8 @@ fn raw_redo_and_release_invalidates_cached_placeholder_before_painting() {
     h.step();
     let v = h.state().view;
     let o = h.state().viewport.min;
-    let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 15.0));
-    let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 45.0));
+    let from = v.to_screen(o, Pos2::new(tall.min.x - 10.0, -v.pan.y + 90.0));
+    let to = v.to_screen(o, Pos2::new(tall.max.x + 10.0, -v.pan.y + 120.0));
     hold(&mut h, from, to);
     assert!(h.state().marquee_geometry.placeholder(id));
     assert!(!h.state().painted.contains_key(&id));
