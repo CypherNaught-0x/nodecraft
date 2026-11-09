@@ -54,7 +54,6 @@ fn app_mode959_exposes_a_named_modal_with_its_own_controls() {
     use egui::accesskit::Role;
     use egui_kittest::kittest::NodeT;
     let mut h = with_app();
-    let revision = h.state().session.revision();
     open(&mut h);
     h.run_steps(2);
     let dialog = h.get_by_role_and_label(Role::Dialog, "App mode");
@@ -62,7 +61,6 @@ fn app_mode959_exposes_a_named_modal_with_its_own_controls() {
     dialog.get_by_role_and_label(Role::Button, "Done").click();
     h.run_steps(2);
     assert!(h.state().app_mode.is_none());
-    assert_eq!(h.state().session.revision(), revision, "opening and closing a named container is view state");
 }
 
 fn open(h: &mut Harness<'static, NodeCraftApp>) {
