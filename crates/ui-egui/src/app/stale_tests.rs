@@ -739,3 +739,31 @@ fn render_control_states1112_evidence() {
         h.render().unwrap().save(folder.join(format!("file-{theme:?}-controls.png"))).unwrap();
     }
 }
+
+/// #1114: at 50% zoom the stale badge is about 10 screen points tall, but its hit rect is at
+/// least 24 x 24, and a click in that rect's corner refreshes.
+#[test]
+fn a_stale_badge_is_a_24_point_target_at_half_zoom() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.run();
+    let zoom = 0.5;
+    let view = h.state().view;
+    h.state_mut().view = crate::canvas::CanvasView { pan: view.pan, zoom };
+    h.run();
+    let badge = h.get_all_by_label(STALE).next().expect("a stale badge").rect();
+    assert!(badge.width() >= 24.0 && badge.height() >= 24.0, "hit rect {badge:?}");
+    assert!(h.state().run_confirm.is_none() && h.state().notice.is_none());
+    // The hit rect never rises into the card above it, so its bottom-left corner is clear of it.
+    let card = h.state().view.rect_to_screen(h.state().viewport.min, *h.state().painted.get(&id(21)).unwrap());
+    assert!(badge.top() >= card.bottom() - 0.01, "the hit rect {badge:?} stays below the card {card:?}");
+    let corner = badge.left_bottom() + Vec2::new(1.0, -1.0);
+    h.hover_at(corner);
+    h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().run_confirm.is_some() || h.state().notice.is_some(), "the corner click asked to refresh");
+}

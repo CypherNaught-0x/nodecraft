@@ -78,7 +78,11 @@ pub(super) fn badge(ui: &egui::Ui, painter: &egui::Painter, view: &CanvasView, v
     let galley = painter.layout_no_wrap(text.to_owned(), egui::FontId::proportional(t.label_size), t.card_fill);
     let size = galley.size() + Vec2::new(t.control_gap * 2.0, t.control_gap);
     let rect = Rect::from_min_size(card.right_bottom() + Vec2::new(-size.x, t.control_gap), size);
-    let response = ui.interact(view.rect_to_screen(viewport.min, rect), ui.id().with(("mask_badge", id)), Sense::click());
+    let response = ui.interact(
+        crate::theme::badge_hit(view.rect_to_screen(viewport.min, rect), t.min_target, view.rect_to_screen(viewport.min, card).bottom()),
+        ui.id().with(("mask_badge", id)),
+        Sense::click(),
+    );
     // Hover and press lift the badge toward the text colour (#1112).
     let state = crate::theme::State::of(&response);
     painter.rect_filled(rect, size.y / 2.0, state.tint(fill, t.text));

@@ -4374,3 +4374,25 @@ pub(super) fn named_outside_wiring(h: &Harness<'_, NodeCraftApp>, text: &str) ->
         })
         .count()
 }
+
+/// #1114: a noodle's hit band is 12 screen points either side, so a click 10 points off its line
+/// still selects it, and one well clear of it doesn't; the painted width is unchanged.
+#[test]
+fn a_click_ten_points_off_a_noodle_selects_it() {
+    let mut h = chain_harness();
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    let ab = h.state().session.document().canvases().get(&h.state().canvas).unwrap().edges().values().find(|e| e.from.node == chain_id(1)).unwrap().id;
+    let mid = a + (b - a) * 0.5;
+    // Any point 10 away from a point on the line is within 10 of the line; off along its normal.
+    let normal = (b - a).normalized().rot90();
+    press(&mut h, mid + normal * 10.0, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.edges(), &[ab].into_iter().collect(), "10 points off the line is inside the band");
+    // Give the next press time to count as its own click, not a double-click.
+    for _ in 0..40 {
+        h.step();
+    }
+    press(&mut h, mid + normal * 60.0, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert!(h.state().selection.edges().is_empty(), "60 points off is empty canvas: {:?}", h.state().selection.edges());
+}

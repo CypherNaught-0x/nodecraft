@@ -262,9 +262,6 @@ fn payload_rect(session: &Session, node: &nodecraft_graph::Node, t: &theme::Toke
     card::world_rect_with_roles(node, admitted.as_ref().map(|a| a.descriptor.as_ref()), admitted.as_ref().map(|a| &a.roles), t)
 }
 
-/// Screen points within which a click selects a noodle.
-const NOODLE_HIT: f32 = 6.0;
-
 /// How many floating areas quick-add will inspect for the pointer before refusing the key. The
 /// bound keeps the ownership scan O(areas); tests assert against this value so the cap and the
 /// fixture can't drift apart (#267).
@@ -2468,7 +2465,7 @@ impl NodeCraftApp {
             if !overlay_blocks && !file_owns_input && !file_menu_owns_input && background.clicked() {
                 let hit = ui.input(|i| i.pointer.interact_pos()).and_then(|p| {
                     let world = self.view.to_world(viewport.min, p);
-                    let reach = NOODLE_HIT / self.view.zoom;
+                    let reach = t.noodle_hit / self.view.zoom;
                     curves.iter().map(|(id, curve, _)| (*id, noodle::distance(curve, world))).filter(|(_, d)| *d <= reach).min_by(|a, b| a.1.total_cmp(&b.1))
                 });
                 match (hit, shift) {
@@ -2487,7 +2484,7 @@ impl NodeCraftApp {
                 && let Some(p) = ui.input(|i| i.pointer.interact_pos())
             {
                 let world = self.view.to_world(viewport.min, p);
-                let reach = NOODLE_HIT / self.view.zoom;
+                let reach = t.noodle_hit / self.view.zoom;
                 if !curves.iter().any(|(_, curve, _)| noodle::distance(curve, world) <= reach) {
                     self.palette = Some(Palette::new(world, p));
                     self.turn_into = None;

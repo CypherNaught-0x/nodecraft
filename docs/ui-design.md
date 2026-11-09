@@ -74,6 +74,14 @@ stays when Enter or Space activates the widget, and goes when a click elsewhere 
 is the one call a painted widget makes; a `theme.rs` test holds the ring at 3:1 against the canvas
 and card fill in both themes.
 
+Pointer targets are at least 24 × 24 screen points (#1114, WCAG 2.5.8): a noodle's hit band is
+`noodle_hit` (12) either side of its line in screen points, whatever its painted width, and a card
+under the pointer wins over a noodle; stale, mask and "Can't check" badges and presence avatars hit
+in a `min_target` (24) square around their painted shape (`theme::at_least`; a badge grows down
+and sideways only, never into the card above it, `theme::badge_hit`), at any zoom, painted as before. Ports already reach 26 points. In-card controls (19 world points tall) still shrink with
+the canvas: refusing clicks below a zoom would break editing at overview zoom, so that part of
+#1114 is left open.
+
 A disabled control keeps its explanation (#1113): egui hides `on_hover_text` once a widget is
 disabled, so every `add_enabled(..)` that sets hover text also sets `on_disabled_hover_text`, written
 as what to do ("Select at least one row to run"), and `ui_ext::command_button` shows a command's own

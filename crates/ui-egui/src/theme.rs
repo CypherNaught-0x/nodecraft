@@ -237,6 +237,12 @@ pub struct Tokens {
     pub control_fill_pressed: Color32,
     /// A noodle under the pointer is drawn this wide, a little brighter, so it reads as clickable.
     pub wire_width_hover: f32,
+
+    /// The smallest pointer target on screen (#1114, WCAG 2.5.8): a badge's or avatar's hit
+    /// rect grows to this square around its painted shape, at any zoom.
+    pub min_target: f32,
+    /// Half the width of a noodle's hit band, in screen points; only the hit area, not the line.
+    pub noodle_hit: f32,
     /// The Library's Assets, History and Styles browsers (#96): the side of a listed thumbnail.
     pub library_thumbnail: f32,
     /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
@@ -404,6 +410,9 @@ pub const DARK: Tokens = Tokens {
     control_fill_hover: Color32::from_rgb(0x2c, 0x2c, 0x30),
     control_fill_pressed: Color32::from_rgb(0x3c, 0x3c, 0x42),
     wire_width_hover: 3.0,
+
+    min_target: 24.0,
+    noodle_hit: 12.0,
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
@@ -612,6 +621,27 @@ pub fn panel_frame(t: &Tokens) -> egui::Frame {
     egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(Stroke::new(t.stroke_hairline, t.panel_stroke)).corner_radius(t.panel_radius)
 }
 
+/// `rect` grown, about its centre, to at least `side` × `side`: a hit rect for a small painted
+/// shape (#1114). A rect already as large is returned unchanged.
+pub fn at_least(rect: egui::Rect, side: f32) -> egui::Rect {
+    let side = if side.is_finite() { side.max(0.0) } else { 0.0 };
+    let grow = egui::vec2((side - rect.width()).max(0.0), (side - rect.height()).max(0.0)) * 0.5;
+    rect.expand2(grow)
+}
+
+/// A badge's hit rect under a card (#1114): [`at_least`] `side` square, but grown down and sideways
+/// only, never above `below` (the card's bottom edge), so it can't take the card's or a port's
+/// clicks.
+pub fn badge_hit(rect: egui::Rect, side: f32, below: f32) -> egui::Rect {
+    let mut hit = at_least(rect, side);
+    if below.is_finite() && hit.min.y < below {
+        let lift = below - hit.min.y;
+        hit.min.y = below;
+        hit.max.y += lift;
+    }
+    hit
+}
+
 impl Tokens {
     pub fn marquee_stroke(&self) -> Stroke {
         Stroke::new(self.stroke_hairline, self.accent)
@@ -799,6 +829,21 @@ mod tests {
             // The ring sits clear of the presence ring, which starts `presence_ring * 2` out.
             assert!(t.focus_ring_gap + t.focus_ring_width < t.presence_ring * 2.0, "{kind:?} a gap stays before the presence ring");
         }
+    }
+
+    #[test]
+    fn small_targets_grow_to_the_minimum_and_large_ones_stay() {
+        let small = egui::Rect::from_center_size(egui::pos2(10.0, 10.0), egui::vec2(40.0, 19.0));
+        let hit = at_least(small, DARK.min_target);
+        assert_eq!(hit.center(), small.center());
+        assert_eq!(hit.size(), egui::vec2(40.0, 24.0));
+        let big = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(30.0, 30.0));
+        assert_eq!(at_least(big, 24.0), big);
+        assert_eq!(at_least(big, f32::NAN), big, "a hostile side changes nothing");
+        let under = egui::Rect::from_min_size(egui::pos2(0.0, 103.0), egui::vec2(40.0, 9.5));
+        let hit = badge_hit(under, 24.0, 100.0);
+        assert_eq!((hit.min.y, hit.height()), (100.0, 24.0), "never above the card, still 24 tall");
+        const { assert!(DARK.min_target >= 24.0 && DARK.noodle_hit >= 10.0) };
     }
 
     #[test]
