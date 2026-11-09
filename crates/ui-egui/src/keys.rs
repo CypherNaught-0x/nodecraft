@@ -430,103 +430,112 @@ impl KeysPanel {
         self.load(settings);
         self.prune(settings);
         let mut open = self.open;
-        crate::floating::panel(ctx, "API keys", egui::Id::new("nodecraft.keys"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
-            ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
-            ui.add_space(t.control_gap);
-            let rows = self.rows.clone();
-            if rows.is_empty() {
-                ui.label(egui::RichText::new("No keys yet.").color(t.text_muted));
-            }
-            egui::Grid::new("nodecraft.keys.rows").num_columns(3).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
-                for (account, status) in &rows {
-                    ui.label(egui::RichText::new(account.as_str()).color(t.text).monospace());
-                    let (text, color) = match status {
-                        KeyStatus::Unchecked => ("Not checked".to_owned(), t.text_muted),
-                        KeyStatus::Waiting => ("Waiting for the keychain…".to_owned(), t.text_muted),
-                        KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
-                        KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
-                        KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
-                        KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent_text),
-                        KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
-                        KeyStatus::Failed(why) => (why.clone(), t.danger),
-                        KeyStatus::Unknown(what) => (what.clone(), t.text),
-                    };
-                    ui.label(egui::RichText::new(text).color(color));
-                    ui.horizontal(|ui| {
-                        let waiting = matches!(status, KeyStatus::Waiting | KeyStatus::Testing);
-                        if ui.add_enabled(!waiting, egui::Button::new("Check")).clicked() {
-                            changes.extend(self.send(session, Op::Status, account, json!({"account": account.as_str()})));
-                        }
-                        // The browser can't send the check (keys.test is unsupported there).
-                        if cfg!(not(target_arch = "wasm32"))
-                            && ui
-                                .add_enabled(!waiting, egui::Button::new("Test"))
-                                .on_hover_text("Ask the provider whether it accepts this key (free)")
-                                .on_disabled_hover_text("Waiting for the keychain or the provider; try again once it answers")
-                                .clicked()
-                        {
-                            changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
-                        }
-                        let confirming = self.confirm_remove.as_ref() == Some(account);
-                        let label = if confirming { "Confirm remove" } else { "Remove" };
-                        if ui.add_enabled(!waiting, egui::Button::new(label)).clicked() {
-                            if confirming {
-                                self.confirm_remove = None;
-                                changes.extend(self.send(session, Op::Remove, account, json!({"account": account.as_str()})));
-                            } else {
-                                self.confirm_remove = Some(account.clone());
+        let id = egui::Id::new("nodecraft.keys");
+        crate::floating::panel(ctx, "API keys", id, crate::floating::Home::RightTop, t)
+            .open(&mut open)
+            .max_height(crate::floating::body_room(ctx, id, t))
+            .vscroll(true)
+            .show(ctx, |ui| {
+                ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
+                ui.add_space(t.control_gap);
+                let rows = self.rows.clone();
+                if rows.is_empty() {
+                    ui.label(egui::RichText::new("No keys yet.").color(t.text_muted));
+                }
+                egui::Grid::new("nodecraft.keys.rows").num_columns(3).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
+                    for (account, status) in &rows {
+                        ui.label(egui::RichText::new(account.as_str()).color(t.text).monospace());
+                        let (text, color) = match status {
+                            KeyStatus::Unchecked => ("Not checked".to_owned(), t.text_muted),
+                            KeyStatus::Waiting => ("Waiting for the keychain…".to_owned(), t.text_muted),
+                            KeyStatus::Stored(masked) => (format!("Stored {masked}"), t.text),
+                            KeyStatus::Missing => ("No key".to_owned(), t.text_muted),
+                            KeyStatus::Testing => ("Asking the provider…".to_owned(), t.text_muted),
+                            KeyStatus::Verified(masked) => (format!("Stored {masked}, works: the provider accepted it"), t.accent_text),
+                            KeyStatus::Unverifiable(masked, why) => (format!("Stored {masked}, can't verify: {why}"), t.text_muted),
+                            KeyStatus::Failed(why) => (why.clone(), t.danger),
+                            KeyStatus::Unknown(what) => (what.clone(), t.text),
+                        };
+                        ui.label(egui::RichText::new(text).color(color));
+                        ui.horizontal(|ui| {
+                            let waiting = matches!(status, KeyStatus::Waiting | KeyStatus::Testing);
+                            if ui.add_enabled(!waiting, egui::Button::new("Check")).clicked() {
+                                changes.extend(self.send(session, Op::Status, account, json!({"account": account.as_str()})));
+                            }
+                            // The browser can't send the check (keys.test is unsupported there).
+                            if cfg!(not(target_arch = "wasm32"))
+                                && ui
+                                    .add_enabled(!waiting, egui::Button::new("Test"))
+                                    .on_hover_text("Ask the provider whether it accepts this key (free)")
+                                    .on_disabled_hover_text("Waiting for the keychain or the provider; try again once it answers")
+                                    .clicked()
+                            {
+                                changes.extend(self.send(session, Op::Test, account, json!({"account": account.as_str()})));
+                            }
+                            let confirming = self.confirm_remove.as_ref() == Some(account);
+                            let label = if confirming { "Confirm remove" } else { "Remove" };
+                            if ui.add_enabled(!waiting, egui::Button::new(label)).clicked() {
+                                if confirming {
+                                    self.confirm_remove = None;
+                                    changes.extend(self.send(session, Op::Remove, account, json!({"account": account.as_str()})));
+                                } else {
+                                    self.confirm_remove = Some(account.clone());
+                                }
+                            }
+                        });
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                ui.label(egui::RichText::new("Add or replace a key").color(t.text));
+                // The quick picks wrap at a fixed width, not the panel's, so widening the panel never
+                // reflows them into fewer rows and shortens it under the pointer.
+                ui.scope(|ui| {
+                    ui.set_max_width(ui.available_width().min(t.card_width * 1.25));
+                    ui.horizontal_wrapped(|ui| {
+                        for preset in PRESETS {
+                            if ui.selectable_label(self.account == *preset, *preset).clicked() {
+                                self.account = (*preset).to_owned();
                             }
                         }
                     });
-                    ui.end_row();
+                });
+                if self.account == "runway" {
+                    ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
                 }
-            });
-            ui.separator();
-            ui.label(egui::RichText::new("Add or replace a key").color(t.text));
-            // The quick picks wrap at a fixed width, not the panel's, so widening the panel never
-            // reflows them into fewer rows and shortens it under the pointer.
-            ui.scope(|ui| {
-                ui.set_max_width(ui.available_width().min(t.card_width * 1.25));
-                ui.horizontal_wrapped(|ui| {
-                    for preset in PRESETS {
-                        if ui.selectable_label(self.account == *preset, *preset).clicked() {
-                            self.account = (*preset).to_owned();
+                if let Some(hint) = account_hint(&self.account) {
+                    ui.label(egui::RichText::new(hint).color(t.text_muted));
+                }
+                egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
+                    let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
+                    ui.add(egui::TextEdit::singleline(&mut self.account).hint_text("e.g. openai").desired_width(t.card_width)).labelled_by(label.id);
+                    ui.end_row();
+                    let label = ui.label(egui::RichText::new("Key").color(t.text_muted));
+                    ui.horizontal(|ui| {
+                        ui.add(
+                            egui::TextEdit::singleline(&mut self.key)
+                                .id(Self::key_field())
+                                .password(true)
+                                .hint_text("paste the key")
+                                .desired_width(t.card_width),
+                        )
+                        .labelled_by(label.id);
+                        if ui.add_enabled(!self.key.trim().is_empty(), egui::Button::new("Save")).clicked() {
+                            // The field (and its undo history) is cleared whatever happens: the key
+                            // lives only in the keychain.
+                            let key = std::mem::take(&mut self.key);
+                            self.forget_typed(ui.ctx());
+                            let name = self.account.clone();
+                            changes.extend(self.save(session, settings, &name, key));
                         }
-                    }
+                    });
+                    ui.end_row();
                 });
+                if let Some(notice) = &self.notice {
+                    ui.label(egui::RichText::new(notice).color(t.danger));
+                }
+                self.endpoints.show(ui, t);
             });
-            if self.account == "runway" {
-                ui.hyperlink_to("Powered by Runway", "https://runwayml.com");
-            }
-            if let Some(hint) = account_hint(&self.account) {
-                ui.label(egui::RichText::new(hint).color(t.text_muted));
-            }
-            egui::Grid::new("nodecraft.keys.add").num_columns(2).spacing([t.control_gap * 2.0, t.control_gap]).show(ui, |ui| {
-                let label = ui.label(egui::RichText::new("Account").color(t.text_muted));
-                ui.add(egui::TextEdit::singleline(&mut self.account).hint_text("e.g. openai").desired_width(t.card_width)).labelled_by(label.id);
-                ui.end_row();
-                let label = ui.label(egui::RichText::new("Key").color(t.text_muted));
-                ui.horizontal(|ui| {
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.key).id(Self::key_field()).password(true).hint_text("paste the key").desired_width(t.card_width),
-                    )
-                    .labelled_by(label.id);
-                    if ui.add_enabled(!self.key.trim().is_empty(), egui::Button::new("Save")).clicked() {
-                        // The field (and its undo history) is cleared whatever happens: the key
-                        // lives only in the keychain.
-                        let key = std::mem::take(&mut self.key);
-                        self.forget_typed(ui.ctx());
-                        let name = self.account.clone();
-                        changes.extend(self.save(session, settings, &name, key));
-                    }
-                });
-                ui.end_row();
-            });
-            if let Some(notice) = &self.notice {
-                ui.label(egui::RichText::new(notice).color(t.danger));
-            }
-            self.endpoints.show(ui, t);
-        });
         if !open {
             // Closing forgets anything typed: the key lives only in the keychain.
             self.forget_typed(ctx);
