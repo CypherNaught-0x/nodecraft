@@ -68,8 +68,10 @@ Recent merged history supporting the last batch follow-ups:
 ## Local continuations and verification limits
 
 This source tree also includes Vertex Gemini chat (#1151), eight additional key-only text
-endpoints (#1152), and Bedrock's native Converse/SigV4 paths (#1150, #1163). These are separate
-follow-ups, not evidence that their original batch issue promised every later capability.
+endpoints (#1152), and Bedrock's native Converse adapter and SigV4 authentication (#1150,
+#1163). Built-in Bedrock cards retain the OpenAI-compatible route; native Converse is a library
+entry point without a catalog card. These are separate follow-ups, not evidence that their
+original batch issue promised every later capability.
 In particular, #1151 and #1152 remain open on GitHub at this snapshot; their local implementation
 and fixture checks must not be reported as remote issue closure or released availability.
 
