@@ -394,3 +394,37 @@ fn the_shader_editor_lays_out_without_overlaps_at_both_sizes() {
         assert!(h.state().shader_editor.is_none());
     }
 }
+
+/// A floating editor keeps its actual text control above the overlapping minimap, and that
+/// press must not start a canvas pan in the early navigation admission pass.
+#[test]
+fn review959_shader_prompt_above_the_minimap_owns_its_pointer_and_text() {
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut h, runs) = open(scene_sized(None, Vec2::new(1000.0, 700.0)));
+        h.state_mut().theme = theme;
+        crate::theme::apply(&h.ctx, theme);
+        h.run_steps(8);
+        let prompt = h.get_by_role_and_label(Role::MultilineTextInput, "Ask a model").rect();
+        let map = crate::navigation::layout(h.state().viewport, h.state().navigation.visible, h.state().theme.tokens()).map;
+        let overlap = prompt.intersect(map);
+        assert!(overlap.is_positive(), "fixture exercises a real prompt/minimap overlap: {prompt:?}, {map:?}");
+        let at = overlap.center();
+        assert_eq!(h.ctx.layer_id_at(at), Some(crate::floating::layer(egui::Id::new("nodecraft.shader_editor"))));
+        super::panel_check::menu_evidence(&mut h, &format!("shader-navigation-{theme:?}"));
+        let before_view = h.state().view;
+        let before_document = h.state().session.document().clone();
+        h.hover_at(at);
+        h.run_steps(3);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.event(egui::Event::Text("A public filter request".into()));
+        h.run_steps(4);
+        assert_eq!(h.state().shader_editor.as_ref().unwrap().request, "A public filter request");
+        assert!(!h.state().navigation.pointer_owned);
+        assert_eq!(h.state().view, before_view, "the covered minimap never pans");
+        assert_eq!(h.state().session.document(), &before_document);
+        assert!(runs.lock().unwrap().is_empty(), "typing submits no model request");
+    }
+}

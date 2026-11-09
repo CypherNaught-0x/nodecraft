@@ -777,11 +777,14 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 **Stacking, back to front** (egui `Order` in brackets):
 
-1. **Canvas** (`Background`): the board, cards and wires.
+1. **Canvas** (`Background`): the board, cards and wires. The minimap and Fit/zoom toolbar
+   use their own `Background` area above that root and below floating tools; see the
+   [navigation stacking decision](decisions/2026-11-09-navigation-below-floating-tools.md).
+   A covered minimap cannot admit a new pan: its actual painted layer must own the press.
 2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
    in front. Opening one never reorders the others.
 3. **Pinned chrome** (`Foreground`): the application row, Format selection, Search,
-   Discussions, the minimap and comment pins.
+   Discussions and comment pins.
 4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More and File menus, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
 5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,

@@ -335,5 +335,15 @@ fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
         assert_eq!(h.state().batch_review.as_ref().unwrap().item, 1, "the actual grid cell receives the pointer");
         assert_eq!(h.state().view, before_view, "choosing a batch item never fits the canvas");
         assert_eq!(h.state().session.document(), &before_document);
+        // The bottom row remains reachable through the panel's real nested scroll areas.
+        h.get_by_role_and_label(Role::Button, "Failed").scroll_to_me();
+        h.run_steps(8);
+        let bottom = h.get_by_role_and_label(Role::Button, "Failed").rect();
+        assert_eq!(h.ctx.layer_id_at(bottom.center()), Some(crate::floating::layer(egui::Id::new("nodecraft.batch_review"))));
+        h.get_by_role_and_label(Role::Button, "Failed").click();
+        h.run_steps(4);
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 3, "the last grid item remains selectable");
+        assert_eq!(h.state().view, before_view);
+        assert_eq!(h.state().session.document(), &before_document);
     }
 }

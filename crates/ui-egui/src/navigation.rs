@@ -288,10 +288,12 @@ pub struct Navigation {
     pub geometry: Geometry,
     pub drag: Option<Mapping>,
     pub pointer_owned: bool,
+    /// The painted canvas-chrome layer; a covered minimap cannot admit an early pan.
+    layer: Option<egui::LayerId>,
 }
 impl Default for Navigation {
     fn default() -> Self {
-        Self { visible: true, geometry: Geometry::default(), drag: None, pointer_owned: false }
+        Self { visible: true, geometry: Geometry::default(), drag: None, pointer_owned: false, layer: None }
     }
 }
 pub struct OverlayInput<'a> {
@@ -333,7 +335,7 @@ impl Navigation {
                     })
                     .is_some_and(|pos| {
                         let layout = layout(viewport, self.visible, t);
-                        layout.map_shown && layout.map.contains(pos)
+                        layout.map_shown && layout.map.contains(pos) && self.layer.is_some_and(|layer| ctx.layer_id_at(pos) == Some(layer))
                     })
             })
     }
@@ -384,7 +386,10 @@ impl Navigation {
             actions.push(("canvas.pan_to", json!({"x":x,"y":y})));
         }
         let blocked = self.pointer_owned || (!canvas_gesture && pointer.is_some_and(|p| layout.overlay.contains(p)));
-        egui::Area::new(ui.id().with("navigation_overlay")).order(egui::Order::Foreground).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
+        // Canvas chrome stays above the canvas root, while floating tools retain their
+        // controls and scrollbars wherever the two overlap. Menus/questions remain above both.
+        self.layer = Some(egui::LayerId::new(egui::Order::Background, ui.id().with("navigation_overlay")));
+        egui::Area::new(ui.id().with("navigation_overlay")).order(egui::Order::Background).movable(false).fixed_pos(layout.overlay.min).constrain(false).show(
             ui.ctx(),
             |ui| {
                 ui.set_min_size(layout.overlay.size());
