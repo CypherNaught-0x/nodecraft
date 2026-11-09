@@ -38,9 +38,10 @@ download budget. Downloaded candidates must still be recognized meshes. Native r
 decoding off the frame thread. A poster-only, damaged native mesh or oversized result is an explicit error. Original mesh bytes
 are retained. Per-file and aggregate downloads remain capped at 256 MiB, with at most 512 files.
 Generic imported workflows keep their mapped Image/Mesh outputs and selected saver ordering.
-The browser retains the recognized original and uses the existing small-model preview limits;
-it does not decode a large downloaded mesh in its polling frame. An invalid or unsupported
-browser preview has an explicit unavailable state. A browser geometry worker remains #569.
+The browser retains the recognized original and prepares supported geometry through the bounded
+Rust worker described in [browser mesh resources](browser-mesh-resources.md); it does not decode
+a large downloaded mesh in its polling frame. An invalid or unsupported browser preview has an
+explicit unavailable state. Retained materials and textures remain part of #569.
 
 ## Other mesh workflows
 
@@ -55,11 +56,15 @@ presets do not transmit that text or use it as conditioning; the wired image dri
 
 ## Validation record and merge blocker
 
-**Live validation is outstanding and blocks merging this change.** No configured server was
-probed and no generation request was made for this work. Record actual ComfyUI version, model
-checkpoint/hash, any custom-node versions, run settings, output format/count and viewer result
-here after an authorized live run. Do not treat projected fixtures or a catalog-only read as
-that evidence.
+**Live Hunyuan3D generation validation is outstanding and blocks merging this change.** A
+9 November 2026 probe reached ComfyUI 0.41.0 and parsed its live catalog. The required core nodes
+were present, including SaveGLB's MESH/file union, but neither named Hunyuan3D checkpoint was
+installed. No Hunyuan3D job was queued. A separate model-free workflow-card smoke passed upload,
+value override, selected-output, queue/history, download and decoded-image checks; this does not
+validate a Hunyuan recipe or its viewer output. See the [handoff review](reviews/2026-11-09-handoff-publication.md).
+Record the model checkpoint/hash, custom-node versions, run settings, output format/count and
+viewer result here after an authorized Hunyuan run. Projected fixtures and metadata reads do not
+satisfy that requirement.
 
 The authored `mesh-object-info.json` fixture projects public node interface documentation.
 Those primary-hosted node pages explicitly identify themselves as AI-generated; they are not
@@ -84,3 +89,12 @@ NODECRAFT_LIVE_COMFYUI_3D=1 NODECRAFT_COMFYUI_3D_IMAGE=/path/to/public-safe.png 
 This test queues one generation and verifies decoded mesh results. It does not certify the
 interactive viewer or record server/model versions automatically; retain those in the record
 above after testing. This test has not been run for this change.
+
+The separate opt-in smoke below queues only stock image operations on an original 16×16
+fixture. It requires no checkpoint, model inference or paid API, and leaves a small test input
+and output on the selected server. It is ignored in CI:
+
+```sh
+NODECRAFT_LIVE_COMFYUI_WORKFLOW=1 NODECRAFT_COMFYUI_URL=http://127.0.0.1:8188 \
+  cargo test -p nodecraft-providers --test live_comfyui live_comfyui_model_free_workflow_card -- --ignored --nocapture
+```
