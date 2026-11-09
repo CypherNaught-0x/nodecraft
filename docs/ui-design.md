@@ -899,7 +899,8 @@ bar, clear of open Search and Comments), at 1000 × 700 and 1600 × 900, in both
 on-screen controls (buttons, fields, checkboxes, combo boxes, sliders, links) crosses another (a
 control and its own accessibility descendants aside). Clipping isn't checked: egui's accessibility
 tree doesn't mark scroll areas, so scrolled-away content can't be told from cut-off content. Choosing its entry
-again closes it. Only the state a panel opens in is checked, nothing scrolled or expanded.
+again closes it. The shared inventory check covers the opening state; feature tests separately
+exercise scrolling, expanded controls and operation states.
 Questions (`floating::question`, #1116) get `panel_check::check_question`: open, on the screen,
 and no crossing controls inside their `Dialog` node.
 
@@ -917,7 +918,7 @@ and no crossing controls inside their `Dialog` node.
 | Batch items | a fanned card's menu, Review items… | floating panel | `batch_review_tests` (with the layout check; at 640 × 400 with Escape) |
 | Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | floating panel | `comfy_mapping::tests` (with the layout check; at 640 × 400 with Escape) |
 | File menu | top bar, File (first entry) | menu | `file_dialogs::tests` (`panel_check::check_menu` at 1000 × 700 and 1600 × 900; Open recent, Remove, Clear; disabled with reasons), `small_windows1115_tests` (640 × 400: below File, Open recent lists entries, Escape), `ui_scale_tests` (150 % and 200 %, with Open recent) |
-| Tags panel | top bar, Tag filter | pinned chrome | `small_windows1115_tests` (opens below the row, closes, the count badge) |
+| Tag filter | top bar, Tag filter | floating panel | tag/filter tests (open, filter controls, expanded rows, scroll, close), `small_windows1115_tests` (small windows) |
 | Choose a model | a card's Change model… | floating panel | `models::comfy970_tests` (with the layout check, while searching), `models::tests` (640 × 400, Escape; a failed choice shows at its top) |
 | Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
 | Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
@@ -939,11 +940,15 @@ and settles inside once laid out; the checks run after placement settles. The im
 past the bottom of the window for a tall or square image; it now shows the image smaller, keeping
 its shape, so the panel fits (`floating::body_room`).
 
-**Not yet reviewed or covered:** Provider servers (browser only), every modal (app mode, deck editor and presenter, tag
-definition, export, results save, file progress, unsaved-changes confirmation), the recovery dialog,
-the update banner, card and field context menus, the inspector and bulk panels, notices, and the
-Tag filter (#958). The issue's per-surface checklist (focus order, Enter, empty and disabled
-states, tokens) and before-and-after screenshots remain tracked in the audit below.
+**Review follow-through.** The [baseline audit](reviews/2026-11-09-ui-ux-audit.md) records the
+complete menu, question, modal, notice and progress inventory. Its seven findings have local
+repairs: bounded Mask/quote/provider/title layouts, named modal semantics, Agent control names
+and explanations, and bounded long notices. The [acceptance follow-through](reviews/2026-11-09-ui-959-acceptance.md)
+maps the finite open/control/close test gaps and distinguishes actual capture evidence from
+optional additional host/state combinations. Provider settings now have scrolled Save/reload
+and real dismissal tests; the seven service/editor tool fixtures exercise both the header Close
+control and Escape through their existing lifecycle cleanup. Browser Recovery and Unsaved
+changes have actual Harness button flows, not only direct state-machine answers.
 
 **Escape closes the frontmost eligible floating tool** ([decision](decisions/2026-11-09-frontmost-tool-escape.md)).
 The shell consumes the key before canvas or sheet handlers, after all earlier keyboard owners
@@ -957,7 +962,8 @@ surface's own tests.
 The [9 November 2026 audit](reviews/2026-11-09-ui-ux-audit.md) extends this index to the native
 Agent sidebar and every direct modal, records new narrow-window and AccessKit findings, and
 separates existing tests from new probes and unverified states. It also reconciles #1125's stale
-checkboxes against the issue states at the reviewed snapshot. #959 remains open until its fixes,
+checkboxes against the issue states at the reviewed snapshot. The original audit is historical;
+use the acceptance follow-through for current local repairs and tests. #959 remains open until its fixes,
 per-surface acceptance checks and before/after evidence are complete.
 
 The [layout repair record](reviews/2026-11-09-ui-ux-layout-repairs.md) describes the bounded Mask
