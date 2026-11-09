@@ -358,6 +358,7 @@ mod deck_thumbnails;
 mod drop;
 mod element_library_view;
 mod elements;
+pub(crate) mod empty_canvas;
 mod export;
 mod fields;
 #[cfg(not(target_arch = "wasm32"))]
@@ -628,6 +629,9 @@ pub struct NodeCraftApp {
     /// The plugin packages panel (#172).
     pub plugin_panel: crate::plugins::PluginsPanel,
     pub key_accounts: nodecraft_engine::settings::KeySettings,
+    /// First-run guidance on an empty canvas and beside the sample card (#1119): on in the
+    /// desktop and browser apps, off in headless sessions.
+    pub guidance: bool,
     /// The Budgets panel, and the caps runs are checked against (from settings, #201).
     pub budgets: crate::budgets::BudgetsPanel,
     /// Settings › Automation: the desktop app's built-in MCP server, once it hands one over (#116).
@@ -716,6 +720,7 @@ impl NodeCraftApp {
             let _ = app.key_accounts.remember(account);
         }
         ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        app.guidance = true;
         Ok(app)
     }
     /// The app with settings from `store`, which it saves while running and flushes on exit.
@@ -821,6 +826,7 @@ impl NodeCraftApp {
         }
         app.notice = app.notice.or(plugin_problem);
         app.plugins = plugins;
+        app.guidance = true;
         // Unsaved work from a session that didn't close cleanly: ask before anything else (#408).
         if let Some(journal) = journal {
             app.attach_recovery(journal, kept);
@@ -1333,6 +1339,7 @@ impl NodeCraftApp {
             keys: crate::keys::KeysPanel::default(),
             plugin_panel: crate::plugins::PluginsPanel::default(),
             key_accounts: nodecraft_engine::settings::KeySettings::default(),
+            guidance: false,
             budgets: crate::budgets::BudgetsPanel::default(),
             automation: automation::AutomationPanel::default(),
             budget_caps: nodecraft_engine::settings::BudgetSettings::default(),
@@ -2825,6 +2832,8 @@ impl NodeCraftApp {
         if self.drag.is_some() || self.marquee.is_some() || self.wiring.is_some() || self.reordering.is_some() || self.view != view_before {
             self.palette = None;
         }
+        // First-run guidance on an empty canvas or beside the sample card (#1119).
+        self.empty_canvas(ui, viewport, canvas_blocks, t);
         if !self.model_frame_owned {
             self.drop_files(ui, viewport, t);
         }
@@ -3930,6 +3939,8 @@ fn starter_id() -> [u8; 16] {
 }
 #[cfg(test)]
 mod centering_tests;
+#[cfg(test)]
+mod empty_canvas1119_tests;
 #[cfg(test)]
 mod names1118_tests;
 #[cfg(test)]

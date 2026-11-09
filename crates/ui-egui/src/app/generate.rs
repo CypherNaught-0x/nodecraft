@@ -452,9 +452,19 @@ impl NodeCraftApp {
             }
             _ => 0,
         };
+        let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
+        let (mut open_keys, mut open_comfy) = (false, false);
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
+            // Nothing can generate until a provider is set up (#1119): say so, with the way there.
+            if !providers_ready {
+                ui.label(egui::RichText::new(super::empty_canvas::NO_PROVIDER).color(t.stale));
+                ui.horizontal(|ui| {
+                    open_keys = ui.button("Open API keys").clicked();
+                    open_comfy = ui.button("Open ComfyUI").clicked();
+                });
+            }
             let quote = &confirm.quote;
             if stale {
                 ui.label("The canvas changed after this price was quoted. Nothing was started.");
@@ -563,6 +573,19 @@ impl NodeCraftApp {
         if change_caps {
             // Generating again after changing a cap quotes afresh.
             self.budgets.open();
+            close = true;
+        }
+        if open_keys || open_comfy {
+            self.keys.open |= open_keys;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.comfy_server.open |= open_comfy;
+            }
+            // The browser build has no ComfyUI panel of its own: its providers panel sets servers up.
+            #[cfg(target_arch = "wasm32")]
+            if open_comfy && let Some(providers) = &mut self.browser_providers {
+                providers.open = true;
+            }
             close = true;
         }
         close |= modal.should_close();

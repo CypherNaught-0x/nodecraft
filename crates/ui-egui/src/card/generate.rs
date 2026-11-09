@@ -313,13 +313,17 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
             reuse(ui, shown_variations.cache, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if submit(ui, t)
-                    .on_hover_text(format!(
+                // With nothing set up to generate, the tooltip names the missing setup (#1119).
+                let ready = ui.ctx().data(|data| data.get_temp::<bool>(crate::app::empty_canvas::providers_ready_id())).unwrap_or(true);
+                let hover = if ready {
+                    format!(
                         "Generate (Enter on the card, or {} in the prompt). Shows the price first.",
                         crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
-                    ))
-                    .clicked()
-                {
+                    )
+                } else {
+                    format!("{}. Open API keys or ComfyUI in the top bar.", crate::app::empty_canvas::NO_PROVIDER)
+                };
+                if submit(ui, t).on_hover_text(hover).clicked() {
                     intents.push(Intent::Generate);
                 }
             });
