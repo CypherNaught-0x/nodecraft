@@ -85,7 +85,13 @@ pub(super) fn layer(bytes: &[u8]) -> Result<&[u8], MediaError> {
     let x = usize::from(u16_at(l, 28)?);
     let cx = usize::from(u16_at(c, 30)?);
     let local_name = part(bytes, 30, n)?;
-    if !name(local_name) || part(c, 46, n)? != local_name || 46usize.checked_add(n).and_then(|v| v.checked_add(cx)) != Some(c.len()) {
+    if part(c, 46, n)? != local_name || 46usize.checked_add(n).and_then(|v| v.checked_add(cx)) != Some(c.len()) {
+        return Err(invalid());
+    }
+    if local_name.ends_with(b".usdc") || local_name.ends_with(b".usd") {
+        return Err(MediaError::Decode("USDZ binary USDC and generic USD layers are unsupported; export one static USDA triangle mesh".into()));
+    }
+    if !name(local_name) {
         return Err(invalid());
     }
     extra(part(bytes, 30usize.checked_add(n).ok_or_else(invalid)?, x)?)?;

@@ -34,13 +34,13 @@ fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
         .with_size(Vec2::new(1000.0, 700.0))
         .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
-// Native saves now complete on a real worker. Simulated frames must yield wall-clock time;
+// Native saves and opens now complete on a real worker. Simulated frames must yield wall-clock time;
 // the fixed deadline fails rather than hiding a stuck publication or retrying an operation.
 fn settle(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         h.step();
-        if !h.state().session.file_status().saving
+        if h.state().session.file_status().operation.is_none()
             && h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay != std::time::Duration::ZERO
         {
             return;
@@ -324,15 +324,30 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     settle(&mut h);
     h.get_by_label("File").click();
     settle(&mut h);
+    h.get_by_label("Open recent").click();
+    settle(&mut h);
     h.get_by_label("missing-public.ncraft").click();
     settle(&mut h);
     assert!(h.state().notice.is_some());
+    assert!(!h.state().files.menu_open, "choosing a recent project closes the menu");
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
     settle(&mut h);
+    h.get_by_label("Open recent").click();
+    settle(&mut h);
+    assert!(!h.get_by_label("Clear recent projects").accesskit_node().is_disabled(), "a list to clear");
     h.get_by_label("Remove").click();
     settle(&mut h);
     assert!(h.state().files.projects.recent().is_empty());
+    // #1111: with nothing listed, Clear has nothing to do and says so.
+    assert!(h.query_by_label("No recent projects").is_some());
+    let clear = h.get_by_label("Clear recent projects");
+    assert!(clear.accesskit_node().is_disabled(), "an empty list can't be cleared");
+    clear.hover();
+    for _ in 0..90 {
+        h.step();
+    }
+    assert!(h.query_by_label("There are no recent projects to clear").is_some(), "the disabled button says why");
 }
 
 #[test]
@@ -516,12 +531,17 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .with_size(Vec2::new(width, 700.0))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
         settle(&mut h);
+        // File is the top bar's first entry (#1123), clear of Comments.
         let file = h.get_by_label("File").rect();
-        assert!(!file.intersects(h.state().comments_toolbar_rect()));
+        assert!(h.state().topbar_rect().contains_rect(file));
+        if let Some(comments) = h.query_by_role_and_label(egui::accesskit::Role::Button, "Comments") {
+            assert!(!file.intersects(comments.rect()));
+        }
         h.get_by_label("File").click();
         settle(&mut h);
-        assert!(!file.intersects(h.get_by_label("Open project…").rect()));
-        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open project…").rect()));
+        assert!(!file.intersects(h.get_by_label("Open… (Ctrl+O)").rect()));
+        assert!(h.get_by_label("Open… (Ctrl+O)").rect().top() >= file.bottom(), "the menu opens below File");
+        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open… (Ctrl+O)").rect()));
     }
 }
 
@@ -592,17 +612,21 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
     let dir = Scratch::new("nav-pointer407");
     let mut h = harness(dir.app("journal"));
     settle(&mut h);
-    h.get_by_label("File").click();
-    settle(&mut h);
-    assert!(h.state().files.menu_open);
     let view = h.state().view;
     let visible = h.state().navigation.visible;
+    // #1123: a click outside the File menu closes it and never reaches the canvas.
     for label in ["Fit all", "100%", "Hide map"] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
         h.get_by_label(label).click();
         settle(&mut h);
+        assert!(!h.state().files.menu_open, "{label}: the click closed the menu");
         assert_eq!(h.state().navigation.visible, visible);
         assert_eq!(h.state().view, view);
     }
+    h.get_by_label("File").click();
+    settle(&mut h);
     let point = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
     for pressed in [true, false] {
         h.hover_at(point);
@@ -611,8 +635,11 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
         assert_eq!(h.state().view, view);
         assert!(!h.state().navigation.pointer_owned);
     }
-    h.key_press(egui::Key::Escape);
     settle(&mut h);
+    if h.state().files.menu_open {
+        h.key_press(egui::Key::Escape);
+        settle(&mut h);
+    }
     assert!(!h.state().files.menu_open);
     let ctx = h.ctx.clone();
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
@@ -795,6 +822,12 @@ fn selected_save_as_waits_for_publication_before_recents_and_open_or_failure() {
         }
         runner.run();
         h.step();
+        if !fail {
+            // The published save starts the open on the same held runner (#367).
+            assert!(h.state().session.file_status().operation.is_some_and(|op| op.kind == nodecraft_engine::file_cmds::FileOperationKind::Open));
+            assert_eq!(h.state().session.document(), &expected, "nothing is replaced until the open finishes");
+            runner.run();
+        }
         settle(&mut h);
         assert!(!h.state().files.owns_input());
         if fail {
@@ -899,7 +932,8 @@ fn model_and_file_pickers_cannot_acquire_a_second_owner() {
     settle(&mut h);
     h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
     settle(&mut h);
-    assert!(h.get_by_label("File").accesskit_node().is_disabled());
+    // The model picker owns the frame: the top bar, File with it, isn't offered.
+    assert!(h.query_by_label("File").is_none_or(|file| file.accesskit_node().is_disabled()));
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     assert_eq!(calls.get(), 0, "model ownership cannot create an OS-picker future");
@@ -967,12 +1001,11 @@ fn bulk_file_menu_and_parked_picker_disable_actual_bulk_reset_controls() {
     h.get_by_label("File").click();
     settle(&mut h);
     let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default");
-    assert!(reset.accesskit_node().is_disabled(), "the File panel owns bulk controls");
+    assert!(reset.accesskit_node().is_disabled(), "the File menu owns bulk controls");
     reset.click();
     settle(&mut h);
     assert_eq!(h.state().session.document(), &before);
-    h.key_press(egui::Key::Escape);
-    settle(&mut h);
+    assert!(!h.state().files.menu_open, "a click outside the File menu closes it, and does nothing else");
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1084,11 +1117,19 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     assert!(owns);
     assert!(app.session.file_status().available);
     assert!(!app.storage_owner_blocked());
-    assert!(app.notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
-    assert!(app.notice.as_deref().unwrap().contains("can still be saved"));
     let calls = stub(&mut app, vec![None]);
     let mut h = harness(app);
+    // The startup open runs in the background from the first frame (#367).
     settle(&mut h);
+    let notice = h.state().notice.clone().unwrap();
+    assert!(
+        notice.starts_with("broken.ncraft couldn't be opened: ")
+            && notice.ends_with(". The new project is open instead and can be saved.")
+            && notice.matches(". ").count() == 1,
+        "one cause, one piece of advice: {notice}"
+    );
+    assert!(h.state().session.file_status().available);
+    h.state_mut().notice = None;
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1124,7 +1165,13 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     assert_eq!(closed.session.dispatch("file.save", &json!({})).unwrap_err().message, reason);
     let mut h = harness(closed);
     settle(&mut h);
-    h.get_by_role_and_label(egui::accesskit::Role::Window, "Project files").get_by_label(reason);
+    // The File menu opened with the reason at its top (the notice says it too), and the entries
+    // that need storage are disabled.
+    assert!(h.state().files.menu_open);
+    assert!(h.query_all_by_label(reason).count() >= 2, "the menu and the notice give the reason");
+    for label in ["Open… (Ctrl+O)", "Save (Ctrl+S)", "Save as… (Ctrl+Shift+S)"] {
+        assert!(h.get_by_label(label).accesskit_node().is_disabled(), "{label} is disabled without storage");
+    }
 }
 
 #[test]
@@ -1150,7 +1197,232 @@ fn render_storage968_evidence() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     settle(&mut h);
     h.run();
-    assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
-    h.get_by_label("Open project…");
+    assert!(h.state().files.menu_open, "An unavailable save opens the File menu with its storage guidance");
+    h.get_by_label("Open… (Ctrl+O)");
     h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
+}
+
+/// Steps frame time past the progress window's delay while a held operation stays pending.
+fn past_progress_delay(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..((progress::SHOW_AFTER * 60.0) as usize + 4) {
+        h.step();
+    }
+}
+fn progress_shown(h: &Harness<'static, NodeCraftApp>, title: &str) -> bool {
+    h.query_by_label(title).is_some()
+}
+
+#[test]
+fn a_held_open_shows_progress_and_installs_the_project_only_when_it_finishes() {
+    let dir = Scratch::new("open367");
+    let target = saved(&dir, "target.ncraft", 90);
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":dir.file("initial.ncraft").to_str().unwrap()})).unwrap();
+    let before = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target.clone())]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    h.step();
+    h.step();
+    assert!(runner.0.lock().unwrap().is_some(), "the open runs on the runner, not in the frame");
+    assert!(!progress_shown(&h, "Opening project…"), "a short operation doesn't flash the window");
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Opening project…"));
+    h.get_by_label("Reading and checking the project file…");
+    assert_eq!(h.state().session.document(), &before, "nothing is replaced while it reads");
+    assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
+    runner.run();
+    settle(&mut h);
+    assert!(!progress_shown(&h, "Opening project…"));
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target.clone())));
+    assert!(h.state().session.document().canvases().values().any(|c| c.nodes().contains_key(&NodeId::from_bytes([90; 16]))));
+    assert!(h.state().session.document().canvases().contains_key(&h.state().canvas), "the opened project's canvas is shown");
+    assert_eq!(h.state().files.projects.recent().first().map(String::as_str), target.to_str());
+    assert!(!h.state().files.owns_input());
+}
+
+#[test]
+fn cancelling_a_held_open_keeps_the_current_project_and_its_file() {
+    let dir = Scratch::new("open367-cancel");
+    let target = saved(&dir, "target.ncraft", 91);
+    let initial = dir.file("initial.ncraft");
+    let mut app = dir.app("journal");
+    add(&mut app, 92);
+    app.session.dispatch("file.save_as", &json!({"location":initial.to_str().unwrap()})).unwrap();
+    let before = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target.clone())]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    past_progress_delay(&mut h);
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    let operation = h.state().session.file_status().operation.unwrap();
+    assert!(operation.cancel_requested);
+    h.get_by_label("Cancelling… the current step finishes first.");
+    runner.run();
+    settle(&mut h);
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(initial)));
+    assert!(!h.state().session.file_status().dirty);
+    assert_eq!(h.state().notice.as_deref(), Some("Opening target.ncraft was cancelled; the current project is unchanged."));
+    assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
+    // The current project still journals and saves.
+    add(h.state_mut(), 93);
+    h.state_mut().session.dispatch("file.save", &json!({})).unwrap();
+}
+
+#[test]
+fn cancelling_a_held_save_leaves_the_previous_file_byte_for_byte() {
+    let dir = Scratch::new("save367-cancel");
+    let path = dir.file("project.ncraft");
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":path.to_str().unwrap()})).unwrap();
+    let on_disk = std::fs::read(&path).unwrap();
+    add(&mut app, 94);
+    let edited = app.session.document().clone();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Saving project…"));
+    h.get_by_label("Preparing the project's files…");
+    h.get_by_label("Cancel").click();
+    h.step();
+    runner.run();
+    settle(&mut h);
+    assert!(!progress_shown(&h, "Saving project…"));
+    assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the file is unchanged");
+    assert_eq!(h.state().session.document(), &edited, "and the edits are still open");
+    assert!(h.state().session.file_status().dirty);
+    assert!(h.state().notice.as_deref().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice);
+    // Saving again afterwards writes the edits.
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    h.step();
+    runner.run();
+    settle(&mut h);
+    assert!(!h.state().session.file_status().dirty);
+    assert_eq!(nodecraft_format::decode(&std::fs::read(&path).unwrap()).unwrap().project, edited);
+}
+
+#[test]
+fn a_background_open_started_elsewhere_shows_progress_and_its_project() {
+    let dir = Scratch::new("open367-external");
+    let target = saved(&dir, "target.ncraft", 95);
+    let mut app = dir.app("journal");
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    let mut h = harness(app);
+    settle(&mut h);
+    // As the control channel or MCP would: the same command, no dialog involved.
+    let opening = h.state_mut().session.dispatch("file.open", &json!({"location":target.to_str().unwrap(),"discard_dirty":true,"background":true})).unwrap();
+    assert_eq!(opening["opening"], true);
+    past_progress_delay(&mut h);
+    assert!(progress_shown(&h, "Opening project…"));
+    runner.run();
+    settle(&mut h);
+    assert!(h.state().session.document().canvases().contains_key(&h.state().canvas));
+    assert!(h.state().session.document().canvases().values().any(|c| c.nodes().contains_key(&NodeId::from_bytes([95; 16]))));
+}
+
+#[test]
+#[ignore = "writes review screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_file367_progress_evidence() {
+    let output = PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&output).unwrap();
+    let dir = Scratch::new("public-evidence367");
+    let target = saved(&dir, "Public-forest.ncraft", 96);
+    let mut app = dir.app("journal");
+    app.session.dispatch("file.save_as", &json!({"location":dir.file("Public-start.ncraft").to_str().unwrap()})).unwrap();
+    let runner = Arc::new(HeldSave::default());
+    app.session.set_save_runner(runner.clone());
+    stub(&mut app, vec![Some(target)]);
+    let mut h = harness(app);
+    settle(&mut h);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
+    past_progress_delay(&mut h);
+    h.render().unwrap().save(output.join("opening-progress.png")).unwrap();
+    runner.run();
+    settle(&mut h);
+    add(h.state_mut(), 97);
+    h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
+    past_progress_delay(&mut h);
+    h.render().unwrap().save(output.join("saving-progress.png")).unwrap();
+    h.get_by_label("Cancel").click();
+    h.step();
+    h.step();
+    h.render().unwrap().save(output.join("saving-cancelling.png")).unwrap();
+    runner.run();
+    settle(&mut h);
+    h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
+}
+
+/// The File menu opens on the screen with no crossing controls at the two window sizes the
+/// panels are checked at (#959, #1123).
+#[test]
+fn file_menu_keeps_its_layout_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let dir = Scratch::new("layout959");
+        let mut app = dir.app("layout");
+        app.files.menu_open = true;
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        settle(&mut h);
+        h.run();
+        crate::app::panel_check::check_menu(&h, crate::app::topbar::file_popup_id(), &format!("File menu at {size:?}"));
+    }
+}
+
+/// #1123: the File menu's entries run the same flows as the shortcuts: Open… asks the picker,
+/// Save as… asks it to save, and choosing an entry closes the menu.
+#[test]
+fn file1123_menu_entries_run_the_file_flows() {
+    let dir = Scratch::new("menu1123");
+    let mut app = dir.app("journal");
+    let calls = stub(&mut app, vec![None, None]);
+    let mut h = harness(app);
+    settle(&mut h);
+    for (n, label) in [(1, "Open… (Ctrl+O)"), (2, "Save as… (Ctrl+Shift+S)")] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
+        assert!(!h.get_by_label(label).accesskit_node().is_disabled());
+        h.get_by_label(label).click();
+        settle(&mut h);
+        assert_eq!(calls.get(), n, "{label} asked the picker");
+        assert!(!h.state().files.menu_open, "{label} closed the menu");
+    }
+}
+
+/// #1121: the palette's Recent keeps Open project only once its picker opened.
+#[test]
+fn a_refused_open_from_the_palette_is_not_remembered_as_recent() {
+    let dir = Scratch::new("palette-recent-open");
+    let mut app = dir.app("journal");
+    app.files.picker = Box::new(|_| Err("Fixture native picker refused".into()));
+    let mut h = harness(app);
+    settle(&mut h);
+    let choose_open = |h: &mut Harness<'static, NodeCraftApp>| {
+        h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(200.0, 200.0)));
+        h.run();
+        h.event(egui::Event::Text("Open project".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        settle(h);
+        assert!(h.state().palette.is_none());
+    };
+    choose_open(&mut h);
+    assert!(h.state().notice.is_some(), "the refusal is explained");
+    assert!(crate::palette::recent(&h.ctx).is_empty(), "a refused Open isn't recent");
+    stub(h.state_mut(), vec![None]);
+    choose_open(&mut h);
+    assert_eq!(crate::palette::recent(&h.ctx), [crate::palette::Target::Command("file.open")]);
 }

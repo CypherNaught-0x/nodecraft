@@ -26,6 +26,7 @@ use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod bedrock;
 pub(crate) mod comfy_profile;
 
 /// Why an adapter can't run, in words a person can act on.
@@ -60,9 +61,14 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "deepseek" => Some("deepseek"),
+        "mistral" => Some("mistral"),
+        "groq" => Some("groq"),
+        "xai" => Some("xai"),
         "deepgram" => Some("deepgram"),
         "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
+        "bedrock" => Some("bedrock"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
@@ -251,6 +257,32 @@ fn llm(endpoint: Endpoint, env: &HostEnv<'_>) -> LlmClient {
     LlmClient::new(endpoint, env.http.clone())
 }
 
+/// The base URL set for `adapter` in place of its own API (#960), checked before any key is read.
+/// A set but unusable one refuses the adapter: it never falls back to the default host.
+fn custom_base(adapter: &str, env: &HostEnv<'_>) -> Result<Option<nodecraft_providers::base_url::BaseUrl>, Readiness> {
+    crate::custom_endpoints::base_url(env.settings, adapter)
+        .map_err(|error| Readiness::NotSetUp(format!("{} can't be used: {}", where_base_urls(adapter), error.message)))
+}
+
+/// Where the person edits `adapter`'s custom base URL, in this host's words.
+fn where_base_urls(adapter: &str) -> String {
+    if cfg!(target_arch = "wasm32") {
+        format!("its custom base URL (Providers, Custom endpoints: {adapter})")
+    } else {
+        format!("its custom base URL in settings ([providers.base_urls] {adapter} in config.toml)")
+    }
+}
+
+/// A catalog chat provider's client, at its custom base URL when one is set.
+fn chat(adapter: &str, endpoint: impl FnOnce(ApiKey) -> Endpoint, env: &HostEnv<'_>) -> Result<LlmClient, Readiness> {
+    let base = custom_base(adapter, env)?;
+    let endpoint = endpoint(ApiKey::from(&needs_key(env.keys, adapter)?));
+    Ok(match base {
+        Some(base) => LlmClient::with_base_url(endpoint, &base, env.http.clone()),
+        None => llm(endpoint, env),
+    })
+}
+
 /// The host's maker: the adapter for setup key `slot` (an adapter id, or a ComfyUI server's
 /// [`comfy_slot`]), built from its key and settings.
 pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readiness> {
@@ -264,10 +296,18 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         return comfy_profile::make(server, env);
     }
     let adapter = slot;
+    // A key set up for a custom endpoint never goes to another adapter's own API (#960).
+    if let Some(error) = crate::custom_endpoints::shared_key_conflict(env.settings, adapter) {
+        return Err(Readiness::NotSetUp(error.message));
+    }
     let provider: Arc<dyn Provider> = match adapter {
         // Chat models (#503): the LLM client, keyed by its endpoint id.
-        "openai" => Arc::new(llm(Endpoint::openai(ApiKey::from(&needs_key(env.keys, "openai")?)), env)),
-        "anthropic" => Arc::new(llm(Endpoint::anthropic(ApiKey::from(&needs_key(env.keys, "anthropic")?)), env)),
+        "openai" => Arc::new(chat("openai", Endpoint::openai, env)?),
+        "anthropic" => Arc::new(chat("anthropic", Endpoint::anthropic, env)?),
+        "deepseek" => Arc::new(chat("deepseek", Endpoint::deepseek, env)?),
+        "mistral" => Arc::new(chat("mistral", Endpoint::mistral, env)?),
+        "groq" => Arc::new(chat("groq", Endpoint::groq, env)?),
+        "xai" => Arc::new(chat("xai", Endpoint::xai, env)?),
         "azure-openai" => {
             let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {
@@ -279,6 +319,22 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             })?;
             let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
             Arc::new(llm(endpoint, env))
+        }
+        // Bedrock's OpenAI-compatible route (#46): a Region code and, from the keychain, a
+        // Bedrock API key or else AWS access keys signed with SigV4 (#1163). No AWS credential
+        // discovery (environment, profiles, instance metadata).
+        "bedrock" => {
+            let region = env.settings.bedrock_region.as_deref().map(str::trim).filter(|region| !region.is_empty()).ok_or_else(|| {
+                let why = if cfg!(target_arch = "wasm32") {
+                    "Amazon Bedrock needs a custom browser host to supply its AWS Region; the built-in browser cannot configure it"
+                } else {
+                    "set bedrock_region in provider settings to an AWS Region code such as us-east-1"
+                };
+                Readiness::NotSetUp(why.into())
+            })?;
+            nodecraft_providers::llm::validate_bedrock_region(region).map_err(|error| Readiness::NotSetUp(error.message))?;
+            let auth = bedrock::auth(env.keys, nodecraft_providers::aws::system_seconds())?;
+            Arc::new(LlmClient::bedrock_chat(region, auth, env.http.clone()).map_err(adapter_error)?)
         }
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
@@ -300,7 +356,14 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             };
             Arc::new(llm(Endpoint::litellm(&url, key.as_ref().map(ApiKey::from)), env))
         }
-        "openai-images" => Arc::new(nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone())),
+        "openai-images" => {
+            let base = custom_base("openai-images", env)?;
+            let images = nodecraft_providers::openai_images::OpenAiImages::new(needs_key(env.keys, "openai")?, env.http.clone());
+            Arc::new(match base {
+                Some(base) => images.with_base_url(base),
+                None => images,
+            })
+        }
         "deepgram" => Arc::new(nodecraft_providers::deepgram::Deepgram::new(needs_key(env.keys, "deepgram")?, env.http.clone())),
         "stability" => {
             if cfg!(target_arch = "wasm32") {

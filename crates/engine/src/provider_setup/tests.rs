@@ -105,7 +105,12 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     for account in [
         "openai",
         "azure-openai",
+        "bedrock",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
         "replicate",
         "runway",
         "bfl",
@@ -127,8 +132,11 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings =
-        ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt") };
+    let settings = ProviderSettings {
+        azure_openai_url: Some("https://demo.openai.azure.com".into()),
+        bedrock_region: Some("us-east-1".into()),
+        ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt")
+    };
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
@@ -139,6 +147,10 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "openai-images",
         "openai",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
         "replicate",
         "runway",
         "seedream",
@@ -297,6 +309,86 @@ fn azure_uses_its_own_keychain_account_and_preserves_the_catalog_deployment() {
     assert!(!format!("{:?}", requests[0]).contains(KEY));
     let invalid = ProviderSettings { azure_openai_url: Some(format!("https://user:{KEY}@demo.openai.azure.com")), ..Default::default() };
     assert!(!make("azure-openai", &env(&keys, &http, &invalid)).err().unwrap().message("azure-openai").unwrap().contains(KEY));
+}
+
+#[test]
+fn bedrock_uses_its_own_keychain_account_region_and_catalog_model() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert_eq!(key_account("bedrock"), Some("bedrock"));
+    for region in [None, Some(""), Some("  ")] {
+        let settings = ProviderSettings { bedrock_region: region.map(Into::into), ..Default::default() };
+        assert!(matches!(make("bedrock", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(_))), "{region:?}");
+    }
+    for region in ["US-EAST-1", "eu-central", "useast1", "us-east-1/../x", "cn-north-1", "us-east-1.evil.example"] {
+        let settings = ProviderSettings { bedrock_region: Some(region.into()), ..Default::default() };
+        let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("{region} must refuse") };
+        assert!(!why.contains(region), "{why}");
+    }
+    let settings = ProviderSettings { bedrock_region: Some(" us-west-2 ".into()), ..Default::default() };
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock".into() }));
+    const KEY: &str = "bedrock-public-fixture-46";
+    keys.set(&Account::new("bedrock").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit(), "a lost Bedrock reply may already be billed");
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-46".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "openai.gpt-oss-120b-1:0");
+    assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    assert!(requests[0].secret_headers.iter().any(|name| name == "authorization"));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
+}
+
+/// With no Bedrock API key, stored AWS access keys sign the same route with SigV4 (#1163). The
+/// credentials are AWS's published examples, never real ones.
+#[test]
+fn bedrock_signs_with_stored_aws_credentials_when_there_is_no_api_key() {
+    const ACCESS: &str = "AKIDEXAMPLE";
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const TOKEN: &str = "public-fixture-session-token-1163";
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings { bedrock_region: Some("us-west-2".into()), ..Default::default() };
+    let set = |name: &str, value: &str| keys.set(&Account::new(name).unwrap(), &Secret::new(value).unwrap()).unwrap();
+    set("bedrock:aws-access-key-id", ACCESS);
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock:aws-secret-access-key".into() }));
+    set("bedrock:aws-secret-access-key", SECRET);
+    set("bedrock:aws-session-token", TOKEN);
+    set("bedrock:aws-expiration", "2015-08-30T12:36:00Z");
+    let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("expired credentials must refuse") };
+    assert!(why.contains("expired"), "{why}");
+    set("bedrock:aws-expiration", "9999-12-31T23:59:59Z");
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-1163".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    let [request] = requests.as_slice() else { panic!("one request") };
+    assert_eq!(request.url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let header = |name: &str| request.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
+    let authorization = header("authorization").unwrap();
+    assert!(authorization.starts_with(&format!("AWS4-HMAC-SHA256 Credential={ACCESS}/")), "{authorization}");
+    assert!(authorization.contains("/us-west-2/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token,"));
+    assert_eq!(header("x-amz-security-token"), Some(TOKEN));
+    assert!(request.secret_headers.iter().any(|name| name == "x-amz-security-token"));
+    let printed = format!("{request:?} {:?}", make("bedrock", &env(&keys, &http, &settings)).err());
+    assert!(!printed.contains(SECRET) && !printed.contains(TOKEN), "{printed}");
 }
 
 #[test]
@@ -492,4 +584,86 @@ fn magnific38_host_uses_a_separate_key_account_and_construction_sends_nothing() 
     assert_eq!(provider.id(), "magnific");
     assert!(!provider.retry_ambiguous_submit());
     assert_eq!(http.0.load(Ordering::SeqCst), 0, "creating an adapter never validates a key with a paid request");
+}
+
+#[test]
+fn custom_base_urls_route_catalog_providers_to_the_configured_server_only() {
+    const KEY: &str = "sk-openai-public-fixture-960";
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("openai").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    keys.set(&Account::new("anthropic").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let http = Arc::new(Wire::default());
+    let job = ProviderJob {
+        model: "gpt-4.1-mini".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "A lake".into() }],
+        idempotency_key: "public-fixture-960".into(),
+    };
+    // Nothing set: every listed provider keeps its own API.
+    for entry in crate::custom_endpoints::PROVIDERS {
+        let provider = make(entry.provider, &env(&keys, &http, &ProviderSettings::default())).unwrap();
+        assert_eq!(provider.custom_base_url(), None, "{}", entry.provider);
+    }
+    let openai = make("openai", &env(&keys, &http, &ProviderSettings::default())).unwrap();
+    let _ = futures::executor::block_on(openai.submit(&job));
+    assert_eq!(http.1.lock().unwrap().pop().unwrap().url, "https://api.openai.com/v1/chat/completions");
+    // Set: the request and the key go to that server, under the catalog provider's id.
+    let mut settings = ProviderSettings::default();
+    settings.base_urls.insert("openai".into(), "http://127.0.0.1:4000/v1/".into());
+    let openai = make("openai", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(openai.id(), "openai");
+    assert_eq!(openai.custom_base_url(), Some("http://127.0.0.1:4000/v1"));
+    assert!(!openai.retry_ambiguous_submit());
+    let _ = futures::executor::block_on(openai.submit(&job));
+    let sent = http.1.lock().unwrap().pop().unwrap();
+    assert_eq!(sent.url, "http://127.0.0.1:4000/v1/chat/completions");
+    assert!(sent.headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    // Each provider has its own entry: anthropic is unaffected by openai's.
+    assert_eq!(make("anthropic", &env(&keys, &http, &settings)).unwrap().custom_base_url(), None);
+    // Unusable: refused before the keychain is read, without echoing the address, and never
+    // sent to the default host instead.
+    let empty = MemoryStore::default();
+    for bad in ["ftp://proxy.example/v1", "http://proxy.example/v1", "https://user:sk-secret-960@proxy.example/v1", "proxy.example"] {
+        for provider in ["openai", "anthropic", "openai-images"] {
+            let mut invalid = ProviderSettings::default();
+            invalid.base_urls.insert(provider.into(), bad.into());
+            let Err(Readiness::NotSetUp(why)) = make(provider, &env(&empty, &http, &invalid)) else { panic!("{provider} {bad} must refuse") };
+            assert!(why.contains("base URL") && !why.contains("proxy.example") && !why.contains("sk-secret"), "{why}");
+            assert!(make(provider, &env(&keys, &http, &invalid)).is_err());
+        }
+    }
+    assert!(http.1.lock().unwrap().is_empty(), "nothing is sent for an unusable base URL");
+}
+
+#[test]
+fn a_key_set_up_for_a_custom_base_url_never_reaches_another_adapters_own_api() {
+    const KEY: &str = "sk-gateway-public-fixture-960";
+    let keys = MemoryStore::default();
+    keys.set(&Account::new("openai").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let http = Arc::new(Wire::default());
+    let mut settings = ProviderSettings::default();
+    settings.base_urls.insert("openai".into(), "https://gateway.example/v1".into());
+    // openai-images and openai-audio read the same `openai` key and have no base URL of their own.
+    for adapter in ["openai-images", "openai-audio"] {
+        let Err(Readiness::NotSetUp(why)) = make(adapter, &env(&keys, &http, &settings)) else { panic!("{adapter} must refuse") };
+        assert!(why.contains("openai key") && why.contains("custom base URL") && !why.contains(KEY), "{why}");
+    }
+    // The other way round too: an images base URL keeps chat from sending the key to OpenAI.
+    let mut images_only = ProviderSettings::default();
+    images_only.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert!(matches!(make("openai", &env(&keys, &http, &images_only)), Err(Readiness::NotSetUp(_))));
+    // With its own base URL, it is built and sends there.
+    settings.base_urls.insert("openai-images".into(), "https://gateway.example/v1".into());
+    assert_eq!(make("openai-images", &env(&keys, &http, &settings)).unwrap().custom_base_url(), Some("https://gateway.example/v1"));
+    assert!(make("openai-audio", &env(&keys, &http, &settings)).is_err(), "openai-audio takes no base URL, so it stays refused");
+    // Unrelated accounts are unaffected.
+    keys.set(&Account::new("anthropic").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    assert!(make("anthropic", &env(&keys, &http, &settings)).is_ok());
+    // An unreadable entry refuses too: never the default host.
+    let mut unreadable = ProviderSettings::default();
+    unreadable.base_urls.insert("openai".into(), crate::custom_endpoints::BaseUrlEntry::Unreadable(serde_json::json!({"url": "x"})));
+    for adapter in ["openai", "openai-images", "openai-audio"] {
+        assert!(matches!(make(adapter, &env(&keys, &http, &unreadable)), Err(Readiness::NotSetUp(_))), "{adapter}");
+    }
+    assert!(http.1.lock().unwrap().is_empty());
 }

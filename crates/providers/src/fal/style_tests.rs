@@ -245,3 +245,53 @@ fn the_catalog_entries_train_and_take_the_family_the_adapter_checks() {
     // 1000 steps is 2 USD.
     assert_eq!(trainer.quote(&ParamValues::new()).unwrap().map(|m| m.micros), Some(2_000_000));
 }
+
+#[test]
+fn a_training_reports_its_queue_and_progress_then_keeps_its_style() {
+    let t = Transport::new(vec![
+        receipt(FLUX_LORA_TRAINER),
+        json!({"status":"IN_QUEUE","queue_position":3}),
+        json!({"status":"IN_PROGRESS"}),
+        json!({"status":"COMPLETED"}),
+        trained(WEIGHTS),
+    ]);
+    let f = fal(&t);
+    let Submission::Queued(h) = block_on(f.submit(&training(4))).unwrap() else { panic!() };
+    assert!(matches!(block_on(f.poll(&h)).unwrap(), JobProgress::Queued { position: Some(3) }));
+    assert!(matches!(block_on(f.poll(&h)).unwrap(), JobProgress::Running { .. }));
+    let JobProgress::Done(done) = block_on(f.poll(&h)).unwrap() else { panic!() };
+    let [Output::Bytes { mime, .. }] = &done.outputs[..] else { panic!("{done:?}") };
+    assert_eq!(mime, nodecraft_media::style::MIME);
+    let status = format!("{ORIGIN}/{}/requests/r_1/status", Model::read(FLUX_LORA_TRAINER).unwrap().root());
+    let requests = t.requests.lock().unwrap();
+    assert!(requests[1..4].iter().all(|r| r.url.starts_with(&status)), "every poll asks the training's own queue");
+}
+
+#[test]
+fn a_training_fal_reports_failed_keeps_no_style_and_echoes_none_of_its_text() {
+    let t = Transport::new(vec![receipt(FLUX_LORA_TRAINER), json!({"status":"COMPLETED","error":"private provider text","error_type":"runtime_error"})]);
+    let f = fal(&t);
+    let Submission::Queued(h) = block_on(f.submit(&training(4))).unwrap() else { panic!() };
+    let JobProgress::Failed(e) = block_on(f.poll(&h)).unwrap() else { panic!("failed") };
+    assert_eq!(e.kind, ErrorKind::JobFailed);
+    assert!(!e.to_string().contains("private"));
+    assert_eq!(t.requests.lock().unwrap().len(), 2, "no result or weights are fetched for a failed training");
+}
+
+#[test]
+fn a_training_is_cancelled_at_its_own_queue_and_a_lost_submit_is_never_sent_again() {
+    let cancelled = HttpResponse { status: 202, headers: vec![], body: serde_json::to_vec(&json!({"status":"CANCELLATION_REQUESTED"})).unwrap() };
+    let t = Transport::new(vec![receipt(FLUX_LORA_TRAINER)]);
+    t.replies.lock().unwrap().push_back(cancelled);
+    let f = fal(&t);
+    let Submission::Queued(h) = block_on(f.submit(&training(4))).unwrap() else { panic!() };
+    // A handle restored after a restart cancels the same training.
+    let h: JobHandle = serde_json::from_str(&serde_json::to_string(&h).unwrap()).unwrap();
+    block_on(f.cancel(&h)).unwrap();
+    let requests = t.requests.lock().unwrap();
+    let root = Model::read(FLUX_LORA_TRAINER).unwrap().root();
+    assert_eq!((requests[1].method, requests[1].url.as_str()), (HttpMethod::Put, format!("{ORIGIN}/{root}/requests/r_1/cancel").as_str()));
+    // fal takes no idempotency key, so a submit whose reply is lost is never sent again: a
+    // second paid training could start.
+    assert!(!f.retry_ambiguous_submit());
+}

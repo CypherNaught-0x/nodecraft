@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable ≥ 1.95 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
+- Rust stable ≥ 1.97.1 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
   target: `rustup target add wasm32-unknown-unknown`.
 - Linux: the usual eframe/wgpu system libraries (X11/Wayland, xkbcommon, Vulkan or GL drivers).
 - Optional: [cargo-nextest](https://nexte.st) for faster test runs (`.config/nextest.toml`).
@@ -138,6 +138,19 @@ means a required context that a branch's workflow never publishes leaves that pu
 forever, so adding the contexts first would freeze every open pull request. Land the workflow, let the
 open pull requests pick it up, then add the two contexts. The four there now keep their exact names.
 
+## Image actions on the GPU
+
+The desktop app runs built-in image actions on the GPU and falls back to the CPU reference
+([decision](decisions/2026-11-06-image-actions-on-gpu.md)); `NODECRAFT_IMAGE_GPU=0` keeps it on
+the CPU. Tests never turn the GPU path on, so their results stay exact. The GPU parity tests are
+ignored by default; on Linux without a GPU, a software Vulkan driver (`mesa-vulkan-drivers`,
+lavapipe) runs them:
+
+```sh
+cargo test -p nodecraft-engine --lib image_gpu -- --ignored --nocapture
+cargo test -p nodecraft-gpu -- --ignored
+```
+
 ## Benchmarks
 
 For the bounded release collect/compare matrix, baseline policy, CI artifacts and precise timing
@@ -149,6 +162,11 @@ prints the tooling entry points. The older manual workloads below remain availab
   ignored `app::tests::perf281_visual_current` render capture is opt-in: with
   `NODECRAFT_PERF281_RENDER_ROOT` unset it prints why it skipped and the run still passes, and with
   it set to a directory it cannot capture into the run fails loudly.
+- `cargo test -p nodecraft-ui-egui --release perf::sheet163 -- --ignored --nocapture`: a Batch
+  Generate sheet at its 1,000-row limit, every row with a result: the table and the review grid
+  scrolling, and the table's frame after an edit, at 1 and 2 pixels per point, on the same frame
+  loop with the performance recorder on (its p50/p95/p99 and over-budget count are printed). CPU
+  side only, like the canvas workload; it is not part of the `cargo xtask perf` matrix.
 
 ## Performance capture
 
@@ -243,12 +261,14 @@ rather than reusing an old recorder-only nanosecond estimate.
 |---|---|
 | `cargo xtask layers` | print the crate → layer table and fail on layering violations |
 | `cargo xtask wasm` | `cargo check --target wasm32-unknown-unknown` for every layered crate and the `nodecraft-web` app |
+| `cargo xtask browser` | the browser tests (#1038), compiled to wasm32 and run in headless Chrome by `wasm-bindgen-test-runner`; needs `cargo install wasm-bindgen-cli --version <Cargo.lock's wasm-bindgen> --locked` and a `chromedriver` matching the installed Chrome (on `PATH`, or `CHROMEDRIVER`). CI's Linux leg runs it |
 | `cargo xtask catalog-check` | validate `assets/catalog/*.toml` and that each file is built in (`docs/catalog.md`); also part of `cargo test` |
 | `cargo xtask decisions` | check `docs/decisions/`: dated record files with matching headings, and no entries in `docs/decisions.md`; also part of the `layers` step of `ci` |
 | `cargo xtask ci` | all of the above plus fmt, clippy and tests; stops at the first failure |
 | `cargo xtask ci --quick [--base REF]` | fmt, clippy, layers and the changed packages' tests without the slow ones ([Quick and full](#quick-and-full)) |
 | `cargo xtask slow-tests [--threshold SECS]` | time every test and regenerate the slow-test block of `.config/nextest.toml` |
 | `cargo xtask version [set X.Y.Z]` | print or set the workspace version (Cargo.toml + Cargo.lock) |
+| `cargo xtask shared -- <cargo args>` | run a supported Cargo command in the shared build directory, or remove the owned cache with `shared --clean` ([Sharing one build directory](#sharing-one-build-directory)) |
 
 `xtask` resolves the invoking workspace at runtime with Cargo's
 [`locate-project --workspace`](https://doc.rust-lang.org/cargo/commands/cargo-locate-project.html),
@@ -265,6 +285,72 @@ can therefore be reused from another compatible workspace without checking or mo
 one. Invoke from inside the intended workspace (`cd` there first); invoking its binary from an
 unrelated/outside directory fails instead of falling back. Selecting a workspace with an outer
 `cargo --manifest-path` while remaining outside it is not an xtask root override.
+
+## Sharing one build directory
+
+Every worktree's own `target/` costs about 15 GB, and most of that is the same third-party
+dependencies in every checkout. When several worktrees build on one machine and disk is short, set
+`NODECRAFT_SHARED_TARGET` to one absolute, dedicated directory with an existing parent. Keep it
+outside Git checkouts, and start with a new or empty directory. Use the same directory only from
+worktrees with the updated shared-cache protocol. Earlier caches lack the ownership marker, so
+choose a fresh path when moving from the original #1033 implementation. The path must be valid
+UTF-8 and omit braces reserved for Cargo directory templates.
+
+```sh
+mkdir -p "$HOME/.cache"
+export NODECRAFT_SHARED_TARGET="$HOME/.cache/nodecraft-target"
+export CARGO_INCREMENTAL=0
+cargo xtask ci --quick                                   # also ci, wasm, catalog-check, slow-tests
+cargo xtask shared -- test -p nodecraft-engine --test panic_hunt -- --ignored
+cargo xtask shared -- run -p nodecraft                   # holds the lock while the app runs
+cargo xtask shared --clean                               # remove the owned cache
+```
+
+Reserve `CARGO_TARGET_DIR`, `CARGO_BUILD_TARGET_DIR`, `CARGO_BUILD_BUILD_DIR` and the corresponding
+Cargo config for isolated builds. Cargo builds the outer xtask before xtask can take the lock.
+Each worktree's own `target/` then holds only xtask, about 200 MB. Run `perf collect` outside a
+shared command so it uses an isolated target.
+
+`shared --` accepts explicit workspace commands such as `build`, `check`, `test`, `run`, `bench`
+and `doc`, along with `fmt`, `clippy` and `nextest`. xtask invokes those three extensions directly.
+Aliases, arbitrary extensions, `clean` and arguments that override the workspace, build or target
+directory are refused. Select a toolchain on the outer Cargo command.
+
+To keep the app running without holding the lock, copy the binary out first:
+`cargo xtask shared -- build -p nodecraft`, then copy
+`$NODECRAFT_SHARED_TARGET/debug/nodecraft` somewhere of your own. Running it in place lets another
+checkout relink it underneath, and on Windows a running `.exe` makes other checkouts' builds fail.
+
+What xtask does with the directory:
+
+- **One build at a time.** xtask holds a permanent sibling lock for the whole command. That
+  reservation also prevents a second shared cache from being placed below the first. xtask passes
+  the shared paths to the intended Cargo command without exporting them to its descendants.
+  A nested `cargo xtask` launcher and the commands it starts use an isolated workspace target.
+  Start explicit `shared` commands from outside a managed build.
+- **Cleanup and recovery.** `shared --clean` waits for the lock and removes the owned directory.
+  Leave the sibling `*.nodecraft-shared.lock` file in place so waiting worktrees keep using the
+  same reservation. Interrupted wrappers, signaled Cargo children and failed waits leave
+  `.nodecraft-build-active` behind. On Windows, any failed Cargo exit leaves the marker because
+  external termination can report the same status as an ordinary failure. Both reuse and
+  cleanup refuse a marked cache. Confirm that any Cargo, compiler and build-script processes
+  from that build have stopped. Then remove the marker from the owned cache and run
+  `cargo xtask shared --clean` to rebuild from an empty cache.
+- **Never another checkout's code.** Cargo names a workspace crate's artifacts the same in every
+  checkout and judges freshness by file times, so a plain shared `CARGO_TARGET_DIR` can link
+  another checkout's code without rebuilding. The directory records the checkout that built last.
+  When a different checkout takes it, xtask deletes the workspace crates' fingerprints and
+  incremental state in every profile and target, and nothing else. Cargo then rebuilds the NodeCraft
+  crates in place and reuses every third-party dependency.
+- **Never bypass it.** A plain cargo command whose target dir is the shared directory skips both the
+  lock and the invalidation.
+- **The cost.** Switching checkouts rebuilds the workspace crates, and builds queue rather than run
+  in parallel. Consecutive builds from one checkout are incremental as usual. Feature sets and
+  profiles still each keep their own copy of what they link, so keep building through
+  `cargo xtask ci`, and use `shared --clean` when the directory grows.
+
+The safety policy is recorded in
+[`decisions/2026-11-04-shared-cache-safety.md`](decisions/2026-11-04-shared-cache-safety.md).
 
 ## Build provenance
 
@@ -348,7 +434,7 @@ discard uncommitted card-field drafts before file actions.
 
 When project storage cannot start, the startup notice and File actions retain the same reason.
 A second desktop window that cannot acquire the shared recovery journal opens in memory only;
-its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+its File menu offers **Focus the other window**. This asks the owner to come forward so its File
 menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
 use the system window switcher. Older owners without the focus endpoint must also be switched to
 manually. An unreadable startup project instead leaves a new project with working storage and an
@@ -408,3 +494,15 @@ still require the desktop.
 
 Kittests inject picker futures and exercise actual native temporary-file persistence. They verify
 UI routing and lifecycle/refusal behavior; they do not prove OS dialog operation on every platform.
+
+## Browser tests
+
+`cargo xtask browser` runs the tests that need a real browser, today the example plugin import
+through the browser's session-only store (`crates/engine/tests/browser_plugins_wasm.rs`, which
+compiles the native `browser_plugins866.rs` tests for wasm32 under `wasm-bindgen-test`). It
+checks that `wasm-bindgen-test-runner` is Cargo.lock's wasm-bindgen version first. It also fails when fewer tests ran than the target holds, so tests that stopped
+compiling in can't pass unseen. Without a matching `chromedriver`, run the runner by hand with
+`NO_HEADLESS=1` on the test's `.wasm` (`wasm32-unknown-unknown/debug/deps/browser_plugins_wasm-*.wasm`
+under the target directory, built by
+`cargo test -p nodecraft-engine --target wasm32-unknown-unknown --test browser_plugins_wasm --no-run`)
+and open the address it prints in any browser: the page shows each test's result.

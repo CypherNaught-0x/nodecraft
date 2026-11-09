@@ -1103,8 +1103,8 @@ fn track(
         let aspect = posters.get(&s.clip.id).map_or(size[0] / size[1].max(1.0), |(_, px)| px[0] as f32 / px[1].max(1) as f32);
         if let Some(corners) = outline(preview, size, aspect, s.clip.placement()) {
             let frame = fitted(preview, size);
-            painter.with_clip_rect(preview).add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(1.5, t.accent)));
-            painter.rect_stroke(frame, 0.0, egui::Stroke::new(1.0, t.panel_stroke), egui::StrokeKind::Outside);
+            painter.with_clip_rect(preview).add(egui::Shape::closed_line(corners.to_vec(), egui::Stroke::new(t.stroke_medium, t.accent)));
+            painter.rect_stroke(frame, 0.0, egui::Stroke::new(t.stroke_hairline, t.panel_stroke), egui::StrokeKind::Outside);
         }
     }
 
@@ -1129,7 +1129,7 @@ fn track(
     let mut tick = 0u64;
     while tick <= span {
         let at = x(tick);
-        painter.line_segment([Pos2::new(at, ruler.max.y - t.control_gap), Pos2::new(at, ruler.max.y)], egui::Stroke::new(1.0, t.panel_stroke));
+        painter.line_segment([Pos2::new(at, ruler.max.y - t.control_gap), Pos2::new(at, ruler.max.y)], egui::Stroke::new(t.stroke_hairline, t.panel_stroke));
         painter.text(Pos2::new(at + 2.0, ruler.min.y), egui::Align2::LEFT_TOP, duration(tick), egui::FontId::proportional(t.label_size), t.text_muted);
         tick = tick.saturating_add(step);
     }
@@ -1196,7 +1196,7 @@ fn track(
             Input::Audio => t.wire_audio,
             Input::Stills => t.wire_image,
         };
-        let stroke = if selected { egui::Stroke::new(2.0, t.card_stroke_selected) } else { egui::Stroke::new(1.0, colour) };
+        let stroke = if selected { egui::Stroke::new(t.stroke_strong, t.card_stroke_selected) } else { egui::Stroke::new(t.stroke_hairline, colour) };
         painter.rect_filled(block, f32::from(t.card_radius) / 3.0, t.panel_fill);
         if let Some((texture, size)) = posters.get(&s.clip.id) {
             let aspect = size[0] as f32 / size[1].max(1) as f32;
@@ -1207,11 +1207,11 @@ fn track(
         // Fades as ramps over the top edge, the crossing into the next clip as a band.
         let ramp = |from: u64, to: u64| [Pos2::new(x(from), block.max.y), Pos2::new(x(to), block.min.y)];
         if s.clip.fade_in_us > 0 {
-            painter.line_segment(ramp(p.start_us, p.start_us.saturating_add(s.clip.fade_in_us)), egui::Stroke::new(1.0, t.accent));
+            painter.line_segment(ramp(p.start_us, p.start_us.saturating_add(s.clip.fade_in_us)), egui::Stroke::new(t.stroke_hairline, t.accent));
         }
         let end = p.start_us.saturating_add(p.length_us);
         if s.clip.fade_out_us > 0 {
-            painter.line_segment(ramp(end, end.saturating_sub(s.clip.fade_out_us)), egui::Stroke::new(1.0, t.accent));
+            painter.line_segment(ramp(end, end.saturating_sub(s.clip.fade_out_us)), egui::Stroke::new(t.stroke_hairline, t.accent));
         }
         if p.overlap_us > 0 {
             let band = Rect::from_min_max(Pos2::new(x(end.saturating_sub(p.overlap_us)), block.min.y), Pos2::new(block.max.x, block.min.y + grip));
@@ -1257,7 +1257,7 @@ fn track(
                 let end = placed.iter().filter(main).map(|q| q.start_us.saturating_add(q.length_us).saturating_sub(q.overlap_us)).max().unwrap_or(0);
                 let at = before.and_then(|b| placed.iter().find(|q| q.index == b)).map_or(x(end), |q| x(q.start_us));
                 let main_lane = lane_of(0);
-                painter.line_segment([Pos2::new(at, main_lane.min.y), Pos2::new(at, main_lane.max.y)], egui::Stroke::new(2.0, t.accent));
+                painter.line_segment([Pos2::new(at, main_lane.min.y), Pos2::new(at, main_lane.max.y)], egui::Stroke::new(t.stroke_strong, t.accent));
             }
         }
         if !ui.input(|i| i.pointer.any_down()) {
@@ -1311,7 +1311,7 @@ fn track(
     }
 
     let head = x(editor.playhead_us);
-    painter.line_segment([Pos2::new(head, ruler.min.y), Pos2::new(head, lane.max.y)], egui::Stroke::new(1.5, t.danger));
+    painter.line_segment([Pos2::new(head, ruler.min.y), Pos2::new(head, lane.max.y)], egui::Stroke::new(t.stroke_medium, t.danger));
     ui.allocate_rect(area, Sense::hover());
 }
 

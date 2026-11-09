@@ -452,9 +452,15 @@ impl View<'_> {
         ui.horizontal(|ui| {
             let run = ui.add_enabled(
                 self.form.ready,
-                egui::Button::new(egui::RichText::new("Run").strong()).stroke(egui::Stroke::new(1.0, t.accent)).min_size(Vec2::new(t.app_thumbnail, 0.0)),
+                egui::Button::new(egui::RichText::new("Run").strong())
+                    .stroke(egui::Stroke::new(t.stroke_hairline, t.accent))
+                    .min_size(Vec2::new(t.app_thumbnail, 0.0)),
             );
-            if run.on_hover_text("Shows the price, then runs").clicked() {
+            if run
+                .on_hover_text("Shows the price, then runs")
+                .on_disabled_hover_text(self.form.blocked.clone().unwrap_or_else(|| "Fill in the inputs this form needs first".to_owned()))
+                .clicked()
+            {
                 asks.push(Ask::Run);
             }
             if let Some(price) = &self.form.price {
@@ -589,11 +595,11 @@ impl View<'_> {
     fn thumbnail(&self, ui: &mut egui::Ui, value: Option<&Value>, active: bool) -> egui::Response {
         let t = self.t;
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(t.app_thumbnail), Sense::click());
-        let stroke = if active { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+        let stroke = if active { egui::Stroke::new(t.stroke_strong, t.accent) } else { egui::Stroke::new(t.stroke_hairline, t.panel_stroke) };
         ui.painter().rect_filled(rect, f32::from(t.panel_radius) / 2.0, t.canvas_bg);
         match value {
             Some(Value::Media(asset)) => match self.thumbnails.get(&asset.hash) {
-                Some(preview) => crate::card::show_image(ui, rect.shrink(2.0), preview, None, t),
+                Some(preview) => crate::card::show_image(ui, rect.shrink(t.inset), preview, None, t),
                 None => caption(ui, rect, asset.mime.essence(), t),
             },
             Some(Value::Text(text)) => {
@@ -612,7 +618,7 @@ impl View<'_> {
 fn field<R>(ui: &mut egui::Ui, width: f32, t: &Tokens, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(t.prompt_fill)
-        .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+        .stroke(egui::Stroke::new(t.stroke_hairline, t.panel_stroke))
         .corner_radius(t.card_radius / 2)
         .inner_margin(t.control_gap)
         .show(ui, |ui| {

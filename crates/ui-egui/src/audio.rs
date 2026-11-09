@@ -6,7 +6,9 @@
 //! imported into a video service of its own; its waveform is made once per content hash, and a
 //! playing card asks for a couple of seconds of decoded sound at a time, one request in flight,
 //! into a bounded buffer the sound device's callback plays from. One card plays at a time.
-//! Browsers have no video service, so cards say playback needs the desktop app.
+//! Browsers have no video service: there the page's own `<audio>` element plays each sound card's
+//! sound (#1070), with no waveform, and a video card plays its own sound through the page's video
+//! element (#1069).
 //!
 //! A speech card also plays its job's latest preview while the sound arrives (#875): the MP3 so
 //! far, imported like any sound but never given a waveform, and dropped once a newer one or the
@@ -111,45 +113,7 @@ pub use native::Audios;
 pub use web::Audios;
 
 #[cfg(target_arch = "wasm32")]
-mod web {
-    use super::{AudioIntent, AudioView, Take};
-    use nodecraft_types::NodeId;
-
-    /// Browsers have no video service, so no sound decoding, yet.
-    #[derive(Default)]
-    pub struct Audios;
-
-    impl Audios {
-        pub fn configure(&mut self, _: Option<(&std::path::Path, &std::path::Path)>) {}
-        pub fn poll(&mut self, _: &egui::Context) {}
-        pub fn view(
-            &mut self,
-            _: &egui::Context,
-            _: NodeId,
-            _: &nodecraft_types::AssetRef,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn view_result(
-            &mut self,
-            _: &egui::Context,
-            _: NodeId,
-            _: &nodecraft_types::AssetRef,
-            _: Option<Take>,
-            _: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
-        ) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn view_preview(&mut self, _: &egui::Context, _: NodeId, _: &nodecraft_engine::run_jobs::AudioPreview) -> AudioView {
-            AudioView::Unavailable("Sound playback needs the desktop app")
-        }
-        pub fn act(&mut self, _: &egui::Context, _: NodeId, _: AudioIntent) {}
-        pub fn let_go(&mut self, _: NodeId) {}
-        pub fn retain(&mut self, _: impl Fn(NodeId) -> bool) {}
-        pub fn stop(&mut self) {}
-    }
-}
+mod web;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod output;
@@ -175,6 +139,8 @@ mod native {
 
     /// Sounds read from the project at once.
     const MAX_READS: usize = 1;
+    /// How far a video card's sound may drift from its picture before it is moved back (#1065).
+    const MAX_DRIFT_US: u64 = 300_000;
     /// `media`'s cap on one input's bytes; a bigger sound is refused for good.
     const MAX_INPUT: usize = 256 * 1024 * 1024;
     /// Staged sound bytes kept imported; the least recently shown go first past this.
@@ -274,6 +240,15 @@ mod native {
         feeder: Option<Feeder>,
         clock: u64,
         now: f64,
+        /// Video cards whose sound follows their picture (#1065): whether the picture played last
+        /// frame, and when the sound was last moved back to it.
+        following: HashMap<NodeId, Following>,
+    }
+
+    #[derive(Clone, Copy, Debug, Default)]
+    struct Following {
+        playing: bool,
+        corrected: Option<f64>,
     }
 
     impl Default for Audios {
@@ -286,6 +261,7 @@ mod native {
                 players: HashMap::new(),
                 playback: None,
                 feeder: None,
+                following: HashMap::new(),
                 clock: 0,
                 now: 0.0,
             }
@@ -823,6 +799,83 @@ mod native {
             ctx.request_repaint();
         }
 
+        /// Plays a video card's sound track with its picture (#1065): node `id` shows `video`,
+        /// which `playing` says plays, at `position_us`. The sound starts when the picture starts
+        /// and stops when it stops; only those changes act, so another card's sound (a sound
+        /// card, another video) that took the player since is left alone. While both play, the
+        /// sound is moved back to the picture when they drift apart by more than
+        /// [`MAX_DRIFT_US`], at most once a second. Nothing is read while the card is still, no
+        /// waveform is made, and a video with no sound track, or one whose sound has ended,
+        /// plays silent.
+        pub fn follow(
+            &mut self,
+            ctx: &egui::Context,
+            id: NodeId,
+            video: &AssetRef,
+            playing: bool,
+            position_us: u64,
+            read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
+        ) {
+            let before = self.following.get(&id).copied().unwrap_or_default();
+            if !playing && !before.playing {
+                return;
+            }
+            let now = ctx.input(|input| input.time);
+            self.following.insert(id, Following { playing, corrected: before.corrected });
+            let AudioView::Sound { playing: heard, position_us: at, duration_us, .. } = self.sound_only(ctx, id, video, read) else { return };
+            match (before.playing, playing) {
+                // The picture starts: so does its sound, from the picture's place.
+                (false, true) if position_us < duration_us && !heard => {
+                    self.act(ctx, id, AudioIntent::Seek(position_us));
+                    self.act(ctx, id, AudioIntent::Toggle);
+                    self.mark_corrected(id, now);
+                }
+                // The picture stops: its sound too, if it is still the one heard.
+                (true, false) if heard => self.act(ctx, id, AudioIntent::Toggle),
+                // The sound may still be loading when the picture starts: start once it is ready.
+                (true, true)
+                    if !heard && self.players.get(&id).is_some_and(|p| p.notice.is_none()) && before.corrected.is_none() && position_us < duration_us =>
+                {
+                    self.act(ctx, id, AudioIntent::Seek(position_us));
+                    self.act(ctx, id, AudioIntent::Toggle);
+                    self.mark_corrected(id, now);
+                }
+                (true, true) if heard && at.abs_diff(position_us) > MAX_DRIFT_US && before.corrected.is_none_or(|at| now - at >= 1.0) => {
+                    self.act(ctx, id, AudioIntent::Seek(position_us.min(duration_us)));
+                    self.mark_corrected(id, now);
+                }
+                _ => {}
+            }
+            if !playing {
+                self.following.remove(&id);
+            }
+        }
+
+        fn mark_corrected(&mut self, id: NodeId, now: f64) {
+            if let Some(following) = self.following.get_mut(&id) {
+                following.corrected = Some(now);
+            }
+        }
+
+        /// [`Audios::view`] without a waveform: a video card's sound is heard, never drawn.
+        pub(super) fn sound_only(
+            &mut self,
+            ctx: &egui::Context,
+            id: NodeId,
+            asset: &AssetRef,
+            read: impl FnOnce() -> Result<PreviewAssetRead, PreviewReadError>,
+        ) -> AudioView {
+            if let Err(view) = self.open(ctx) {
+                return view;
+            }
+            let sound = match self.source(ctx, asset.hash, read) {
+                Ok(sound) => sound,
+                Err(view) => return view,
+            };
+            self.switch(id, asset.hash, None, false);
+            self.show(id, &sound, None)
+        }
+
         /// Plays node `id`'s `asset` from `from`, stopping whichever card played before.
         fn play(&mut self, id: NodeId, asset: AudioAsset, from: u64, duration: u64) {
             if let Some(previous) = self.playback.take() {
@@ -859,6 +912,7 @@ mod native {
         /// Forgets the players of nodes `keep` says are gone, stopping one that was playing.
         pub fn retain(&mut self, keep: impl Fn(NodeId) -> bool) {
             self.players.retain(|id, _| keep(*id));
+            self.following.retain(|id, _| keep(*id));
             if self.playback.as_ref().is_some_and(|p| !keep(p.node)) {
                 self.stop();
             }

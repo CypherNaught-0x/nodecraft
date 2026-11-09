@@ -7,10 +7,11 @@ struct View {
 }
 
 #[test]
-fn bfl33_model_is_selectable_with_an_unknown_usage_price() {
+fn bfl33_model_is_selectable_with_its_megapixel_price() {
     let catalog = Catalog::builtin().unwrap();
     let mut picker = ModelPicker::new(&catalog, &Wiring::new(Modality::Image).with_inline_prompt(), |_| Ok(())).unwrap();
-    picker.set_query("BFL").unwrap();
+    // Several BFL models now (#1060): narrow to this one.
+    picker.set_query("klein 4B").unwrap();
     let state = View { catalog, picker, outcome: Outcome::Open };
     let mut h = Harness::builder().with_size(egui::vec2(1000.0, 650.0)).build_ui_state(
         |ui, state: &mut View| {
@@ -21,7 +22,7 @@ fn bfl33_model_is_selectable_with_an_unknown_usage_price() {
         state,
     );
     h.run();
-    assert_eq!(price_label(h.state().catalog.get("bfl.flux-2-klein-4b").unwrap()), "Usage based (USD)");
+    assert_eq!(price_label(h.state().catalog.get("bfl.flux-2-klein-4b").unwrap()), "0.014 USD first MP + 0.001 USD / extra MP");
     h.get_by_label("FLUX.2 klein 4B (BFL)").click();
     h.run();
     assert_eq!(h.state().outcome, Outcome::Chosen("bfl.flux-2-klein-4b".into()));

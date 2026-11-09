@@ -8,13 +8,14 @@ use crate::{
 use egui::{FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use nodecraft_graph::{Node, Position};
 use nodecraft_nodes::NodeDescriptor;
-use nodecraft_types::{Integer, Modality, Number, ParamControl, Unsigned, Value};
+use nodecraft_types::{Integer, Modality, NodeId, Number, ParamControl, Unsigned, Value};
 use std::{
     borrow::Cow,
     collections::{BTreeMap, BTreeSet, HashSet},
 };
 
 mod chips;
+pub(crate) mod connected;
 pub(crate) mod generate;
 mod layout;
 #[cfg(test)]
@@ -83,8 +84,14 @@ pub enum Intent {
     Variations(u64),
     /// Put this canvas's extra variations on cards beside their source, or in its history (#808).
     VariationCards(bool),
+    /// Reuse an identical earlier result instead of running again, or run fresh each time (#1059).
+    Cache(bool),
     /// Choose a folder whose files replace the ones this Folder card holds.
     ImportFolder,
+    /// Choose the folder an Export to folder card writes into (#746): a person's grant.
+    ChooseExportFolder,
+    /// Write what an Export to folder card describes into its chosen folder (#746).
+    Export,
 }
 
 /// What a Folder card holds and gives: "12 of 40 images from Shoot".
@@ -215,6 +222,9 @@ pub struct CardView<'a> {
     pub mention_blocked: Option<&'a str>,
     /// A text card's answer still arriving, or cut short (#504).
     pub partial: Option<generate::Partial<'a>>,
+    /// The media wired into a text card, shown above its answer (#84): the tiles the host
+    /// prepared, and how many assets are connected in all.
+    pub connected: (Vec<connected::Thumb>, usize),
     pub(crate) local_text: Option<&'a [crate::text_preview::Row]>,
     /// The node's video and its player, when it has one (#105).
     pub video: Option<crate::video::VideoView>,
@@ -227,6 +237,48 @@ pub struct CardView<'a> {
     pub outdated: bool,
     /// Where the canvas puts extra variations, and whether this card pins a seed (#808).
     pub variations: generate::Variations,
+    /// The name of the folder a person chose for an Export to folder card (#746), when one is
+    /// chosen in this window. View state: the project never holds it.
+    pub export_folder: Option<String>,
+    /// The canvas and node kinds, so each port can name what it is connected to for screen
+    /// readers (#1109). Without them a port names only itself and its card.
+    pub links: Option<PortLinks<'a>>,
+}
+
+/// The titles wired to each port, keyed by node, side and port name, in input order.
+pub type PeerTitles = BTreeMap<(NodeId, Side, String), Vec<String>>;
+
+/// What a card's ports read to name their connections (#1109).
+#[derive(Clone, Copy)]
+pub struct PortLinks<'a> {
+    pub canvas: &'a nodecraft_graph::Canvas,
+    pub kinds: &'a nodecraft_nodes::Registry,
+    /// Built from the edges once per frame, the first time a port is named: only while
+    /// AccessKit asks for names, so nothing is spent on it otherwise.
+    pub peers: &'a std::cell::OnceCell<PeerTitles>,
+}
+
+impl PortLinks<'_> {
+    /// A card's title as its own heading shows it.
+    pub fn title(&self, node: &Node) -> String {
+        title(node, self.kinds.get(&node.kind).ok().map(|kind| kind.descriptor()))
+    }
+
+    /// The titles of the cards wired to `port` of `node` on `side`, in input order for an input.
+    pub fn peers(&self, node: NodeId, side: Side, port: &str) -> Vec<String> {
+        let map = self.peers.get_or_init(|| {
+            let mut edges: Vec<_> = self.canvas.edges().values().collect();
+            edges.sort_by_key(|edge| edge.order);
+            let mut map = PeerTitles::new();
+            for edge in edges {
+                let (Some(from), Some(to)) = (self.canvas.nodes().get(&edge.from.node), self.canvas.nodes().get(&edge.to.node)) else { continue };
+                map.entry((to.id, Side::Input, edge.to.port.clone())).or_default().push(self.title(from));
+                map.entry((from.id, Side::Output, edge.from.port.clone())).or_default().push(self.title(to));
+            }
+            map
+        });
+        map.get(&(node, side, port.to_owned())).cloned().unwrap_or_default()
+    }
 }
 
 /// Positive distances outside the body, including the clipped title/UNSAVED notice and
@@ -268,12 +320,15 @@ pub fn show(
         mentions,
         mention_blocked,
         partial,
+        connected: connected_media,
         local_text,
         video,
         audio,
         mesh,
         outdated,
         variations,
+        export_folder,
+        links,
     } = card;
     let (images, video, audio, mesh) =
         if crate::text_preview::eligible(descriptor) { ((Vec::new(), 0), None, None, None) } else { (images, video, audio, mesh) };
@@ -348,7 +403,7 @@ pub fn show(
     } else {
         t.card_stroke
     };
-    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(1.0 / view.zoom, stroke), StrokeKind::Inside);
+    ui.painter().rect(rect, t.card_radius, t.card_fill, Stroke::new(t.stroke_hairline / view.zoom, stroke), StrokeKind::Inside);
 
     {
         let px = (t.label_size * view.zoom).round().max(t.title_min_screen_px);
@@ -483,7 +538,8 @@ pub fn show(
         } else if node.kind == nodecraft_nodes::generation::TEXT_KIND {
             let (area, rest) = inner.split_top_bottom_at_y(inner.top() + metrics.answer);
             inner = rest;
-            generate::answer(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), generate::answer_of(node), partial, &mut intents, t);
+            let area = connected::show(&mut ui, area.shrink2(Vec2::new(0.0, t.control_gap)), &connected_media.0, connected_media.1, view.zoom, t);
+            generate::answer(&mut ui, area, generate::answer_of(node), partial, &mut intents, t);
         }
         if let Some(d) = draw_composer {
             inner = generate::show(
@@ -511,95 +567,107 @@ pub fn show(
         let own = |name: &str| generate::owns_parameter(composer.is_some(), roles, name);
         let mut body = ui.new_child(egui::UiBuilder::new().id_salt("body").max_rect(inner));
         body.set_clip_rect(inner.intersect(ui.clip_rect()));
-        egui::ScrollArea::vertical().id_salt("parameters").max_height(inner.height().min(metrics.parameters)).auto_shrink([false, false]).show(
-            &mut body,
-            |ui| {
-                ui.set_width(inner.width());
-                // Another version's ports or settings may not fit this one's schema at all.
-                if outdated {
-                    ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
-                    if ui.button("Update card").clicked() {
-                        intents.push(Intent::Migrate);
+        // Under the controls, so the card layer's hit test says when the pointer is over the body.
+        let viewport_height = inner.height().min(metrics.parameters);
+        let wheel = body.interact(Rect::from_min_size(inner.min, Vec2::new(inner.width(), viewport_height)), body.id().with("wheel"), Sense::hover());
+        let parameters = egui::ScrollArea::vertical().id_salt("parameters").max_height(viewport_height).auto_shrink([false, false]).show(&mut body, |ui| {
+            ui.set_width(inner.width());
+            // Another version's ports or settings may not fit this one's schema at all.
+            if outdated {
+                ui.label(egui::RichText::new("This card was made with another version of its plugin.").color(t.text_muted));
+                if ui.button("Update card").clicked() {
+                    intents.push(Intent::Migrate);
+                }
+            }
+            match descriptor {
+                None if outdated => {}
+                None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
+                    ui.label(missing_plugin(&lock));
+                }
+                None => {
+                    ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
+                    if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
+                        && ui.button("Choose supported model…").clicked()
+                    {
+                        intents.push(Intent::Model);
                     }
                 }
-                match descriptor {
-                    None if outdated => {}
-                    None if let Some(lock) = nodecraft_engine::plugin_runtime::PluginLock::of(node) => {
-                        ui.label(missing_plugin(&lock));
-                    }
-                    None => {
-                        ui.label("This node kind or its controls are unavailable. Check its schema and view cache budget.");
-                        if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, nodecraft_nodes::generation::MODEL)
-                            && ui.button("Choose supported model…").clicked()
-                        {
-                            intents.push(Intent::Model);
+                Some(d) => {
+                    if node.kind == nodecraft_nodes::folder::ID {
+                        ui.label(folder_summary(node));
+                        let label =
+                            if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
+                        if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
+                            intents.push(Intent::ImportFolder);
                         }
                     }
-                    Some(d) => {
-                        if node.kind == nodecraft_nodes::folder::ID {
-                            ui.label(folder_summary(node));
-                            let label =
-                                if nodecraft_nodes::folder::stored(node).is_ok_and(|files| files.is_empty()) { "Import folder…" } else { "Import again…" };
-                            if ui.button(label).on_hover_text("Choose a folder; its files replace the ones this card holds").clicked() {
-                                intents.push(Intent::ImportFolder);
-                            }
+                    if node.kind == nodecraft_nodes::export::ID {
+                        export_controls(ui, export_folder.as_deref(), &mut intents, t);
+                    }
+                    for spec in &d.params.params {
+                        if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
+                            continue;
                         }
-                        for spec in &d.params.params {
-                            if !visible.is_some_and(|visible| visible.contains(&spec.name)) || own(&spec.name) {
-                                continue;
-                            }
-                            // A workflow card's model is fixed: it runs the workflow it holds.
-                            if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
-                                continue;
-                            }
-                            ui.push_id(&spec.name, |ui| {
-                                let label = ui.add_sized(
-                                    [ui.available_width(), t.body_size + t.control_gap],
-                                    egui::Label::new(egui::RichText::new(&spec.label).color(t.text_muted)).truncate().halign(egui::Align::LEFT),
-                                );
-                                let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
-                                let value = node.params.get(&spec.name).or(spec.default.as_ref());
-                                let editable = enabled.is_none_or(|names| names.contains(&spec.name));
-                                if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
-                                    let current = match value {
-                                        Some(Value::Text(id)) => id.as_str(),
-                                        _ => "Unavailable saved model",
-                                    };
-                                    let preview: String = current.chars().take(t.preview_chars).collect();
-                                    ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
-                                    if ui.add_enabled(editable, egui::Button::new("Change model…")).labelled_by(label.id).on_hover_text(&preview).clicked() {
-                                        intents.push(Intent::Model);
-                                    }
-                                } else {
-                                    let list = listed_params.and_then(|listed| listed.get(&spec.name));
-                                    // A stored value of another type (a hand-edited project) keeps the
-                                    // ordinary control, which shows it as it is.
-                                    let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
-                                    let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
-                                    // A stored copy of the default (a new card stores its defaults) is not an override.
-                                    let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
-                                    let changed = match choices {
-                                        Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
-                                        None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
-                                        None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
-                                    };
-                                    if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
-                                        ui.label(egui::RichText::new(hint).color(t.text_muted).small());
-                                    }
-                                    if editable && let Some(value) = changed {
-                                        intents.push(Intent::Parameter { name: spec.name.clone(), value });
-                                    }
+                        // A workflow card's model is fixed: it runs the workflow it holds.
+                        if node.kind == nodecraft_nodes::comfy_workflow::ID && spec.name == nodecraft_nodes::comfy_workflow::MODEL {
+                            continue;
+                        }
+                        ui.push_id(&spec.name, |ui| {
+                            let label = ui.add_sized(
+                                [ui.available_width(), t.body_size + t.control_gap],
+                                egui::Label::new(egui::RichText::new(&spec.label).color(t.text_muted)).truncate().halign(egui::Align::LEFT),
+                            );
+                            let label = if let Some(description) = &spec.description { label.on_hover_text(description) } else { label };
+                            let value = node.params.get(&spec.name).or(spec.default.as_ref());
+                            let editable = enabled.is_none_or(|names| names.contains(&spec.name));
+                            if nodecraft_engine::generation_catalog::GenerationCatalog::is_model_selector(&node.kind, &spec.name) {
+                                let current = match value {
+                                    Some(Value::Text(id)) => id.as_str(),
+                                    _ => "Unavailable saved model",
+                                };
+                                let preview: String = current.chars().take(t.preview_chars).collect();
+                                ui.add_sized([ui.available_width(), t.body_size + t.control_gap], egui::Label::new(&preview).truncate());
+                                if ui
+                                    .add_enabled(editable, egui::Button::new("Change model…"))
+                                    .labelled_by(label.id)
+                                    .on_hover_text(&preview)
+                                    .on_disabled_hover_text(format!("{preview}\n\nThe model can't be changed here right now"))
+                                    .clicked()
+                                {
+                                    intents.push(Intent::Model);
                                 }
-                            });
-                        }
+                            } else {
+                                let list = listed_params.and_then(|listed| listed.get(&spec.name));
+                                // A stored value of another type (a hand-edited project) keeps the
+                                // ordinary control, which shows it as it is.
+                                let text = value.is_none_or(|value| matches!(value, Value::Text(_)));
+                                let choices = list.filter(|_| text).and_then(|list| list.choices(lists));
+                                // A stored copy of the default (a new card stores its defaults) is not an override.
+                                let overridden = node.params.get(&spec.name).is_some_and(|stored| spec.default.as_ref() != Some(stored));
+                                let changed = match choices {
+                                    Some(choices) => ui.add_enabled_ui(editable, |ui| listed::picker(ui, choices, value, overridden, label.id, t)).inner,
+                                    None if editable => control(ui, &spec.control, value, &spec.name, editor, label.id, t),
+                                    None => ui.add_enabled_ui(false, |ui| control(ui, &spec.control, value, &spec.name, editor, label.id, t)).inner,
+                                };
+                                if let Some(hint) = list.filter(|_| text && choices.is_none()).and_then(Listed::hint) {
+                                    ui.label(egui::RichText::new(hint).color(t.text_muted).small());
+                                }
+                                if editable && let Some(value) = changed {
+                                    intents.push(Intent::Parameter { name: spec.name.clone(), value });
+                                }
+                            }
+                        });
                     }
                 }
+            }
 
-                if let Some((_, error)) = &editor.error {
-                    ui.label(error);
-                }
-            },
-        );
+            if let Some((_, error)) = &editor.error {
+                ui.label(error);
+            }
+        });
+        // Inner regions (a long text field) have taken their share already; this body takes what
+        // it can of the rest and the canvas pans by whatever remains (#413).
+        crate::scroll_chain::take(&body, wheel.contains_pointer(), &parameters, [false, true]);
     }
     if view.zoom < BODY_MIN_ZOOM {
         editor.mark_hidden();
@@ -611,7 +679,10 @@ pub fn show(
         let radius = t.port_radius.max(t.port_min_radius / view.zoom);
         ui.painter().circle(c, radius, t.card_fill, Stroke::new(t.port_stroke / view.zoom, t.wire(port.port_type.modality)));
         let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, inputs.len()), ui.id().with(("in", &port.name)), Sense::drag());
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} input", port.name)));
+        r.widget_info(|| port_info(links, node, Side::Input, port, descriptor));
+        if r.has_focus() {
+            focus_ring(&ui, c, radius, view.zoom, t);
+        }
         let hint = if node.inputs.iter().any(|saved| saved == port) {
             port.name.clone()
         } else {
@@ -628,10 +699,53 @@ pub fn show(
             ui.painter().line_segment([c - arm, c + arm], Stroke::new(t.handle_stroke / view.zoom, t.handle_glyph));
         }
         let r = ui.interact(port_hit_rect(rect, c, radius + hit, index, node.outputs.len()), ui.id().with(("out", &port.name)), Sense::drag());
-        r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, format!("{} output", port.name)));
+        r.widget_info(|| port_info(links, node, Side::Output, port, descriptor));
+        if r.has_focus() {
+            focus_ring(&ui, c, radius, view.zoom, t);
+        }
         ports.push((Side::Output, port.name.clone(), r.on_hover_text(format!("Drag to connect {}", port.name))));
     }
     Some(CardResponse { response, context, save_hit, intents, ports })
+}
+
+/// An Export to folder card's folder and Export button (#746). The folder is the person's choice
+/// in this window; the card's parameters below describe the names and policy.
+fn export_controls(ui: &mut egui::Ui, folder: Option<&str>, intents: &mut Vec<Intent>, t: &Tokens) {
+    if let Some(why) = crate::app::card_export_unavailable() {
+        ui.label(egui::RichText::new(why).color(t.text_muted));
+        return;
+    }
+    match folder {
+        Some(folder) => ui.label(format!("Folder: {folder}")),
+        None => ui.label(egui::RichText::new("No folder chosen yet").color(t.text_muted)),
+    };
+    ui.horizontal(|ui| {
+        let choose = if folder.is_some() { "Change folder…" } else { "Choose folder…" };
+        if ui.button(choose).on_hover_text("Pick the folder this card writes into; it stays on this computer, never in the project").clicked() {
+            intents.push(Intent::ChooseExportFolder);
+        }
+        if ui
+            .add_enabled(folder.is_some(), egui::Button::new("Export"))
+            .on_hover_text("Write the wired results into the chosen folder")
+            .on_disabled_hover_text("Choose a folder first")
+            .clicked()
+        {
+            intents.push(Intent::Export);
+        }
+    });
+}
+
+/// The keyboard focus ring around a port (#1109), outside the drop ring's gap.
+fn focus_ring(ui: &egui::Ui, center: Pos2, radius: f32, zoom: f32, t: &Tokens) {
+    ui.painter().circle_stroke(center, radius + t.drop_ring_gap / zoom, Stroke::new(t.port_focus_width / zoom, t.accent));
+}
+
+/// A port's accessible name (#1109): "Image output of Generate 1", or "Prompt input of Text 2,
+/// connected to Text 1". Ports are buttons: Enter or Space starts a keyboard connection.
+fn port_info(links: Option<PortLinks<'_>>, node: &Node, side: Side, port: &nodecraft_graph::Port, descriptor: Option<&NodeDescriptor>) -> egui::WidgetInfo {
+    let owner = title(node, descriptor);
+    let peers = links.map(|links| links.peers(node.id, side, &port.name)).unwrap_or_default();
+    egui::WidgetInfo::labeled(egui::WidgetType::Button, true, noodle::port_label(side, port, &owner, &peers))
 }
 
 // At overview zoom, and for additive migration input previews, screen-sized hit targets can
@@ -853,10 +967,10 @@ fn show_audio(ui: &mut egui::Ui, area: Rect, audio: &crate::audio::AudioView, in
             }
         }
         _ => {
-            painter.hline(bars.x_range(), bars.center().y, Stroke::new(1.0, t.waveform));
+            painter.hline(bars.x_range(), bars.center().y, Stroke::new(t.stroke_hairline, t.waveform));
         }
     }
-    painter.vline(playhead, bars.y_range(), Stroke::new(1.5, t.text));
+    painter.vline(playhead, bars.y_range(), Stroke::new(t.stroke_medium, t.text));
     let mut row = ui.new_child(egui::UiBuilder::new().id_salt("audio_controls").max_rect(controls).layout(egui::Layout::left_to_right(egui::Align::Center)));
     row.set_clip_rect(controls.intersect(ui.clip_rect()));
     let name = if *playing { "Pause sound" } else { "Play sound" };
@@ -1116,12 +1230,13 @@ pub(crate) fn control_with_mode(
             let id = ui.make_persistent_id(egui::IdSalt::new("value"));
             let widget = widget.id(id).desired_width(f32::INFINITY).char_limit(char_limit);
             let r = if multiline {
-                egui::ScrollArea::vertical()
+                let out = egui::ScrollArea::vertical()
                     .id_salt("text_scroll")
                     .max_height(t.body_size * t.text_rows as f32)
                     .auto_shrink([false, false])
-                    .show(ui, |ui| ui.add(widget))
-                    .inner
+                    .show(ui, |ui| ui.add(widget));
+                crate::scroll_chain::take(ui, out.inner.contains_pointer(), &out, [false, true]);
+                out.inner
             } else {
                 ui.add_sized(Vec2::new(ui.available_width(), t.control_row_height / 2.0), widget)
             }

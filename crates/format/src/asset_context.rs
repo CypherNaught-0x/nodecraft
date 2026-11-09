@@ -118,6 +118,23 @@ impl AssetContext {
         }
         Ok(crate::disk_quota::DiskUsage::default())
     }
+    /// Which of `hashes` already have a verified copy here, so decoding them copies nothing
+    /// (#367). `None` when another verification holds the store and it can't be told.
+    pub(crate) fn verified_among(&self, hashes: &[Blake3]) -> Result<Option<Vec<bool>>, Error> {
+        let Ok(_operation) = self.operation() else { return Ok(None) };
+        self.prune_cache()?;
+        let cache = self.0.cache.lock().map_err(|_| unavailable())?;
+        Ok(Some(hashes.iter().map(|hash| cache.get(hash).is_some_and(|record| record.identity.strong_count() != 0)).collect()))
+    }
+    /// Bytes of private files earlier cleanup couldn't delete: still on disk and still charged
+    /// until the handle pinning them closes or NodeCraft restarts (#367).
+    pub fn cleanup_debt(&self) -> Result<u64, Error> {
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(workspace) = &self.0.workspace {
+            return workspace.quota().cleanup_retained_bytes();
+        }
+        Ok(0)
+    }
     pub fn retained_usage(&self) -> Result<(usize, u64), Error> {
         let ledger = self.0.ledger.lock().map_err(|_| unavailable())?;
         Ok((ledger.retained.len(), ledger.bytes))
@@ -202,7 +219,7 @@ impl AssetContext {
     pub fn same_instance(&self, other: &Self) -> bool {
         self.same(other)
     }
-    pub(crate) fn same(&self, other: &Self) -> bool {
+    pub fn same(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
 }

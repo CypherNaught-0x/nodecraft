@@ -208,7 +208,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         return minimax::prepare(j, l, model);
     }
     #[cfg(target_arch = "wasm32")]
-    if model == Model::Pika {
+    if model.pika() {
         return Err(invalid("Pika 2.5 needs a desktop project so its large video results can be saved"));
     }
     #[cfg(target_arch = "wasm32")]
@@ -220,6 +220,9 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
     }
     if model == Model::Pika {
         return pika::prepare(j, l);
+    }
+    if model == Model::PikaFrames {
+        return pika::prepare_frames(j, l);
     }
     if model == Model::Topaz {
         return topaz::prepare(j, l);
@@ -336,6 +339,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
             | Model::HeygenSpeed
             | Model::HeygenPrecision
             | Model::Pika
+            | Model::PikaFrames
             | Model::Topaz => false,
             Model::Image => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "seed"),
             Model::Styled => matches!(k.as_str(), "width" | "height" | "num_images" | "num_inference_steps" | "guidance_scale" | "lora_scale" | "seed"),
@@ -428,6 +432,7 @@ pub(super) fn prepare(j: &ProviderJob, l: Limits) -> Result<(Record, Vec<u8>), P
         | Model::HeygenSpeed
         | Model::HeygenPrecision
         | Model::Pika
+        | Model::PikaFrames
         | Model::Topaz => {
             return Err(invalid("fal model requests require their own schema"));
         }

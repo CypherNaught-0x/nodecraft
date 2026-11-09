@@ -1,14 +1,15 @@
 //! Offering unsaved work back after an unclean exit (#408). At startup a journal holding work
-//! is kept aside (`storage`); here it is replayed and the person decides: **Recover** adopts the
-//! replayed project at the file its session had open (checkpointed at once, unsaved), **Start
-//! from last save** opens that file as last saved, then drops only the selected copy. Nothing is lost silently: the
+//! is kept aside (`keep_aside`, off the UI thread, #1053); here the person decides: **Recover** adopts the
+//! replayed project at the file its session had open (restored in the background and
+//! checkpointed, unsaved; a failure or cancellation asks again, #367), **Start
+//! from last save** opens that file as last saved in the background (#367), then drops only the
+//! selected copy, and only once the open has succeeded. Nothing is lost silently: the
 //! kept copy stays on disk until the recovered work is saved (so quitting first, or crashing
 //! again, offers it again next time), a damaged journal offers what could be replayed and says
 //! so, and one that can't be read is left where it is, with its name.
 use super::{NodeCraftApp, storage};
 use crate::theme::Tokens;
 use nodecraft_format::{Snapshot, StorageLocation};
-use serde_json::json;
 use std::path::{Path, PathBuf};
 
 /// What a kept journal held.
@@ -36,13 +37,53 @@ pub struct RecoveryOffer {
 impl RecoveryOffer {
     /// Reads and replays the kept journal at `kept`.
     pub fn read(kept: PathBuf) -> Self {
-        let found = storage::replay_kept(&kept).map_err(|error| error.message).map(|recovered| Found {
+        let replayed = storage::replay_kept(&kept);
+        Self::from_replay(kept, replayed)
+    }
+
+    /// The question about `kept`, from a replay already made of the same bytes (#1053: the
+    /// startup keep-aside replays the live journal to decide whether to keep it, and the copy
+    /// it keeps is byte for byte that journal, so it isn't replayed again).
+    pub(super) fn from_replay(kept: PathBuf, replayed: Result<nodecraft_format::journal::Recovered, nodecraft_types::Error>) -> Self {
+        let found = replayed.map_err(|error| error.message).map(|recovered| Found {
             title: recovered.snapshot.project.title().to_owned(),
             changes: recovered.applied,
             damaged: recovered.damage.is_some() || recovered.truncated_tail,
             snapshot: recovered.snapshot,
         });
         Self { location: storage::recorded_location(&kept), kept, found, offered_over: None }
+    }
+
+    /// The question about an earlier copy that still replays (work recovered and never saved),
+    /// newest slot first, stopping at `cancel` (#1053: off the UI thread, so a long run of
+    /// damaged copies never holds the window). Each replay copies its checkpoint into the
+    /// private workspace, so each is charged against `probe` first (#367), as the live
+    /// journal's is. `Err` when cancelled, or when a copy's replay wouldn't fit: the scan stops
+    /// there, and the copies stay to be offered another time.
+    pub(super) fn earlier(
+        recovery: &Path,
+        cancel: &nodecraft_format::asset_source::TransferCancel,
+        probe: &dyn Fn() -> nodecraft_format::space::SpaceProbe,
+    ) -> Result<Option<Self>, nodecraft_types::Error> {
+        let mut copies = storage::kept_journals(recovery);
+        while let Some(candidate) = copies.pop() {
+            cancel.check()?;
+            if let Ok(bytes) = std::fs::metadata(&candidate).map(|metadata| metadata.len())
+                && bytes > 0
+            {
+                nodecraft_format::space::SpaceInventory::replay_journal(bytes)?.check(&probe())?;
+            }
+            let replayed = storage::replay_kept_with(&candidate, cancel);
+            if let Err(error) = &replayed
+                && nodecraft_format::asset_source::TransferCancel::is_cancellation(error)
+            {
+                return Err(error.clone());
+            }
+            if replayed.is_ok() {
+                return Ok(Some(Self::from_replay(candidate, replayed)));
+            }
+        }
+        Ok(None)
     }
 
     /// The question to ask at startup, if any: about `kept` (the journal this launch kept
@@ -99,6 +140,10 @@ enum Choice {
     Keep,
 }
 
+fn flag(value: &serde_json::Value, key: &str) -> bool {
+    value.get(key).and_then(serde_json::Value::as_bool) == Some(true)
+}
+
 fn quoted(title: &str) -> String {
     let title = title.trim();
     if title.is_empty() {
@@ -122,12 +167,29 @@ impl NodeCraftApp {
         }
     }
 
+    /// [`Self::attach_recovery`] with the question the startup keep-aside already worked out
+    /// off the UI thread (#1053).
+    pub(super) fn attach_recovery_offer(&mut self, journal: PathBuf, offer: Option<RecoveryOffer>) {
+        if self.session.file_status().available {
+            self.recovery = offer;
+            if let Some(offer) = &mut self.recovery {
+                offer.offered_over = Some(self.session.document_lineage());
+            }
+            self.recovery_journal = Some(journal);
+        }
+    }
+
     /// The startup question, while one is pending. It's modal: the canvas waits for the answer,
     /// and no key or drop reaches it meanwhile.
     pub(super) fn recovery_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(offer) = &self.recovery else {
             return;
         };
+        // A background open (at startup, say) owns the window until it settles; its progress
+        // window takes the input meanwhile, and the question is asked once it has finished.
+        if self.session.file_status().operation.is_some() {
+            return;
+        }
         let mut choice = None;
         egui::Modal::new(egui::Id::new("recovery_offer")).show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
@@ -205,45 +267,93 @@ impl NodeCraftApp {
         }
 
         match (choice, &offer.found) {
-            (Choice::Recover, Ok(found)) => match self.session.recover(found.snapshot.clone(), offer.location.clone().map(StorageLocation::Path)) {
-                Ok(()) => {
-                    log::info!("recovery: recovered {} changes from {name}", found.changes);
-                    self.after_document_replaced();
-                    let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or_else(|| quoted(&found.title), |n| n.to_string_lossy().into_owned());
-                    self.notice = Some(if offer.location.is_some() {
-                        format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
-                    } else {
-                        format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
-                    });
-                    // Kept until the recovered work is saved (`track_recovery`).
-                    self.recovered = Some(RecoveredWork { offer, lineage: self.session.document_lineage() });
-                }
-                Err(error) => {
-                    log::error!("recovery: {name} couldn't be recovered: {}", error.message);
-                    self.notice = Some(format!("That work couldn't be recovered ({}). It was kept as {name} in the recovery folder.", error.message));
-                }
+            // Restored on the save runner (#367): the media copies and the checkpoint never hold
+            // the window. The copy stays until the recovered work is saved (`track_recovery`).
+            (Choice::Recover, Ok(found)) => match self.session.recover_in_background(found.snapshot.clone(), offer.location.clone().map(StorageLocation::Path))
+            {
+                Ok(result) if flag(&result, "recovering") => self.recovering(offer),
+                Ok(result) if flag(&result, "recovered") => self.recovered_work(offer),
+                Ok(_) => self.recovery_not_restored(offer, &super::file_dialogs::OpenFailed::Unconfirmed, true),
+                Err(error) => self.recovery_not_restored(offer, &super::file_dialogs::OpenFailed::from_error(&error), true),
             },
-            (Choice::StartFromLastSave, _) => {
-                if let Some(file) = &offer.location {
-                    let opened = file.to_str().ok_or_else(|| "the path isn't valid UTF-8".to_owned()).and_then(|location| {
-                        self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":true})).map(|_| ()).map_err(|error| error.message)
-                    });
-                    if let Err(error) = opened {
-                        self.notice = Some(format!("The last save couldn't be opened ({error}). Unsaved work was kept as {name} in the recovery folder."));
-                        return;
-                    }
-                    self.after_document_replaced();
-                }
-                self.notice = Some(match offer.remove_selected() {
-                    Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
-                    Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
-                    Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
-                });
-            }
+            (Choice::StartFromLastSave, _) => match offer.location.clone() {
+                // The copy stays until the open has succeeded (`started_from_last_save`).
+                Some(file) => self.start_background_open(file, true, super::file_dialogs::AfterOpen::LastSave(Box::new(offer))),
+                None => self.started_from_last_save(&offer),
+            },
             (Choice::Recover | Choice::Keep, _) => {
                 log::warn!("recovery: kept {name}, which can't be replayed");
             }
         }
+    }
+
+    /// "Recover" has replaced the document with the offered work: the copy is kept until that
+    /// work is saved.
+    pub(super) fn recovered_work(&mut self, offer: RecoveryOffer) {
+        let name = offer.kept_name();
+        let (changes, title) = match &offer.found {
+            Ok(found) => (found.changes, quoted(&found.title)),
+            Err(_) => (0, quoted("")),
+        };
+        log::info!("recovery: recovered {changes} changes from {name}");
+        self.after_document_replaced();
+        let title = offer.location.as_ref().and_then(|p| p.file_name()).map_or(title, |n| n.to_string_lossy().into_owned());
+        self.notice = Some(if offer.location.is_some() {
+            format!("Recovered {title}. Save to keep it; until then a copy stays in the recovery folder.")
+        } else {
+            format!("Recovered {title} as an untitled project. Until it's saved, a copy stays in the recovery folder.")
+        });
+        // Kept until the recovered work is saved (`track_recovery`).
+        self.recovered = Some(RecoveredWork { offer, lineage: self.session.document_lineage() });
+    }
+
+    /// "Recover" didn't restore the work (it failed, was cancelled, or ended without an
+    /// outcome): the copy is untouched, the current project stays, and in this session the
+    /// question is asked again so either choice is still one click away.
+    pub(super) fn recovery_not_restored(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
+        let name = offer.kept_name();
+        log::warn!("recovery: the work wasn't recovered; kept {name}");
+        self.notice = Some(match failed {
+            super::file_dialogs::OpenFailed::Cancelled => format!("Recovering was cancelled. The unsaved work was kept as {name} in the recovery folder."),
+            failed => format!("That work couldn't be recovered: {}. It was kept as {name} in the recovery folder.", failed.clause()),
+        });
+        if same_session && self.recovery.is_none() {
+            self.recovery = Some(offer);
+        }
+    }
+
+    /// "Start from last save" has replaced the document with that file, or there was no file:
+    /// only now is the selected copy discarded.
+    pub(super) fn started_from_last_save(&mut self, offer: &RecoveryOffer) {
+        let name = offer.kept_name();
+        self.notice = Some(match offer.remove_selected() {
+            Ok(()) if offer.location.is_some() => "Started from the last save; the selected unsaved recovery copy was discarded.".to_owned(),
+            Ok(()) => "The selected unsaved recovery copy was discarded.".to_owned(),
+            Err(error) => format!("Started from the last save, but the recovery copy couldn't be removed ({error}); it remains as {name}."),
+        });
+    }
+
+    /// The last save didn't open (it failed, was cancelled, or the open ended without an
+    /// outcome): the copy is untouched, and the question is asked again in this session.
+    pub(super) fn last_save_not_opened(&mut self, offer: RecoveryOffer, failed: &super::file_dialogs::OpenFailed, same_session: bool) {
+        let name = offer.kept_name();
+        log::warn!("recovery: the last save didn't open; kept {name}");
+        self.notice = Some(match failed {
+            super::file_dialogs::OpenFailed::Cancelled => {
+                format!("Opening the last save was cancelled. Unsaved work was kept as {name} in the recovery folder.")
+            }
+            failed => format!("The last save couldn't be opened: {}. Unsaved work was kept as {name} in the recovery folder.", failed.clause()),
+        });
+        if same_session && self.recovery.is_none() {
+            self.recovery = Some(offer);
+        }
+    }
+
+    /// Whether the startup question is still being decided: asked, or its "Start from last
+    /// save" open still running (whose failure asks it again), or not yet worked out while the
+    /// earlier journal is kept aside (#1053).
+    pub(super) fn recovery_deciding(&self) -> bool {
+        self.recovery.is_some() || self.last_save_opening() || self.keeping_aside()
     }
 
     /// Every frame: keeps the record of which file this session has open beside its journal

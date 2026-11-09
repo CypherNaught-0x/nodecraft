@@ -167,11 +167,25 @@ pub trait Provider: MaybeSendSync {
         false
     }
 
+    /// The base URL the person set for this adapter in place of its provider's own API (#960),
+    /// or `None` when it talks to its default. The engine captures it with the routing binding:
+    /// a quote binds it, and a step it would price as free counts as unknown-price instead.
+    fn custom_base_url(&self) -> Option<&str> {
+        None
+    }
+
     /// Whether an uncertain, no-handle submit may be retried automatically. This is a stable
     /// policy of this provider instance, not remote deduplication or proof of nonbilling.
     /// The compatibility default preserves legacy adapters; paid synchronous adapters can refuse.
     fn retry_ambiguous_submit(&self) -> bool {
         true
+    }
+
+    /// The most of one run's jobs this adapter takes at once, when it sets its own; the engine
+    /// captures it with the routing binding as the cap on the adapter's scheduler lane. A plugin
+    /// provider's is its template's `limits.concurrency` (#174). `None` keeps the default.
+    fn max_jobs_at_once(&self) -> Option<usize> {
+        None
     }
 
     /// Starts a job. Queue-style APIs return [`Submission::Queued`] without waiting; synchronous

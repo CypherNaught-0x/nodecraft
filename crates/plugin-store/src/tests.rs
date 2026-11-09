@@ -227,14 +227,21 @@ fn archive_limits_hold_before_reading_entries() {
     assert!(archive::open(&bytes, ArchiveLimits::DEFAULT).is_ok());
 }
 
+/// A module package is refused for good (#1071), whatever it holds, with a reason that says so
+/// and what to use instead; a dry run (what `plugin lint` does) refuses it the same way.
 #[test]
-fn executable_packages_wait_for_a_later_phase() {
+fn module_packages_are_refused_at_install() {
     let mut f = files(&spec("io.example.exec"));
     let text = String::from_utf8(f[0].1.clone()).unwrap().replace(r#"{"kind":"data"}"#, r#"{"kind":"rust_wasm","module":"g.wasm"}"#);
     f[0].1 = text.into_bytes();
     f.push(("g.wasm".into(), b"\0asm\x01\0\0\0".to_vec()));
     let bytes = archive::build(&f.iter().map(|(n, b)| (n.as_str(), b.as_slice())).collect::<Vec<_>>(), None).unwrap();
-    assert_eq!(store().import(&bytes, &TrustStore::default(), false).unwrap_err().kind, ErrorKind::Unsupported);
+    for dry_run in [false, true] {
+        let refused = store().import(&bytes, &TrustStore::default(), dry_run).unwrap_err();
+        assert_eq!(refused.kind, ErrorKind::Unsupported);
+        assert_eq!(refused.message, crate::MODULE_REFUSED);
+        assert!(refused.message.contains("rust_wasm") && refused.message.contains("text_actions") && !refused.message.contains("later"), "{refused:?}");
+    }
 }
 
 fn random_seed() -> [u8; 32] {

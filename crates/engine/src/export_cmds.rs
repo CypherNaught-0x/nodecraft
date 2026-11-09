@@ -32,6 +32,10 @@ fn export(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     crate::export::check(&p.path)?;
     let leaf = crate::export_leaves::result_value(c, p.canvas, p.id, p.generation, p.port.as_deref(), p.item, &mut Default::default())?;
     let value = leaf.value;
+    // A Soul ID's descriptor is a handle only its account can use, not a file to hand on (#180).
+    if crate::soul_ids::bound_value(value) {
+        return Err(Error::new(ErrorKind::Unsupported, crate::soul_ids::ACCOUNT_BOUND));
+    }
     let Value::Media(asset) = value else {
         return Err(Error::new(ErrorKind::Unsupported, "only image, video, audio, 3D and document results export to a file; copy text instead"));
     };
@@ -65,7 +69,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: schema,
-            params_doc: "{canvas, id: NodeId, generation, port?: output name, item?: flattened export-leaf index (all non-list values count), path: absolute file path, overwrite?: bool, background?: bool} -> {bytes} or {pending: id}; background requires an export runner and verifies/copies off the UI thread. export.status retains the terminal result; export.cancel accepts cancellation before finishing atomic publication. Defaults are synchronous and no replacement. Desktop only.",
+            params_doc: "{canvas, id: NodeId, generation, port?: output name, item?: flattened export-leaf index (all non-list values count), path: absolute file path, overwrite?: bool, background?: bool} -> {bytes} or {pending: id}; background requires an export runner and verifies/copies off the UI thread. export.status retains the terminal result; export.cancel accepts cancellation before finishing atomic publication. Defaults are synchronous and no replacement. A Soul ID (a trained style of family soul-2) is refused: it works only on the Higgsfield account that trained it, so it is never written out as a portable file. Desktop only.",
             enabled,
             run: export,
         },
@@ -75,7 +79,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: || json!({"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","additionalProperties":false,"required":[],"properties":{}}),
-            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; optional progress has completed/total/written/failed counts. result.state is exported (bytes), results (per-file report and manifest name), cancelled or failed (error).",
+            params_doc: "{} -> {export: null | {id, phase, cancellable, result}}; path-free status of the latest background export; optional progress has completed/total/written/failed counts. result.state is exported (bytes), results (per-file report and manifest name), batch (outcome: the export.local_run/export.node_run per-entry result with counts), cancelled or failed (error).",
             enabled: |_, value| {
                 let _: Empty = params(value)?;
                 Ok(())

@@ -1,11 +1,13 @@
 # Native video service
 
-With the optional `nodecraft-media/video` feature, `video::VideoService` imports bounded media,
-decodes preview frames, supports latest-request-wins scrubbing, and encodes a stream of RGBA
-frames to VP9 WebM, and stitches staged clips into one WebM (see "Compose" below). The desktop
-app uses it to play videos and sounds on cards (see "On cards" and "Sound on cards" below); the service itself is not an engine
-command. It does not call providers. The default media
-build is unchanged.
+The desktop app uses installed FFmpeg and ffprobe to play media on cards and render video
+actions and Timelines. See [installation](install.md#optional-ffmpeg-tools) to configure them.
+
+For library consumers, the optional `nodecraft-media/video` feature enables
+`video::VideoService`. The desktop and native CLI already enable it through their
+dependencies. The service imports bounded media, decodes preview frames, supports
+latest-request-wins scrubbing and writes verified VP9 WebM. The engine exposes its render
+paths through Timeline and video-action commands. The service calls no providers.
 
 ## Tools and platforms
 
@@ -27,7 +29,7 @@ The native backend uses bounded worker/pipe threads and ordinary processes. It d
 a malicious executable, codec vulnerability, descendants or external process memory. Standard
 Flatpak installations do not grant host executable access; an explicitly configured permitted
 sandbox executable is necessary. There is no host-spawn escape or broader Flatpak permission.
-The browser API rejects setup as Unsupported before native work; WebCodecs is separate.
+The browser API rejects native video setup as Unsupported.
 
 ## Nonblocking host integration
 
@@ -293,10 +295,19 @@ ffmpeg = "/opt/homebrew/bin/ffmpeg"
 ffprobe = "/opt/homebrew/bin/ffprobe"
 ```
 
-They come from the trusted native host, never from a project. Without them, or in the browser build, the
-card says what is missing instead of a frame. A card shows a poster frame from the start of the
+They come from the trusted native host, never from a project. Without them the card says what is
+missing instead of a frame. The browser build needs neither: there the page's own `<video>`
+element decodes the card's video and plays its sound, and the card draws its current frame
+(#1069); a video the browser can't decode says so. Rendering (the Timeline, video actions) still
+needs desktop FFmpeg, and in the browser those cards say so. A card shows a poster frame from the start of the
 clip, a play/pause button, a position slider and the time. Playing and scrubbing are view state:
 they change nothing in the document and are not commands.
+
+A video with a sound track is heard while its card plays (#1065): the card's sound is decoded
+from the same file, through the sound cards' player, started and stopped with the picture and
+moved back to it when they drift apart by more than 0.3 s. Nothing is read for it while the card
+is still, and a video with no sound track plays silent. As for sound cards, one card is heard at a
+time.
 
 Each frame is one ffmpeg run, so playback shows the newest frame the tools can deliver rather
 than every frame at the clip's rate: each card has at most one frame in flight and drops the
@@ -319,7 +330,12 @@ buffer that the device's callback resamples from; it plays silence, rather than 
 decoding falls behind. One card plays at a time: playing another pauses the first where it was.
 Playback stops when its card is deleted, when the sound device goes away (the card says so; play
 again to reopen it) and when the app quits. Without an output device the card says "No sound
-output device found". The browser build says playback needs the desktop app. A bounded worker
+output device found". In the browser (#1070) the page's own `<audio>` element plays each card's sound from an object
+URL, with no waveform (the card shows a plain line), at most 8 players and 64 MiB a sound; a
+speech card's previews continue into its result there too, keeping the place, and a preview that
+plays up to what has arrived waits for more, still playing. Playing one card pauses the others. If
+the browser refuses to play (the page hasn't been clicked yet), the card says so rather than
+playing muted. A bounded worker
 opens the output device and requests the next stretch independently of app frames, so playback
 continues when the window is minimized. Seek drags replace one pending target without decoding
 until release; committed seeks wait 75 ms before decoding. If frames stop before a drag release,
@@ -361,3 +377,19 @@ redistributed. No speed, full codec support or fully decoded security guarantee 
 The engine's ignored `several_timeline_renders_respect_the_shared_staging_quota` test uses the
 same explicit tool variables, deterministic mock-provider captions and tiny actual renders to
 check aggregate admission and cleanup with a small test-only budget.
+
+### M7 four-clip render check
+
+On 2026-11-03, the Timeline integration path in NodeCraft 0.6.0 rendered four original
+one-second MP4 clips with distinct picture colors and audio tones on macOS using FFmpeg
+and ffprobe 9.0.2. The project imported the four files, wired them into a Timeline, set
+100 ms clip fades and three 200 ms crossfades through `timeline.update`, then ran the
+Timeline through `run.quote` and `run.start`. The recorded output was a 3.4-second WebM.
+FFprobe counted 102 VP9 frames at 30 fps and a 48 kHz stereo Opus track. Decoded samples
+from all four clips confirmed their distinct pictures and audible signals. The demo used
+the same engine path as [the two-clip integration test](../crates/engine/tests/timeline109.rs).
+
+This check covers the rendered video. Importing exported cuts into Final Cut Pro and
+DaVinci Resolve can be checked by hand (see "Checking an import" in
+[timeline-interchange.md](timeline-interchange.md)); that hasn't been done yet. It is tracked in
+[#1066](https://github.com/CypherNaught-0x/nodecraft/issues/1066).

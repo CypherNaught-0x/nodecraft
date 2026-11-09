@@ -320,6 +320,99 @@ fn the_share_chip_opens_the_panel() {
     assert!(h.state().sharing.as_ref().unwrap().panel.open);
     h.get_by_label("Join a shared project in a new window");
     assert!(h.query_by_label("Stop sharing").is_none());
+    crate::app::panel_check::check_open_panels(&h, "Share, not sharing");
+}
+
+/// The Share panel, idle and live, opens inside the panel area with no crossing controls at the
+/// two window sizes the top-bar panels are checked at (#959).
+#[test]
+fn the_share_panel_keeps_its_layout_idle_and_live_at_both_sizes() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        // A relay of its own per size: a room keeps its document after everyone leaves.
+        let relay = relay();
+        let mut owner = app(&opened);
+        if let Some(sharing) = &mut owner.sharing {
+            sharing.panel.open = true;
+        }
+        let mut h = egui_kittest::Harness::builder().with_size(size).with_max_steps(60).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+        h.run();
+        crate::app::panel_check::check_open_panels(&h, &format!("Share, not sharing, at {size:?}"));
+        let mut owner = h.into_state();
+        owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+        until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+        if let Some(sharing) = &mut owner.sharing {
+            sharing.panel.open = true;
+        }
+        let mut h = egui_kittest::Harness::builder().with_size(size).with_max_steps(60).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+        h.run();
+        use egui_kittest::kittest::Queryable;
+        assert!(h.query_by_label("Stop sharing").is_some(), "the live panel is showing");
+        crate::app::panel_check::check_open_panels(&h, &format!("Share, live, at {size:?}"));
+        h.state_mut().session.dispatch("share.stop", &json!({})).unwrap();
+    }
+}
+
+/// A Train style card holding a trained Soul ID, recorded as a run records it.
+pub(crate) fn with_soul_id(app: &mut NodeCraftApp) {
+    let on = app.canvas;
+    let card = NodeId::from_bytes([90; 16]);
+    let session = &mut app.session;
+    session.dispatch("node.create", &json!({"canvas": on, "id": card, "kind": nodecraft_nodes::generation::STYLE_KIND, "pos": {"x": 900, "y": 900}})).unwrap();
+    session.dispatch("node.title", &json!({"canvas": on, "id": card, "title": "Mara"})).unwrap();
+    let style = nodecraft_media::style::Style {
+        provider: "higgsfield".into(),
+        trainer: "higgsfield/soul-id/v2".into(),
+        family: "soul-2".into(),
+        trigger: String::new(),
+        weights: "https://api.higgsfield.ai/v1/custom-references/7c9e6679-7425-40de-944b-e07fc1f90ae7".into(),
+    };
+    let hash = session.import_asset(&nodecraft_media::style::encode(&style).unwrap()).unwrap();
+    let asset = nodecraft_types::AssetRef { hash, mime: "application/vnd.nodecraft.style+json; family=soul-2".parse().unwrap(), meta: Default::default() };
+    let results = json!([{"node": card, "generation": {"id": nodecraft_types::GenerationId::from_bytes([91; 16]), "outputs": [Value::Media(asset)]}}]);
+    session.dispatch("run.record", &json!({"canvas": on, "results": results})).unwrap();
+}
+
+#[test]
+fn the_share_panel_says_a_projects_soul_ids_work_only_on_the_account_that_trained_them() {
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut h = egui_kittest::Harness::builder()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .with_max_steps(60)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app(&opened));
+    h.run();
+    use egui_kittest::kittest::Queryable;
+    crate::app::topbar_tests::reveal(&mut h, "Share");
+    h.get_by_label("Share").click();
+    h.run();
+    let note = "This project uses Higgsfield Soul IDs";
+    assert!(h.query_by_label_contains(note).is_none(), "no Soul IDs, no note");
+    with_soul_id(h.state_mut());
+    h.run();
+    h.run();
+    assert!(h.query_by_label_contains(note).is_some(), "the note follows the document's revision");
+}
+
+#[test]
+#[ignore = "manual public-safe capture; SOUL180_RENDER_DIR"]
+fn soul180_share_visual() {
+    let dir = std::path::PathBuf::from(std::env::var_os("SOUL180_RENDER_DIR").unwrap());
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let mut owner = app(&opened);
+    with_soul_id(&mut owner);
+    let mut h = egui_kittest::Harness::builder()
+        .wgpu()
+        .with_size(Vec2::new(1200.0, 800.0))
+        .with_max_steps(60)
+        .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), owner);
+    h.run();
+    use egui_kittest::kittest::Queryable;
+    crate::app::topbar_tests::reveal(&mut h, "Share");
+    h.get_by_label("Share").click();
+    for _ in 0..4 {
+        h.run();
+    }
+    h.render().unwrap().save(dir.join("soul180-share-panel.png")).unwrap();
 }
 
 #[test]
@@ -527,4 +620,62 @@ fn an_https_page_reaches_wss_or_this_machine() {
     }
     assert!(can_reach("wss://relay.example/", false, false).is_err());
     assert!(can_reach("ws://relay.example/", false, false).is_ok());
+}
+
+/// A peer's edit that arrives while a background save writes (#367) waits for the save instead
+/// of being taken in on the UI thread, which would wait for the disk there: ticks go on, the
+/// connection stays, and the edit lands once the save has settled.
+#[test]
+fn a_peers_edit_waits_for_a_background_save_and_ticks_go_on() {
+    #[derive(Default)]
+    struct Gate(Mutex<Vec<nodecraft_engine::save_runner::SaveJob>>);
+    impl nodecraft_engine::save_runner::SaveRunner for Gate {
+        fn spawn(&self, job: nodecraft_engine::save_runner::SaveJob) -> Result<(), nodecraft_engine::save_runner::SaveJob> {
+            self.0.lock().unwrap().push(job);
+            Ok(())
+        }
+    }
+    let opened = Rc::new(RefCell::new(Vec::new()));
+    let relay = relay();
+    let dir = tempfile::tempdir().unwrap();
+    let mut owner = {
+        let opened = Rc::clone(&opened);
+        let mut services = Services::default();
+        let open: OpenWindow = Box::new(move |link| {
+            opened.borrow_mut().push(link.to_owned());
+            Ok(())
+        });
+        let sharing = NodeCraftApp::register_sharing(&mut services, open).unwrap();
+        let setup = crate::app::storage::StorageSetup { recovery: dir.path().join("session.journal"), open: None };
+        let (mut app, _, stored) = NodeCraftApp::from_storage_setup(services, Some(setup), "").unwrap();
+        assert!(stored);
+        app.sharing = Some(sharing);
+        app
+    };
+    owner.session.dispatch("share.start", &json!({"relay": relay})).unwrap();
+    until(&mut [&mut owner], |apps| chip(apps[0]) == "Live");
+    let mut joiner = app(&opened);
+    joiner.join_live(&egui::Context::default(), &link(&owner)).unwrap();
+    until(&mut [&mut owner, &mut joiner], |apps| chip(apps[1]) == "Live" && !apps[1].session.document().canvases().is_empty());
+
+    let gate = Arc::new(Gate::default());
+    owner.session.set_save_runner(gate.clone());
+    let file = dir.path().join("shared.ncraft");
+    assert_eq!(owner.session.dispatch("file.save_as", &json!({"location": file.to_str().unwrap(), "background": true})).unwrap()["saving"], true);
+    let note = NodeId::from_bytes([0x71; 16]);
+    text_note(&mut joiner, note);
+    // With the save's job held, a tick that took the edit in would wait forever.
+    let ctx = egui::Context::default();
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_millis(500) {
+        owner.tick_sharing(&ctx);
+        joiner.tick_sharing(&ctx);
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    assert!(!holds(&owner, note), "nothing is taken into the state being saved");
+    // Live, and possibly "catching up" once the held edit has reached it.
+    assert!(chip(&owner).starts_with("Live"), "the connection stays: {}", chip(&owner));
+    std::mem::take(&mut *gate.0.lock().unwrap()).into_iter().for_each(nodecraft_engine::save_runner::SaveJob::run);
+    assert_eq!(owner.session.poll_file().unwrap().unwrap()["saved"], true);
+    until(&mut [&mut owner, &mut joiner], |apps| holds(apps[0], note));
 }

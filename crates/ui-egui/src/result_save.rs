@@ -131,7 +131,8 @@ pub(crate) fn menu(ui: &mut egui::Ui, checked: &Targets, t: &Tokens) -> Option<H
         }
         response.on_disabled_hover_text("Saving to a folder needs the desktop app on macOS or Linux.");
     } else {
-        ui.menu_button("Save as…", |ui| {
+        // A submenu takes no ellipsis; its items open the dialog (#1118).
+        ui.menu_button("Save as", |ui| {
             for target in targets {
                 if ui.add(Icon::Save.button(ui, &target.label, t)).clicked() {
                     intent = Some(target.file());
@@ -142,7 +143,7 @@ pub(crate) fn menu(ui: &mut egui::Ui, checked: &Targets, t: &Tokens) -> Option<H
             }
         });
         ui.add_enabled_ui(cfg!(all(unix, not(target_arch = "wasm32"))), |ui| {
-            ui.menu_button("Save to folder…", |ui| {
+            ui.menu_button("Save to folder", |ui| {
                 for target in targets {
                     if ui.add(Icon::Open.button(ui, &target.label, t)).clicked() {
                         intent = Some(target.folder());

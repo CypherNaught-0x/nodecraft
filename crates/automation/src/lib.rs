@@ -1,7 +1,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic, clippy::unimplemented, clippy::todo, clippy::unreachable)]
 
-//! NodeCraft automation: control channel (native only), MCP server and the command tools both
-//! expose. HTTP serve mode lives in `apps/nodecraft-cli`, not here.
+//! NodeCraft automation: control channel (native only), MCP server (stdio, and Streamable HTTP on
+//! native hosts) and the command tools both expose. HTTP serve mode lives in
+//! `apps/nodecraft-cli`, not here.
 //!
 //! Layer and allowed dependencies: `docs/architecture.md`, enforced by `cargo xtask layers`.
 

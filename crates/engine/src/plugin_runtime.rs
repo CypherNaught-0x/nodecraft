@@ -330,16 +330,29 @@ impl PluginSnapshot {
     /// [`Self::of`], and whether the store was read in full: its grants, and every enabled,
     /// granted package. A read that wasn't may leave out a package that is still granted (#174).
     pub fn read<B: StoreBackend>(store: &Store<B>) -> (Self, bool) {
-        let Ok(grants) = store.grants() else { return (Self::default(), false) };
+        Self::read_store(store).unwrap_or_else(|_| (Self::default(), false))
+    }
+
+    /// [`Self::read`], or an error when the store couldn't be read just now: its grants are
+    /// unreadable (damaged, oversized, mid-replace), or it is busy in another window's request.
+    /// Such a read says nothing about what was withdrawn, so a host keeps what it had (#174);
+    /// only a package the store reports, damaged or incompatible, is left out as incomplete.
+    pub fn read_store<B: StoreBackend>(store: &Store<B>) -> Result<(Self, bool), nodecraft_types::Error> {
+        let grants = store.grants()?;
         let mut complete = true;
         let mut actions = BTreeMap::new();
         let mut providers = BTreeMap::new();
         for (id, (digest, state)) in &store.index().active {
             let Some(grant) = (*state == State::Enabled).then(|| grants.live(id, digest)).flatten() else { continue };
             // One this build can't negotiate with is still granted: a newer NodeCraft may finish its jobs.
-            let Ok(package) = store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) else {
-                complete = false;
-                continue;
+            let package = match store.load(id).and_then(|package| nodecraft_plugin_store::store::compatible(&package.manifest).map(|()| package)) {
+                Ok(package) => package,
+                // Busy in another window's request: not evidence the package is gone.
+                Err(e) if e.kind == nodecraft_types::ErrorKind::Busy => return Err(e),
+                Err(_) => {
+                    complete = false;
+                    continue;
+                }
             };
             let stamp = PluginStamp { grant_id: grant.grant_id.clone(), package: id.clone(), digest: *digest, epoch: grant.epoch };
             for (provider_id, provider) in crate::plugin_providers::of(&package, grant, &stamp) {
@@ -351,7 +364,7 @@ impl PluginSnapshot {
                 actions.insert(action_id.as_str().to_owned(), Arc::new(action));
             }
         }
-        (Self { actions, providers }, complete)
+        Ok((Self { actions, providers }, complete))
     }
 
     /// The granted provider `id`, while its grant stands.

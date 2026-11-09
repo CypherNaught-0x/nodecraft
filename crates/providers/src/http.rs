@@ -240,6 +240,23 @@ pub trait Http: MaybeSendSync {
         })
     }
 
+    /// [`Http::send_streaming_no_redirect`] for a caller that needs only the status and headers
+    /// of a reply that isn't 2xx (a redirect, a refusal): that reply's body is never read, so a
+    /// large or slow one costs nothing, and the response comes back with an empty body. A 2xx
+    /// body streams to `on_chunk` as usual. The default keeps the inherited behaviour and just
+    /// drops the body it read, so other transports stay correct.
+    fn send_streaming_no_redirect_bodiless_errors<'a>(
+        &'a self,
+        request: HttpRequest,
+        on_chunk: &'a mut ChunkSink<'a>,
+    ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        Box::pin(async move {
+            let mut response = self.send_streaming_no_redirect(request, on_chunk).await?;
+            response.body.clear();
+            Ok(response)
+        })
+    }
+
     /// Request-local evidence. Legacy implementations are unknown before future construction.
     fn send_with_delivery<'a>(&'a self, request: HttpRequest, context: &'a crate::RequestContext) -> BoxFuture<'a, Result<HttpResponse, crate::HttpFailure>> {
         context.unknown();
@@ -314,6 +331,19 @@ mod reqwest_impl {
             #[cfg(not(target_arch = "wasm32"))]
             let builder = builder.redirect(reqwest::redirect::Policy::none());
             let client = builder.build().map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
+            Ok(Self { client, public_only: false })
+        }
+
+        /// [`Self::new`] without system proxies: loopback fixture servers in tests, which a proxy
+        /// named by `HTTP_PROXY` would otherwise intercept. Native only.
+        #[cfg(not(target_arch = "wasm32"))]
+        pub fn without_proxy() -> Result<Self, ProviderError> {
+            let client = reqwest::Client::builder()
+                .user_agent(USER_AGENT)
+                .redirect(reqwest::redirect::Policy::none())
+                .no_proxy()
+                .build()
+                .map_err(|e| ProviderError::new(ErrorKind::Network, format!("HTTP client: {e}")))?;
             Ok(Self { client, public_only: false })
         }
 
@@ -492,10 +522,20 @@ mod reqwest_impl {
                 on_chunk(&chunk)?;
             }
         }
+        // The browser's `fetch` delivers the body as a stream too (#1070), under the same cap.
         #[cfg(target_arch = "wasm32")]
         {
-            let body = read_body(response, cap).await?;
-            on_chunk(&body)?;
+            use futures::StreamExt as _;
+            let mut chunks = std::pin::pin!(response.bytes_stream());
+            let mut total = 0usize;
+            while let Some(chunk) = chunks.next().await {
+                let chunk = chunk.map_err(|e| network(&e))?;
+                total = total.saturating_add(chunk.len());
+                if total > cap {
+                    return Err(too_large(cap));
+                }
+                on_chunk(&chunk)?;
+            }
         }
         Ok(HttpResponse { status, headers, body: Vec::new() })
     }
@@ -530,6 +570,34 @@ mod reqwest_impl {
                 let status = response.status().as_u16();
                 let headers = response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
                 drop(request);
+                stream_body(response, status, headers, cap, on_chunk).await
+            });
+            #[cfg(target_arch = "wasm32")]
+            {
+                let _ = (request, on_chunk);
+                Box::pin(async {
+                    Err(ProviderError::new(ErrorKind::UnsupportedInput, "no-redirect streamed requests need a native or audited host transport"))
+                })
+            }
+        }
+        fn send_streaming_no_redirect_bodiless_errors<'a>(
+            &'a self,
+            request: HttpRequest,
+            on_chunk: &'a mut ChunkSink<'a>,
+        ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+            #[cfg(not(target_arch = "wasm32"))]
+            return Box::pin(async move {
+                let cap = request.max_response_bytes;
+                let response = self.send_once(&request, None).await?;
+                let status = response.status().as_u16();
+                let headers: Vec<(String, String)> =
+                    response.headers().iter().filter_map(|(n, v)| Some((n.as_str().to_ascii_lowercase(), v.to_str().ok()?.to_owned()))).collect();
+                drop(request);
+                if !(200..300).contains(&status) {
+                    // Dropping the response closes the connection without reading its body.
+                    drop(response);
+                    return Ok(HttpResponse { status, headers, body: Vec::new() });
+                }
                 stream_body(response, status, headers, cap, on_chunk).await
             });
             #[cfg(target_arch = "wasm32")]
@@ -619,6 +687,42 @@ mod tests {
         assert!(r.redirected(302, "http://api.example.com/x").is_none(), "no downgrade");
         assert!(r.redirected(302, "file:///etc/passwd").is_none());
         assert!(HttpRequest::get("not a url").redirected(302, "/x").is_none());
+    }
+
+    /// A redirect or refusal's body is never read: a reply that announces 20 MB and sends almost
+    /// none of it comes back at once, with its status and headers.
+    #[cfg(all(feature = "http", not(target_arch = "wasm32")))]
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_bodiless_error_reply_is_returned_without_reading_its_body() {
+        use std::io::{BufRead, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/start", listener.local_addr().unwrap());
+        let (done, finished) = std::sync::mpsc::channel::<()>();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().unwrap();
+            stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+            let mut reader = std::io::BufReader::new(stream.try_clone().unwrap());
+            let mut line = String::new();
+            while reader.read_line(&mut line).unwrap() > 0 && line != "\r\n" {
+                line.clear();
+            }
+            let mut stream = stream;
+            stream.write_all(b"HTTP/1.1 302 Found\r\nLocation: /next\r\nContent-Length: 20000000\r\n\r\nabc").unwrap();
+            stream.flush().unwrap();
+            // Hold the connection open, the rest of the body never coming, until the client is done.
+            let _ = finished.recv_timeout(std::time::Duration::from_secs(10));
+        });
+        let http = ReqwestHttp::new().unwrap();
+        let mut sink = |_: &[u8]| -> Result<(), ProviderError> { panic!("a redirect's body never streams") };
+        let started = std::time::Instant::now();
+        let request = HttpRequest::get(url).timeout_ms(8_000).max_response_bytes(16 * 1024 * 1024);
+        let response = http.send_streaming_no_redirect_bodiless_errors(request, &mut sink).await.unwrap();
+        assert_eq!(response.status, 302);
+        assert_eq!(response.header("location"), Some("/next"));
+        assert!(response.body.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(4), "returned without waiting for the body");
+        drop(done);
+        server.join().unwrap();
     }
 
     #[test]

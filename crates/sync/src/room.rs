@@ -139,6 +139,64 @@ impl Room {
         self.peers.is_empty()
     }
 
+    /// A room as a relay kept it across a restart (#1068), with no one in it: its document as
+    /// one update, its links and the assets it held. What was stored is read as hostile: an
+    /// update that doesn't merge refuses the room, and links that aren't valid, assets whose
+    /// bytes don't match their hash and whatever is past the room's limits are left out.
+    pub fn restore(
+        document: &[u8],
+        links: impl IntoIterator<Item = ([u8; 32], Grant)>,
+        assets: impl IntoIterator<Item = ([u8; 32], Vec<u8>)>,
+    ) -> Result<Self, &'static str> {
+        let mut room = Self::new();
+        if document.len() > room.limit {
+            return Err("the stored room is larger than a room may hold");
+        }
+        if !document.is_empty() {
+            room.merge(document)?;
+        }
+        let size = room.size().ok_or(DAMAGED)?;
+        if size > room.limit {
+            return Err("the stored room is larger than a room may hold");
+        }
+        room.merged = size;
+        room.measured = size;
+        for (hash, grant) in links {
+            if room.links.len() >= MAX_LINKS {
+                break;
+            }
+            if grant.validate().is_ok() {
+                room.links.insert(hash, grant);
+            }
+        }
+        for (hash, bytes) in assets {
+            let fits = room.asset_bytes.saturating_add(bytes.len()) <= MAX_ROOM_ASSET_BYTES;
+            if fits && !room.assets.contains_key(&hash) && blake3::hash(&bytes).as_bytes() == &hash {
+                room.asset_bytes = room.asset_bytes.saturating_add(bytes.len());
+                room.assets.insert(hash, bytes);
+            }
+        }
+        Ok(room)
+    }
+
+    /// The whole document as one update, to store; `None` once the room is damaged.
+    pub fn document(&self) -> Option<Vec<u8>> {
+        if self.damaged {
+            return None;
+        }
+        Some(self.doc.try_transact().ok()?.encode_state_as_update_v1(&StateVector::default()))
+    }
+
+    /// The room's share links by hash, with their terms.
+    pub fn links(&self) -> impl Iterator<Item = (&[u8; 32], &Grant)> {
+        self.links.iter()
+    }
+
+    /// The assets the room keeps, by content hash.
+    pub fn assets(&self) -> impl Iterator<Item = (&[u8; 32], &[u8])> {
+        self.assets.iter().map(|(hash, bytes)| (hash, bytes.as_slice()))
+    }
+
     /// The bytes the room has taken in: merged updates and kept assets.
     pub fn held(&self) -> usize {
         self.merged.saturating_add(self.asset_bytes)

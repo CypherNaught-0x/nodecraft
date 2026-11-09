@@ -32,6 +32,8 @@ tempfile = { workspace = true }
 # Relay (#119): rooms of shared projects, over WebSockets on std threads.
 nodecraft-sync = { workspace = true }
 tungstenite = { workspace = true }
+# Relay store (#1068): rooms are kept under a hash of their id, never the id.
+blake3 = { workspace = true }
 # Serve webhooks (#632): signed with HMAC-SHA256, sent with a pinned address and no redirects.
 hmac = { workspace = true }
 # TLS comes from nodecraft-providers, which turns on reqwest's native-tls (desktop) or rustls
@@ -42,8 +44,14 @@ url = { workspace = true }
 # Runs (#97): jobs are driven on a tokio runtime, as the app's are.
 tokio = { workspace = true, features = ["rt-multi-thread", "time", "net", "sync", "signal"] }
 
+# Relay wss:// (#1067): the platform's TLS stack, as the providers' HTTPS uses: the operating
+# system's on Windows and macOS, rustls with aws-lc elsewhere.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+native-tls = "0.2.18"
+[target.'cfg(not(any(windows, target_os = "macos")))'.dependencies]
+rustls = { version = "0.23.46", default-features = false, features = ["std", "aws_lc_rs", "tls12"] }
+
 [dev-dependencies]
-blake3 = { workspace = true }
 nodecraft-catalog = { workspace = true }
 nodecraft-provider-testkit = { workspace = true }
 nodecraft-graph = { workspace = true }
