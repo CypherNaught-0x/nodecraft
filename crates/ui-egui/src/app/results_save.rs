@@ -74,7 +74,7 @@ impl NodeCraftApp {
         let mut dismiss = false;
         let mut start = false;
         let mut cancel = None;
-        egui::Modal::new(egui::Id::new("results_save966"))
+        crate::floating::modal(ctx, egui::Id::new("results_save966"), "Save workflow results")
             .frame(egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding))
             .backdrop_color(t.canvas_bg)
             .show(ctx, |ui| {

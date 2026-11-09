@@ -619,7 +619,7 @@ impl NodeCraftApp {
                     self.notices.warning("The project changed while the confirmation was open. Open the project again.");
                 } else {
                     let mut choice = None;
-                    egui::Modal::new(egui::Id::new("file_dirty_confirmation")).show(ctx, |ui| {
+                    crate::floating::modal(ctx, egui::Id::new("file_dirty_confirmation"), "Save changes before opening?").show(ctx, |ui| {
                         ui.heading("Save changes before opening?");
                         ui.label("Save keeps the current project. Discard opens the selected file without saving these changes.");
                         ui.horizontal(|ui| {

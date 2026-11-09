@@ -303,6 +303,9 @@ fn node(app: &NodeCraftApp) -> &nodecraft_graph::Node {
 fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
     let (mut h, runs) = scene("mock-square");
     press(&mut h, Role::Button, "Generate");
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Generate");
+    assert!(dialog.accesskit_node().is_modal());
+    dialog.get_by_role_and_label(Role::Button, "Cancel");
     assert!(runs.lock().unwrap().is_empty(), "pressing Generate alone never spends");
     let accept = h.get_by_label_contains("Generate for").accesskit_node().label().unwrap_or_default();
     assert!(accept.contains("0.04"), "the price is shown before the run: {accept}");

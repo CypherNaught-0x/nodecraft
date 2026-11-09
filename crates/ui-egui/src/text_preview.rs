@@ -437,7 +437,7 @@ impl Cache {
     pub fn overlay(&mut self, ctx: &egui::Context, t: &Tokens) -> bool {
         let Some(full) = &self.full else { return false };
         let mut close = false;
-        let modal = egui::Modal::new(egui::Id::new("local_text_preview_full")).show(ctx, |ui| {
+        let modal = crate::floating::modal(ctx, egui::Id::new("local_text_preview_full"), "Text preview").show(ctx, |ui| {
             ui.set_width(t.viewer_width.min(ctx.content_rect().width() - t.card_padding * 2.0).max(t.card_width));
             ui.heading(&full.title);
             if full.display_end < full.text.len() {

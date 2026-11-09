@@ -795,7 +795,7 @@ fn an_edited_card_shows_a_stale_badge_and_refreshing_runs_it_again() {
     press(&mut h, Role::Button, BADGE);
     frames_until(&mut h, |app| app.run_confirm.is_some());
     assert!(mock.requests().len() == 1, "the badge quotes; it starts nothing");
-    h.get_by_label("Refresh");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Refresh");
     refresh_accept(&mut h);
     frames_until(&mut h, |app| idle(app) && node(app).history.len() == 2);
     h.run();

@@ -43,6 +43,19 @@ fn stored(h: &Harness<'static, NodeCraftApp>) -> Deck {
     nodecraft_engine::deck_cmds::stored(&node).unwrap()
 }
 
+#[test]
+fn slides959_exposes_a_named_modal_with_its_own_controls() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    let mut h = with_deck();
+    open(&mut h);
+    h.run_steps(2);
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Slides editor");
+    assert!(dialog.accesskit_node().is_modal());
+    dialog.get_by_role_and_label(Role::Button, "Done");
+    dialog.get_by_role_and_label(Role::Button, "Undo");
+}
+
 fn names(h: &Harness<'static, NodeCraftApp>) -> Vec<String> {
     stored(h).slides.iter().map(|s| s.name.clone()).collect()
 }

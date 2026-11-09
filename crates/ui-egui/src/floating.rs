@@ -271,6 +271,16 @@ struct Drag {
 /// `title` names it for screen readers: its area is an AccessKit `Dialog` labelled `title`, with
 /// the question's controls inside it (callers still show `title` as a heading).
 pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
+    let screen = ctx.content_rect();
+    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
+    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
+    modal(ctx, id, title).area(area).frame(crate::theme::panel_frame(t))
+}
+
+/// A named modal container for editors, progress and confirmations. Its controls appear under
+/// an AccessKit Dialog carrying `title` and the modal flag. Callers retain their own sizing,
+/// visual frame and keyboard/action policy; naming a modal never confirms or cancels it.
+pub fn modal(ctx: &Context, id: Id, title: &str) -> egui::Modal {
     // The area's own node (`<id>.with("move")` in egui 0.36), made before its content so the
     // content is placed inside it rather than at the root of the tree.
     // Its bounds are where it was last drawn: it stays centred, so they only lag on its first pass.
@@ -283,10 +293,7 @@ pub fn question(ctx: &Context, id: Id, title: &str, t: &Tokens) -> egui::Modal {
             node.set_bounds(egui::accesskit::Rect { x0: rect.min.x.into(), y0: rect.min.y.into(), x1: rect.max.x.into(), y1: rect.max.y.into() });
         }
     });
-    let screen = ctx.content_rect();
-    let room = Vec2::new(screen.width() - t.navigation_margin * 2.0, screen.height() - t.navigation_margin * 2.0).max(Vec2::splat(t.navigation_margin));
-    let area = egui::Modal::default_area(id).constrain_to(screen).default_width(t.dialog_width.min(room.x));
-    egui::Modal::new(id).area(area).frame(crate::theme::panel_frame(t))
+    egui::Modal::new(id)
 }
 
 /// The widest a [`question`]'s content may be: `dialog_width`, or less in a narrow window.

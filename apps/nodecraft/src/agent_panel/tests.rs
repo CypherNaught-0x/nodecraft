@@ -264,6 +264,54 @@ fn canvas_width(shell: &crate::shell::Shell) -> f32 {
 }
 
 #[test]
+fn agent959_mentions_and_endpoint_have_accessible_names() {
+    use egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    let (panel, _script) = panel(AgentSettings::default());
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(frame, shell(panel));
+    h.run_steps(3);
+    h.get_by_role_and_label(Role::Button, "Mention a node");
+    h.get_by_role_and_label(Role::Button, "Settings").click();
+    h.run_steps(3);
+    assert!(h.state().agent.draft.is_some());
+    let endpoint = h.get_by_role(Role::ComboBox);
+    assert!(endpoint.accesskit_node().label().unwrap_or_default().contains("Endpoint"), "{endpoint:?}");
+}
+
+#[test]
+fn agent959_busy_clear_and_settings_keep_their_explanation() {
+    use egui::accesskit::Role;
+    use egui_kittest::{
+        Harness,
+        kittest::{NodeT, Queryable},
+    };
+    let (panel, _script) = panel(AgentSettings::default());
+    let mut h = Harness::builder().with_size(egui::vec2(1200.0, 800.0)).build_ui_state(frame, shell(panel));
+    h.ctx.style_mut(|style| {
+        style.interaction.tooltip_delay = 0.0;
+        style.interaction.tooltip_grace_time = 0.0;
+        style.interaction.show_tooltips_only_when_still = false;
+    });
+    h.state_mut().agent.input = "Wait for the scripted reply".into();
+    let ctx = h.ctx.clone();
+    let shell = h.state_mut();
+    shell.agent.apply(vec![Intent::Ask], &mut shell.app, &ctx);
+    h.run_steps(3);
+    for label in ["Clear", "Settings"] {
+        let control = h.get_by_role_and_label(Role::Button, label);
+        assert!(control.accesskit_node().is_disabled());
+        let at = control.rect().center();
+        h.hover_at(at);
+        h.run_steps(4);
+        h.get_by_label("Available once the agent has finished; cancel its current request first");
+    }
+    assert_eq!(h.state().agent.agent().status(), Status::Thinking);
+}
+
+#[test]
 fn the_sidebar_opens_with_the_shortcut_beside_a_narrower_canvas_and_sends_on_enter() {
     use egui_kittest::{Harness, kittest::Queryable};
     let (mut panel, script) = panel(AgentSettings::default());

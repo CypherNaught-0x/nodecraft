@@ -335,7 +335,7 @@ impl NodeCraftApp {
             colour: Some(Value::Text(deck.background.clone())),
         };
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
-        egui::Modal::new(egui::Id::new("deck_editor")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("deck_editor"), "Slides editor").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             let size = (content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0));
             ui.set_min_size(size);
             ui.set_max_size(size);

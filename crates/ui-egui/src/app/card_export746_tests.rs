@@ -181,13 +181,13 @@ fn card746_replacing_existing_files_needs_the_persons_yes() {
     export_tests::finish(&mut h);
 
     press(&mut h, "Export");
-    h.get_by_label("Replace existing files?");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Replace existing files?");
     h.get_by_label("1 file in Renders will be replaced by this export.");
     evidence(&mut h, "4-confirm-replace");
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "nothing is written before the answer");
     press(&mut h, "Cancel");
     export_tests::finish(&mut h);
-    assert!(h.query_by_label("Replace existing files?").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Replace existing files?").is_none());
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), b"the person's own file", "Cancel keeps the file");
 
     press(&mut h, "Export");

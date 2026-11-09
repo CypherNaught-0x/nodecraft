@@ -78,7 +78,8 @@ impl NodeCraftApp {
         let t = self.theme.tokens();
         let mut submit = false;
         let mut cancel = false;
-        let modal = egui::Modal::new(egui::Id::new("tag_definition")).show(ui.ctx(), |ui| {
+        let title = if editor.deleting { "Delete tag?" } else { "Rename tag" };
+        let modal = crate::floating::modal(ui.ctx(), egui::Id::new("tag_definition"), title).show(ui.ctx(), |ui| {
             ui.set_max_width(t.viewer_width);
             ui.heading(if editor.deleting { "Delete tag?" } else { "Rename tag" });
             ui.label(crate::tags::label(&editor.original.title));

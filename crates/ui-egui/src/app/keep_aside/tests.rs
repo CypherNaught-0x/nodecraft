@@ -104,7 +104,7 @@ fn the_first_frame_shows_the_keep_aside_and_frames_go_on_while_it_is_held() {
     let mut h = launch(&dir, &held.spawn());
     // The first frame: the window is up, and nothing has been read or written yet.
     h.step();
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_some(), "the first frame shows the keep-aside");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_some(), "the first frame shows the keep-aside");
     assert!(h.query_by_label("Decide later").is_some());
     let started = Instant::now();
     for _ in 0..30 {
@@ -123,8 +123,8 @@ fn the_first_frame_shows_the_keep_aside_and_frames_go_on_while_it_is_held() {
 
     held.release();
     settle(&mut h);
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_none());
-    assert!(h.query_by_label("Recover unsaved work?").is_some(), "then the question is asked");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some(), "then the question is asked");
     assert!(h.query_by_label_contains("1 unsaved change to").is_some());
     assert!(h.state().session.file_status().available, "and the session owns the journal");
     assert_eq!(dir.copies(), ["session.journal.unrecovered-1"], "no partial copy is left");
@@ -138,7 +138,7 @@ fn recover_after_a_background_keep_aside_brings_the_work_back() {
     crash(&dir);
     let mut h = launch(&dir, &thread_spawn());
     settle(&mut h);
-    assert!(h.query_by_label("Recover unsaved work?").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     h.get_by_label("Recover").click();
     let deadline = Instant::now() + Duration::from_secs(20);
     while h.state().session.file_status().operation.is_some() || h.state().recovery.is_some() {
@@ -173,7 +173,7 @@ fn decide_later_keeps_every_byte_and_leaves_the_journal_for_the_next_launch() {
     // The next launch keeps it aside as usual.
     let mut next = launch(&dir, &thread_spawn());
     settle(&mut next);
-    assert!(next.query_by_label("Recover unsaved work?").is_some());
+    assert!(next.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), before);
 }
 
@@ -225,7 +225,7 @@ fn quitting_after_it_finished_but_before_a_frame_took_it_in_decides_the_journal_
     // The kept copy is offered next time, and the live journal isn't kept a second time.
     let mut next = launch(&dir, &thread_spawn());
     settle(&mut next);
-    assert!(next.query_by_label("Recover unsaved work?").is_some());
+    assert!(next.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some());
     assert_eq!(dir.copies(), ["session.journal.unrecovered-1"]);
 }
 
@@ -242,10 +242,10 @@ fn a_damaged_earlier_copy_is_skipped_off_the_ui_thread() {
     let held = Held::default();
     let mut h = launch(&dir, &held.spawn());
     h.step();
-    assert!(h.query_by_label("Keeping unsaved work safe…").is_some(), "the window is up before any copy is read");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Keeping unsaved work safe…").is_some(), "the window is up before any copy is read");
     held.release();
     settle(&mut h);
-    assert!(h.query_by_label("Recover unsaved work?").is_some(), "the copy that replays is offered");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some(), "the copy that replays is offered");
     assert_eq!(h.state().recovery.as_ref().map(|offer| offer.kept.clone()), Some(dir.0.join("session.journal.unrecovered-1")));
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-2")).unwrap(), b"not a journal", "the damaged copy is left for the person");
 }

@@ -406,7 +406,7 @@ impl NodeCraftApp {
                 "Stop now. The unsaved work stays where it is and is offered the next time NodeCraft starts; until then this window can't save projects.",
             )
         };
-        egui::Modal::new(egui::Id::new("keep_aside1053")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("keep_aside1053"), heading).show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             ui.heading(heading);
             ui.label(why);

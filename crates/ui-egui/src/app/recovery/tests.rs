@@ -79,7 +79,7 @@ fn has_added(h: &Harness<'static, NodeCraftApp>) -> bool {
 }
 
 fn asked(h: &Harness<'static, NodeCraftApp>) -> bool {
-    h.query_by_label("Recover unsaved work?").is_some()
+    h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?").is_some()
 }
 
 #[test]
@@ -764,7 +764,7 @@ fn start_from_last_save_held(test: &str) -> Held367 {
 /// Steps until the progress window has appeared (it waits a moment, so quick opens don't flash).
 fn until_progress(h: &mut Harness<'static, NodeCraftApp>) {
     for _ in 0..200 {
-        if h.query_by_label("Opening project…").is_some() {
+        if h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some() {
             // A new window is sized on its first frame; let it settle where clicks land.
             for _ in 0..4 {
                 h.step();
@@ -920,7 +920,7 @@ fn startup_open_and_a_recovery_offer_ask_only_once_the_open_has_settled() {
     app.session.set_save_runner(gate.clone());
     let mut h = Harness::builder().with_size(egui::Vec2::new(1000.0, 700.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.step();
-    assert!(h.query_by_label("Opening project…").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some());
     assert!(!asked(&h), "one modal at a time");
     gate.release();
     settle(&mut h);
@@ -997,7 +997,7 @@ fn recover_restores_in_the_background_behind_its_progress_window() {
     assert!(h.state().recovery_deciding(), "queued runs stay paused while it restores");
     assert!(h.state().window_title().contains("(recovering…)"), "{}", h.state().window_title());
     past_progress_delay(&mut h);
-    assert!(h.query_by_label("Recovering unsaved work…").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recovering unsaved work…").is_some());
     h.get_by_label("Copying the recovered work's media…");
     // Keys and pointer meanwhile reach nothing behind it.
     let revision = h.state().session.revision();
@@ -1006,7 +1006,7 @@ fn recover_restores_in_the_background_behind_its_progress_window() {
     assert_eq!(h.state().session.revision(), revision);
     held.release();
     settle(&mut h);
-    assert!(h.query_by_label("Recovering unsaved work…").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Recovering unsaved work…").is_none());
     assert!(has_added(&h), "the edit is back");
     let status = h.state().session.file_status();
     assert!(status.dirty && status.operation.is_none());

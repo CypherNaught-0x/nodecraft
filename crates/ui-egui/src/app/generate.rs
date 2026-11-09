@@ -456,7 +456,7 @@ impl NodeCraftApp {
         };
         let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
         let (mut open_keys, mut open_comfy) = (false, false);
-        let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
+        let modal = crate::floating::modal(ui.ctx(), egui::Id::new("run_confirm"), confirm.kind.title()).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
             // Nothing can generate until a provider is set up (#1119): say so, with the way there.

@@ -339,7 +339,7 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
     let mut h = harness(app);
     h.step();
     // The very first frame already shows the open, before it has read anything.
-    assert!(h.query_by_label("Opening project…").is_some(), "progress shows from the first frame");
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some(), "progress shows from the first frame");
     assert!(h.query_by_label("Cancel").is_some());
     assert_eq!(h.state().window_title(), "Untitled • (opening…) — NodeCraft");
     assert!(runner.0.lock().unwrap().is_some(), "the open waits on the runner, not the frame");
@@ -350,7 +350,7 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
         assert!(h.output().viewport_output.get(&egui::ViewportId::ROOT).unwrap().repaint_delay <= std::time::Duration::from_millis(16));
     }
     assert_eq!(h.ctx.cumulative_frame_nr(), first + 30, "frames advanced while the open was held");
-    assert!(h.query_by_label("Opening project…").is_some());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_some());
     assert_eq!(h.state().session.document(), &starter, "nothing is replaced until the open settles");
     // Input belongs to the progress window: a shortcut doesn't reach the canvas behind it.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
@@ -361,7 +361,7 @@ fn startup_open_shows_progress_from_the_first_frame_and_frames_keep_coming_while
     settle(&mut h);
     assert!(holds(h.state(), 90), "the file is open: {:?}", h.state().notice());
     assert!(h.state().notices.is_empty());
-    assert!(h.query_by_label("Opening project…").is_none());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Opening project…").is_none());
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file.clone())));
     assert_eq!(h.state().files.projects.recent(), vec![file.to_str().unwrap()]);
     assert_eq!(h.state().canvas, crate::app::sheet_view::home_canvas(h.state().session.document()).unwrap());

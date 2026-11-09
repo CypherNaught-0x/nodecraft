@@ -264,7 +264,7 @@ impl NodeCraftApp {
         let background = egui::Color32::from_rgba_unmultiplied(r, g, b, a);
         let shell = egui::Frame::NONE.fill(t.canvas_bg).inner_margin(gap);
         let notice = self.notices.latest().cloned();
-        egui::Modal::new(egui::Id::new("deck_presenter")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("deck_presenter"), "Deck presentation").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             ui.set_min_size((content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0)));
             let response = ui.allocate_rect(slide_rect, Sense::click());
             let painter = ui.painter_at(slide_rect);

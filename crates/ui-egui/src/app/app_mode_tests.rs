@@ -49,6 +49,22 @@ fn png() -> Vec<u8> {
     nodecraft_media::encode_png(4, 4, &[200; 64], &Default::default()).unwrap()
 }
 
+#[test]
+fn app_mode959_exposes_a_named_modal_with_its_own_controls() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    let mut h = with_app();
+    let revision = h.state().session.revision();
+    open(&mut h);
+    h.run_steps(2);
+    let dialog = h.get_by_role_and_label(Role::Dialog, "App mode");
+    assert!(dialog.accesskit_node().is_modal());
+    dialog.get_by_role_and_label(Role::Button, "Done").click();
+    h.run_steps(2);
+    assert!(h.state().app_mode.is_none());
+    assert_eq!(h.state().session.revision(), revision, "opening and closing a named container is view state");
+}
+
 fn open(h: &mut Harness<'static, NodeCraftApp>) {
     h.state_mut().selection.only(PLACED);
     // The top bar grows to fit the button, then settles.

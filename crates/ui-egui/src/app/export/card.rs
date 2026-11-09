@@ -160,7 +160,7 @@ impl NodeCraftApp {
         }
         let t = *self.theme.tokens();
         let mut cancel = false;
-        egui::Modal::new(egui::Id::new("card_export746"))
+        crate::floating::modal(ctx, egui::Id::new("card_export746"), "Export to folder")
             .frame(egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding))
             .backdrop_color(t.canvas_bg)
             .show(ctx, |ui| {
@@ -198,7 +198,7 @@ impl NodeCraftApp {
         let folder = self.grant(canvas, id).map(ExportHost::label);
         let t = *self.theme.tokens();
         let (mut replace, mut cancel) = (false, false);
-        egui::Modal::new(egui::Id::new("card_export746_confirm"))
+        crate::floating::modal(ctx, egui::Id::new("card_export746_confirm"), "Replace existing files?")
             .frame(egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding))
             .backdrop_color(t.canvas_bg)
             .show(ctx, |ui| {

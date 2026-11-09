@@ -359,7 +359,7 @@ fn results966_folder_preview_progress_cancel_and_quit_share_the_engine_receipt()
         h.run_steps(2);
         h.get_by_label("Save workflow results…").click();
         h.run_steps(3);
-        assert!(h.query_by_label("Save workflow results").is_some());
+        assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Save workflow results").is_some());
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "folder choice is only authority, never implicit execution");
         if let Some(root) = &evidence {
             h.render().unwrap().save(root.join(format!("after-results-preview-{shade}.png"))).unwrap();

@@ -191,7 +191,7 @@ impl NodeCraftApp {
             return;
         }
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("recovery_offer")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("recovery_offer"), "Recover unsaved work?").show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             ui.heading("Recover unsaved work?");
             match &offer.found {

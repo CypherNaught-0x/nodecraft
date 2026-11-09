@@ -58,6 +58,18 @@ fn opened() -> Harness<'static, NodeCraftApp> {
 }
 
 #[test]
+fn timeline959_exposes_a_named_modal_with_its_own_controls() {
+    use egui::accesskit::Role;
+    use egui_kittest::kittest::NodeT;
+    let mut h = opened();
+    h.run_steps(2);
+    let dialog = h.get_by_role_and_label(Role::Dialog, "Timeline editor");
+    assert!(dialog.accesskit_node().is_modal());
+    dialog.get_by_role_and_label(Role::Button, "Done");
+    dialog.get_by_role_and_label(Role::Button, "Undo");
+}
+
+#[test]
 fn regenerated_shorter_sources_warn_before_running_and_keep_the_rendered_version() {
     use nodecraft_graph::{Generation, SourceVersion};
     use nodecraft_types::GenerationId;

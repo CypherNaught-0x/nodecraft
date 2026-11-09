@@ -139,7 +139,7 @@ fn dirty_cancel_discard_and_save_before_open_preserve_exact_work() {
         settle(&mut h);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
         settle(&mut h);
-        h.get_by_label("Save changes before opening?");
+        h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Save changes before opening?");
         h.get_by_label(choice).click();
         settle(&mut h);
         if choice == "Cancel" {
@@ -306,7 +306,7 @@ fn dirty_confirmation_invalidates_before_discard_after_a_new_edit() {
     settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     settle(&mut h);
-    h.get_by_label("Save changes before opening?");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Save changes before opening?");
     add(h.state_mut(), 53);
     let expected = h.state().session.document().clone();
     h.step();
@@ -411,7 +411,7 @@ fn recovery_modal_owns_file_shortcuts_and_cannot_launch_a_picker() {
     let calls = stub(&mut app, vec![]);
     let mut h = harness(app);
     settle(&mut h);
-    h.get_by_label("Recover unsaved work?");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Recover unsaved work?");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     settle(&mut h);
     assert_eq!(calls.get(), 0);
@@ -511,7 +511,7 @@ fn render_file407_workflow_evidence() {
     settle(&mut h);
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     settle(&mut h);
-    h.get_by_label("Save changes before opening?");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Save changes before opening?");
     h.render().unwrap().save(output.join("dirty-confirmation.png")).unwrap();
     h.get_by_label("Discard").click();
     settle(&mut h);

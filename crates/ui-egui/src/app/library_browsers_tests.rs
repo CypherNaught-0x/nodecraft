@@ -296,7 +296,7 @@ fn ticked_results_export_through_the_workflow_result_save_after_a_folder_is_chos
     h.state_mut().exports.answer = Some(dir.path().to_path_buf());
     h.get_by_label("Export…").click();
     h.run_steps(3);
-    assert!(h.query_by_label("Save workflow results").is_some(), "{:?}", h.state().notice());
+    assert!(h.query_by_role_and_label(egui::accesskit::Role::Dialog, "Save workflow results").is_some(), "{:?}", h.state().notice());
     assert!(h.query_by_label("Only the chosen historical result items.").is_some());
     assert!(h.query_by_label("2 media files; 2 ready").is_some());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing is written before Save files");

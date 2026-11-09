@@ -350,13 +350,19 @@ impl AgentPanel {
             ui.horizontal(|ui| {
                 ui.heading("Agent");
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if ui.add_enabled(status == Status::Idle, egui::Button::new("Clear")).on_hover_text("Start a new conversation").clicked() {
+                    if ui
+                        .add_enabled(status == Status::Idle, egui::Button::new("Clear"))
+                        .on_hover_text("Start a new conversation")
+                        .on_disabled_hover_text("Available once the agent has finished; cancel its current request first")
+                        .clicked()
+                    {
                         intents.push(Intent::Clear);
                     }
                     let editing = self.draft.is_some();
                     if ui
                         .add_enabled(status == Status::Idle || editing, egui::Button::new("Settings").selected(editing))
                         .on_hover_text("Which endpoint and model the agent asks")
+                        .on_disabled_hover_text("Available once the agent has finished; cancel its current request first")
                         .clicked()
                     {
                         intents.push(Intent::Settings(!editing));
@@ -447,7 +453,7 @@ impl AgentPanel {
                     intents.push(Intent::Unmention(*id));
                 }
             }
-            ui.menu_button("@", |ui| {
+            let mentions = ui.menu_button("@", |ui| {
                 ui.set_max_height(t.comments_height);
                 egui::ScrollArea::vertical().show(ui, |ui| {
                     let nodes = canvas.map(|c| c.nodes().values().take(MAX_MENTIONS).collect::<Vec<_>>()).unwrap_or_default();
@@ -461,9 +467,9 @@ impl AgentPanel {
                         }
                     }
                 });
-            })
-            .response
-            .on_hover_text("Mention a node");
+            });
+            mentions.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Mention a node"));
+            mentions.response.on_hover_text("Mention a node");
         });
         let input = egui::TextEdit::multiline(&mut self.input)
             .id(Self::input_id())
@@ -558,12 +564,16 @@ fn node_name(title: &str, kind: &str) -> String {
 /// The agent's settings form (#1063): the endpoint, its model and, for a local server, its
 /// address. Saved only with Save; keys stay in the keychain (the API keys window).
 fn settings_form(ui: &mut egui::Ui, draft: &mut Draft, idle: bool, intents: &mut Vec<Intent>, t: &nodecraft_ui_egui::theme::Tokens) {
-    ui.label(egui::RichText::new("Endpoint").color(t.text_muted).size(t.label_size));
-    egui::ComboBox::from_id_salt("nodecraft-agent-endpoint").selected_text(endpoint_label(draft.endpoint)).show_ui(ui, |ui| {
-        for endpoint in ENDPOINTS {
-            ui.selectable_value(&mut draft.endpoint, endpoint, endpoint_label(endpoint));
-        }
-    });
+    let endpoint = ui.label(egui::RichText::new("Endpoint").color(t.text_muted).size(t.label_size));
+    egui::ComboBox::from_id_salt("nodecraft-agent-endpoint")
+        .selected_text(endpoint_label(draft.endpoint))
+        .show_ui(ui, |ui| {
+            for endpoint in ENDPOINTS {
+                ui.selectable_value(&mut draft.endpoint, endpoint, endpoint_label(endpoint));
+            }
+        })
+        .response
+        .labelled_by(endpoint.id);
     let label = ui.label(egui::RichText::new("Model").color(t.text_muted).size(t.label_size));
     let hint = if draft.endpoint == AgentEndpoint::Anthropic { "the endpoint's default" } else { "the model's name, as the endpoint lists it" };
     ui.add(egui::TextEdit::singleline(&mut draft.model).hint_text(hint).char_limit(AgentSettings::MAX_TEXT_BYTES)).labelled_by(label.id);

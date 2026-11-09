@@ -662,7 +662,7 @@ impl NodeCraftApp {
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
-        egui::Modal::new(egui::Id::new("layer_editor")).frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
+        crate::floating::modal(&ctx, egui::Id::new("layer_editor"), "Layer Editor").frame(shell).backdrop_color(t.canvas_bg).show(&ctx, |ui| {
             let size = (content.size() - Vec2::splat(gap * 2.0)).max(Vec2::splat(1.0));
             ui.set_min_size(size);
             ui.set_max_size(size);

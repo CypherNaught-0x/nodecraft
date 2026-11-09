@@ -60,7 +60,7 @@ impl NodeCraftApp {
         let shown = describe(operation);
         let t = *self.theme.tokens();
         let mut cancel = false;
-        egui::Modal::new(egui::Id::new("file_progress367")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("file_progress367"), shown.title).show(ctx, |ui| {
             ui.set_max_width(t.card_width);
             ui.heading(shown.title);
             ui.horizontal(|ui| {

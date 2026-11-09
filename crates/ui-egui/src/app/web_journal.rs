@@ -543,7 +543,7 @@ impl NodeCraftApp {
     fn web_recovery_dialog(&mut self, ctx: &egui::Context, t: &Tokens) {
         let Some(offer) = self.web_recovery.as_ref().and_then(|recovery| recovery.offer.as_ref()) else { return };
         let mut choice = None;
-        egui::Modal::new(egui::Id::new("nodecraft.web_recovery")).show(ctx, |ui| {
+        crate::floating::modal(ctx, egui::Id::new("nodecraft.web_recovery"), "Recover unsaved work?").show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             ui.heading("Recover unsaved work?");
             match &offer.found {

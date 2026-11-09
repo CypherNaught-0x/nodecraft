@@ -213,7 +213,7 @@ impl NodeCraftApp {
         let mut create = false;
         let canvas = self.canvas;
         let id = editor.mask;
-        let modal = egui::Modal::new(egui::Id::new("mask_editor")).show(&ctx, |ui| {
+        let modal = crate::floating::modal(&ctx, egui::Id::new("mask_editor"), "Mask editor").show(&ctx, |ui| {
             ui.set_width(t.viewer_width);
             ui.heading("Mask");
             drift_banner(ui, &target, canvas, id, &t, &mut commands);
