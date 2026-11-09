@@ -12,13 +12,24 @@ pub(super) struct Interaction {
 }
 
 pub(super) fn header(ui: &mut egui::Ui, allowed: bool, focus_pending: &mut bool, t: &theme::Tokens) -> (Rect, (egui::Response, egui::Response)) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), t.navigation_toolbar_height), Sense::hover());
+    let width = ui.available_width();
     let font = egui::TextStyle::Button.resolve(ui.style());
     let label_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("Close".to_owned(), font, t.text).size().x);
-    let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(rect.width());
-    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, rect.top()), rect.max);
+    let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(width);
+    let title_width = ui.fonts_mut(|fonts| fonts.layout_no_wrap("Tag filter".to_owned(), egui::FontId::proportional(t.body_size), t.text).size().x);
+    // Preserve a centered title and visible Close label when pinned Comments leaves a narrow panel.
+    let stacked = title_width + close_width * 2.0 > width;
+    let gap = if stacked { ui.spacing().item_spacing.y } else { 0.0 };
+    let height = if stacked { t.navigation_toolbar_height * 2.0 + gap } else { t.navigation_toolbar_height };
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
+    let close_top = if stacked { rect.top() + t.navigation_toolbar_height + gap } else { rect.top() };
+    let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, close_top), rect.max);
     let handle = rect.with_max_x(close_rect.left());
-    let title_rect = Rect::from_min_max(Pos2::new((rect.left() + close_width).min(close_rect.left()), rect.top()), close_rect.left_bottom());
+    let title_rect = if stacked {
+        Rect::from_min_max(rect.min, Pos2::new(rect.right(), rect.top() + t.navigation_toolbar_height))
+    } else {
+        Rect::from_min_max(Pos2::new(rect.left() + close_width, rect.top()), close_rect.left_bottom())
+    };
     let title = ui.place(title_rect, egui::Label::new(egui::RichText::new("Tag filter").size(t.body_size)).sense(Sense::focusable_noninteractive()).truncate());
     if allowed && *focus_pending && ui.is_visible() {
         title.request_focus();
