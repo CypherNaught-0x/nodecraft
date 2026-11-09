@@ -36,6 +36,7 @@ fn actual_card_pointer_preview_apply_is_one_atomic_undo_without_run_consent() {
     assert!(h.state().model_choice.is_some());
     choose(&mut h);
     assert_eq!(h.state().session.document(), &before);
+    crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_review"), "Review model change");
     h.get_by_label("Apply model change").click();
     h.run();
     assert!(h.state().model_choice.is_none());
@@ -91,6 +92,7 @@ fn external_document_or_same_revision_catalog_replacement_keeps_preview_stale() 
         h.run();
         assert!(h.state().model_choice.as_ref().unwrap().stale);
         assert!(h.query_by_label("Apply model change").is_none());
+        crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_stale"), "Model preview changed");
         h.get_by_label("Cancel model change").click();
         h.run();
         assert_eq!(h.state().session.document(), &before);
@@ -225,4 +227,145 @@ fn router949_model_picker_matches_all_direct_candidate_states_and_headless_check
             }
         }
     }
+}
+
+/// A picker-stage failure shows at the top of the picker panel (#1116; its own window before),
+/// which keeps its layout in the floating panel area (#959).
+#[test]
+fn a_picker_failure_shows_in_the_picker_panel_that_keeps_its_layout() {
+    let mut h = harness();
+    h.get_by_label("Change model…").click();
+    h.run();
+    h.state_mut().model_choice.as_mut().unwrap().error = Some("The model catalog could not be read. Nothing was changed.".into());
+    h.run();
+    h.get_by_role_and_label(egui::accesskit::Role::Window, "Choose a model").get_by_label("The model catalog could not be read. Nothing was changed.");
+    crate::app::panel_check::check_open_panels(&h, "Choose a model, with a failure");
+}
+
+/// The desktop app's smallest window (#1115), where every dialog must stay on the screen.
+fn small() -> Harness<'static, NodeCraftApp> {
+    let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app());
+    h.run();
+    h
+}
+/// Opens the picker on the selected card, as its Change model… does.
+fn open_small(h: &mut Harness<'static, NodeCraftApp>) {
+    h.state_mut().selection.only(A);
+    let revision = h.state().session.revision();
+    h.state_mut().open_model_picker(C, vec![A], revision).unwrap();
+    h.run();
+}
+fn selected(h: &Harness<'static, NodeCraftApp>) -> bool {
+    h.state().selection.nodes().contains(&A)
+}
+
+/// #1116: Choose a model is a tool, a floating panel kept in the panel area at 640 × 400; Escape
+/// closes it and doesn't also clear the canvas selection.
+#[test]
+fn dialogs1116_the_picker_is_a_panel_on_screen_and_escape_closes_only_it() {
+    let mut h = small();
+    open_small(&mut h);
+    h.run_steps(4);
+    crate::app::panel_check::check_open_panels(&h, "Choose a model at 640 × 400");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert!(selected(&h), "Escape closed the picker without reaching the canvas");
+}
+
+/// #1116: Review model change is a question at 640 × 400: Escape cancels (nothing changes, the
+/// canvas keeps its selection) and Enter applies.
+#[test]
+fn dialogs1116_review_is_a_question_enter_applies_escape_cancels() {
+    let mut h = small();
+    let before = h.state().session.document().clone();
+    open_small(&mut h);
+    choose(&mut h);
+    h.run_steps(4);
+    crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_review"), "Review model change at 640 × 400");
+    let apply = h.get_by_label("Apply model change").rect();
+    assert!(h.ctx.content_rect().contains_rect(apply), "Apply {apply:?} is on the screen");
+    h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert_eq!(h.state().session.document(), &before);
+    assert!(selected(&h), "Escape cancelled without reaching the canvas");
+
+    open_small(&mut h);
+    choose(&mut h);
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    let node = h.state().session.document().canvases().get(&C).unwrap().nodes().get(&A).unwrap().clone();
+    assert_eq!(node.params.get("model"), Some(&Value::Text(DESTINATION.into())));
+}
+
+/// #1116: Model preview changed is a question at 640 × 400: Enter refreshes the models, Escape
+/// cancels the change.
+#[test]
+fn dialogs1116_preview_changed_is_a_question_enter_refreshes_escape_cancels() {
+    for escape in [true, false] {
+        let mut h = small();
+        open_small(&mut h);
+        choose(&mut h);
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":A,"title":"External change"})).unwrap();
+        h.run();
+        assert!(h.state().model_choice.as_ref().unwrap().stale);
+        crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.model_stale"), "Model preview changed at 640 × 400");
+        let before = h.state().session.document().clone();
+        h.key_press(if escape { egui::Key::Escape } else { egui::Key::Enter });
+        h.run();
+        assert_eq!(h.state().session.document(), &before);
+        if escape {
+            assert!(h.state().model_choice.is_none());
+            assert!(selected(&h), "Escape cancelled without reaching the canvas");
+        } else {
+            let choice = h.state().model_choice.as_ref().unwrap();
+            assert!(!choice.stale && matches!(choice.step, Step::Picking(_)), "Enter refreshed the models");
+        }
+    }
+}
+
+/// #1116: Enter held to choose a model in the picker doesn't also apply it; key repeats never
+/// answer the review. After a release, a fresh Enter applies.
+#[test]
+fn dialogs1116_a_held_enter_from_the_picker_does_not_apply_the_review() {
+    let key = |pressed: bool, repeat: bool| egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed, repeat, modifiers: egui::Modifiers::NONE };
+    let mut h = small();
+    let before = h.state().session.document().clone();
+    open_small(&mut h);
+    h.event(egui::Event::Text(DESTINATION.into()));
+    h.run();
+    h.event(key(true, false));
+    h.run();
+    assert!(matches!(h.state().model_choice.as_ref().unwrap().step, Step::Review(_)));
+    for _ in 0..3 {
+        h.event(key(true, true));
+        h.run();
+    }
+    assert!(matches!(h.state().model_choice.as_ref().unwrap().step, Step::Review(_)), "a held Enter answers nothing");
+    assert_eq!(h.state().session.document(), &before);
+    h.event(key(false, false));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert_ne!(h.state().session.document(), &before, "a fresh Enter applies");
+}
+
+/// #1116: with the review's Cancel focused, Enter presses Cancel rather than applying.
+#[test]
+fn dialogs1116_enter_on_a_focused_cancel_cancels() {
+    let mut h = small();
+    let before = h.state().session.document().clone();
+    open_small(&mut h);
+    choose(&mut h);
+    h.run();
+    h.get_by_label("Cancel model change").focus();
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().model_choice.is_none());
+    assert_eq!(h.state().session.document(), &before, "Enter on Cancel cancels");
 }

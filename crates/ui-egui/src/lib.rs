@@ -36,6 +36,7 @@ pub mod tags;
 pub(crate) mod text_preview;
 pub mod theme;
 pub mod turn_into;
+pub mod ui_ext;
 pub mod video;
 #[cfg(target_arch = "wasm32")]
 mod web_storage;

@@ -91,6 +91,8 @@ list (2..=MAX_CHANGES unique IDs on the shown canvas); when supplied it frames t
 including collapsed-field headers for hidden cards, without changing the person's selection.
 Without `nodes` it frames the selection. These operations change only the view, without
 document revisions, undo entries or events. Headless control/MCP sessions remain Unsupported.
+The four `view.ui_scale.*` commands (#1107) also run through the live host: they set the
+window's interface size, which the app applies on its next frame and saves with its settings.
 The five `canvas.search_*` commands use the app's existing scoped search host: open the bar,
 set a query, step next/previous, or close it. Queries retain the 1024 UTF-8 byte bound and the
 incremental per-frame scanner; a response may report scanning before the match is framed.

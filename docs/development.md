@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- Rust stable ≥ 1.95 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
+- Rust stable ≥ 1.97.1 (`rustup toolchain install stable`) with `rustfmt`, `clippy` and the wasm
   target: `rustup target add wasm32-unknown-unknown`.
 - Linux: the usual eframe/wgpu system libraries (X11/Wayland, xkbcommon, Vulkan or GL drivers).
 - Optional: [cargo-nextest](https://nexte.st) for faster test runs (`.config/nextest.toml`).
@@ -434,7 +434,7 @@ discard uncommitted card-field drafts before file actions.
 
 When project storage cannot start, the startup notice and File actions retain the same reason.
 A second desktop window that cannot acquire the shared recovery journal opens in memory only;
-its File panel offers **Focus the other window**. This asks the owner to come forward so its File
+its File menu offers **Focus the other window**. This asks the owner to come forward so its File
 menu can be used; it never transfers the unsaved document. If the window manager refuses focus,
 use the system window switcher. Older owners without the focus endpoint must also be switched to
 manually. An unreadable startup project instead leaves a new project with working storage and an

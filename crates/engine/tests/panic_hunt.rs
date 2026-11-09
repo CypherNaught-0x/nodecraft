@@ -14,6 +14,8 @@ fn panic_hunt() {
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
+    // The window's interface size (#1107), so its commands reach their real checks.
+    nodecraft_engine::ui_scale_cmds::install(&mut session, Default::default()).unwrap();
     // The generic corpus also reaches actual result-service parameter/identity checks.
     let mut result_services = nodecraft_engine::commands::Services::default();
     let worker = nodecraft_engine::plugin_cmds::PluginWorker::spawn(
@@ -48,6 +50,13 @@ fn panic_hunt() {
         deep,
         json!("x".repeat(1024 * 1024 + 1)),
         json!(vec![Value::Null; 16_385]),
+        // Sizes (#1107): zero, huge, negative, fractional and NaN (which JSON writes as null).
+        json!({"percent":0}),
+        json!({"percent":1e9}),
+        json!({"percent":-1}),
+        json!({"percent":0.5}),
+        json!({"percent":f64::NAN}),
+        json!({"percent":f64::MAX}),
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
@@ -555,6 +564,9 @@ fn template(id: &str) -> (Session, Value) {
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
     let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
+    if id.starts_with("view.ui_scale.") {
+        nodecraft_engine::ui_scale_cmds::install(&mut session, Default::default()).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
@@ -699,6 +711,9 @@ fn template(id: &str) -> (Session, Value) {
         // No MCP server host here either (#116): refused cleanly, never started.
         "automation.mcp_server_set" => json!({"enabled": true}),
         "automation.mcp_server_status" => json!({}),
+        // Interface size (#1107): the hunt's session has the frontend's scale installed.
+        "view.ui_scale.increase" | "view.ui_scale.decrease" | "view.ui_scale.reset" => json!({}),
+        "view.ui_scale.set" => json!({"percent": 150}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})

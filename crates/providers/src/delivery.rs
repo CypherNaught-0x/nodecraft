@@ -220,34 +220,66 @@ impl SubmitContext {
         proven.then_some(SubmitNotAccepted)
     }
     // Register before even constructing the transport future. Unpolled/dropped children count.
+    // The audited send for an adapter that sends itself; the chat client sends through its link.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn send<'a>(&'a self, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
-        let child = Child::new(Arc::clone(&self.state));
-        let Some(child) = child else {
-            return Box::pin(async { Err(crate::ProviderError::new(crate::ErrorKind::Network, "submission evidence scope is closed")) });
-        };
-        Box::pin(async move {
-            let result = http.send_with_delivery(request, &child.context).await;
-            child.finish(result)
-        })
+        send_child(&self.state, http, request)
+    }
+    /// An owned handle that sends this submit's requests with the same evidence as
+    /// [`Self::send`], for a transport whose futures must own what they use (the chat client's
+    /// HTTP seam, #1122). It adds no way to assert anything: each request it sends is a child of
+    /// this scope, registered when its send is constructed.
+    #[cfg(feature = "llm")]
+    pub(crate) fn link(&self) -> DeliveryLink {
+        DeliveryLink { state: Arc::clone(&self.state) }
     }
 }
-impl SubmitContext {
-    /// [`Self::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
+/// See [`SubmitContext::link`]. Not `Clone`: one transport owns it.
+#[cfg(feature = "llm")]
+pub(crate) struct DeliveryLink {
+    state: Arc<Mutex<Operation>>,
+}
+#[cfg(feature = "llm")]
+impl DeliveryLink {
+    /// [`SubmitContext::send`].
+    pub(crate) fn send<'a>(&'a self, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+        send_child(&self.state, http, request)
+    }
+    /// [`SubmitContext::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
     pub(crate) fn send_streaming<'a>(
         &'a self,
         http: &'a dyn Http,
         request: HttpRequest,
         on_chunk: &'a mut ChunkSink<'a>,
     ) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
-        let child = Child::new(Arc::clone(&self.state));
-        let Some(child) = child else {
-            return Box::pin(async { Err(crate::ProviderError::new(crate::ErrorKind::Network, "submission evidence scope is closed")) });
-        };
-        Box::pin(async move {
-            let result = http.send_streaming_with_delivery(request, on_chunk, &child.context).await;
-            child.finish(result)
-        })
+        send_streaming_child(&self.state, http, request, on_chunk)
     }
+}
+fn send_child<'a>(state: &Arc<Mutex<Operation>>, http: &'a dyn Http, request: HttpRequest) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+    let child = Child::new(Arc::clone(state));
+    let Some(child) = child else {
+        return Box::pin(async { Err(crate::ProviderError::new(crate::ErrorKind::Network, "submission evidence scope is closed")) });
+    };
+    Box::pin(async move {
+        let result = http.send_with_delivery(request, &child.context).await;
+        child.finish(result)
+    })
+}
+/// [`SubmitContext::send`] for a streamed reply: the body goes to `on_chunk` as it arrives.
+fn send_streaming_child<'a>(
+    state: &Arc<Mutex<Operation>>,
+    http: &'a dyn Http,
+    request: HttpRequest,
+    on_chunk: &'a mut ChunkSink<'a>,
+) -> BoxFuture<'a, Result<HttpResponse, ProviderError>> {
+    let child = Child::new(Arc::clone(state));
+    let Some(child) = child else {
+        return Box::pin(async { Err(crate::ProviderError::new(crate::ErrorKind::Network, "submission evidence scope is closed")) });
+    };
+    Box::pin(async move {
+        let result = http.send_streaming_with_delivery(request, on_chunk, &child.context).await;
+        child.finish(result)
+    })
 }
 
 /// The largest char boundary in `text` at or below `at`.

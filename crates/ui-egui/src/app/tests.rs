@@ -394,7 +394,8 @@ fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
         spec("enabled", ParamControl::Toggle, Value::Bool(false)),
     ]);
     enter_text(&mut h, "count", "9");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // Empty canvas below the top bar (#1123 put File at the row's left end).
+    click(&mut h, Pos2::new(50.0, 300.0));
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
@@ -1194,29 +1195,37 @@ fn noodles_are_clickable_box_selectable_and_deletable() {
 
 /// #1112: a noodle under the pointer is painted wider and brighter; moving away restores it.
 #[test]
-fn a_hovered_noodle_is_drawn_wider_and_brighter() {
+fn a_hovered_and_pressed_noodle_is_drawn_wider_and_brighter() {
     let mut h = chain_harness();
     h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
     h.run();
     let t = *h.state().theme.tokens();
     // Wider and in the tinted colour, not just wider.
     let tinted = crate::theme::State::Hovered.tint(t.wire(nodecraft_types::Modality::Text), t.card_stroke_selected);
-    let hovered = |h: &Harness<'static, NodeCraftApp>| {
+    let highlighted = |h: &Harness<'static, NodeCraftApp>, color| {
         h.output().shapes.iter().any(|clipped| {
             matches!(&clipped.shape, egui::epaint::Shape::CubicBezier(curve)
-                if (curve.stroke.width - t.wire_width_hover).abs() < 1e-3 && curve.stroke.color == egui::epaint::ColorMode::Solid(tinted))
+                if (curve.stroke.width - t.wire_width_hover).abs() < 1e-3 && curve.stroke.color == egui::epaint::ColorMode::Solid(color))
         })
     };
     let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
     h.hover_at(Pos2::new(990.0, 20.0));
     h.run();
-    assert!(!hovered(&h), "no noodle is hovered at rest");
+    assert!(!highlighted(&h, tinted), "no noodle is hovered at rest");
     h.hover_at(a + (b - a) * 0.5);
     h.run();
-    assert!(hovered(&h), "the noodle under the pointer widens");
+    assert!(highlighted(&h, tinted), "the noodle under the pointer widens");
+    let at = a + (b - a) * 0.5;
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.step();
+    let pressed = crate::theme::State::Pressed.tint(t.wire(nodecraft_types::Modality::Text), t.card_stroke_selected);
+    assert!(highlighted(&h, pressed), "holding a noodle gives distinct pressed feedback");
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
     h.hover_at(a + (b - a) * 0.5 + Vec2::new(0.0, 60.0));
     h.run();
-    assert!(!hovered(&h), "and goes back once the pointer leaves its band");
+    assert!(!highlighted(&h, tinted), "and goes back once the pointer leaves its band");
 }
 
 #[test]
@@ -1729,7 +1738,8 @@ fn palette_keys_and_wheel_never_reach_the_canvas() {
     h.run();
     // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
     h.state_mut().selection.only(id);
-    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // The popup may open upward from where it was double-clicked (#1121): use its real corner.
+    let corner = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).unwrap().rect().min;
     // A click on the popup's padding takes focus off the query, but the palette stays open...
     click(&mut h, corner + Vec2::splat(3.0));
     assert!(h.state().palette.is_some());
@@ -3552,11 +3562,11 @@ fn bulk71_unavailable_models_use_shared_repair_picker_and_one_exact_undo() {
     assert!(!apply_node.accesskit_node().is_disabled(), "{apply_node:?}");
     let apply_rect = apply_node.rect();
     assert!(h.ctx.content_rect().contains_rect(apply_rect), "Apply {apply_rect:?} outside {:?}", h.ctx.content_rect());
-    let window_rect = h.get_by_role_and_label(Role::Window, "Review model change").rect();
+    let window_rect = h.get_by_role_and_label(Role::Dialog, "Review model change").rect();
     assert!(window_rect.contains_rect(apply_rect), "Apply {apply_rect:?} outside review {window_rect:?}");
     let apply = apply_rect.center();
     bulk71_model_click(&mut h, apply);
-    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Window, "Review model change"));
+    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Dialog, "Review model change"));
     for id in ids {
         assert_eq!(
             h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("model"),
@@ -3639,7 +3649,7 @@ fn bulk71_real_catalog_media() {
         assert!(h.query_by_label_contains("Drop quality").is_some());
         let apply = h.get_by_label("Apply model change");
         assert!(!apply.accesskit_node().is_disabled());
-        assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Review model change").rect().contains_rect(apply.rect()));
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change").rect().contains_rect(apply.rect()));
         h.render().unwrap().save(out.join("review.png")).unwrap();
     }
     assert_eq!(h.state().session.document(), &project);
@@ -4350,3 +4360,17 @@ fn palette_same_frame_row_choice_and_metadata_key_create_only_chosen_kind() {
 mod clipboard_native273;
 
 mod clipboard_capture273;
+
+/// How many nodes other than port buttons and connections carry `text` in their name. Ports and
+/// noodles repeat their cards' titles (#1109), so a card's own element is the only other match.
+pub(super) fn named_outside_wiring(h: &Harness<'_, NodeCraftApp>, text: &str) -> usize {
+    h.query_all_by_label_contains(text)
+        .filter(|node| {
+            let node = node.accesskit_node();
+            let name = node.label().or_else(|| node.value()).unwrap_or_default();
+            let port = node.role() == Role::Button && (name.contains(" input of ") || name.contains(" output of "));
+            let edge = node.role() == Role::Label && name.contains(" from ") && name.contains(" · ");
+            !port && !edge
+        })
+        .count()
+}

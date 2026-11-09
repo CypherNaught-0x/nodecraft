@@ -43,8 +43,15 @@ fn wheel_reaches_a_later_palette_row_without_moving_canvas_and_click_selects_it(
     let view = h.state().view;
     let document = h.state().session.document().clone();
     let pos = menu_rect(&h, "quick_add_palette").center();
-    wheel(&mut h, pos, egui::Modifiers::NONE);
-    assert!(h.state().palette.is_some(), "wheel must scroll the palette instead of closing it");
+    // Two-line rows under section headings (#1121): wheel until the row comes into view.
+    for _ in 0..8 {
+        let menu = menu_rect(&h, "quick_add_palette");
+        if h.query_by_label(&label(&h, &entry)).is_some_and(|row| menu.contains_rect(row.rect())) {
+            break;
+        }
+        wheel(&mut h, pos, egui::Modifiers::NONE);
+        assert!(h.state().palette.is_some(), "wheel must scroll the palette instead of closing it");
+    }
     assert_eq!(h.state().view, view);
     assert_eq!(h.state().session.document(), &document);
     h.get_by_label(&label(&h, &entry)).click();
@@ -186,8 +193,11 @@ fn render_palette_scroll_evidence() {
 /// its label, rather than a few spaces after it.
 #[test]
 fn palette_shortcuts_are_platform_spelled_and_right_aligned() {
-    let h = open_palette();
+    let mut h = open_palette();
     let entry = h.state().palette_entries().into_iter().find(|entry| entry.shortcut.as_deref() == Some("A")).expect("a kind with a one-key shortcut");
+    // Its section may start below the fold (#1121): ask for it by name.
+    h.event(egui::Event::Text(entry.label.clone()));
+    h.run();
     let name = palette::row_name(&h.ctx, &entry);
     assert_eq!(name, format!("{} (A)", entry.label));
     let row = h.get_by_label(&name).rect();
