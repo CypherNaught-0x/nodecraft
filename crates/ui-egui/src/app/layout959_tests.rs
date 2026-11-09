@@ -8,9 +8,10 @@ pub(super) fn viewport(h: &mut Harness<'static, NodeCraftApp>, theme: ThemeKind,
     h.state_mut().theme = theme;
     crate::theme::apply(&h.ctx, theme);
     h.state_mut().session.dispatch("view.ui_scale.set", &json!({"percent":percent})).unwrap();
-    // Apply zoom before setting physical size: doing both in one pass rescales the old size.
+    // RawInput.screen_rect is in logical points. Apply zoom, then convert the
+    // requested physical size so the renderer still emits that exact pixel size.
     h.run_steps(6);
-    h.set_size(size);
+    h.set_size(size * 100.0 / f32::from(percent));
     h.run_steps(16);
     assert!((h.ctx.content_rect().width() - size.x * 100.0 / f32::from(percent)).abs() < 1.0);
 }
