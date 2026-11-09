@@ -101,5 +101,5 @@ fn empty_router_port_drag_explains_missing_provenance_instead_of_widening() {
     let start = app.view.to_screen(app.viewport.min, noodle::port_anchor(node, app.painted[&ROUTER], Side::Output, "out").unwrap());
     super::tests::wire_drag(&mut h, start, DROP);
     assert!(h.state().turn_into.is_none());
-    assert!(h.state().notice.as_deref().is_some_and(|why| why.contains("Router") && why.contains("no resolved source")));
+    assert!(h.state().notice().is_some_and(|why| why.contains("Router") && why.contains("no resolved source")));
 }

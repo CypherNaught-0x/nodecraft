@@ -113,7 +113,7 @@ fn clean_open_palette_and_cancel_use_only_ui_picker_boundary() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::O);
     settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     // The same UI dispatch used by a chosen palette entry obtains a location.
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
@@ -174,7 +174,7 @@ fn cancelled_or_failed_save_never_continues_the_dirty_open() {
         settle(&mut h);
         assert_eq!(h.state().session.document(), &expected);
         assert!(h.state().session.file_status().dirty);
-        assert_eq!(h.state().notice.is_some(), bad.is_some());
+        assert_eq!(h.state().notice().is_some(), bad.is_some());
     }
 }
 #[test]
@@ -210,7 +210,7 @@ fn late_picker_after_edits_or_replacement_and_duplicate_requests_never_dispatch(
         ready.set(true);
         h.step();
         assert_eq!(h.state().session.document(), &expected);
-        assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+        assert!(h.state().notice().unwrap().contains("changed"));
         assert!(h.state().files.pending.is_none());
     }
 }
@@ -312,7 +312,7 @@ fn dirty_confirmation_invalidates_before_discard_after_a_new_edit() {
     h.step();
     assert_eq!(h.state().session.document(), &expected);
     assert!(h.state().files.pending.is_none());
-    assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+    assert!(h.state().notice().unwrap().contains("changed"));
 }
 #[test]
 fn missing_recent_is_retained_until_explicit_menu_removal() {
@@ -324,15 +324,30 @@ fn missing_recent_is_retained_until_explicit_menu_removal() {
     settle(&mut h);
     h.get_by_label("File").click();
     settle(&mut h);
+    h.get_by_label("Open recent").click();
+    settle(&mut h);
     h.get_by_label("missing-public.ncraft").click();
     settle(&mut h);
-    assert!(h.state().notice.is_some());
+    assert!(h.state().notice().is_some());
+    assert!(!h.state().files.menu_open, "choosing a recent project closes the menu");
     assert_eq!(h.state().files.projects.recent().len(), 1);
     h.get_by_label("File").click();
     settle(&mut h);
+    h.get_by_label("Open recent").click();
+    settle(&mut h);
+    assert!(!h.get_by_label("Clear recent projects").accesskit_node().is_disabled(), "a list to clear");
     h.get_by_label("Remove").click();
     settle(&mut h);
     assert!(h.state().files.projects.recent().is_empty());
+    // #1111: with nothing listed, Clear has nothing to do and says so.
+    assert!(h.query_by_label("No recent projects").is_some());
+    let clear = h.get_by_label("Clear recent projects");
+    assert!(clear.accesskit_node().is_disabled(), "an empty list can't be cleared");
+    clear.hover();
+    for _ in 0..90 {
+        h.step();
+    }
+    assert!(h.query_by_label("There are no recent projects to clear").is_some(), "the disabled button says why");
 }
 
 #[test]
@@ -358,7 +373,7 @@ fn actual_native_save_error_keeps_dirty_work_and_does_not_open_target() {
     assert_eq!(h.state().session.document(), &expected);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(source)));
     assert!(h.state().session.file_status().dirty);
-    assert!(h.state().notice.is_some());
+    assert!(h.state().notice().is_some());
 }
 #[test]
 fn read_only_settings_never_turn_successful_save_into_failed_or_claim_persistence() {
@@ -380,7 +395,7 @@ fn read_only_settings_never_turn_successful_save_into_failed_or_claim_persistenc
     settle(&mut h);
     assert!(target.is_file());
     assert!(!h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("could not be saved"));
+    assert!(h.state().notice().unwrap().contains("could not be saved"));
     assert_eq!(std::fs::read_to_string(config.join("config.toml")).unwrap(), text);
 }
 #[test]
@@ -420,7 +435,7 @@ fn uncommitted_text_draft_is_not_silently_saved_or_replaced() {
     settle(&mut h);
     assert_eq!(calls.get(), 0);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.as_deref().unwrap().contains("field edits"));
+    assert!(h.state().notice().unwrap().contains("field edits"));
 }
 
 #[test]
@@ -462,7 +477,7 @@ fn picker_errors_and_panics_leave_the_document_unchanged_and_release_the_slot() 
         settle(&mut h);
         assert_eq!(h.state().session.document(), &original);
         assert!(h.state().files.pending.is_none());
-        assert!(h.state().notice.is_some());
+        assert!(h.state().notice().is_some());
         let target = dir.file("after-error.ncraft");
         stub(h.state_mut(), vec![Some(target.clone())]);
         h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
@@ -516,12 +531,17 @@ fn file_chrome_is_separate_from_comments_at_narrow_and_regular_widths() {
             .with_size(Vec2::new(width, 700.0))
             .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), dir.app("journal"));
         settle(&mut h);
+        // File is the top bar's first entry (#1123), clear of Comments.
         let file = h.get_by_label("File").rect();
-        assert!(!file.intersects(h.state().comments_toolbar_rect()));
+        assert!(h.state().topbar_rect().contains_rect(file));
+        if let Some(comments) = h.query_by_role_and_label(egui::accesskit::Role::Button, "Comments") {
+            assert!(!file.intersects(comments.rect()));
+        }
         h.get_by_label("File").click();
         settle(&mut h);
-        assert!(!file.intersects(h.get_by_label("Open project…").rect()));
-        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open project…").rect()));
+        assert!(!file.intersects(h.get_by_label("Open… (Ctrl+O)").rect()));
+        assert!(h.get_by_label("Open… (Ctrl+O)").rect().top() >= file.bottom(), "the menu opens below File");
+        assert!(h.ctx.content_rect().contains_rect(h.get_by_label("Open… (Ctrl+O)").rect()));
     }
 }
 
@@ -569,7 +589,7 @@ fn correction407_supported_replacement_keeps_picker_slot_and_recents() {
     ready.set(true);
     settle(&mut h);
     assert_eq!(h.state().session.document(), &expected);
-    assert!(h.state().notice.as_deref().unwrap().contains("changed"));
+    assert!(h.state().notice().unwrap().contains("changed"));
     assert_eq!(dropped.get(), 1);
     assert!(h.state().files.pending.is_none());
     h.state_mut().begin_file("file.open", &ctx);
@@ -592,17 +612,21 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
     let dir = Scratch::new("nav-pointer407");
     let mut h = harness(dir.app("journal"));
     settle(&mut h);
-    h.get_by_label("File").click();
-    settle(&mut h);
-    assert!(h.state().files.menu_open);
     let view = h.state().view;
     let visible = h.state().navigation.visible;
+    // #1123: a click outside the File menu closes it and never reaches the canvas.
     for label in ["Fit all", "100%", "Hide map"] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
         h.get_by_label(label).click();
         settle(&mut h);
+        assert!(!h.state().files.menu_open, "{label}: the click closed the menu");
         assert_eq!(h.state().navigation.visible, visible);
         assert_eq!(h.state().view, view);
     }
+    h.get_by_label("File").click();
+    settle(&mut h);
     let point = crate::navigation::layout(h.state().viewport, true, h.state().theme.tokens()).map.center();
     for pressed in [true, false] {
         h.hover_at(point);
@@ -611,8 +635,11 @@ fn correction407_file_panel_blocks_actual_navigation_pointer() {
         assert_eq!(h.state().view, view);
         assert!(!h.state().navigation.pointer_owned);
     }
-    h.key_press(egui::Key::Escape);
     settle(&mut h);
+    if h.state().files.menu_open {
+        h.key_press(egui::Key::Escape);
+        settle(&mut h);
+    }
     assert!(!h.state().files.menu_open);
     let ctx = h.ctx.clone();
     assert!(h.state_mut().navigation_enabled(&ctx, "canvas.minimap_toggle", &json!({})).is_ok());
@@ -807,7 +834,7 @@ fn selected_save_as_waits_for_publication_before_recents_and_open_or_failure() {
             assert_eq!(h.state().session.document(), &expected);
             assert!(h.state().session.file_status().dirty);
             assert!(h.state().files.projects.recent().is_empty());
-            assert!(h.state().notice.is_some());
+            assert!(h.state().notice().is_some());
         } else {
             assert_eq!(nodecraft_format::decode(&std::fs::read(&source).unwrap()).unwrap().project, expected);
             assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(target.clone())));
@@ -905,7 +932,8 @@ fn model_and_file_pickers_cannot_acquire_a_second_owner() {
     settle(&mut h);
     h.state_mut().open_model_picker(canvas, vec![id], revision).unwrap();
     settle(&mut h);
-    assert!(h.get_by_label("File").accesskit_node().is_disabled());
+    // The model picker owns the frame: the top bar, File with it, isn't offered.
+    assert!(h.query_by_label("File").is_none_or(|file| file.accesskit_node().is_disabled()));
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     assert_eq!(calls.get(), 0, "model ownership cannot create an OS-picker future");
@@ -973,12 +1001,11 @@ fn bulk_file_menu_and_parked_picker_disable_actual_bulk_reset_controls() {
     h.get_by_label("File").click();
     settle(&mut h);
     let reset = h.get_by_role_and_label(egui::accesskit::Role::Window, "Shared parameters").get_by_label("Reset all to default");
-    assert!(reset.accesskit_node().is_disabled(), "the File panel owns bulk controls");
+    assert!(reset.accesskit_node().is_disabled(), "the File menu owns bulk controls");
     reset.click();
     settle(&mut h);
     assert_eq!(h.state().session.document(), &before);
-    h.key_press(egui::Key::Escape);
-    settle(&mut h);
+    assert!(!h.state().files.menu_open, "a click outside the File menu closes it, and does nothing else");
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1052,7 +1079,7 @@ fn storage968_actual_journal_conflict_retains_startup_reason_and_focus_action() 
     let (mut second, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
     assert!(!owns);
     assert!(second.storage_owner_blocked());
-    let startup = second.notice.clone().unwrap();
+    let startup = second.notice().map(str::to_owned).unwrap();
     assert!(startup.contains("recovery location is already in use"));
     assert!(startup.contains("Another NodeCraft window"));
     let focused = Rc::new(Cell::new(0));
@@ -1068,9 +1095,9 @@ fn storage968_actual_journal_conflict_retains_startup_reason_and_focus_action() 
     let mut h = harness(second);
     settle(&mut h);
     let ctx = h.ctx.clone();
-    h.state_mut().notice = None;
+    h.state_mut().notices.clear();
     h.state_mut().begin_file("file.save", &ctx);
-    assert_eq!(h.state().notice.as_deref(), Some(startup.as_str()));
+    assert_eq!(h.state().notice(), Some(startup.as_str()));
     settle(&mut h);
     h.get_by_label("Focus the other window").click();
     settle(&mut h);
@@ -1090,11 +1117,19 @@ fn storage968_unreadable_project_still_has_storage_and_picker() {
     assert!(owns);
     assert!(app.session.file_status().available);
     assert!(!app.storage_owner_blocked());
-    assert!(app.notice.as_deref().unwrap().starts_with("That project couldn't be opened:"));
-    assert!(app.notice.as_deref().unwrap().contains("can still be saved"));
     let calls = stub(&mut app, vec![None]);
     let mut h = harness(app);
+    // The startup open runs in the background from the first frame (#367).
     settle(&mut h);
+    let notice = h.state().notice().map(str::to_owned).unwrap();
+    assert!(
+        notice.starts_with("broken.ncraft couldn't be opened: ")
+            && notice.ends_with(". The new project is open instead and can be saved.")
+            && notice.matches(". ").count() == 1,
+        "one cause, one piece of advice: {notice}"
+    );
+    assert!(h.state().session.file_status().available);
+    h.state_mut().notices.clear();
     let ctx = h.ctx.clone();
     h.state_mut().begin_file("file.open", &ctx);
     settle(&mut h);
@@ -1109,16 +1144,16 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     let setup = storage::StorageSetup { recovery: folder.join("journal"), open: None };
     let (mut failed, _, owns) = NodeCraftApp::from_storage_setup(Default::default(), Some(setup), "unused").unwrap();
     assert!(!owns);
-    let startup = failed.notice.clone().unwrap();
+    let startup = failed.notice().map(str::to_owned).unwrap();
     assert!(startup.contains("recovery folder can't be created"));
     assert!(!failed.storage_owner_blocked());
     let ctx = egui::Context::default();
     failed.begin_file("file.open", &ctx);
-    assert_eq!(failed.notice.as_deref(), Some(startup.as_str()));
+    assert_eq!(failed.notice(), Some(startup.as_str()));
     let (mut missing, _, _) =
         NodeCraftApp::from_storage_setup(Default::default(), None, "No settings folder is available. Restart after fixing access.").unwrap();
     missing.begin_file("file.save_as", &ctx);
-    assert_eq!(missing.notice.as_deref(), Some("No settings folder is available. Restart after fixing access."));
+    assert_eq!(missing.notice(), Some("No settings folder is available. Restart after fixing access."));
     let mut closed = dir.app("closed");
     closed.session.close_recovery(true).unwrap();
     assert!(!closed.session.file_status().available);
@@ -1126,11 +1161,17 @@ fn storage968_storage_failure_missing_configuration_and_closed_recovery_have_dis
     assert!(reason.contains("Recovery was closed"));
     assert!(reason.contains("reopen NodeCraft"));
     closed.begin_file("file.open", &ctx);
-    assert_eq!(closed.notice.as_deref(), Some(reason));
+    assert_eq!(closed.notice(), Some(reason));
     assert_eq!(closed.session.dispatch("file.save", &json!({})).unwrap_err().message, reason);
     let mut h = harness(closed);
     settle(&mut h);
-    h.get_by_role_and_label(egui::accesskit::Role::Window, "Project files").get_by_label(reason);
+    // The File menu opened with the reason at its top (the notice says it too), and the entries
+    // that need storage are disabled.
+    assert!(h.state().files.menu_open);
+    assert!(h.query_all_by_label(reason).count() >= 2, "the menu and the notice give the reason");
+    for label in ["Open… (Ctrl+O)", "Save (Ctrl+S)", "Save as… (Ctrl+Shift+S)"] {
+        assert!(h.get_by_label(label).accesskit_node().is_disabled(), "{label} is disabled without storage");
+    }
 }
 
 #[test]
@@ -1139,8 +1180,8 @@ fn storage968_replacement_does_not_reuse_an_old_failure_reason() {
     let replacement = nodecraft_engine::Session::new(app.session.document().clone()).unwrap();
     app.replace_session(replacement, app.canvas).unwrap();
     app.begin_file("file.open", &egui::Context::default());
-    assert!(!app.notice.as_deref().unwrap().contains("Old startup reason"));
-    assert!(app.notice.as_deref().unwrap().contains("not configured"));
+    assert!(!app.notice().unwrap().contains("Old startup reason"));
+    assert!(app.notice().unwrap().contains("not configured"));
 }
 
 #[test]
@@ -1156,8 +1197,8 @@ fn render_storage968_evidence() {
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     settle(&mut h);
     h.run();
-    assert!(h.state().files.menu_open, "An unavailable save opens the File panel with its storage guidance");
-    h.get_by_label("Open project…");
+    assert!(h.state().files.menu_open, "An unavailable save opens the File menu with its storage guidance");
+    h.get_by_label("Open… (Ctrl+O)");
     h.render().unwrap().save(output.join("closed-recovery.png")).unwrap();
 }
 
@@ -1230,7 +1271,7 @@ fn cancelling_a_held_open_keeps_the_current_project_and_its_file() {
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(initial)));
     assert!(!h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("opening was cancelled"), "{:?}", h.state().notice);
+    assert_eq!(h.state().notice(), Some("Opening target.ncraft was cancelled; the current project is unchanged."));
     assert!(h.state().files.projects.recent().iter().all(|path| path != target.to_str().unwrap()));
     // The current project still journals and saves.
     add(h.state_mut(), 93);
@@ -1262,7 +1303,7 @@ fn cancelling_a_held_save_leaves_the_previous_file_byte_for_byte() {
     assert_eq!(std::fs::read(&path).unwrap(), on_disk, "the file is unchanged");
     assert_eq!(h.state().session.document(), &edited, "and the edits are still open");
     assert!(h.state().session.file_status().dirty);
-    assert!(h.state().notice.as_deref().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice);
+    assert!(h.state().notice().unwrap().contains("the save was cancelled; the file is unchanged"), "{:?}", h.state().notice());
     // Saving again afterwards writes the edits.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::S);
     h.step();
@@ -1322,4 +1363,66 @@ fn render_file367_progress_evidence() {
     runner.run();
     settle(&mut h);
     h.render().unwrap().save(output.join("save-cancelled-notice.png")).unwrap();
+}
+
+/// The File menu opens on the screen with no crossing controls at the two window sizes the
+/// panels are checked at (#959, #1123).
+#[test]
+fn file_menu_keeps_its_layout_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let dir = Scratch::new("layout959");
+        let mut app = dir.app("layout");
+        app.files.menu_open = true;
+        let mut h =
+            Harness::builder().with_step_dt(1.0 / 60.0).with_max_steps(120).with_size(size).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        settle(&mut h);
+        h.run();
+        crate::app::panel_check::check_menu(&h, crate::app::topbar::file_popup_id(), &format!("File menu at {size:?}"));
+    }
+}
+
+/// #1123: the File menu's entries run the same flows as the shortcuts: Open… asks the picker,
+/// Save as… asks it to save, and choosing an entry closes the menu.
+#[test]
+fn file1123_menu_entries_run_the_file_flows() {
+    let dir = Scratch::new("menu1123");
+    let mut app = dir.app("journal");
+    let calls = stub(&mut app, vec![None, None]);
+    let mut h = harness(app);
+    settle(&mut h);
+    for (n, label) in [(1, "Open… (Ctrl+O)"), (2, "Save as… (Ctrl+Shift+S)")] {
+        h.get_by_label("File").click();
+        settle(&mut h);
+        assert!(h.state().files.menu_open);
+        assert!(!h.get_by_label(label).accesskit_node().is_disabled());
+        h.get_by_label(label).click();
+        settle(&mut h);
+        assert_eq!(calls.get(), n, "{label} asked the picker");
+        assert!(!h.state().files.menu_open, "{label} closed the menu");
+    }
+}
+
+/// #1121: the palette's Recent keeps Open project only once its picker opened.
+#[test]
+fn a_refused_open_from_the_palette_is_not_remembered_as_recent() {
+    let dir = Scratch::new("palette-recent-open");
+    let mut app = dir.app("journal");
+    app.files.picker = Box::new(|_| Err("Fixture native picker refused".into()));
+    let mut h = harness(app);
+    settle(&mut h);
+    let choose_open = |h: &mut Harness<'static, NodeCraftApp>| {
+        h.state_mut().palette = Some(Palette::new(Pos2::ZERO, Pos2::new(200.0, 200.0)));
+        h.run();
+        h.event(egui::Event::Text("Open project".into()));
+        h.run();
+        h.key_press(egui::Key::Enter);
+        settle(h);
+        assert!(h.state().palette.is_none());
+    };
+    choose_open(&mut h);
+    assert!(h.state().notice().is_some(), "the refusal is explained");
+    assert!(crate::palette::recent(&h.ctx).is_empty(), "a refused Open isn't recent");
+    stub(h.state_mut(), vec![None]);
+    choose_open(&mut h);
+    assert_eq!(crate::palette::recent(&h.ctx), [crate::palette::Target::Command("file.open")]);
 }

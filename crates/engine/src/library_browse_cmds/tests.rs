@@ -214,6 +214,8 @@ fn trained_styles_and_soul_ids_are_listed_across_canvases_with_the_provider_that
     let soul = by_id(SOUL);
     assert_eq!((soul["identity"].clone(), soul["kept_by"].clone(), soul["family"].clone()), (json!(true), json!("higgsfield"), json!("soul-2")));
     assert_eq!(soul["canvas"], json!(BETA));
+    // Its fixture descriptor names no Higgsfield reference: no account can check it.
+    assert_eq!((soul["portable"].clone(), soul["soul_id"].clone(), soul["available"].clone()), (json!(false), Json::Null, json!("unreadable")));
     let ink = by_id(INK);
     assert_eq!((ink["identity"].clone(), ink["kept_by"].clone(), ink["trigger"].clone()), (json!(false), json!("fal"), json!("inkwash")));
     let untrained = by_id(UNTRAINED);

@@ -53,7 +53,7 @@ fn a_project_version_is_placed_in_the_middle_of_the_view_and_selected() {
     h.get_by_label("Place").click();
     h.run();
     let nodes = placed(&h);
-    assert_eq!(nodes.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(nodes.len(), 1, "{:?}", h.state().notice());
     assert!(h.state().selection.contains(nodes[0].id));
     // Local evaluation may finish during the pointer-driven frame and append a history
     // strip. Placement centers the fresh command payload, before that later graph edit.
@@ -82,7 +82,7 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     open_panel(&mut a);
     a.get_by_label("Add to library").click();
     a.run();
-    assert!(a.query_by_label("In library").is_some(), "{:?}", a.state().notice);
+    assert!(a.query_by_label("In library").is_some(), "{:?}", a.state().notice());
     assert_eq!(store.saved().unwrap().versions().count(), 1);
 
     let mut b = harness_on(&store);
@@ -92,7 +92,7 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     b.get_by_label("Place").click();
     b.run();
     let nodes = placed(&b);
-    assert_eq!(nodes.len(), 1, "{:?}", b.state().notice);
+    assert_eq!(nodes.len(), 1, "{:?}", b.state().notice());
     let copy = nodecraft_nodes::technique::interface(&nodes[0]).unwrap().canvas;
     let info = b.state().session.document().canvases().get(&copy).unwrap().technique_info().unwrap().clone();
     assert_eq!((info.id, info.version), (T, 1));
@@ -100,9 +100,27 @@ fn a_version_kept_in_the_library_is_placed_in_another_project_and_outlives_remov
     // Now the project has it too, beside the library's entry.
     assert_eq!(b.get_all_by_label("Echo · v1").count(), 2);
 
+    // #1111: the first click only asks; Keep and Escape both answer no.
     b.get_by_label("Remove").click();
     b.run();
-    assert!(b.query_by_label_contains("The library is empty").is_some(), "{:?}", b.state().notice);
+    assert!(b.query_by_label("Remove Echo v1?").is_some());
+    assert_eq!(store.saved().unwrap().versions().count(), 1, "nothing is removed on the first click");
+    assert!(b.get_by_label("Keep").is_focused(), "focus starts on Keep");
+    b.get_by_label("Keep").click();
+    b.run();
+    assert!(b.query_by_label("Remove Echo v1?").is_none());
+    b.get_by_label("Remove").click();
+    b.run();
+    b.key_press(egui::Key::Escape);
+    b.run();
+    assert!(b.query_by_label("Remove Echo v1?").is_none(), "Escape keeps it");
+    assert!(b.state().library.open, "Escape answered the question; the panel stays");
+    assert_eq!(store.saved().unwrap().versions().count(), 1);
+    b.get_by_label("Remove").click();
+    b.run();
+    b.get_by_label("Remove").click();
+    b.run();
+    assert!(b.query_by_label_contains("The library is empty").is_some(), "{:?}", b.state().notice());
     assert_eq!(store.saved().unwrap().versions().count(), 0);
     assert_eq!(placed(&b).len(), 1, "the project keeps its copy");
     assert!(b.state().session.document().canvases().contains_key(&copy));
@@ -131,13 +149,36 @@ fn a_library_shader_is_placed_as_a_card_and_removed() {
         .values()
         .filter(|n| n.kind == nodecraft_nodes::shader::ID && n.id != card)
         .collect();
-    assert_eq!(shaders.len(), 1, "{:?}", app.notice);
+    assert_eq!(shaders.len(), 1, "{:?}", app.notice());
     assert_eq!(shaders[0].title, "Glow");
     assert_eq!(nodecraft_nodes::shader::pinned(shaders[0]).map(|pin| pin.version), Some(1));
     assert!(app.selection.contains(shaders[0].id));
     h.get_by_label("Remove").click();
     h.run();
-    assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Remove Glow and its versions?").is_some(), "#1111: the first click asks");
+    assert!(h.query_by_label("Glow · v1").is_none(), "the question replaces the row");
+    h.get_by_label("Keep").click();
+    h.run();
+    assert!(h.query_by_label("Glow · v1").is_some(), "Keep leaves it");
+    h.get_by_label("Remove").click();
+    h.run();
+    assert!(h.get_by_label("Keep").is_focused(), "focus starts on Keep");
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.query_by_label("Glow · v1").is_some(), "Escape keeps it");
+    // A question left on another tab is dropped, not left waiting.
+    h.get_by_label("Remove").click();
+    h.run();
+    h.state_mut().library.browsers.tab = super::library_browsers::Tab::Assets;
+    h.run();
+    h.state_mut().library.browsers.tab = super::library_browsers::Tab::Library;
+    h.run();
+    assert!(h.query_by_label("Remove Glow and its versions?").is_none(), "switching tabs answers Keep");
+    h.get_by_label("Remove").click();
+    h.run();
+    h.get_by_label("Remove").click();
+    h.run();
+    assert!(h.query_by_label_contains("No shaders saved yet").is_some(), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -159,4 +200,52 @@ fn library96_visual() {
         shot.render().unwrap().save(dir.join(name)).unwrap();
         h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), shot.into_state());
     }
+}
+
+/// A Higgsfield account that is never reached: publishing plans the run but sends nothing.
+struct Unreachable;
+impl nodecraft_providers::Http for Unreachable {
+    fn send(
+        &self,
+        _: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::Network, "offline")) })
+    }
+    fn send_no_redirect(
+        &self,
+        _: nodecraft_providers::HttpRequest,
+    ) -> nodecraft_providers::BoxFuture<'_, Result<nodecraft_providers::HttpResponse, nodecraft_providers::ProviderError>> {
+        Box::pin(async { Err(nodecraft_providers::ProviderError::new(nodecraft_providers::ErrorKind::Network, "offline")) })
+    }
+}
+
+#[test]
+fn a_library_version_using_a_soul_id_says_it_runs_only_on_the_training_account() {
+    let store = MemoryLibrary::default();
+    let mut h = harness_on(&store);
+    let app = h.state_mut();
+    let canvas = app.canvas;
+    let soul = NodeId::from_bytes([77; 16]);
+    let values = [
+        ("model".to_owned(), Value::Text("higgsfield.soul-2".into())),
+        ("prompt".to_owned(), Value::Text("a portrait".into())),
+        ("custom_reference_id".to_owned(), Value::Text("7c9e6679-7425-40de-944b-e07fc1f90ae7".into())),
+    ]
+    .into();
+    let node = app.session.kinds().get("generation.image").unwrap().instantiate_instance(soul, BTreeMap::new(), &values).unwrap();
+    app.session.dispatch("node.add", &json!({"canvas": canvas, "node": node})).unwrap();
+    let mut routing = nodecraft_engine::provider_routing::ProviderRouting::new();
+    let key = nodecraft_providers::secrets::Secret::new("fixture-key-id-0003:fixture-secret-not-real-0003").unwrap();
+    let higgsfield = nodecraft_providers::higgsfield::Higgsfield::new(key, std::sync::Arc::new(Unreachable));
+    let binding = routing.bind_default(std::sync::Arc::new(higgsfield)).unwrap();
+    routing.select(soul, "higgsfield", binding.target()).unwrap();
+    app.session.set_provider_routing(routing).unwrap();
+    let params = json!({"canvas": canvas, "published": V1, "seed": NodeId::from_bytes([41; 16]), "technique": T,
+        "name": "Portrait", "outputs": [{"node": soul, "name": "Portrait"}]});
+    app.session.dispatch("technique.publish", &params).unwrap();
+    app.session.dispatch("library.add", &json!({"canvas": V1})).unwrap();
+    h.run();
+    open_panel(&mut h);
+    h.run();
+    assert!(h.query_by_label_contains("Uses a Higgsfield Soul ID").is_some(), "the library entry says it is account-bound");
 }

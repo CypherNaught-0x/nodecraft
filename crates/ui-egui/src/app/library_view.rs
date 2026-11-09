@@ -23,6 +23,41 @@ pub(super) struct LibraryView {
     shaders: super::shader_editor::ShaderListing,
     /// The Assets, History and Styles tabs.
     pub(super) browsers: super::library_browsers::Browsers,
+    /// A removal waiting for its second click (#1111), and whether Keep still needs focus.
+    pub(super) confirm: Option<Confirm>,
+    confirm_focus: bool,
+    /// Whether the question was drawn last frame: Escape answers it only then, and a question
+    /// whose row is gone (another tab, the item removed elsewhere) is dropped.
+    confirm_shown: bool,
+}
+
+/// A removal from outside the document's undo history, asked about inline before it happens
+/// (#1111). Commands stay non-interactive: only the panel asks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum Confirm {
+    Technique(TechniqueId, u32),
+    Shader(String),
+    ClearTemplates,
+}
+
+/// The inline question: "Remove *name*?", then **Remove** and **Keep**, with focus on Keep the
+/// first frame so Enter or Space keeps it. `Some(true)` removes, `Some(false)` keeps.
+fn confirm_row(ui: &mut egui::Ui, question: &str, hover: &str, focus: &mut bool, t: &Tokens) -> Option<bool> {
+    let mut answer = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.label(egui::RichText::new(question).color(t.text));
+        if ui.button("Remove").on_hover_text(hover).clicked() {
+            answer = Some(true);
+        }
+        let keep = ui.button("Keep");
+        if std::mem::take(focus) {
+            keep.request_focus();
+        }
+        if keep.clicked() {
+            answer = Some(false);
+        }
+    });
+    answer
 }
 
 impl LibraryView {
@@ -40,6 +75,9 @@ struct Kept {
     name: String,
     #[serde(default)]
     description: String,
+    /// Cards in it that name a Soul ID, which works only on the account that trained it.
+    #[serde(default)]
+    account_bound: usize,
 }
 
 #[derive(Deserialize)]
@@ -67,12 +105,16 @@ enum Action {
     PlaceShader(String),
     /// Take a shader, every version, out of the library.
     RemoveShader(String),
+    /// Ask before a removal (#1111); `Keep` answers no.
+    Ask(Confirm),
+    Keep,
 }
 
 impl NodeCraftApp {
     pub(super) fn toggle_techniques(&mut self) {
         self.library.open = !self.library.open;
         self.library.listed = None;
+        self.library.confirm = None;
     }
 
     /// Whether this window keeps a technique library.
@@ -103,7 +145,9 @@ impl NodeCraftApp {
                     .and_then(|value| serde_json::from_value(value).map_err(|_| "Starter templates could not be listed".into())),
             );
         }
-        let can_fetch_templates = self.session.enabled("template.refresh", &json!({})).is_ok();
+        // The engine's own reason, shown on the disabled Update templates button (#1113).
+        let fetch_reason = self.session.enabled("template.refresh", &json!({})).map_err(|error| error.message);
+        let can_fetch_templates = fetch_reason.is_ok();
         let template_status = self.template_status();
         let template_waiting = self.template_fetch.as_ref().is_some_and(template_fetch::TemplateFetcher::waiting)
             || nodecraft_engine::templates::disk::is_clearing(&self.session)
@@ -140,6 +184,15 @@ impl NodeCraftApp {
         let in_project = |technique: TechniqueId, version: u32| own.iter().any(|o| o.1 == technique && o.2 == version);
         let mut action = None;
         let mut open = self.library.open;
+        // Escape answers a pending removal with Keep while its question is on screen, and is
+        // consumed so the panels and popups drawn after this one don't also act on it.
+        if self.library.confirm.is_some() && self.library.confirm_shown && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.library.confirm = None;
+        }
+        let confirm = self.library.confirm.clone();
+        let mut confirm_focus = self.library.confirm_focus;
+        let mut confirm_shown = false;
+        let cached_templates = nodecraft_engine::templates::catalog::cached(&self.session);
         crate::floating::panel(ctx, "Techniques", egui::Id::new("nodecraft.techniques"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
             ui.set_max_width(t.dialog_width);
             super::library_browsers::tabs(ui, &mut self.library.browsers);
@@ -193,15 +246,31 @@ impl NodeCraftApp {
                         } else {
                             "Copy this version into the project, and a node running it in the middle of the view"
                         };
+                        if confirm == Some(Confirm::Technique(k.technique, k.version)) {
+                            let question = format!("Remove {} v{}?", sheet_view::line(&k.name), k.version);
+                            let hover = "Take it out of the library; projects that placed it keep their copy";
+                            confirm_shown = true;
+                            action = confirm_row(ui, &question, hover, &mut confirm_focus, t)
+                                .map(|remove| if remove { Action::Remove(k.technique, k.version) } else { Action::Keep })
+                                .or(action.take());
+                            return;
+                        }
                         if ui.add(egui::Button::new("Place")).on_hover_text(hint).clicked() {
                             action = Some(Action::PlaceKept(k.technique, k.version));
                         }
                         if ui.button("Remove").on_hover_text("Take it out of the library; projects that placed it keep their copy").clicked() {
-                            action = Some(Action::Remove(k.technique, k.version));
+                            action = Some(Action::Ask(Confirm::Technique(k.technique, k.version)));
                         }
                     });
                     if !k.description.is_empty() {
                         ui.label(egui::RichText::new(sheet_view::line(&k.description)).small().color(t.text_muted));
+                    }
+                    if k.account_bound > 0 {
+                        ui.label(
+                            egui::RichText::new("Uses a Higgsfield Soul ID: it runs only on the account that trained it, in any project")
+                                .small()
+                                .color(t.text_muted),
+                        );
                     }
                 }
                 if let Some(listing) = &self.library.shaders {
@@ -219,6 +288,15 @@ impl NodeCraftApp {
                     }
                     for (name, latest) in shaders {
                         ui.horizontal(|ui| {
+                            if confirm.as_ref() == Some(&Confirm::Shader(name.clone())) {
+                                let question = format!("Remove {} and its versions?", sheet_view::line(name));
+                                let hover = "Take it out of the library; cards placed from it keep their shader";
+                                confirm_shown = true;
+                            action = confirm_row(ui, &question, hover, &mut confirm_focus, t)
+                                    .map(|remove| if remove { Action::RemoveShader(name.clone()) } else { Action::Keep })
+                                    .or(action.take());
+                                return;
+                            }
                             ui.label(format!("{} · v{latest}", sheet_view::line(name)));
                             if ui.button("Place").on_hover_text("A custom shader card with its latest version, in the middle of the view").clicked() {
                                 action = Some(Action::PlaceShader(name.clone()));
@@ -228,7 +306,7 @@ impl NodeCraftApp {
                                 .on_hover_text("Take it and its versions out of the library; cards placed from it keep their shader")
                                 .clicked()
                             {
-                                action = Some(Action::RemoveShader(name.clone()));
+                                action = Some(Action::Ask(Confirm::Shader(name.clone())));
                             }
                         });
                     }
@@ -238,22 +316,41 @@ impl NodeCraftApp {
                         ui.separator();
                         ui.horizontal(|ui| {
                             ui.label(egui::RichText::new("Starter templates").strong().color(t.text));
-                            if ui
-                                .add_enabled(can_fetch_templates && !template_waiting, egui::Button::new("Update templates"))
-                                .on_hover_text("Download new and changed templates from the NodeCraft templates repository. Each is checked against its published digest before it is kept.")
-                                .clicked()
+                            let update = if template_waiting {
+                                Err("Templates are being updated, read or cleared; wait for it to finish".to_owned())
+                            } else {
+                                fetch_reason.clone()
+                            };
+                            if crate::ui_ext::command_button(
+                                ui,
+                                egui::Button::new("Update templates"),
+                                update,
+                                "Download new and changed templates from the NodeCraft templates repository. Each is checked against its published digest before it is kept.",
+                            )
+                            .clicked()
                             {
                                 ui.ctx().request_repaint();
                                 action = Some(Action::UpdateTemplates);
                             }
                             if ui
                                 .add_enabled(can_clear_templates, egui::Button::new("Clear downloaded"))
-                                .on_hover_text("Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.")
+                                .on_hover_text("Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.").on_disabled_hover_text(if template_waiting { "Templates are being updated, read or cleared; wait for it to finish" } else { "Nothing has been downloaded yet" })
                                 .clicked()
                             {
-                                action = Some(Action::ClearTemplates);
+                                action = Some(Action::Ask(Confirm::ClearTemplates));
                             }
                         });
+                        if confirm == Some(Confirm::ClearTemplates) && can_clear_templates {
+                            let question = match cached_templates {
+                                1 => "Clear 1 downloaded template?".to_owned(),
+                                n => format!("Clear {n} downloaded templates?"),
+                            };
+                            let hover = "Remove downloaded templates from this computer. Bundled templates and templates in your projects stay.";
+                            confirm_shown = true;
+                            action = confirm_row(ui, &question, hover, &mut confirm_focus, t)
+                                .map(|remove| if remove { Action::ClearTemplates } else { Action::Keep })
+                                .or(action.take());
+                        }
                         ui.horizontal_wrapped(|ui| {
                             if template_waiting {
                                 ui.spinner();
@@ -299,7 +396,7 @@ impl NodeCraftApp {
                                         "Add this exact version as a new canvas; save its assets with your project. Undo removes the addition."
                                     } else {
                                         "Retrieve and verify this exact version without adding or running it. It stays available for this project session."
-                                    })
+                                    }).on_disabled_hover_text(if added { "Open this canvas from Canvases; duplicate its nodes for another copy" } else { fetch_reason.as_ref().err().map_or("This window can't download templates; only bundled ones can be added", String::as_str) })
                                     .clicked()
                                 {
                                     ui.ctx().request_repaint();
@@ -317,6 +414,16 @@ impl NodeCraftApp {
             });
         });
         self.library.open = open;
+        self.library.confirm_focus = confirm_focus;
+        self.library.confirm_shown = confirm_shown;
+        // A question whose row wasn't drawn (another tab, the item gone, clearing no longer
+        // possible) is dropped rather than left waiting.
+        if !confirm_shown {
+            self.library.confirm = None;
+        }
+        if !open {
+            self.library.confirm = None;
+        }
         if let Some(action) = action {
             self.library_action(action, t);
         }
@@ -357,7 +464,21 @@ impl NodeCraftApp {
     }
 
     fn library_action(&mut self, action: Action, t: &Tokens) {
+        match action {
+            Action::Ask(confirm) => {
+                self.library.confirm = Some(confirm);
+                self.library.confirm_focus = true;
+                return;
+            }
+            Action::Keep => {
+                self.library.confirm = None;
+                return;
+            }
+            Action::Remove(..) | Action::RemoveShader(_) | Action::ClearTemplates => self.library.confirm = None,
+            _ => {}
+        }
         let result = match action {
+            Action::Ask(_) | Action::Keep => Ok(()),
             Action::UpdateTemplates => self.session.dispatch("templates.update", &json!({})).map(|_| ()),
             Action::ClearTemplates => self.session.dispatch("templates.clear_cache", &json!({})).map(|_| ()),
             Action::RetrieveTemplate(ref identity) => {
@@ -385,8 +506,8 @@ impl NodeCraftApp {
             self.library.listed = None;
         }
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

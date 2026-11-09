@@ -18,7 +18,14 @@ use nodecraft_types::{Error, ErrorKind};
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Cursor;
 use std::sync::Arc;
+
 use zip::CompressionMethod;
+
+/// Why a module (`rust_wasm`) package never installs (#1071): NodeCraft runs no code a package
+/// ships. The refusal is final for this contract; see
+/// `docs/decisions/2026-11-06-module-packages-refused.md`.
+pub const MODULE_REFUSED: &str = "module (rust_wasm) packages can't be installed: NodeCraft runs no code a package ships. \
+Use a data, text_actions or provider_operations package instead";
 
 /// What an archive may hold.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -104,7 +111,7 @@ pub fn open(bytes: &[u8], limits: ArchiveLimits) -> Result<Package, Error> {
     let manifest = Manifest::decode(checked.get(&manifest_path).map(|b| &b[..]).unwrap_or_default()).map_err(wire)?;
     inventory.check_manifest(&manifest).map_err(wire)?;
     if let Runtime::RustWasm { .. } = manifest.runtime {
-        return Err(Error::new(ErrorKind::Unsupported, "only data and text action packages can be installed; module packages come later"));
+        return Err(Error::new(ErrorKind::Unsupported, MODULE_REFUSED));
     }
     for r in &manifest.registrations {
         let bytes = checked.get(&r.descriptor).map(|b| &b[..]).unwrap_or_default();

@@ -56,6 +56,10 @@ fn invalid() -> Error {
     Error::new(ErrorKind::Internal, "workflow fields could not be read")
 }
 impl Editor {
+    /// Its Workflow fields panel's id.
+    pub(super) fn panel_id(&self) -> egui::Id {
+        mapping_panel_id(self.canvas, self.node)
+    }
     fn load(&mut self, session: &mut Session) {
         let loaded = session
             .dispatch("comfy.workflow.mapping", &json!({"canvas":self.canvas,"id":self.node}))
@@ -244,14 +248,15 @@ impl NodeCraftApp {
         }
         let mut open = true;
         let (mut apply, mut reload, mut read, mut cancel) = (false, false, false, false);
-        egui::Window::new("Workflow fields")
-            .id(egui::Id::new(("comfy_mapping", editor.canvas, editor.node)))
+        // A tool the person works in beside the canvas: a floating panel (#1116). Escape closes
+        // it; the shell takes that key before the canvas reads it (`tool_escape`).
+        if std::mem::take(&mut self.tool_escape) == Some(super::ToolEscape::Mapping) {
+            return;
+        }
+        crate::floating::panel(ctx, "Workflow fields", mapping_panel_id(editor.canvas, editor.node), crate::floating::Home::CenterTop, t)
             .open(&mut open)
-            .collapsible(false)
-            .order(egui::Order::Foreground)
-            .default_pos(ctx.content_rect().center() - egui::vec2(t.dialog_width * 0.75, t.card_max_height * 0.3))
-            .resizable(true)
             .default_width(t.dialog_width * 1.5)
+            .vscroll(true)
             .show(ctx, |ui| {
                 ui.label("Choose what appears on this card.");
                 ui.horizontal_wrapped(|ui| {
@@ -319,7 +324,7 @@ impl NodeCraftApp {
             match editor.request().and_then(|request| self.session.dispatch("comfy.workflow.mapping_set", &request)) {
                 Ok(_) => {
                     open = false;
-                    self.notice = Some("Workflow fields saved. Undo restores the previous mapping.".into());
+                    self.notices.success("Workflow fields saved. Undo restores the previous mapping.");
                 }
                 Err(error) => editor.error = Some(error.message),
             }
@@ -331,3 +336,8 @@ impl NodeCraftApp {
 }
 #[cfg(test)]
 mod tests;
+
+/// The Workflow fields panel's id for one card.
+pub(super) fn mapping_panel_id(canvas: CanvasId, node: NodeId) -> egui::Id {
+    egui::Id::new(("comfy_mapping", canvas, node))
+}

@@ -34,8 +34,15 @@ pub struct Tokens {
     /// The `+` output handle on a card's edge.
     pub handle_fill: Color32,
     pub handle_glyph: Color32,
-    /// Accent for focus and selection outside cards.
+    /// Accent for focus and selection outside cards: strokes and fills, where 3:1 is enough.
     pub accent: Color32,
+    /// The accent drawn as text (status words, marks): at least 4.5:1 on canvas, panel and card.
+    pub accent_text: Color32,
+    /// Background of a selected row or entry (`selectable_label`, the palette's highlighted row,
+    /// the top bar's open panel) and of selected text.
+    pub selection_fill: Color32,
+    /// Text on `selection_fill`: at least 4.5:1 against it.
+    pub selection_text: Color32,
     /// Translucent fill of the box-select rectangle (outlined with `accent`).
     pub marquee_fill: Color32,
     /// The painted area in the mask editor (#102), at full mask strength.
@@ -94,6 +101,8 @@ pub struct Tokens {
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
+    /// The File menu's width (#1123): its entries, their shortcuts and a storage problem's text.
+    pub file_menu_width: f32,
     pub comments_width: f32,
     pub comments_height: f32,
     /// The shader editor window (#90): its width, its source area's height, a parameter name field's width.
@@ -108,9 +117,20 @@ pub struct Tokens {
     pub comment_marker_gap: f32,
     pub comment_marker_radius: u8,
     pub comments_button_width: f32,
-    /// The agent sidebar's width (#114).
+    /// The agent sidebar's width (#114): where it opens, and the narrowest it can be dragged.
+    /// It never takes more than `agent_max_fraction` of the window (#1115).
     pub agent_width: f32,
+    pub agent_min_width: f32,
+    pub agent_max_fraction: f32,
+    /// The navigation panel's (minimap and its toolbar) widest, and its narrowest: enough for
+    /// the toolbar's labels. Between them it takes `navigation_fraction` of the canvas width,
+    /// and the map keeps its `navigation_width` : `minimap_height` shape (#1115).
     pub navigation_width: f32,
+    pub navigation_min_width: f32,
+    pub navigation_fraction: f32,
+    /// Below this canvas width or height the map hides itself, leaving the toolbar (#1115).
+    pub minimap_hide_width: f32,
+    pub minimap_hide_height: f32,
     pub minimap_height: f32,
     pub navigation_toolbar_height: f32,
     pub navigation_margin: f32,
@@ -175,6 +195,9 @@ pub struct Tokens {
     /// The ring around inputs that accept the noodle being dragged: gap outside the port, width.
     pub drop_ring_gap: f32,
     pub drop_ring_width: f32,
+    /// The `accent` ring around a port with keyboard focus, which is also where a keyboard
+    /// connection would land (#1109), in screen points.
+    pub port_focus_width: f32,
     /// The prompt composer on a generation card (#83): its fill, and the submit arrow's size.
     pub prompt_fill: Color32,
     pub submit_size: f32,
@@ -205,6 +228,21 @@ pub struct Tokens {
     /// App mode (#95): the width of its form and side of a result or media thumbnail.
     pub app_form_width: f32,
     pub app_thumbnail: f32,
+    /// A button at rest, under the pointer and held down (#1112): its fill, and an outline at
+    /// least 3:1 against `panel_fill` so it never reads as a plain label. Quiet buttons (the top
+    /// bar, menus) opt out with `frame_when_inactive(false)`.
+    pub control_fill: Color32,
+    pub control_stroke: Color32,
+    pub control_fill_hover: Color32,
+    pub control_fill_pressed: Color32,
+    /// A noodle under the pointer is drawn this wide, a little brighter, so it reads as clickable.
+    pub wire_width_hover: f32,
+
+    /// The smallest pointer target on screen (#1114, WCAG 2.5.8): a badge's or avatar's hit
+    /// rect grows to this square around its painted shape, at any zoom.
+    pub min_target: f32,
+    /// Half the width of a noodle's hit band, in screen points; only the hit area, not the line.
+    pub noodle_hit: f32,
     /// The Library's Assets, History and Styles browsers (#96): the side of a listed thumbnail.
     pub library_thumbnail: f32,
     /// The Timeline editor (#109): the height of its clip track and time ruler, and how near
@@ -212,6 +250,29 @@ pub struct Tokens {
     pub timeline_track_height: f32,
     pub timeline_ruler_height: f32,
     pub timeline_trim_grip: f32,
+    /// The keyboard focus ring on painted canvas widgets (#1108): its width and its gap outside
+    /// the widget, in screen points at any zoom.
+    pub focus_ring_width: f32,
+    pub focus_ring_gap: f32,
+    /// Stroke widths (#1124): a hairline outline (panel and frame edges, guides), a medium line
+    /// (a playhead, a traced shape) and a strong one (a chosen thumbnail or clip, a drop marker).
+    pub stroke_hairline: f32,
+    pub stroke_medium: f32,
+    pub stroke_strong: f32,
+    /// A heading in an overlay (the drop hint), and the large message on an empty deck slide.
+    pub heading_size: f32,
+    pub display_size: f32,
+    /// How far a thumbnail's image sits inside its outline, and the radius of a small swatch.
+    pub inset: f32,
+    /// How much a dimmed fill keeps of its colour (`gamma_multiply`), for a shape drawn behind
+    /// what is being edited.
+    pub dim: f32,
+    /// A number inside a round badge, as a fraction of the badge's radius (input order badges).
+    pub badge_text_ratio: f32,
+    /// The coloured edge on a notice's left side, in its kind's colour (#1110).
+    pub notice_edge: f32,
+    /// The width of the bottom-left notice stack, before it is fitted to the window.
+    pub notice_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -224,10 +285,13 @@ pub const DARK: Tokens = Tokens {
     card_stroke_hover: Color32::from_rgb(0x5a, 0x5a, 0x61),
     card_stroke_selected: Color32::from_rgb(0xe6, 0xe6, 0xea),
     text: Color32::from_rgb(0xe8, 0xe8, 0xec),
-    text_muted: Color32::from_rgb(0x8a, 0x8a, 0x93),
+    text_muted: Color32::from_rgb(0x96, 0x96, 0x9f),
     handle_fill: Color32::from_rgb(0x08, 0x08, 0x09),
     handle_glyph: Color32::from_rgb(0xe8, 0xe8, 0xec),
     accent: Color32::from_rgb(0x4c, 0xc3, 0x8a),
+    accent_text: Color32::from_rgb(0x4c, 0xc3, 0x8a),
+    selection_fill: Color32::from_rgb(0x1d, 0x3a, 0x2c),
+    selection_text: Color32::from_rgb(0x4c, 0xc3, 0x8a),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x24),
     mask_overlay: Color32::from_rgba_unmultiplied_const(0x4c, 0xc3, 0x8a, 0x99),
     danger: Color32::from_rgb(0xf0, 0x6a, 0x5f),
@@ -283,6 +347,7 @@ pub const DARK: Tokens = Tokens {
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
+    file_menu_width: 260.0,
     comments_width: 340.0,
     comments_height: 500.0,
     shader_editor_width: 560.0,
@@ -296,7 +361,13 @@ pub const DARK: Tokens = Tokens {
     comment_marker_radius: 6,
     comments_button_width: 110.0,
     agent_width: 360.0,
+    agent_min_width: 280.0,
+    agent_max_fraction: 0.5,
     navigation_width: 320.0,
+    navigation_min_width: 240.0,
+    navigation_fraction: 1.0 / 3.0,
+    minimap_hide_width: 720.0,
+    minimap_hide_height: 480.0,
     minimap_height: 160.0,
     navigation_toolbar_height: 30.0,
     navigation_margin: 16.0,
@@ -338,9 +409,18 @@ pub const DARK: Tokens = Tokens {
     port_radius: 5.0,
     port_min_radius: 3.0,
     port_stroke: 2.0,
+    control_fill: Color32::from_rgb(0x1f, 0x1f, 0x22),
+    control_stroke: Color32::from_rgb(0x67, 0x67, 0x6e),
+    control_fill_hover: Color32::from_rgb(0x2c, 0x2c, 0x30),
+    control_fill_pressed: Color32::from_rgb(0x3c, 0x3c, 0x42),
+    wire_width_hover: 3.0,
+
+    min_target: 24.0,
+    noodle_hit: 12.0,
     wire_halo: 2.0,
     drop_ring_gap: 3.0,
     drop_ring_width: 1.5,
+    port_focus_width: 2.5,
     prompt_fill: Color32::from_rgb(0x1a, 0x1a, 0x1d),
     submit_size: 28.0,
     mention_fill: Color32::from_rgb(0x23, 0x36, 0x2d),
@@ -348,6 +428,8 @@ pub const DARK: Tokens = Tokens {
     toolbar_gap: 10.0,
     viewer_width: 720.0,
     reader_thumb_width: 112.0,
+    focus_ring_width: 2.0,
+    focus_ring_gap: 1.0,
     connected_thumb: 40.0,
     sheet_index_width: 32.0,
     sheet_column_width: 120.0,
@@ -363,6 +445,16 @@ pub const DARK: Tokens = Tokens {
     timeline_track_height: 84.0,
     timeline_ruler_height: 22.0,
     timeline_trim_grip: 6.0,
+    stroke_hairline: 1.0,
+    stroke_medium: 1.5,
+    stroke_strong: 2.0,
+    heading_size: 19.5,
+    display_size: 24.0,
+    inset: 2.0,
+    dim: 0.6,
+    badge_text_ratio: 1.2,
+    notice_edge: 3.0,
+    notice_width: 380.0,
 };
 
 pub const LIGHT: Tokens = Tokens {
@@ -375,10 +467,13 @@ pub const LIGHT: Tokens = Tokens {
     card_stroke_hover: Color32::from_rgb(0xa0, 0xa0, 0xa8),
     card_stroke_selected: Color32::from_rgb(0x18, 0x18, 0x1b),
     text: Color32::from_rgb(0x18, 0x18, 0x1b),
-    text_muted: Color32::from_rgb(0x6b, 0x6b, 0x74),
+    text_muted: Color32::from_rgb(0x5f, 0x5f, 0x68),
     handle_fill: Color32::from_rgb(0xff, 0xff, 0xff),
     handle_glyph: Color32::from_rgb(0x18, 0x18, 0x1b),
     accent: Color32::from_rgb(0x1f, 0x9d, 0x63),
+    accent_text: Color32::from_rgb(0x0f, 0x6b, 0x42),
+    selection_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
+    selection_text: Color32::from_rgb(0x0f, 0x6b, 0x42),
     marquee_fill: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x1c),
     mask_overlay: Color32::from_rgba_unmultiplied_const(0x1f, 0x9d, 0x63, 0x99),
     danger: Color32::from_rgb(0xc4, 0x37, 0x2b),
@@ -418,6 +513,10 @@ pub const LIGHT: Tokens = Tokens {
     ],
     prompt_fill: Color32::from_rgb(0xf4, 0xf4, 0xf5),
     mention_fill: Color32::from_rgb(0xd5, 0xee, 0xe1),
+    control_fill: Color32::from_rgb(0xf6, 0xf6, 0xf7),
+    control_stroke: Color32::from_rgb(0x8c, 0x8c, 0x94),
+    control_fill_hover: Color32::from_rgb(0xdd, 0xdd, 0xe1),
+    control_fill_pressed: Color32::from_rgb(0xc9, 0xc9, 0xcf),
     ..DARK
 };
 
@@ -454,33 +553,125 @@ pub fn visuals(kind: ThemeKind) -> egui::Visuals {
     };
     v.panel_fill = t.canvas_bg;
     v.window_fill = t.panel_fill;
-    v.window_stroke = Stroke::new(1.0, t.panel_stroke);
+    v.window_stroke = Stroke::new(t.stroke_hairline, t.panel_stroke);
     v.window_corner_radius = CornerRadius::same(t.panel_radius);
     v.menu_corner_radius = CornerRadius::same(t.panel_radius);
     v.extreme_bg_color = t.canvas_bg;
-    v.selection.stroke = Stroke::new(1.0, t.accent);
-    let hover = t.panel_stroke;
-    craft_ui::theme::WidgetPalette { noninteractive: t.panel_fill, inactive: t.panel_fill, hovered: hover, active: hover, open: hover }.apply_to(
-        &mut v.widgets,
-        CornerRadius::same(8),
-        Stroke::new(1.0, t.text),
-    );
+    v.selection.bg_fill = t.selection_fill;
+    v.selection.stroke = Stroke::new(t.stroke_hairline, t.selection_text);
+    v.text_cursor.stroke = Stroke::new(v.text_cursor.stroke.width, t.text);
+    v.hyperlink_color = t.accent_text;
+    v.warn_fg_color = t.stale;
+    v.error_fg_color = t.danger;
+    craft_ui::theme::WidgetPalette {
+        noninteractive: t.panel_fill,
+        inactive: t.control_fill,
+        hovered: t.control_fill_hover,
+        active: t.control_fill_pressed,
+        open: t.control_fill_hover,
+    }
+    .apply_to(&mut v.widgets, CornerRadius::same(8), Stroke::new(t.stroke_hairline, t.text));
+    // A visible outline at rest, so a button never reads as a label (#1112). Hovered and pressed
+    // keep egui's own (no) outline: their fill already answers, and a selectable row or a
+    // selection keeps a clean edge.
+    v.widgets.inactive.bg_stroke = Stroke::new(t.stroke_hairline, t.control_stroke);
     v
+}
+
+/// How a custom-painted control looks in its current state (#1112): the shell's own widgets get
+/// this from egui; badges, the submit arrow, thumbnails and noodles ask here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum State {
+    Rest,
+    Hovered,
+    Pressed,
+}
+
+impl State {
+    pub fn of(response: &egui::Response) -> Self {
+        if response.is_pointer_button_down_on() {
+            State::Pressed
+        } else if response.hovered() {
+            State::Hovered
+        } else {
+            State::Rest
+        }
+    }
+
+    /// `base` lifted toward `toward` when hovered, further when pressed: a painted fill that
+    /// keeps its meaning (a badge's warning colour) but answers the pointer.
+    pub fn tint(self, base: Color32, toward: Color32) -> Color32 {
+        match self {
+            State::Rest => base,
+            State::Hovered => base.lerp_to_gamma(toward, 0.18),
+            State::Pressed => base.lerp_to_gamma(toward, 0.36),
+        }
+    }
 }
 
 /// Install the theme on a context. Call once at startup and on theme change.
 pub fn apply(ctx: &egui::Context, kind: ThemeKind) {
     ctx.set_visuals(visuals(kind));
+    let label = kind.tokens().label_size;
+    ctx.all_styles_mut(|style| style_text(style, label));
+}
+
+/// egui's `Small` text (`.small()`, 9 pt by default) is never smaller than a card label (#1124).
+fn style_text(style: &mut egui::Style, label_size: f32) {
+    style.text_styles.insert(egui::TextStyle::Small, egui::FontId::proportional(label_size));
+}
+
+/// The framed group used inside panels and windows (#1124): `panel_fill`, a hairline
+/// `panel_stroke` edge, `panel_radius` corners and `card_padding` inside.
+pub fn panel_frame(t: &Tokens) -> egui::Frame {
+    egui::Frame::NONE.inner_margin(t.card_padding).fill(t.panel_fill).stroke(Stroke::new(t.stroke_hairline, t.panel_stroke)).corner_radius(t.panel_radius)
+}
+
+/// `rect` grown, about its centre, to at least `side` × `side`: a hit rect for a small painted
+/// shape (#1114). A rect already as large is returned unchanged.
+pub fn at_least(rect: egui::Rect, side: f32) -> egui::Rect {
+    let side = if side.is_finite() { side.max(0.0) } else { 0.0 };
+    let grow = egui::vec2((side - rect.width()).max(0.0), (side - rect.height()).max(0.0)) * 0.5;
+    rect.expand2(grow)
+}
+
+/// A badge's hit rect under a card (#1114): [`at_least`] `side` square, but grown down and sideways
+/// only, never above `below` (the card's bottom edge), so it can't take the card's or a port's
+/// clicks.
+pub fn badge_hit(rect: egui::Rect, side: f32, below: f32) -> egui::Rect {
+    let mut hit = at_least(rect, side);
+    if below.is_finite() && hit.min.y < below {
+        let lift = below - hit.min.y;
+        hit.min.y = below;
+        hit.max.y += lift;
+    }
+    hit
 }
 
 impl Tokens {
     pub fn marquee_stroke(&self) -> Stroke {
-        Stroke::new(1.0, self.accent)
+        Stroke::new(self.stroke_hairline, self.accent)
     }
 
     pub fn tag_color(&self, color: Option<&str>) -> Color32 {
         crate::tags::PALETTE.iter().position(|(id, _)| Some(*id) == color).and_then(|i| self.tag_colors.get(i)).copied().unwrap_or(self.text_muted)
     }
+}
+
+/// `text` without its inline test modules (`#[cfg(test)] mod x { … }` to the end of the file),
+/// for source guards. A `#[cfg(test)] mod x_tests;` declaration doesn't end the code.
+#[cfg(test)]
+pub(crate) fn non_test_code(text: &str) -> &str {
+    let mut from = 0;
+    while let Some(at) = text.get(from..).and_then(|rest| rest.find("#[cfg(test)]")).map(|found| found + from) {
+        let after = text.get(at + "#[cfg(test)]".len()..).unwrap_or_default().trim_start();
+        let line = after.lines().next().unwrap_or_default();
+        if line.contains("mod ") && line.trim_end().ends_with('{') {
+            return text.get(..at).unwrap_or_default();
+        }
+        from = at + 1;
+    }
+    text
 }
 
 #[cfg(test)]
@@ -514,6 +705,151 @@ mod tests {
             assert!(contrast(t.text_muted, t.prompt_fill) >= 4.5, "{kind:?} prompt hint");
             assert!(contrast(t.text, t.mention_fill) >= 7.0, "{kind:?} mention chip");
         }
+    }
+
+    #[test]
+    fn selection_accent_text_and_hints_meet_wcag_aa() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.selection_text, t.selection_fill) >= 4.5, "{kind:?} selection: {}", contrast(t.selection_text, t.selection_fill));
+            assert!(contrast(t.text, t.selection_fill) >= 4.5, "{kind:?} selected text in a field");
+            for bg in [t.canvas_bg, t.panel_fill, t.card_fill] {
+                assert!(contrast(t.accent_text, bg) >= 4.5, "{kind:?} accent text on {bg:?}: {}", contrast(t.accent_text, bg));
+            }
+            assert!(contrast(t.text_muted, t.panel_stroke) >= 4.5, "{kind:?} hint on a hovered widget: {}", contrast(t.text_muted, t.panel_stroke));
+            assert!(contrast(t.text_muted, t.panel_fill) >= 4.5, "{kind:?} hint on a panel");
+            assert!(contrast(t.text_muted, t.card_fill) >= 4.5, "{kind:?} hint on a card");
+        }
+    }
+
+    #[test]
+    fn no_egui_default_colour_is_left_unthemed() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            let v = visuals(kind);
+            assert_eq!(v.selection.bg_fill, t.selection_fill, "{kind:?}");
+            assert_eq!(v.selection.stroke.color, t.selection_text, "{kind:?}");
+            assert_eq!(v.hyperlink_color, t.accent_text, "{kind:?}");
+            assert_eq!(v.warn_fg_color, t.stale, "{kind:?}");
+            assert_eq!(v.error_fg_color, t.danger, "{kind:?}");
+            assert_eq!(v.text_cursor.stroke.color, t.text, "{kind:?}");
+            for bg in [t.panel_fill, t.canvas_bg] {
+                assert!(contrast(v.warn_fg_color, bg) >= 4.5, "{kind:?} warning text");
+                assert!(contrast(v.error_fg_color, bg) >= 4.5, "{kind:?} error text");
+            }
+        }
+    }
+
+    #[test]
+    fn small_text_is_never_below_the_label_size() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let ctx = egui::Context::default();
+            apply(&ctx, kind);
+            let small = ctx.global_style().text_styles.get(&egui::TextStyle::Small).map(|font| font.size);
+            assert_eq!(small, Some(kind.tokens().label_size), "{kind:?}");
+        }
+    }
+
+    #[test]
+    fn the_source_guards_skip_only_inline_test_modules() {
+        let text = "#[cfg(test)]\nmod a_tests;\nfn real() {}\n#[cfg(test)]\nmod tests {\n    fn t() {}\n}\n";
+        assert_eq!(non_test_code(text), "#[cfg(test)]\nmod a_tests;\nfn real() {}\n");
+        assert_eq!(non_test_code("fn only() {}"), "fn only() {}");
+    }
+
+    #[test]
+    fn the_panel_frame_is_the_shared_recipe() {
+        let t = &DARK;
+        let frame = panel_frame(t);
+        assert_eq!(frame.fill, t.panel_fill);
+        assert_eq!(frame.stroke, Stroke::new(t.stroke_hairline, t.panel_stroke));
+        assert_eq!(frame.corner_radius, CornerRadius::same(t.panel_radius));
+        assert_eq!(frame.inner_margin, egui::Margin::same(16));
+    }
+
+    /// #1124: stroke widths come from tokens; a literal `Stroke::new(<number>, …)` outside this
+    /// file and tests fails here.
+    #[test]
+    fn no_literal_stroke_widths_outside_the_theme() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let mut stack = vec![root];
+        let mut found = Vec::new();
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).unwrap() {
+                let path = entry.unwrap().path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+                if !name.ends_with(".rs")
+                    || name == "theme.rs"
+                    || name == "tests.rs"
+                    || name.ends_with("_tests.rs")
+                    || path.components().any(|c| c.as_os_str() == "tests")
+                {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).unwrap();
+                // Stop at the file's own test module.
+                let code = crate::theme::non_test_code(&text);
+                for (n, line) in code.lines().enumerate() {
+                    if let Some(at) = line.find("Stroke::new(")
+                        && line[at + "Stroke::new(".len()..].starts_with(|c: char| c.is_ascii_digit())
+                    {
+                        found.push(format!("{}:{}", path.display(), n + 1));
+                    }
+                }
+            }
+        }
+        assert!(found.is_empty(), "literal stroke widths: {found:#?}");
+    }
+
+    #[test]
+    fn buttons_are_outlined_at_rest_and_each_state_differs() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            assert!(contrast(t.control_stroke, t.panel_fill) >= 3.0, "{kind:?} control outline: {}", contrast(t.control_stroke, t.panel_fill));
+            assert!(contrast(t.text, t.control_fill_pressed) >= 7.0, "{kind:?} text on a pressed button");
+            let v = visuals(kind);
+            assert_eq!(v.widgets.inactive.bg_stroke, Stroke::new(1.0, t.control_stroke));
+            let fills = [v.widgets.inactive.weak_bg_fill, v.widgets.hovered.weak_bg_fill, v.widgets.active.weak_bg_fill];
+            assert!(fills[0] != fills[1] && fills[1] != fills[2] && fills[0] != fills[2], "{kind:?} rest, hover and press differ");
+            assert_ne!(v.widgets.inactive.weak_bg_fill, t.panel_fill, "{kind:?} a resting button isn't the panel");
+            assert_eq!(v.widgets.hovered.bg_fill, t.panel_stroke, "{kind:?} the tag contrast test checks the real hover fill");
+            // The pressed submit arrow (card_fill on the tinted accent) stays a readable graphic.
+            assert!(contrast(t.card_fill, t.accent.lerp_to_gamma(t.text, 0.3)) >= 3.0, "{kind:?} pressed submit arrow");
+        }
+        assert_eq!(State::Rest.tint(DARK.stale, DARK.text), DARK.stale);
+        assert_ne!(State::Hovered.tint(DARK.stale, DARK.text), State::Pressed.tint(DARK.stale, DARK.text));
+    }
+
+    #[test]
+    fn the_focus_ring_stands_out_from_canvas_and_card() {
+        for kind in [ThemeKind::Dark, ThemeKind::Light] {
+            let t = kind.tokens();
+            for bg in [t.canvas_bg, t.card_fill] {
+                assert!(contrast(t.accent, bg) >= 3.0, "{kind:?} focus ring on {bg:?}: {}", contrast(t.accent, bg));
+            }
+            assert!(t.focus_ring_width >= 2.0, "{kind:?} WCAG 2.4.11 wants a ring at least 2 pt wide");
+            // The ring sits clear of the presence ring, which starts `presence_ring * 2` out.
+            assert!(t.focus_ring_gap + t.focus_ring_width < t.presence_ring * 2.0, "{kind:?} a gap stays before the presence ring");
+        }
+    }
+
+    #[test]
+    fn small_targets_grow_to_the_minimum_and_large_ones_stay() {
+        let small = egui::Rect::from_center_size(egui::pos2(10.0, 10.0), egui::vec2(40.0, 19.0));
+        let hit = at_least(small, DARK.min_target);
+        assert_eq!(hit.center(), small.center());
+        assert_eq!(hit.size(), egui::vec2(40.0, 24.0));
+        let big = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(30.0, 30.0));
+        assert_eq!(at_least(big, 24.0), big);
+        assert_eq!(at_least(big, f32::NAN), big, "a hostile side changes nothing");
+        let under = egui::Rect::from_min_size(egui::pos2(0.0, 103.0), egui::vec2(40.0, 9.5));
+        let hit = badge_hit(under, 24.0, 100.0);
+        assert_eq!((hit.min.y, hit.height()), (100.0, 24.0), "never above the card, still 24 tall");
+        const { assert!(DARK.min_target >= 24.0 && DARK.noodle_hit >= 10.0) };
     }
 
     #[test]

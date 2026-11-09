@@ -394,7 +394,8 @@ fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
         spec("enabled", ParamControl::Toggle, Value::Bool(false)),
     ]);
     enter_text(&mut h, "count", "9");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // Empty canvas below the top bar (#1123 put File at the row's left end).
+    click(&mut h, Pos2::new(50.0, 300.0));
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
@@ -1096,7 +1097,7 @@ fn dragging_an_output_fans_out_and_replaces_a_single_input_in_one_step() {
     wire_drag(&mut h, from, to);
     // A now feeds B and C; C's single input dropped B.
     assert_eq!(links(&h), [link(1, 2), link(1, 3)].into_iter().collect());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -1118,7 +1119,7 @@ fn invalid_drops_leave_the_document_alone_and_explain_why() {
         let (from, to) = (port_point(&h, a, noodle::Side::Output), port_point(&h, b, noodle::Side::Input));
         wire_drag(&mut h, from, to);
         assert_eq!(h.state().session.document(), &before, "{a}->{b}");
-        assert_eq!(h.state().notice.as_deref(), Some(message));
+        assert_eq!(h.state().notice(), Some(message));
     }
     // Dropping on empty canvas only opens "Turn into" (a new drag closes it), and Escape
     // mid-drag does nothing.
@@ -1192,6 +1193,41 @@ fn noodles_are_clickable_box_selectable_and_deletable() {
     assert_eq!(h.state().session.document(), &before);
 }
 
+/// #1112: a noodle under the pointer is painted wider and brighter; moving away restores it.
+#[test]
+fn a_hovered_and_pressed_noodle_is_drawn_wider_and_brighter() {
+    let mut h = chain_harness();
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let t = *h.state().theme.tokens();
+    // Wider and in the tinted colour, not just wider.
+    let tinted = crate::theme::State::Hovered.tint(t.wire(nodecraft_types::Modality::Text), t.card_stroke_selected);
+    let highlighted = |h: &Harness<'static, NodeCraftApp>, color| {
+        h.output().shapes.iter().any(|clipped| {
+            matches!(&clipped.shape, egui::epaint::Shape::CubicBezier(curve)
+                if (curve.stroke.width - t.wire_width_hover).abs() < 1e-3 && curve.stroke.color == egui::epaint::ColorMode::Solid(color))
+        })
+    };
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    h.hover_at(Pos2::new(990.0, 20.0));
+    h.run();
+    assert!(!highlighted(&h, tinted), "no noodle is hovered at rest");
+    h.hover_at(a + (b - a) * 0.5);
+    h.run();
+    assert!(highlighted(&h, tinted), "the noodle under the pointer widens");
+    let at = a + (b - a) * 0.5;
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.step();
+    let pressed = crate::theme::State::Pressed.tint(t.wire(nodecraft_types::Modality::Text), t.card_stroke_selected);
+    assert!(highlighted(&h, pressed), "holding a noodle gives distinct pressed feedback");
+    h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    h.hover_at(a + (b - a) * 0.5 + Vec2::new(0.0, 60.0));
+    h.run();
+    assert!(!highlighted(&h, tinted), "and goes back once the pointer leaves its band");
+}
+
 #[test]
 fn list_inputs_collect_in_order_reject_duplicates_and_accept_reroutes() {
     let mut h = chain_harness();
@@ -1218,7 +1254,7 @@ fn list_inputs_collect_in_order_reject_duplicates_and_accept_reroutes() {
     let from = port_point(&h, 1, noodle::Side::Output);
     wire_drag(&mut h, from, into);
     assert_eq!(h.state().session.document(), &before);
-    assert_eq!(h.state().notice.as_deref(), Some("These ports are already connected."));
+    assert_eq!(h.state().notice(), Some("These ports are already connected."));
     // Rerouting B → C onto the list appends it after the existing items.
     let from = port_point(&h, 3, noodle::Side::Input);
     wire_drag(&mut h, from, into);
@@ -1702,7 +1738,8 @@ fn palette_keys_and_wheel_never_reach_the_canvas() {
     h.run();
     // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
     h.state_mut().selection.only(id);
-    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // The popup may open upward from where it was double-clicked (#1121): use its real corner.
+    let corner = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).unwrap().rect().min;
     // A click on the popup's padding takes focus off the query, but the palette stays open...
     click(&mut h, corner + Vec2::splat(3.0));
     assert!(h.state().palette.is_some());
@@ -1749,7 +1786,7 @@ fn double_clicks_on_noodles_or_cards_do_not_open_the_palette_and_rows_are_clicka
     assert!(h.state().palette.is_some());
     h.event(egui::Event::Text("vid".into()));
     h.run();
-    h.get_by_label_contains("Video    V").click();
+    h.get_by_label_contains("Video (V)").click();
     h.run();
     assert_eq!(nodes_of(&h, "source.video").len(), 1);
     assert!(h.state().palette.is_none());
@@ -1791,7 +1828,7 @@ fn a_fit_while_the_palette_is_open_closes_it() {
 }
 
 /// The text the last frames asked the platform to copy, if any.
-fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
+pub(super) fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
     h.output().platform_output.commands.iter().find_map(|command| match command {
         egui::OutputCommand::CopyText(text) => Some(text.clone()),
         _ => None,
@@ -1901,7 +1938,7 @@ fn paste_lands_centred_duplicate_offsets_and_unreadable_copies_explain() {
     h.event(egui::Event::Paste(text.replace("\"version\":1", "\"version\":9")));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Can't paste these nodes")));
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Can't paste these nodes")));
 }
 
 #[test]
@@ -1914,7 +1951,7 @@ fn cut_with_a_stale_selection_still_removes_what_remains() {
     h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": chain_id(3)})).unwrap();
     h.event(egui::Event::Cut);
     h.run();
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
     assert!(!h.state().session.document().canvases().get(&canvas).unwrap().nodes().contains_key(&chain_id(4)));
 }
 
@@ -1936,7 +1973,7 @@ fn copies_that_could_not_paste_back_are_refused_and_cut_keeps_them() {
     assert!(copied(&h).is_none());
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("too large to copy")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("too large to copy")));
 }
 
 #[test]
@@ -1947,7 +1984,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
     h.event(egui::Event::Paste("x".repeat(clipboard::MAX_BYTES + 1)));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("16 MiB")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("16 MiB")));
     // An Image node referencing an asset, copied from another project.
     let mut image = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(NodeId::from_bytes([9; 16]), &BTreeMap::new()).unwrap();
     let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
@@ -1962,7 +1999,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
     h.event(egui::Event::Paste(clipboard::to_text(&foreign).unwrap()));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("missing asset")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("missing asset")));
     // The same UUID is not evidence of availability either.
     let local = clipboard::Payload { project: Some(h.state().session.document().id()), ..foreign };
     h.event(egui::Event::Paste(clipboard::to_text(&local).unwrap()));
@@ -3129,7 +3166,7 @@ fn bulk71_mixed_text_edits_all_with_one_undo_and_owns_shortcuts() {
         canvas.nodes().values().all(|node| node.params.get("text") == Some(&Value::Text("A shared public-safe prompt".into()))),
         "actual nodes: {:?}, notice: {:?}, revision: {}",
         canvas.nodes(),
-        h.state().notice,
+        h.state().notice(),
         h.state().session.revision()
     );
     assert_eq!(h.state().session.revision(), 1);
@@ -3525,11 +3562,11 @@ fn bulk71_unavailable_models_use_shared_repair_picker_and_one_exact_undo() {
     assert!(!apply_node.accesskit_node().is_disabled(), "{apply_node:?}");
     let apply_rect = apply_node.rect();
     assert!(h.ctx.content_rect().contains_rect(apply_rect), "Apply {apply_rect:?} outside {:?}", h.ctx.content_rect());
-    let window_rect = h.get_by_role_and_label(Role::Window, "Review model change").rect();
+    let window_rect = h.get_by_role_and_label(Role::Dialog, "Review model change").rect();
     assert!(window_rect.contains_rect(apply_rect), "Apply {apply_rect:?} outside review {window_rect:?}");
     let apply = apply_rect.center();
     bulk71_model_click(&mut h, apply);
-    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Window, "Review model change"));
+    assert_eq!(h.state().session.revision(), 1, "{:?}", h.query_by_role_and_label(Role::Dialog, "Review model change"));
     for id in ids {
         assert_eq!(
             h.state().session.document().canvases().get(&canvas).unwrap().nodes().get(&id).unwrap().params.get("model"),
@@ -3612,7 +3649,7 @@ fn bulk71_real_catalog_media() {
         assert!(h.query_by_label_contains("Drop quality").is_some());
         let apply = h.get_by_label("Apply model change");
         assert!(!apply.accesskit_node().is_disabled());
-        assert!(h.get_by_role_and_label(egui::accesskit::Role::Window, "Review model change").rect().contains_rect(apply.rect()));
+        assert!(h.get_by_role_and_label(egui::accesskit::Role::Dialog, "Review model change").rect().contains_rect(apply.rect()));
         h.render().unwrap().save(out.join("review.png")).unwrap();
     }
     assert_eq!(h.state().session.document(), &project);
@@ -4323,3 +4360,39 @@ fn palette_same_frame_row_choice_and_metadata_key_create_only_chosen_kind() {
 mod clipboard_native273;
 
 mod clipboard_capture273;
+
+/// How many nodes other than port buttons and connections carry `text` in their name. Ports and
+/// noodles repeat their cards' titles (#1109), so a card's own element is the only other match.
+pub(super) fn named_outside_wiring(h: &Harness<'_, NodeCraftApp>, text: &str) -> usize {
+    h.query_all_by_label_contains(text)
+        .filter(|node| {
+            let node = node.accesskit_node();
+            let name = node.label().or_else(|| node.value()).unwrap_or_default();
+            let port = node.role() == Role::Button && (name.contains(" input of ") || name.contains(" output of "));
+            let edge = node.role() == Role::Label && name.contains(" from ") && name.contains(" · ");
+            !port && !edge
+        })
+        .count()
+}
+
+/// #1114: a noodle's hit band is 12 screen points either side, so a click 10 points off its line
+/// still selects it, and one well clear of it doesn't; the painted width is unchanged.
+#[test]
+fn a_click_ten_points_off_a_noodle_selects_it() {
+    let mut h = chain_harness();
+    h.state_mut().view = CanvasView { pan: Vec2::new(-100.0, 100.0), zoom: 1.0 };
+    h.run();
+    let (a, b) = (port_point(&h, 1, noodle::Side::Output), port_point(&h, 2, noodle::Side::Input));
+    let ab = h.state().session.document().canvases().get(&h.state().canvas).unwrap().edges().values().find(|e| e.from.node == chain_id(1)).unwrap().id;
+    let mid = a + (b - a) * 0.5;
+    // Any point 10 away from a point on the line is within 10 of the line; off along its normal.
+    let normal = (b - a).normalized().rot90();
+    press(&mut h, mid + normal * 10.0, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert_eq!(h.state().selection.edges(), &[ab].into_iter().collect(), "10 points off the line is inside the band");
+    // Give the next press time to count as its own click, not a double-click.
+    for _ in 0..40 {
+        h.step();
+    }
+    press(&mut h, mid + normal * 60.0, egui::PointerButton::Primary, egui::Modifiers::NONE);
+    assert!(h.state().selection.edges().is_empty(), "60 points off is empty canvas: {:?}", h.state().selection.edges());
+}

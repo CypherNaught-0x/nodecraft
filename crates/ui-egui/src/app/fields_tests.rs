@@ -249,6 +249,7 @@ fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     open_menu(&mut h, at);
     h.get_by_role_and_label(Role::Button, "Rename field…").click();
     h.run();
+    crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.rename_field"), "Rename field");
     h.get_by_role_and_label(Role::TextInput, "Field name").click();
     h.run();
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::A);
@@ -267,7 +268,7 @@ fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().fields.rename.as_ref().map(|(_, title)| title.as_str()), Some(draft.as_str()));
-    assert!(h.state().notice.as_deref().unwrap_or_default().contains("4096"));
+    assert!(h.state().notice().unwrap_or_default().contains("4096"));
 }
 
 #[test]
@@ -445,7 +446,7 @@ fn search_next_expands_a_collapsed_field_to_show_its_match_in_one_undo_step() {
         h.state().search.query,
         h.state().search.results,
         h.state().search.current,
-        h.state().notice
+        h.state().notice()
     );
     assert!(h.state().selection.contains(node), "the match is focused");
     let drawn = card(&h).expect("the match is drawn");
@@ -469,7 +470,7 @@ fn tag_navigation_expands_a_collapsed_field_to_show_its_card() {
     h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
     h.run();
     assert!(!canvas(&h).fields().get(&id).unwrap().collapsed);
-    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice);
+    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice());
     assert!(card(&h).is_some(), "the card is drawn");
 }
 
@@ -638,4 +639,57 @@ fn fit_all_from_far_out_frames_a_collapsed_header_the_same_twice() {
     h.run();
     let second = h.state().view;
     assert!((first.zoom - second.zoom).abs() < 1e-4 && (first.pan - second.pan).length() < 0.5, "Fit all is stable: {first:?} then {second:?}");
+}
+
+/// #1116: Rename field is a question, on the screen at 640 × 400: Escape cancels without
+/// clearing the canvas selection, and Enter saves.
+#[test]
+fn dialogs1116_rename_is_a_question_escape_cancels_enter_saves() {
+    let mut h = harness();
+    h.run();
+    h.hover_at(Pos2::new(40.0, 180.0));
+    h.key_press(egui::Key::F);
+    h.run();
+    let id = only_field(&h);
+    h.set_size(Vec2::new(640.0, 400.0));
+    h.state_mut().fields.rename = Some((id, "Hero shots".into()));
+    h.run();
+    crate::app::panel_check::check_question(&h, egui::Id::new("nodecraft.rename_field"), "Rename field at 640 × 400");
+    h.get_by_role_and_label(Role::Dialog, "Rename field").get_by_role_and_label(Role::TextInput, "Field name");
+    let before = h.state().session.document().clone();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().fields.rename.is_none());
+    assert_eq!(h.state().session.document(), &before);
+    assert_eq!(h.state().fields.selected, Some(id), "Escape cancelled without reaching the canvas");
+
+    h.state_mut().fields.rename = Some((id, "Hero shots".into()));
+    h.run();
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().fields.rename.is_none());
+    assert_eq!(canvas(&h).fields().get(&id).unwrap().title, "Hero shots");
+}
+
+/// #1116: Tab from the name to Cancel, then Enter cancels the rename instead of saving it.
+#[test]
+fn dialogs1116_enter_on_a_tabbed_to_cancel_cancels_the_rename() {
+    let mut h = harness();
+    h.run();
+    h.hover_at(Pos2::new(40.0, 180.0));
+    h.key_press(egui::Key::F);
+    h.run();
+    let id = only_field(&h);
+    let title = canvas(&h).fields().get(&id).unwrap().title.clone();
+    h.state_mut().fields.rename = Some((id, "Hero shots".into()));
+    h.run();
+    for _ in 0..2 {
+        h.key_press(egui::Key::Tab);
+        h.run();
+    }
+    assert!(h.get_by_label("Cancel rename").accesskit_node().is_focused(), "Tab reaches Cancel");
+    h.key_press(egui::Key::Enter);
+    h.run();
+    assert!(h.state().fields.rename.is_none());
+    assert_eq!(canvas(&h).fields().get(&id).unwrap().title, title, "Enter on Cancel keeps the name");
 }

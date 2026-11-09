@@ -52,18 +52,18 @@ impl NodeCraftApp {
         let from = sources(canvas, self.selection.nodes());
         let picked: Vec<_> = from.iter().filter_map(|endpoint| canvas.nodes().get(&endpoint.node)).collect();
         let (Some(right), Some(top)) = (picked.iter().map(|n| n.pos.x).reduce(f32::max), picked.iter().map(|n| n.pos.y).reduce(f32::min)) else {
-            self.notice = Some("Select image cards to make an Element from.".into());
+            self.notices.info("Select image cards to make an Element from.");
             return;
         };
         let Some(name) = free_name(canvas) else {
-            self.notice = Some("Too many Elements on this canvas; rename some first.".into());
+            self.notices.error("Too many Elements on this canvas; rename some first.");
             return;
         };
         let revision = self.session.revision();
         let id = ids::node_id(document, ("element", revision));
         let edges: Option<Vec<_>> = (0..from.len()).map(|n| ids::edge_id(document, ("element-wire", revision, n))).collect();
         let (Some(id), Some(edges)) = (id, edges) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let params = json!({
@@ -76,10 +76,10 @@ impl NodeCraftApp {
         });
         match self.session.dispatch("element.create", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

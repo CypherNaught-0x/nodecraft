@@ -76,21 +76,34 @@ Use the `aarch64` files on ARM machines.
 `nodecraft-web-<version>.zip` is a static site. Unzip it and serve the folder over HTTP from any
 host or path, for example `python3 -m http.server` inside it, then open the page in a browser with
 WebGPU or WebGL 2. Opening `index.html` from disk does not work, because browsers refuse to load
-WebAssembly from `file://`. The `v0.2.0-rc.1` archive is an older snapshot; do not infer current
-`main` capabilities from that build. On current source, browser project pickers/downloads and
-site-local keys work (#118), and supported cloud cards can run when the provider permits direct
-browser requests. Local endpoints, option lists (#721) and clipboard image paste remain desktop-only;
-see [`../ROADMAP.md`](../ROADMAP.md).
+WebAssembly from `file://`. The browser can open and save projects, recover unsaved work and
+paste PNG images (#118, #717, #633). It stores keys and provider server addresses per site.
+Supported cards run when the provider allows requests from the app's origin. The **Providers**
+panel configures a ComfyUI server and fetches its option lists in the background (#721).
+See [provider and browser limits](providers.md).
 
 ### Live sharing in the browser
 
-The browser can share a project live, or join one, through the same relay as the desktop app
-(`nodecraft-cli relay`). The relay speaks plain WebSocket (`ws://`). A page served over `http://`,
-such as `python3 -m http.server` on your own machine, reaches it directly. A page served over
-`https://` may only open `wss://` connections, so put a TLS proxy (Caddy, nginx, a hosted
-tunnel) in front of the relay and share through its `wss://` address, for example
-`wss://relay.example/`. The desktop app can't reach a `wss://` relay yet: someone joining from
-the desktop needs a `ws://` address for the same relay.
+Open **Share** to start a room or join one. The browser uses the same `nodecraft-cli relay`
+as the desktop. For local development, a page served over HTTP can connect to a relay on plain
+WebSocket (`ws://`). A page served over HTTPS may only open a secure WebSocket (`wss://`): start
+the relay with a certificate chain and its private key (PEM files, for example from Let's
+Encrypt) and it serves `wss://` too, on the next port or `--tls-listen`:
+
+```sh
+nodecraft-cli relay --listen 0.0.0.0:7342 --tls-cert fullchain.pem --tls-key privkey.pem
+```
+
+Browsers then use `wss://<host>:7343/`, and desktop peers keep `ws://<host>:7342/`, which the
+desktop client uses; both reach the same rooms. A link shared from the desktop app names its
+`ws://` address: for a browser on an HTTPS page, change its start to `wss://<host>:7343/` and keep
+the `#room=` or `#link=` part. A TLS proxy in front of the relay works as well.
+
+A relay keeps its rooms only in memory unless you start it with a store folder:
+`nodecraft-cli relay --store <folder>` keeps each room, its share links and its media there, so
+a restart loses nothing and a share link works while its owner is away. A room nobody joined for
+`--keep-days` (default 30) is forgotten, and past `--store-max-gib` (default 8) the rooms used
+longest ago go first. Folders are named by a hash of the room id; the id is never written.
 
 The browser has a single window, so joining replaces the project in the current tab. It is refused
 while that tab has changes of its own; save them first, or join in a new tab.

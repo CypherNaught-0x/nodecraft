@@ -54,7 +54,9 @@ fn scene() -> Harness<'static, NodeCraftApp> {
 fn press(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     let pos = h.get_by_label(label).rect().center();
     h.hover_at(pos);
-    h.run();
+    // A hovered button inside a fading-in dialog keeps repainting on some platforms (macOS CI
+    // exceeded `run`'s step limit here), so step a fixed count instead of running to idle.
+    h.run_steps(2);
     for pressed in [true, false] {
         h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
         h.step();
@@ -110,9 +112,9 @@ fn card746_a_person_chooses_the_folder_and_export_writes_there() {
 
     press(&mut h, "Export");
     export_tests::finish(&mut h);
-    assert_eq!(files_in(&folder), ["hero-out-1.png"], "{:?}", h.state().notice);
+    assert_eq!(files_in(&folder), ["hero-out-1.png"], "{:?}", h.state().notice());
     assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png());
-    assert_eq!(h.state().notice.as_deref(), Some("Exported 1 file to Renders."));
+    assert_eq!(h.state().notice(), Some("Exported 1 file to Renders."));
     assert_eq!(h.state().session.document(), &before, "an export is no edit");
     assert!(!h.state().session.can_undo(), "and no undo step");
     evidence(&mut h, "3-exported");
@@ -121,7 +123,7 @@ fn card746_a_person_chooses_the_folder_and_export_writes_there() {
     press(&mut h, "Export");
     export_tests::finish(&mut h);
     assert_eq!(files_in(&folder), ["hero-out-1.png"]);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("1 kept")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("1 kept")), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -191,6 +193,6 @@ fn card746_replacing_existing_files_needs_the_persons_yes() {
     press(&mut h, "Export");
     press(&mut h, "Replace files");
     export_tests::finish(&mut h);
-    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png(), "{:?}", h.state().notice);
+    assert_eq!(std::fs::read(folder.join("hero-out-1.png")).unwrap(), png(), "{:?}", h.state().notice());
     assert_eq!(files_in(&folder), ["hero-out-1.png"]);
 }

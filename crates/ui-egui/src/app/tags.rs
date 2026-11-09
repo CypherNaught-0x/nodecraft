@@ -123,7 +123,7 @@ impl NodeCraftApp {
     pub(super) fn tag_rect(&self) -> Rect {
         let t = self.theme.tokens();
         if !self.tag_filter.open {
-            return self.tag_toolbar_rect();
+            return self.topbar_rect();
         }
         self.tag_panel_rect.unwrap_or_else(|| {
             let area = self.floating_bounds().area;
@@ -131,19 +131,10 @@ impl NodeCraftApp {
         })
     }
 
-    fn tag_toolbar_rect(&self) -> Rect {
-        let t = self.theme.tokens();
-        let pos = Pos2::new(self.viewport.left() + t.navigation_margin, self.topbar_rect().top() + t.navigation_gap);
-        Rect::from_min_size(pos, Vec2::new(self.closed_tag_width(), t.navigation_toolbar_height))
-    }
-
-    pub(super) fn closed_tag_width(&self) -> f32 {
-        let t = self.theme.tokens();
-        let available = self.viewport.width() - t.navigation_margin * 2.0;
-        let remaining = if self.selection.len() >= 2 { available - self.layout_toolbar_width() - t.navigation_gap * 3.0 } else { available - t.navigation_gap };
-        t.search_button_width.min((remaining * 0.5).max(1.0))
-    }
     fn tag_context(&mut self, ctx: &egui::Context) -> TagFilterContext {
+        self.tag_context_scoped(ctx, None)
+    }
+    pub(super) fn tag_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> TagFilterContext {
         self.sync_tag_session();
         self.tag_filter.sync(self.session.document(), self.canvas, self.session.revision());
         let own_focus = self.tag_owns_focus(ctx);
@@ -151,7 +142,7 @@ impl NodeCraftApp {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
             blocked: self.tag_definition.is_some()
-                || egui::Popup::is_any_open(ctx)
+                || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
                 || ((canvas::text_input_focused(ctx) || self.text_focused) && !own_focus)
                 || self.drag.is_some()
                 || self.marquee.is_some()
@@ -272,35 +263,18 @@ impl NodeCraftApp {
                 }
             });
         }
-        let toolbar_rect = self.tag_toolbar_rect();
-        let toolbar = egui::Area::new(ui.id().with("tag_filter_overlay"))
-            .order(egui::Order::Foreground)
-            .fixed_pos(toolbar_rect.min)
-            .movable(false)
-            .constrain(false)
-            .show(&ctx, |ui| {
-                ui.set_min_size(toolbar_rect.size());
-                ui.set_max_size(toolbar_rect.size());
-                ui.set_clip_rect(toolbar_rect);
-                let label = if self.tag_filter.active() { format!("Tags · {} matches", self.tag_filter.results.len()) } else { "Tag filter".into() };
-                ui.add_enabled(allowed, egui::Button::new(label).selected(self.tag_filter.open).truncate())
-            });
-        if toolbar.inner.clicked() {
-            action = Some(if self.tag_filter.open { "canvas.tag_filter_close" } else { "canvas.tag_filter_open" });
-        }
-        let toolbar_owns_pointer = self.tag_surface_owns_pointer(&ctx, toolbar_rect, toolbar.response.layer_id, allowed);
-        self.tag_focus_ids = vec![toolbar.inner.id];
-        self.tag_button_ids = vec![toolbar.inner.id];
-
+        self.tag_focus_ids.clear();
+        self.tag_button_ids.clear();
         let mut panel_owns_pointer = false;
         if self.tag_filter.open {
             use crate::floating::{self, Home};
             let id = egui::Id::new("nodecraft.tag_filter");
-            let bounds = self.tag_panel_bounds(&ctx);
+            let bounds = self.floating_bounds();
             let max_size = bounds.area.size();
             let canvas = self.session.document().canvases().get(&self.canvas);
             let panel = floating::panel_with_bounds(&ctx, "Tag filter", id, Home::LeftTop, t, bounds)
                 .max_size(max_size)
+                .vscroll(true)
                 .default_width(t.tag_panel_width.min(max_size.x))
                 .default_height(t.tag_panel_height.min(max_size.y))
                 .show_with_header(
@@ -328,7 +302,7 @@ impl NodeCraftApp {
                     if let Some((tags, untagged)) = controls.filter
                         && let Err(error) = self.dispatch_tag_filter(&ctx, "canvas.tag_filter_set", &json!({"tags":tags,"untagged":untagged}))
                     {
-                        self.notice = Some(error.message);
+                        self.notices.report(error);
                     }
                 }
             }
@@ -338,10 +312,10 @@ impl NodeCraftApp {
         if let Some(action) = action
             && let Err(error) = self.dispatch_tag_filter(&ctx, action, &json!({}))
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
         self.apply_tag_frame(&ctx);
-        toolbar_owns_pointer || panel_owns_pointer
+        panel_owns_pointer
     }
 
     fn tag_surface_owns_pointer(&self, ctx: &egui::Context, rect: Rect, layer: egui::LayerId, allowed: bool) -> bool {
@@ -404,7 +378,7 @@ mod tests {
         assert!(h.state().tag_owns_focus(&ctx));
         h.event(egui::Event::Key { key: egui::Key::F, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::COMMAND });
         h.run();
-        assert!(h.state().search.open, "{:?}", h.state().notice);
+        assert!(h.state().search.open, "{:?}", h.state().notice());
         assert_eq!(ctx.memory(|m| m.focused()), Some(h.state().search_input_id()));
     }
     #[test]
@@ -453,6 +427,12 @@ mod tests {
                 previous_bottom = rect.bottom();
             }
             assert!(h.get_by_role_and_label(Role::Button, "Next match").rect().top() >= previous_bottom);
+            for label in ["Previous match", "Next match", "Clear tag filter"] {
+                assert!(h.state().tag_rect().contains_rect(h.get_by_role_and_label(Role::Button, label).rect()), "{width}: {label} leaves the panel");
+            }
+            let panel = h.state().tag_rect();
+            let title = h.get_by_role_and_label(Role::Label, "Tag filter").rect();
+            assert!((title.center().x - panel.center().x).abs() <= h.state().theme.tokens().control_gap, "the title is centered: {title:?} in {panel:?}");
             let field = h.get_by_role_and_label(Role::TextInput, "Find a tag").rect().center();
             press_at(&mut h, field, egui::PointerButton::Primary);
             h.event(egui::Event::Text("BLUE".into()));
@@ -872,7 +852,7 @@ mod tests {
             h.state().tag_filter.current,
             h.state().tag_filter.frame_request,
             h.state().search.current,
-            h.state().notice
+            h.state().notice()
         );
         h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_close", &json!({})).unwrap();
         h.run();
@@ -883,7 +863,7 @@ mod tests {
             h.state().tag_filter.current,
             h.state().tag_filter.frame_request,
             h.state().search.current,
-            h.state().notice
+            h.state().notice()
         );
         h.state_mut().tag_filter.set(BTreeSet::new(), false);
         h.state_mut().tag_filter.set(BTreeSet::new(), true);

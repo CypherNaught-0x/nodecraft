@@ -18,13 +18,17 @@ pub(super) fn header(ui: &mut egui::Ui, allowed: bool, focus_pending: &mut bool,
     let close_width = (label_width + t.icon_size + ui.spacing().item_spacing.x + 2.0 * ui.spacing().button_padding.x).min(rect.width());
     let close_rect = Rect::from_min_max(Pos2::new(rect.right() - close_width, rect.top()), rect.max);
     let handle = rect.with_max_x(close_rect.left());
-    let title = ui.place(handle, egui::Label::new(egui::RichText::new("Tag filter").heading()).sense(Sense::focusable_noninteractive()).truncate());
+    let title_rect = Rect::from_min_max(Pos2::new((rect.left() + close_width).min(close_rect.left()), rect.top()), close_rect.left_bottom());
+    let title = ui.place(title_rect, egui::Label::new(egui::RichText::new("Tag filter").size(t.body_size)).sense(Sense::focusable_noninteractive()).truncate());
     if allowed && *focus_pending && ui.is_visible() {
         title.request_focus();
         *focus_pending = false;
     }
-    let close =
-        ui.add_enabled_ui(allowed, |ui| ui.place(close_rect, Icon::Close.button(ui, "Close", t).truncate().frame(false))).inner.on_hover_text("Close tags");
+    let close = ui
+        .add_enabled_ui(allowed, |ui| ui.place(close_rect, Icon::Close.button(ui, "Close", t).truncate().frame(false)))
+        .inner
+        .on_hover_text("Close tags")
+        .on_disabled_hover_text("Finish the current edit or interaction before closing tags");
     close.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, allowed, "Close tags"));
     (handle, (title, close))
 }
@@ -79,7 +83,11 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
             (Icon::Next, "Next", "Next match", steps, Some("canvas.tag_filter_next")),
             (Icon::Clear, "Clear", "Clear tag filter", allowed && state.active(), None),
         ] {
-            let response = ui.add_enabled(enabled, icon.button(ui, label, t).frame(false)).on_hover_text(accessible);
+            let response = ui.add_enabled(enabled, icon.button(ui, label, t).frame(false)).on_hover_text(accessible).on_disabled_hover_text(if enabled {
+                accessible
+            } else {
+                "Choose a tag or Untagged to navigate matching cards"
+            });
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible));
             result.focus.push(response.id);
             result.buttons.push(response.id);
@@ -109,7 +117,7 @@ fn list(ui: &mut egui::Ui, canvas: &Canvas, state: &TagFilter, allowed: bool, t:
         });
     } else {
         // Keep the Untagged row, footer and dividers outside the virtualized list.
-        let footer = t.tag_definition_row_height + ui.spacing().interact_size.y * 2.0 + t.navigation_gap * 3.0;
+        let footer = t.tag_definition_row_height + ui.spacing().interact_size.y * 4.0 + ui.spacing().item_spacing.y * 2.0 + t.navigation_gap * 3.0;
         let height = (ui.available_height() - footer).max(t.tag_definition_row_height);
         egui::ScrollArea::vertical().id_salt("filter_tags").max_height(height).show_rows(ui, t.tag_definition_row_height, ids.len(), |ui, range| {
             for id in ids.get(range).unwrap_or_default() {

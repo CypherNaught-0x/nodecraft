@@ -1,4 +1,4 @@
-//! ⌘/Ctrl+Enter during a run (#965 review): a card still running from an earlier run is never
+//! Command+Enter during a run (#965 review): a card still running from an earlier run is never
 //! started, and charged, a second time by a whole-canvas run.
 use super::*;
 

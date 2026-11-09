@@ -1,0 +1,2738 @@
+{
+  "id": "07824bbb-6672-4bb0-ac36-4313a519e35b",
+  "links": [
+    [
+      632,
+      320,
+      0,
+      75,
+      0,
+      "VIDEO"
+    ],
+    [
+      633,
+      269,
+      0,
+      320,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "inputs": [],
+  "outputs": [],
+  "nodes": [
+    {
+      "id": 103,
+      "type": "MarkdownNote",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 269,
+      "type": "LoadImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            633
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "fixture.png",
+        "NodeCraft synthetic fixture"
+      ]
+    },
+    {
+      "id": 75,
+      "type": "SaveVideo",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "link": 632
+        }
+      ],
+      "outputs": [
+        {
+          "name": "video",
+          "type": "VIDEO",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "NodeCraft",
+        "auto",
+        "auto",
+        "auto"
+      ],
+      "widgets_values_named": {
+        "filename_prefix": "NodeCraft",
+        "format": "auto",
+        "format.codec": "auto",
+        "codec": "auto"
+      }
+    },
+    {
+      "id": 320,
+      "type": "2454ad83-157c-40dd-9f19-5daaf4041ce0",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "input",
+          "label": "first_frame",
+          "type": "IMAGE,MASK",
+          "link": 633
+        },
+        {
+          "name": "value",
+          "label": "prompt",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "value"
+          }
+        },
+        {
+          "name": "value_1",
+          "label": "prompt_enhance",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "value_1"
+          }
+        },
+        {
+          "name": "value_2",
+          "label": "width",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "value_2"
+          }
+        },
+        {
+          "name": "value_3",
+          "label": "height",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "value_3"
+          }
+        },
+        {
+          "name": "value_4",
+          "label": "duration",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "value_4"
+          }
+        },
+        {
+          "name": "value_5",
+          "label": "fps",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "value_5"
+          }
+        },
+        {
+          "name": "noise_seed",
+          "label": "seed",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "noise_seed"
+          }
+        },
+        {
+          "name": "lora_name",
+          "label": "distilled_lora",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "lora_name"
+          }
+        },
+        {
+          "name": "text_encoder",
+          "label": "text_encoder",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "text_encoder"
+          }
+        },
+        {
+          "name": "model_name",
+          "label": "latent_upscale_model",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "model_name"
+          }
+        },
+        {
+          "name": "lora_name_1",
+          "label": "lora",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "lora_name_1"
+          }
+        }
+      ],
+      "outputs": [
+        {
+          "name": "VIDEO",
+          "type": "VIDEO",
+          "links": [
+            632
+          ]
+        }
+      ],
+      "widgets_values": [
+        "NodeCraft synthetic fixture",
+        false,
+        1280,
+        720,
+        5,
+        25,
+        60540193790228,
+        "fixture-model.safetensors",
+        "fixture-model.safetensors",
+        "fixture-model.safetensors",
+        "fixture-model.safetensors",
+        "fixture-model.safetensors"
+      ]
+    }
+  ],
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "2454ad83-157c-40dd-9f19-5daaf4041ce0",
+        "links": [
+          {
+            "id": 512,
+            "origin_id": 288,
+            "origin_slot": 0,
+            "target_id": 278,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 513,
+            "origin_id": 307,
+            "origin_slot": 1,
+            "target_id": 278,
+            "target_slot": 1,
+            "type": "LATENT"
+          },
+          {
+            "id": 478,
+            "origin_id": 285,
+            "origin_slot": 0,
+            "target_id": 282,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 479,
+            "origin_id": 284,
+            "origin_slot": 0,
+            "target_id": 282,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 480,
+            "origin_id": 284,
+            "origin_slot": 1,
+            "target_id": 282,
+            "target_slot": 2,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 541,
+            "origin_id": 285,
+            "origin_slot": 0,
+            "target_id": 314,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 518,
+            "origin_id": 304,
+            "origin_slot": 0,
+            "target_id": 314,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 519,
+            "origin_id": 304,
+            "origin_slot": 1,
+            "target_id": 314,
+            "target_slot": 2,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 483,
+            "origin_id": 277,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 0,
+            "type": "NOISE"
+          },
+          {
+            "id": 484,
+            "origin_id": 314,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 1,
+            "type": "GUIDER"
+          },
+          {
+            "id": 485,
+            "origin_id": 291,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 2,
+            "type": "SAMPLER"
+          },
+          {
+            "id": 544,
+            "origin_id": 306,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 3,
+            "type": "SIGMAS"
+          },
+          {
+            "id": 487,
+            "origin_id": 318,
+            "origin_slot": 0,
+            "target_id": 283,
+            "target_slot": 4,
+            "type": "LATENT"
+          },
+          {
+            "id": 475,
+            "origin_id": 304,
+            "origin_slot": 0,
+            "target_id": 284,
+            "target_slot": 0,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 476,
+            "origin_id": 304,
+            "origin_slot": 1,
+            "target_id": 284,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 477,
+            "origin_id": 307,
+            "origin_slot": 0,
+            "target_id": 284,
+            "target_slot": 2,
+            "type": "LATENT"
+          },
+          {
+            "id": 520,
+            "origin_id": 316,
+            "origin_slot": 0,
+            "target_id": 285,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 547,
+            "origin_id": 307,
+            "origin_slot": 0,
+            "target_id": 287,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 545,
+            "origin_id": 311,
+            "origin_slot": 0,
+            "target_id": 287,
+            "target_slot": 1,
+            "type": "LATENT_UPSCALE_MODEL"
+          },
+          {
+            "id": 554,
+            "origin_id": 293,
+            "origin_slot": 0,
+            "target_id": 287,
+            "target_slot": 2,
+            "type": "VAE"
+          },
+          {
+            "id": 552,
+            "origin_id": 293,
+            "origin_slot": 0,
+            "target_id": 288,
+            "target_slot": 0,
+            "type": "VAE"
+          },
+          {
+            "id": 515,
+            "origin_id": 289,
+            "origin_slot": 0,
+            "target_id": 288,
+            "target_slot": 1,
+            "type": "IMAGE"
+          },
+          {
+            "id": 548,
+            "origin_id": 287,
+            "origin_slot": 0,
+            "target_id": 288,
+            "target_slot": 2,
+            "type": "LATENT"
+          },
+          {
+            "id": 543,
+            "origin_id": 302,
+            "origin_slot": 0,
+            "target_id": 288,
+            "target_slot": 3,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 558,
+            "origin_id": 312,
+            "origin_slot": 0,
+            "target_id": 290,
+            "target_slot": 1,
+            "type": "INT"
+          },
+          {
+            "id": 559,
+            "origin_id": 299,
+            "origin_slot": 0,
+            "target_id": 290,
+            "target_slot": 2,
+            "type": "INT"
+          },
+          {
+            "id": 560,
+            "origin_id": 312,
+            "origin_slot": 0,
+            "target_id": 292,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 557,
+            "origin_id": 316,
+            "origin_slot": 2,
+            "target_id": 293,
+            "target_slot": 0,
+            "type": "VAE"
+          },
+          {
+            "id": 562,
+            "origin_id": 299,
+            "origin_slot": 0,
+            "target_id": 294,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 561,
+            "origin_id": 292,
+            "origin_slot": 1,
+            "target_id": 295,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 563,
+            "origin_id": 294,
+            "origin_slot": 1,
+            "target_id": 295,
+            "target_slot": 1,
+            "type": "INT"
+          },
+          {
+            "id": 556,
+            "origin_id": 316,
+            "origin_slot": 2,
+            "target_id": 296,
+            "target_slot": 0,
+            "type": "VAE"
+          },
+          {
+            "id": 510,
+            "origin_id": 289,
+            "origin_slot": 0,
+            "target_id": 296,
+            "target_slot": 1,
+            "type": "IMAGE"
+          },
+          {
+            "id": 511,
+            "origin_id": 295,
+            "origin_slot": 0,
+            "target_id": 296,
+            "target_slot": 2,
+            "type": "LATENT"
+          },
+          {
+            "id": 542,
+            "origin_id": 302,
+            "origin_slot": 0,
+            "target_id": 296,
+            "target_slot": 3,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 495,
+            "origin_id": 309,
+            "origin_slot": 1,
+            "target_id": 297,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 496,
+            "origin_id": 279,
+            "origin_slot": 0,
+            "target_id": 297,
+            "target_slot": 1,
+            "type": "VAE"
+          },
+          {
+            "id": 564,
+            "origin_id": 300,
+            "origin_slot": 0,
+            "target_id": 298,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 526,
+            "origin_id": 303,
+            "origin_slot": 0,
+            "target_id": 304,
+            "target_slot": 0,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 527,
+            "origin_id": 313,
+            "origin_slot": 0,
+            "target_id": 304,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 566,
+            "origin_id": 298,
+            "origin_slot": 0,
+            "target_id": 304,
+            "target_slot": 2,
+            "type": "FLOAT"
+          },
+          {
+            "id": 497,
+            "origin_id": 296,
+            "origin_slot": 0,
+            "target_id": 318,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 498,
+            "origin_id": 305,
+            "origin_slot": 0,
+            "target_id": 318,
+            "target_slot": 1,
+            "type": "LATENT"
+          },
+          {
+            "id": 481,
+            "origin_id": 279,
+            "origin_slot": 0,
+            "target_id": 305,
+            "target_slot": 0,
+            "type": "VAE"
+          },
+          {
+            "id": 565,
+            "origin_id": 298,
+            "origin_slot": 1,
+            "target_id": 305,
+            "target_slot": 2,
+            "type": "INT"
+          },
+          {
+            "id": 488,
+            "origin_id": 283,
+            "origin_slot": 0,
+            "target_id": 307,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 490,
+            "origin_id": 276,
+            "origin_slot": 0,
+            "target_id": 308,
+            "target_slot": 0,
+            "type": "NOISE"
+          },
+          {
+            "id": 491,
+            "origin_id": 282,
+            "origin_slot": 0,
+            "target_id": 308,
+            "target_slot": 1,
+            "type": "GUIDER"
+          },
+          {
+            "id": 492,
+            "origin_id": 280,
+            "origin_slot": 0,
+            "target_id": 308,
+            "target_slot": 2,
+            "type": "SAMPLER"
+          },
+          {
+            "id": 493,
+            "origin_id": 281,
+            "origin_slot": 0,
+            "target_id": 308,
+            "target_slot": 3,
+            "type": "SIGMAS"
+          },
+          {
+            "id": 494,
+            "origin_id": 278,
+            "origin_slot": 0,
+            "target_id": 308,
+            "target_slot": 4,
+            "type": "LATENT"
+          },
+          {
+            "id": 578,
+            "origin_id": 308,
+            "origin_slot": 0,
+            "target_id": 309,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 539,
+            "origin_id": 309,
+            "origin_slot": 0,
+            "target_id": 315,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 553,
+            "origin_id": 293,
+            "origin_slot": 0,
+            "target_id": 315,
+            "target_slot": 1,
+            "type": "VAE"
+          },
+          {
+            "id": 538,
+            "origin_id": 315,
+            "origin_slot": 0,
+            "target_id": 310,
+            "target_slot": 0,
+            "type": "IMAGE"
+          },
+          {
+            "id": 534,
+            "origin_id": 297,
+            "origin_slot": 0,
+            "target_id": 310,
+            "target_slot": 1,
+            "type": "AUDIO"
+          },
+          {
+            "id": 591,
+            "origin_id": 298,
+            "origin_slot": 0,
+            "target_id": 310,
+            "target_slot": 2,
+            "type": "FLOAT"
+          },
+          {
+            "id": 535,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 290,
+            "target_slot": 0,
+            "type": "IMAGE,MASK"
+          },
+          {
+            "id": 536,
+            "origin_id": 310,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "VIDEO"
+          },
+          {
+            "id": 595,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 319,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 597,
+            "origin_id": -10,
+            "origin_slot": 3,
+            "target_id": 312,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 598,
+            "origin_id": -10,
+            "origin_slot": 4,
+            "target_id": 299,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 599,
+            "origin_id": -10,
+            "origin_slot": 5,
+            "target_id": 301,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 601,
+            "origin_id": -10,
+            "origin_slot": 8,
+            "target_id": 316,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 602,
+            "origin_id": -10,
+            "origin_slot": 9,
+            "target_id": 285,
+            "target_slot": 1,
+            "type": "COMBO"
+          },
+          {
+            "id": 604,
+            "origin_id": -10,
+            "origin_slot": 8,
+            "target_id": 279,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 605,
+            "origin_id": -10,
+            "origin_slot": 8,
+            "target_id": 317,
+            "target_slot": 1,
+            "type": "COMBO"
+          },
+          {
+            "id": 606,
+            "origin_id": -10,
+            "origin_slot": 10,
+            "target_id": 317,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 607,
+            "origin_id": -10,
+            "origin_slot": 11,
+            "target_id": 311,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 624,
+            "origin_id": -10,
+            "origin_slot": 6,
+            "target_id": 300,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 627,
+            "origin_id": 317,
+            "origin_slot": 0,
+            "target_id": 313,
+            "target_slot": 0,
+            "type": "CLIP"
+          },
+          {
+            "id": 628,
+            "origin_id": 301,
+            "origin_slot": 0,
+            "target_id": 323,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 629,
+            "origin_id": 300,
+            "origin_slot": 0,
+            "target_id": 323,
+            "target_slot": 1,
+            "type": "INT"
+          },
+          {
+            "id": 630,
+            "origin_id": 323,
+            "origin_slot": 1,
+            "target_id": 305,
+            "target_slot": 1,
+            "type": "INT"
+          },
+          {
+            "id": 631,
+            "origin_id": 323,
+            "origin_slot": 1,
+            "target_id": 295,
+            "target_slot": 2,
+            "type": "INT"
+          },
+          {
+            "id": 634,
+            "origin_id": 324,
+            "origin_slot": 1,
+            "target_id": 325,
+            "target_slot": 0,
+            "type": "CLIP"
+          },
+          {
+            "id": 635,
+            "origin_id": 327,
+            "origin_slot": 0,
+            "target_id": 326,
+            "target_slot": 0,
+            "type": "*"
+          },
+          {
+            "id": 636,
+            "origin_id": 325,
+            "origin_slot": 0,
+            "target_id": 327,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 637,
+            "origin_id": 328,
+            "origin_slot": 0,
+            "target_id": 327,
+            "target_slot": 2,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 638,
+            "origin_id": 327,
+            "origin_slot": 0,
+            "target_id": 303,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 639,
+            "origin_id": 319,
+            "origin_slot": 0,
+            "target_id": 325,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 640,
+            "origin_id": 319,
+            "origin_slot": 0,
+            "target_id": 327,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 641,
+            "origin_id": 285,
+            "origin_slot": 0,
+            "target_id": 324,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 642,
+            "origin_id": 317,
+            "origin_slot": 0,
+            "target_id": 303,
+            "target_slot": 0,
+            "type": "CLIP"
+          },
+          {
+            "id": 643,
+            "origin_id": 317,
+            "origin_slot": 0,
+            "target_id": 324,
+            "target_slot": 1,
+            "type": "CLIP"
+          },
+          {
+            "id": 644,
+            "origin_id": -10,
+            "origin_slot": 2,
+            "target_id": 328,
+            "target_slot": 0,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 645,
+            "origin_id": -10,
+            "origin_slot": 12,
+            "target_id": 324,
+            "target_slot": 2,
+            "type": "COMBO"
+          },
+          {
+            "id": 646,
+            "origin_id": -10,
+            "origin_slot": 7,
+            "target_id": 277,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 648,
+            "origin_id": 290,
+            "origin_slot": 0,
+            "target_id": 330,
+            "target_slot": 0,
+            "type": "IMAGE,MASK"
+          },
+          {
+            "id": 649,
+            "origin_id": 330,
+            "origin_slot": 0,
+            "target_id": 289,
+            "target_slot": 0,
+            "type": "IMAGE"
+          },
+          {
+            "id": 650,
+            "origin_id": 330,
+            "origin_slot": 0,
+            "target_id": 325,
+            "target_slot": 1,
+            "type": "IMAGE"
+          }
+        ],
+        "inputNode": {
+          "id": -10
+        },
+        "outputNode": {
+          "id": -20
+        },
+        "inputs": [
+          {
+            "name": "input",
+            "label": "first_frame",
+            "type": "IMAGE,MASK",
+            "linkIds": [
+              535
+            ]
+          },
+          {
+            "name": "value",
+            "label": "prompt",
+            "type": "STRING",
+            "linkIds": [
+              595
+            ]
+          },
+          {
+            "name": "value_1",
+            "label": "prompt_enhance",
+            "type": "BOOLEAN",
+            "linkIds": [
+              644
+            ]
+          },
+          {
+            "name": "value_2",
+            "label": "width",
+            "type": "INT",
+            "linkIds": [
+              597
+            ]
+          },
+          {
+            "name": "value_3",
+            "label": "height",
+            "type": "INT",
+            "linkIds": [
+              598
+            ]
+          },
+          {
+            "name": "value_4",
+            "label": "duration",
+            "type": "INT",
+            "linkIds": [
+              599
+            ]
+          },
+          {
+            "name": "value_5",
+            "label": "fps",
+            "type": "INT",
+            "linkIds": [
+              624
+            ]
+          },
+          {
+            "name": "noise_seed",
+            "label": "seed",
+            "type": "INT",
+            "linkIds": [
+              646
+            ]
+          },
+          {
+            "name": "ckpt_name",
+            "type": "COMBO",
+            "linkIds": [
+              601,
+              604,
+              605
+            ]
+          },
+          {
+            "name": "lora_name",
+            "label": "distilled_lora",
+            "type": "COMBO",
+            "linkIds": [
+              602
+            ]
+          },
+          {
+            "name": "text_encoder",
+            "label": "text_encoder",
+            "type": "COMBO",
+            "linkIds": [
+              606
+            ]
+          },
+          {
+            "name": "model_name",
+            "label": "latent_upscale_model",
+            "type": "COMBO",
+            "linkIds": [
+              607
+            ]
+          },
+          {
+            "name": "lora_name_1",
+            "label": "lora",
+            "type": "COMBO",
+            "linkIds": [
+              645
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "VIDEO",
+            "type": "VIDEO",
+            "linkIds": [
+              536
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": 276,
+            "type": "RandomNoise",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "NOISE",
+                "type": "NOISE",
+                "links": [
+                  490
+                ]
+              }
+            ],
+            "widgets_values": [
+              42,
+              "fixed"
+            ]
+          },
+          {
+            "id": 277,
+            "type": "RandomNoise",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "noise_seed",
+                "type": "INT",
+                "link": 646,
+                "widget": {
+                  "name": "noise_seed"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "NOISE",
+                "type": "NOISE",
+                "links": [
+                  483
+                ]
+              }
+            ],
+            "widgets_values": [
+              60540193790228,
+              "randomize"
+            ]
+          },
+          {
+            "id": 278,
+            "type": "LTXVConcatAVLatent",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "video_latent",
+                "type": "LATENT",
+                "link": 512
+              },
+              {
+                "name": "audio_latent",
+                "type": "LATENT",
+                "link": 513
+              }
+            ],
+            "outputs": [
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": [
+                  494
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 279,
+            "type": "LTXVAudioVAELoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "ckpt_name",
+                "type": "COMBO",
+                "link": 604,
+                "widget": {
+                  "name": "ckpt_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Audio VAE",
+                "type": "VAE",
+                "links": [
+                  481,
+                  496
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors"
+            ]
+          },
+          {
+            "id": 280,
+            "type": "KSamplerSelect",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "SAMPLER",
+                "type": "SAMPLER",
+                "links": [
+                  492
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 281,
+            "type": "ManualSigmas",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "SIGMAS",
+                "type": "SIGMAS",
+                "links": [
+                  493
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 282,
+            "type": "CFGGuider",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 478
+              },
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 479
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 480
+              }
+            ],
+            "outputs": [
+              {
+                "name": "GUIDER",
+                "type": "GUIDER",
+                "links": [
+                  491
+                ]
+              }
+            ],
+            "widgets_values": [
+              1
+            ]
+          },
+          {
+            "id": 283,
+            "type": "SamplerCustomAdvanced",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "noise",
+                "type": "NOISE",
+                "link": 483
+              },
+              {
+                "name": "guider",
+                "type": "GUIDER",
+                "link": 484
+              },
+              {
+                "name": "sampler",
+                "type": "SAMPLER",
+                "link": 485
+              },
+              {
+                "name": "sigmas",
+                "type": "SIGMAS",
+                "link": 544
+              },
+              {
+                "name": "latent_image",
+                "type": "LATENT",
+                "link": 487
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output",
+                "type": "LATENT",
+                "links": [
+                  488
+                ]
+              },
+              {
+                "name": "denoised_output",
+                "type": "LATENT",
+                "links": []
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 284,
+            "type": "LTXVCropGuides",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 475
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 476
+              },
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "link": 477
+              }
+            ],
+            "outputs": [
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "links": [
+                  479
+                ]
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "links": [
+                  480
+                ]
+              },
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": []
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 285,
+            "type": "LoraLoaderModelOnly",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 520
+              },
+              {
+                "name": "lora_name",
+                "type": "COMBO",
+                "link": 602,
+                "widget": {
+                  "name": "lora_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  478,
+                  541,
+                  641
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              0.5
+            ]
+          },
+          {
+            "id": 287,
+            "type": "LTXVLatentUpsampler",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "samples",
+                "type": "LATENT",
+                "link": 547
+              },
+              {
+                "name": "upscale_model",
+                "type": "LATENT_UPSCALE_MODEL",
+                "link": 545
+              },
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 554
+              }
+            ],
+            "outputs": [
+              {
+                "name": "LATENT",
+                "type": "LATENT",
+                "links": [
+                  548
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 288,
+            "type": "LTXVImgToVideoInplace",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 552
+              },
+              {
+                "name": "image",
+                "type": "IMAGE",
+                "link": 515
+              },
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "link": 548
+              },
+              {
+                "name": "bypass",
+                "type": "BOOLEAN",
+                "link": 543,
+                "widget": {
+                  "name": "bypass"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": [
+                  512
+                ]
+              }
+            ],
+            "widgets_values": [
+              1,
+              false
+            ]
+          },
+          {
+            "id": 289,
+            "type": "LTXVPreprocess",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "image",
+                "type": "IMAGE",
+                "link": 649
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output_image",
+                "type": "IMAGE",
+                "links": [
+                  510,
+                  515
+                ]
+              }
+            ],
+            "widgets_values": [
+              18
+            ]
+          },
+          {
+            "id": 290,
+            "type": "ResizeImageMaskNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "input",
+                "type": "IMAGE,MASK",
+                "link": 535
+              },
+              {
+                "name": "resize_type.width",
+                "type": "INT",
+                "link": 558,
+                "widget": {
+                  "name": "resize_type.width"
+                }
+              },
+              {
+                "name": "resize_type.height",
+                "type": "INT",
+                "link": 559,
+                "widget": {
+                  "name": "resize_type.height"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "resized",
+                "type": "IMAGE,MASK",
+                "links": [
+                  648
+                ]
+              }
+            ],
+            "widgets_values": [
+              "scale dimensions",
+              1920,
+              1088,
+              "center",
+              "lanczos"
+            ]
+          },
+          {
+            "id": 291,
+            "type": "KSamplerSelect",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "SAMPLER",
+                "type": "SAMPLER",
+                "links": [
+                  485
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 292,
+            "type": "ComfyMathExpression",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "values.a",
+                "label": "a",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": 560
+              },
+              {
+                "name": "values.b",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": null
+              },
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  561
+                ]
+              },
+              {
+                "name": "BOOL",
+                "type": "BOOLEAN",
+                "links": null
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 293,
+            "type": "Reroute",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "",
+                "type": "*",
+                "link": 557
+              }
+            ],
+            "outputs": [
+              {
+                "name": "",
+                "type": "VAE",
+                "links": [
+                  552,
+                  553,
+                  554
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 294,
+            "type": "ComfyMathExpression",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "values.a",
+                "label": "a",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": 562
+              },
+              {
+                "name": "values.b",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": null
+              },
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  563
+                ]
+              },
+              {
+                "name": "BOOL",
+                "type": "BOOLEAN",
+                "links": null
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 295,
+            "type": "EmptyLTXVLatentVideo",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "width",
+                "type": "INT",
+                "link": 561,
+                "widget": {
+                  "name": "width"
+                }
+              },
+              {
+                "name": "height",
+                "type": "INT",
+                "link": 563,
+                "widget": {
+                  "name": "height"
+                }
+              },
+              {
+                "name": "length",
+                "type": "INT",
+                "link": 631,
+                "widget": {
+                  "name": "length"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "LATENT",
+                "type": "LATENT",
+                "links": [
+                  511
+                ]
+              }
+            ],
+            "widgets_values": [
+              768,
+              512,
+              97,
+              1
+            ]
+          },
+          {
+            "id": 296,
+            "type": "LTXVImgToVideoInplace",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 556
+              },
+              {
+                "name": "image",
+                "type": "IMAGE",
+                "link": 510
+              },
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "link": 511
+              },
+              {
+                "name": "bypass",
+                "type": "BOOLEAN",
+                "link": 542,
+                "widget": {
+                  "name": "bypass"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": [
+                  497
+                ]
+              }
+            ],
+            "widgets_values": [
+              0.7,
+              false
+            ]
+          },
+          {
+            "id": 297,
+            "type": "LTXVAudioVAEDecode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "samples",
+                "type": "LATENT",
+                "link": 495
+              },
+              {
+                "name": "audio_vae",
+                "label": "Audio VAE",
+                "type": "VAE",
+                "link": 496
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Audio",
+                "type": "AUDIO",
+                "links": [
+                  534
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 298,
+            "type": "ComfyMathExpression",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "values.a",
+                "label": "a",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": 564
+              },
+              {
+                "name": "values.b",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": [
+                  566,
+                  591
+                ]
+              },
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  565
+                ]
+              },
+              {
+                "name": "BOOL",
+                "type": "BOOLEAN",
+                "links": null
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 299,
+            "type": "PrimitiveInt",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "INT",
+                "link": 598,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  559,
+                  562
+                ]
+              }
+            ],
+            "widgets_values": [
+              720,
+              "fixed"
+            ]
+          },
+          {
+            "id": 300,
+            "type": "PrimitiveInt",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "INT",
+                "link": 624,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  564,
+                  629
+                ]
+              }
+            ],
+            "widgets_values": [
+              25,
+              "fixed"
+            ]
+          },
+          {
+            "id": 301,
+            "type": "PrimitiveInt",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "INT",
+                "link": 599,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  628
+                ]
+              }
+            ],
+            "widgets_values": [
+              5,
+              "fixed"
+            ]
+          },
+          {
+            "id": 302,
+            "type": "PrimitiveBoolean",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "BOOLEAN",
+                "type": "BOOLEAN",
+                "links": [
+                  542,
+                  543
+                ]
+              }
+            ],
+            "widgets_values": [
+              false
+            ]
+          },
+          {
+            "id": 303,
+            "type": "CLIPTextEncode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 642
+              },
+              {
+                "name": "text",
+                "type": "STRING",
+                "link": 638,
+                "widget": {
+                  "name": "text"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "CONDITIONING",
+                "type": "CONDITIONING",
+                "links": [
+                  526
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 304,
+            "type": "LTXVConditioning",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 526
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 527
+              },
+              {
+                "name": "frame_rate",
+                "type": "FLOAT",
+                "link": 566,
+                "widget": {
+                  "name": "frame_rate"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "links": [
+                  475,
+                  518
+                ]
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "links": [
+                  476,
+                  519
+                ]
+              }
+            ],
+            "widgets_values": [
+              24
+            ]
+          },
+          {
+            "id": 305,
+            "type": "LTXVEmptyLatentAudio",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "audio_vae",
+                "type": "VAE",
+                "link": 481
+              },
+              {
+                "name": "frames_number",
+                "type": "INT",
+                "link": 630,
+                "widget": {
+                  "name": "frames_number"
+                }
+              },
+              {
+                "name": "frame_rate",
+                "type": "FLOAT,INT",
+                "link": 565,
+                "widget": {
+                  "name": "frame_rate"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "Latent",
+                "type": "LATENT",
+                "links": [
+                  498
+                ]
+              }
+            ],
+            "widgets_values": [
+              97,
+              25,
+              1
+            ]
+          },
+          {
+            "id": 306,
+            "type": "ManualSigmas",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "SIGMAS",
+                "type": "SIGMAS",
+                "links": [
+                  544
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 307,
+            "type": "LTXVSeparateAVLatent",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "av_latent",
+                "type": "LATENT",
+                "link": 488
+              }
+            ],
+            "outputs": [
+              {
+                "name": "video_latent",
+                "type": "LATENT",
+                "links": [
+                  477,
+                  547
+                ]
+              },
+              {
+                "name": "audio_latent",
+                "type": "LATENT",
+                "links": [
+                  513
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 308,
+            "type": "SamplerCustomAdvanced",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "noise",
+                "type": "NOISE",
+                "link": 490
+              },
+              {
+                "name": "guider",
+                "type": "GUIDER",
+                "link": 491
+              },
+              {
+                "name": "sampler",
+                "type": "SAMPLER",
+                "link": 492
+              },
+              {
+                "name": "sigmas",
+                "type": "SIGMAS",
+                "link": 493
+              },
+              {
+                "name": "latent_image",
+                "type": "LATENT",
+                "link": 494
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output",
+                "type": "LATENT",
+                "links": [
+                  578
+                ]
+              },
+              {
+                "name": "denoised_output",
+                "type": "LATENT",
+                "links": []
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 309,
+            "type": "LTXVSeparateAVLatent",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "av_latent",
+                "type": "LATENT",
+                "link": 578
+              }
+            ],
+            "outputs": [
+              {
+                "name": "video_latent",
+                "type": "LATENT",
+                "links": [
+                  539
+                ]
+              },
+              {
+                "name": "audio_latent",
+                "type": "LATENT",
+                "links": [
+                  495
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 310,
+            "type": "CreateVideo",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "images",
+                "type": "IMAGE",
+                "link": 538
+              },
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "link": 534
+              },
+              {
+                "name": "fps",
+                "type": "FLOAT",
+                "link": 591,
+                "widget": {
+                  "name": "fps"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "VIDEO",
+                "type": "VIDEO",
+                "links": [
+                  536
+                ]
+              }
+            ],
+            "widgets_values": [
+              24,
+              8,
+              "sRGB"
+            ]
+          },
+          {
+            "id": 311,
+            "type": "LatentUpscaleModelLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model_name",
+                "type": "COMBO",
+                "link": 607,
+                "widget": {
+                  "name": "model_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "LATENT_UPSCALE_MODEL",
+                "type": "LATENT_UPSCALE_MODEL",
+                "links": [
+                  545
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors"
+            ]
+          },
+          {
+            "id": 312,
+            "type": "PrimitiveInt",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "INT",
+                "link": 597,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  558,
+                  560
+                ]
+              }
+            ],
+            "widgets_values": [
+              1280,
+              "fixed"
+            ]
+          },
+          {
+            "id": 313,
+            "type": "CLIPTextEncode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 627
+              }
+            ],
+            "outputs": [
+              {
+                "name": "CONDITIONING",
+                "type": "CONDITIONING",
+                "links": [
+                  527
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 314,
+            "type": "CFGGuider",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 541
+              },
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 518
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 519
+              }
+            ],
+            "outputs": [
+              {
+                "name": "GUIDER",
+                "type": "GUIDER",
+                "links": [
+                  484
+                ]
+              }
+            ],
+            "widgets_values": [
+              1
+            ]
+          },
+          {
+            "id": 315,
+            "type": "VAEDecodeTiled",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "samples",
+                "type": "LATENT",
+                "link": 539
+              },
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 553
+              }
+            ],
+            "outputs": [
+              {
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "links": [
+                  538
+                ]
+              }
+            ],
+            "widgets_values": [
+              768,
+              64,
+              4096,
+              4
+            ]
+          },
+          {
+            "id": 316,
+            "type": "CheckpointLoaderSimple",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "ckpt_name",
+                "type": "COMBO",
+                "link": 601,
+                "widget": {
+                  "name": "ckpt_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  520
+                ]
+              },
+              {
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": []
+              },
+              {
+                "name": "VAE",
+                "type": "VAE",
+                "links": [
+                  556,
+                  557
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors"
+            ]
+          },
+          {
+            "id": 317,
+            "type": "LTXAVTextEncoderLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "text_encoder",
+                "type": "COMBO",
+                "link": 606,
+                "widget": {
+                  "name": "text_encoder"
+                }
+              },
+              {
+                "name": "ckpt_name",
+                "type": "COMBO",
+                "link": 605,
+                "widget": {
+                  "name": "ckpt_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": [
+                  627,
+                  642,
+                  643
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              "fixture-model.safetensors",
+              "default"
+            ]
+          },
+          {
+            "id": 318,
+            "type": "LTXVConcatAVLatent",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "video_latent",
+                "type": "LATENT",
+                "link": 497
+              },
+              {
+                "name": "audio_latent",
+                "type": "LATENT",
+                "link": 498
+              }
+            ],
+            "outputs": [
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": [
+                  487
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 319,
+            "type": "PrimitiveStringMultiline",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "STRING",
+                "link": 595,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  639,
+                  640
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 323,
+            "type": "ComfyMathExpression",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "values.a",
+                "label": "a",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": 628
+              },
+              {
+                "name": "values.b",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": 629
+              },
+              {
+                "name": "values.c",
+                "type": "FLOAT,INT,BOOLEAN",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "name": "FLOAT",
+                "type": "FLOAT",
+                "links": null
+              },
+              {
+                "name": "INT",
+                "type": "INT",
+                "links": [
+                  630,
+                  631
+                ]
+              },
+              {
+                "name": "BOOL",
+                "type": "BOOLEAN",
+                "links": null
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 324,
+            "type": "LoraLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 641
+              },
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 643
+              },
+              {
+                "name": "lora_name",
+                "type": "COMBO",
+                "link": 645,
+                "widget": {
+                  "name": "lora_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": null
+              },
+              {
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": [
+                  634
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              1,
+              1
+            ]
+          },
+          {
+            "id": 325,
+            "type": "TextGenerateLTX2Prompt",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 634
+              },
+              {
+                "name": "image",
+                "type": "IMAGE",
+                "link": 650
+              },
+              {
+                "name": "video",
+                "type": "IMAGE",
+                "link": null
+              },
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "link": null
+              },
+              {
+                "name": "prompt",
+                "type": "STRING",
+                "link": 639,
+                "widget": {
+                  "name": "prompt"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "generated_text",
+                "type": "STRING",
+                "links": [
+                  636
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture",
+              2048,
+              "on",
+              0.7,
+              64,
+              0.95,
+              0.05,
+              1.05,
+              0,
+              0,
+              false,
+              true
+            ]
+          },
+          {
+            "id": 326,
+            "type": "PreviewAny",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "source",
+                "type": "*",
+                "link": 635
+              }
+            ],
+            "outputs": [
+              {
+                "name": "STRING",
+                "type": "STRING",
+                "links": []
+              }
+            ],
+            "widgets_values": []
+          },
+          {
+            "id": 327,
+            "type": "ComfySwitchNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "on_false",
+                "type": "STRING",
+                "link": 640
+              },
+              {
+                "name": "on_true",
+                "type": "STRING",
+                "link": 636
+              },
+              {
+                "name": "switch",
+                "type": "BOOLEAN",
+                "link": 637,
+                "widget": {
+                  "name": "switch"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output",
+                "type": "STRING",
+                "links": [
+                  635,
+                  638
+                ]
+              }
+            ],
+            "widgets_values": [
+              false
+            ]
+          },
+          {
+            "id": 328,
+            "type": "PrimitiveBoolean",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "value",
+                "type": "BOOLEAN",
+                "link": 644,
+                "widget": {
+                  "name": "value"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "BOOLEAN",
+                "type": "BOOLEAN",
+                "links": [
+                  637
+                ]
+              }
+            ],
+            "widgets_values": [
+              false
+            ]
+          },
+          {
+            "id": 330,
+            "type": "ResizeImageMaskNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "input",
+                "type": "IMAGE,MASK",
+                "link": 648
+              }
+            ],
+            "outputs": [
+              {
+                "name": "resized",
+                "type": "IMAGE,MASK",
+                "links": [
+                  649,
+                  650
+                ]
+              }
+            ],
+            "widgets_values": [
+              "scale longer dimension",
+              1536,
+              "area"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

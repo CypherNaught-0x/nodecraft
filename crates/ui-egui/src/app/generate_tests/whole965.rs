@@ -1,4 +1,4 @@
-//! ⌘/Ctrl+Enter and Run workflow (#965): a run of the whole canvas is quoted and confirmed like a
+//! Command+Enter and Run workflow (#965): a run of the whole canvas is quoted and confirmed like a
 //! card's own run, and a confirmed run starts exactly the cards it quoted.
 use super::*;
 
@@ -56,7 +56,7 @@ fn ctrl_enter_quotes_what_changed_and_starts_nothing_until_confirmed() {
     let (mut h, runs) = two_cards();
     assert!(!canvas::text_input_focused(&h.ctx), "the shortcut is pressed on the canvas, not in a field");
     ctrl_enter(&mut h);
-    let confirm = h.state().run_confirm.as_ref().expect("Cmd/Ctrl+Enter asks before running");
+    let confirm = h.state().run_confirm.as_ref().expect("Command+Enter asks before running");
     assert_eq!(confirm.nodes(), [N], "the card with no result; fresh M is left alone");
     assert!(runs.lock().unwrap().is_empty(), "a quote never starts a run");
     assert!(h.query_by_label_contains("Runs 1 card: A red square.").is_some(), "the dialog names what runs");
@@ -101,7 +101,7 @@ fn nothing_to_run_says_so_without_a_dialog() {
     record_fresh(&mut h, N, 90);
     ctrl_enter(&mut h);
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some(generate::NOTHING_TO_RUN));
+    assert_eq!(h.state().notice(), Some(generate::NOTHING_TO_RUN));
     // An empty canvas has no workflow either.
     for id in [N, M] {
         h.state_mut().session.dispatch("node.remove", &json!({"canvas": C, "id": id})).unwrap();
@@ -109,7 +109,7 @@ fn nothing_to_run_says_so_without_a_dialog() {
     h.state_mut().dispatch_palette_command("run.workflow");
     h.run();
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some(generate::NO_WORKFLOW));
+    assert_eq!(h.state().notice(), Some(generate::NO_WORKFLOW));
     assert!(runs.lock().unwrap().is_empty());
 }
 

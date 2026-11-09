@@ -222,7 +222,7 @@ pub(super) fn decode_gltf(bytes: &[u8], limits: &MeshLimits) -> Result<Mesh, Med
 impl<'a> Reader<'a> {
     fn new(json: &[u8], bin: Option<&'a [u8]>, limits: &'a MeshLimits) -> Result<Self, MediaError> {
         let (values, objects) = json_values(json);
-        if values > MAX_JSON_VALUES || objects > MAX_JSON_OBJECTS {
+        if values > MAX_JSON_VALUES.min(limits.max_json_values) || objects > MAX_JSON_OBJECTS.min(limits.max_json_objects) {
             return Err(MediaError::LimitExceeded("the glTF JSON holds too many values".into()));
         }
         let root: Root = serde_json::from_slice(json).map_err(|e| corrupt(&format!("its JSON is not valid glTF ({e})")))?;
@@ -423,7 +423,7 @@ impl<'a> Reader<'a> {
             max_input_bytes: self.limits.max_input_bytes as u64,
             max_width: side.saturating_mul(4),
             max_height: side.saturating_mul(4),
-            max_alloc: 512 * 1024 * 1024,
+            max_alloc: self.limits.max_texture_alloc.min(512 * 1024 * 1024),
         };
         let meta = crate::probe_image(&bytes, &limits).ok()?;
         if u64::from(meta.width).saturating_mul(u64::from(meta.height)) > self.limits.max_texture_pixels {

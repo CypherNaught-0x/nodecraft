@@ -72,7 +72,7 @@ fn templates953_pointer_refresh_retrieves_only_selected_version_and_adds_it_as_o
     h.run();
     h.run();
     h.run();
-    assert_eq!(&*calls.borrow(), &["index"], "notice={:?}, busy={}", h.state().notice, h.state().template_fetch.as_ref().unwrap().waiting());
+    assert_eq!(&*calls.borrow(), &["index"], "notice={:?}, busy={}", h.state().notice(), h.state().template_fetch.as_ref().unwrap().waiting());
     assert_eq!(h.state().session.document(), &before);
     h.get_by_label("Generate text · v2");
     h.get_by_label("Retrieve template").click();
@@ -84,7 +84,7 @@ fn templates953_pointer_refresh_retrieves_only_selected_version_and_adds_it_as_o
     assert_eq!(h.get_all_by_label("Add template").count(), 2);
     h.get_all_by_label("Add template").nth(1).unwrap().click();
     h.run();
-    assert!(h.state().session.document().canvases().contains_key(&entry.canvas), "{:?}", h.state().notice);
+    assert!(h.state().session.document().canvases().contains_key(&entry.canvas), "{:?}", h.state().notice());
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -202,14 +202,24 @@ fn templates954_pointer_update_shows_status_then_clear_removes_downloads() {
     h.run();
     h.run();
     h.run();
-    assert_eq!(&*asked.borrow(), &["update"], "notice={:?}", h.state().notice);
-    assert!(h.get_all_by_label("1 template was downloaded and verified.").next().is_some(), "{:?}", h.state().notice);
+    assert_eq!(&*asked.borrow(), &["update"], "notice={:?}", h.state().notice());
+    assert!(h.get_all_by_label("1 template was downloaded and verified.").next().is_some(), "{:?}", h.state().notice());
     let status = h.state_mut().session.dispatch("templates.status", &json!({})).unwrap();
     assert_eq!(status["pending"], json!(false));
     assert_eq!(status["cache"]["files"], json!(1));
     assert_eq!(h.state().session.document(), &before, "updating never edits the project");
     assert_eq!(h.get_all_by_label("Add template").count(), 2);
     h.get_by_label("Clear downloaded").click();
+    h.run();
+    assert!(h.query_by_label("Clear 1 downloaded template?").is_some(), "#1111: the first click asks");
+    assert_eq!(nodecraft_engine::templates::catalog::cached(&h.state().session), 1, "nothing is cleared yet");
+    h.get_by_label("Keep").click();
+    h.run();
+    assert!(h.query_by_label("Clear 1 downloaded template?").is_none());
+    assert_eq!(nodecraft_engine::templates::catalog::cached(&h.state().session), 1);
+    h.get_by_label("Clear downloaded").click();
+    h.run();
+    h.get_by_label("Remove").click();
     h.run();
     h.run();
     h.run();
@@ -242,7 +252,7 @@ fn templates954_failed_update_is_shown_and_cache_problems_are_reported() {
     h.run();
     h.run();
     h.run();
-    assert!(h.get_all_by_label("Templates were not updated: The template repository didn't answer in time").next().is_some(), "{:?}", h.state().notice);
+    assert!(h.get_all_by_label("Templates were not updated: The template repository didn't answer in time").next().is_some(), "{:?}", h.state().notice());
     h.get_all_by_label("Add template").next().unwrap();
 }
 

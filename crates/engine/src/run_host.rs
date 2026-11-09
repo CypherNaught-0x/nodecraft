@@ -267,6 +267,8 @@ pub struct RunHost {
     kept_handles: Arc<Mutex<crate::jobs::KeptHandles>>,
     /// Paid results that couldn't be kept, waiting for a decision (#369).
     results: Arc<Mutex<held::Held>>,
+    /// The jobs `run.jobs` lists and the cancels `run.cancel` asked for (#167).
+    job_board: Arc<Mutex<crate::run_job_cmds::Board>>,
     held_preparation: assets::Actions,
     #[cfg(test)]
     preparation_hook: Option<assets::Hook>,
@@ -367,6 +369,7 @@ impl RunHost {
             checked_at: 0,
             kept_handles: Arc::default(),
             results,
+            job_board: Arc::default(),
             held_preparation: assets::Actions::default(),
             #[cfg(test)]
             preparation_hook: None,
@@ -505,6 +508,27 @@ impl RunHost {
         for entry in gone {
             settle_unresolved(&self.budget, &entry);
             self.held.push(RunNotice::Failed { canvas: entry.canvas, node: entry.node, reason: format!("it couldn't be followed after a restart: {reason}") });
+            self.journal_changed = true;
+        }
+        self.publish_following();
+    }
+
+    /// Gives up the restored jobs of plugin provider `adapter` in `project` that weren't sent
+    /// under `current`, the grant its provider is published under now (#174): a job sent under an
+    /// older grant, version or epoch, or saved without its grant, isn't followed under this one.
+    /// Each is reported as possibly charged and settled as unresolved, as [`Self::abandon`] does.
+    pub fn abandon_other_grants(&mut self, project: ProjectId, adapter: &str, current: &crate::run_journal::PluginGrant) {
+        let (gone, waiting): (Vec<_>, Vec<_>) = std::mem::take(&mut self.parked)
+            .into_iter()
+            .partition(|entry| entry.project == project && entry.target.adapter() == adapter && entry.plugin.as_ref() != Some(current));
+        self.parked = waiting;
+        for entry in gone {
+            settle_unresolved(&self.budget, &entry);
+            let why = match entry.plugin {
+                Some(_) => "its plugin was updated or granted again since it was sent; it may have been charged",
+                None => "it was saved without the grant its plugin ran under, so it isn't followed under today's; it may have been charged",
+            };
+            self.held.push(RunNotice::Failed { canvas: entry.canvas, node: entry.node, reason: format!("it couldn't be followed after a restart: {why}") });
             self.journal_changed = true;
         }
         self.publish_following();
@@ -674,7 +698,8 @@ impl RunHost {
         })?;
         let inbox = Arc::clone(&self.inbox);
         services.register_run_host_idle(move || lock(&inbox).waiting.is_empty())?;
-        held::register(&self.results, services)
+        held::register(&self.results, services)?;
+        crate::run_job_cmds::register(&self.job_board, services)
     }
 
     /// Registers the `run.estimate` service (#663); call once, before the session is built, on a
@@ -866,20 +891,55 @@ impl RunHost {
 
     /// Starts accepted runs and absorbs finished work. UI thread; never blocks on a provider.
     pub fn pump(&mut self, session: &mut Session) -> Vec<RunNotice> {
+        self.pump_with(session, true)
+    }
+    /// The last pump before [`Self::shut_down`], when quitting (#367): records work that has
+    /// finished (results that waited for a save, say) and starts nothing. From here on nothing
+    /// new is sent either, so recording a result can't send a paid job downstream; an accepted
+    /// run still waiting stays unstarted, as at any quit.
+    pub fn pump_for_quit(&mut self, session: &mut Session) -> Vec<RunNotice> {
+        lock(&self.journal).closing = true;
+        self.pump_with(session, false)
+    }
+    fn pump_with(&mut self, session: &mut Session, start: bool) -> Vec<RunNotice> {
         let mut notices = std::mem::take(&mut self.held);
+        // Cancels asked through `run.cancel` (#167), as the queue panel's would be. One that ended
+        // meanwhile has nothing left to stop.
+        let cancels = std::mem::take(&mut lock(&self.job_board).cancels);
+        for key in cancels {
+            let _ = self.cancel(key);
+        }
         // Every accepted run starts now, before this pump records anything (see `Inbox`).
-        loop {
-            let next = lock(&self.inbox).waiting.pop_front();
-            let Some(prepared) = next else { break };
-            if let Err(error) = self.start(session, prepared, &mut notices) {
-                notices.push(RunNotice::Refused { reason: error.message });
+        if start {
+            loop {
+                let next = lock(&self.inbox).waiting.pop_front();
+                let Some(prepared) = next else { break };
+                if let Err(error) = self.start(session, prepared, &mut notices) {
+                    notices.push(RunNotice::Refused { reason: error.message });
+                }
             }
         }
         let mut settled = false;
         let mut journal_changed = false;
+        // While a background save writes, recording a result (or adopting its media) would wait
+        // for the disk on this, the UI thread (#367). Finished work stays in its mailbox, held by
+        // nobody, and is absorbed on the first pump after the save settles; nothing is refused
+        // or held for it. What touches no document still goes on: a submitted job's handle is
+        // journalled (so a crash meanwhile follows it instead of sending it again) and progress
+        // reports reach the queue panel.
+        let deferred = session.file_status().saving;
         let recent = &mut self.recent;
         let charged = &mut self.charged;
         self.runs.retain_mut(|active| {
+            if deferred {
+                note_submitted(active);
+                let mut mailbox = lock(&active.mailbox);
+                // Absorbing again later is harmless: streamed text is taken as it is absorbed.
+                active.jobs.absorb_reports(&mut mailbox.reports);
+                drop(mailbox);
+                journal_changed |= std::mem::take(&mut active.journal_changed);
+                return true;
+            }
             // Read first: everything the driver reported before it returned is then absorbed.
             let ended = lock(&active.mailbox).ended;
             settled |= absorb(session, active, &mut notices, &self.runtime, &self.budget, &self.results);
@@ -894,7 +954,8 @@ impl RunHost {
             !ended
         });
         lock(&self.inbox).running = self.runs.len();
-        let (resumed, handled) = self.resumes.absorb(session, &self.budget, &self.results, &mut notices);
+        let (resumed, handled) =
+            if deferred { (Vec::new(), self.resumes.note_submitted()) } else { self.resumes.absorb(session, &self.budget, &self.results, &mut notices) };
         journal_changed |= handled;
         for ended in resumed {
             settled = true;
@@ -906,7 +967,9 @@ impl RunHost {
             }
         }
         keep_recent(&mut self.recent, &mut self.charged, self.resumes.jobs.ended.drain(..));
-        act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
+        if !deferred {
+            act_on_held(session, &self.results, &mut notices, &self.runtime, &mut self.held_preparation);
+        }
         self.estimates.pump(session, &self.runtime, &mut notices);
         if settled {
             lock(&self.journal).reconciled = false;
@@ -923,6 +986,8 @@ impl RunHost {
         }
         *lock(&self.mapping_running) = self.running();
         self.publish_following();
+        let jobs = self.jobs();
+        lock(&self.job_board).publish(jobs);
         notices
     }
 
@@ -1267,6 +1332,7 @@ fn prepare(session: &Session, active: &mut Active, spec: &nodecraft_exec::schedu
                 recipe: active.run.resume_recipe(session.kinds(), spec.id),
                 launches: 0,
                 staged: None,
+                plugin: session.plugins().provider(queued.provider.target().adapter()).map(|p| crate::run_journal::PluginGrant::of(&p.stamp)),
             };
             lock(&active.templates).insert(spec.id, template);
             active.preparation.register(spec.id, Arc::clone(&active.asset_source), outputs.clone());

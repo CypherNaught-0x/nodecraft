@@ -151,3 +151,23 @@ fn a_model_renders_lit_unlit_and_as_lines_over_the_background() {
     assert!(line[1] > 100 && line[0] == 0, "a green line through the middle: {line:?}");
     assert_eq!(corner, [0, 0, 255, 255]);
 }
+
+#[test]
+fn worker1013_prepared_upload_matches_reference_geometry_pixels_and_buffers() {
+    let Some((device, queue)) = device() else {
+        eprintln!("native GPU unavailable; prepared upload comparison skipped");
+        return;
+    };
+    let bytes = b"v -1 -1 0 1 1 1\nv 1 -1 0 1 1 1\nv 1 1 0 1 1 1\nv -1 1 0 1 1 1\nf 1 2 3 4\n";
+    let data = nodecraft_mesh_preview::prepare(bytes, nodecraft_mesh_preview::Profile::Native).unwrap();
+    let prepared = GpuMesh::upload_prepared(&device, &queue, &data).unwrap();
+    let edges = [0, 1, 1, 2, 2, 0, 2, 3, 3, 0];
+    let white = [[1.; 4]; 4];
+    let reference = GpuMesh::upload(&device, &queue, quad(&white, Some(&edges))).unwrap();
+    assert_eq!(prepared.bytes(), reference.bytes());
+    assert_eq!(prepared.bytes(), data.bytes() as u64);
+    assert!(prepared.has_edges());
+    for style in [Style::Shaded, Style::Unlit, Style::Wireframe] {
+        assert_eq!(render(&device, &queue, &prepared, style), render(&device, &queue, &reference, style));
+    }
+}

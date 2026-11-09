@@ -21,6 +21,7 @@ fn text_and_media_generations_fan_out_over_their_prompt() {
                 audio: None,
                 edit: None,
                 document: None,
+                reads: None,
             }],
         }]
     };

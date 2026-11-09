@@ -27,7 +27,19 @@ pub const MAX_FILE_BYTES: usize = 4 * 1024 * 1024;
 pub const BUILTIN: &[(&str, &str)] = &[
     ("azure-openai.toml", include_str!("../../../assets/catalog/azure-openai.toml")),
     ("anthropic.toml", include_str!("../../../assets/catalog/anthropic.toml")),
+    ("bedrock.toml", include_str!("../../../assets/catalog/bedrock.toml")),
     ("deepgram.toml", include_str!("../../../assets/catalog/deepgram.toml")),
+    ("deepseek.toml", include_str!("../../../assets/catalog/deepseek.toml")),
+    ("mistral.toml", include_str!("../../../assets/catalog/mistral.toml")),
+    ("groq.toml", include_str!("../../../assets/catalog/groq.toml")),
+    ("xai.toml", include_str!("../../../assets/catalog/xai.toml")),
+    ("together.toml", include_str!("../../../assets/catalog/together.toml")),
+    ("moonshot.toml", include_str!("../../../assets/catalog/moonshot.toml")),
+    ("zai.toml", include_str!("../../../assets/catalog/zai.toml")),
+    ("perplexity.toml", include_str!("../../../assets/catalog/perplexity.toml")),
+    ("hyperbolic.toml", include_str!("../../../assets/catalog/hyperbolic.toml")),
+    ("mira.toml", include_str!("../../../assets/catalog/mira.toml")),
+    ("cohere.toml", include_str!("../../../assets/catalog/cohere.toml")),
     ("stability.toml", include_str!("../../../assets/catalog/stability.toml")),
     ("fal.toml", include_str!("../../../assets/catalog/fal.toml")),
     ("heygen.toml", include_str!("../../../assets/catalog/heygen.toml")),
@@ -43,11 +55,13 @@ pub const BUILTIN: &[(&str, &str)] = &[
     ("recraft.toml", include_str!("../../../assets/catalog/recraft.toml")),
     ("ltx.toml", include_str!("../../../assets/catalog/ltx.toml")),
     ("comfyui.toml", include_str!("../../../assets/catalog/comfyui.toml")),
+    ("comfyui-3d.toml", include_str!("../../../assets/catalog/comfyui-3d.toml")),
     ("huggingface.toml", include_str!("../../../assets/catalog/huggingface.toml")),
     ("gemini-llm.toml", include_str!("../../../assets/catalog/gemini-llm.toml")),
     ("gemini-images.toml", include_str!("../../../assets/catalog/gemini-images.toml")),
     ("gemini-video.toml", include_str!("../../../assets/catalog/gemini-video.toml")),
     ("google-gemini-images.toml", include_str!("../../../assets/catalog/google-gemini-images.toml")),
+    ("vertex-llm.toml", include_str!("../../../assets/catalog/vertex-llm.toml")),
     ("google-veo.toml", include_str!("../../../assets/catalog/google-veo.toml")),
     ("google-tts.toml", include_str!("../../../assets/catalog/google-tts.toml")),
     ("openai.toml", include_str!("../../../assets/catalog/openai.toml")),
@@ -425,6 +439,9 @@ mod alibaba_tests;
 mod recraft_tests;
 #[cfg(test)]
 mod rodin_tests;
+
+#[cfg(test)]
+mod comfy3d24_tests;
 
 #[cfg(test)]
 mod magnific38_tests;

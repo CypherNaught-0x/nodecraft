@@ -9,7 +9,7 @@ impl NodeCraftApp {
     /// them.
     pub(super) fn split_grid(&mut self, node: NodeId, rows: u32, columns: u32, t: &Tokens) {
         if self.comments.drag.is_some() || self.comments.gesture_cancelled {
-            self.notice = Some("Finish moving the discussion pin before splitting an image.".into());
+            self.notices.warning("Finish moving the discussion pin before splitting an image.");
             return;
         }
         let document = self.session.document();
@@ -20,7 +20,7 @@ impl NodeCraftApp {
             match ids::node_id(document, ("split", node, revision, index)).filter(|id| !new_ids.contains(id)) {
                 Some(id) => new_ids.push(id),
                 None => {
-                    self.notice = Some("Couldn't allocate node ids; try again.".into());
+                    self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                     return;
                 }
             }
@@ -36,7 +36,7 @@ impl NodeCraftApp {
         let size = match tile {
             Ok(tile) => super::payload_rect(&self.session, &tile, t).size(),
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         };
@@ -44,10 +44,10 @@ impl NodeCraftApp {
         let split = Split { canvas: self.canvas, node, rows, columns, ids: &new_ids, step };
         match split_grid(&mut self.session, &split) {
             Ok(made) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.replace(made.into_iter().collect());
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

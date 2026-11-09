@@ -42,11 +42,23 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `anthropic.claude-opus-5-5` | [Documentation](https://platform.claude.com/docs/en/models/overview) | 2026-10-27 |
 | `anthropic.claude-sonnet-5-5` | [Documentation](https://platform.claude.com/docs/en/models/overview) | 2026-10-27 |
 | `azure-openai.deployment` | [Documentation](https://learn.microsoft.com/en-us/azure/ai-studio/ai-services/concepts/endpoints) | 2026-10-27 |
+| `bedrock.gpt-oss-120b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-120b.html) | 2026-11-03 |
+| `bedrock.gpt-oss-20b` | [Documentation](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-openai-gpt-oss-20b.html) | 2026-11-03 |
+| `bfl.flux-2-flex` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `bfl.flux-2-klein-4b` | [Documentation](https://docs.bfl.ai/quick_start/generating_images) | 2026-10-27 |
+| `bfl.flux-2-klein-9b` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-2-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-max` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
+| `bfl.flux-kontext-pro` | [Documentation](https://api.bfl.ai/openapi.json) | 2026-11-06 |
 | `comfyui.flux-dev` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
+| `comfyui.hunyuan3d-2` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
+| `comfyui.hunyuan3d-2.1` | [Documentation](https://docs.comfy.org/tutorials/3d/hunyuan3D-2) | 2026-10-27 |
 | `comfyui.sdxl` | [Documentation](https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0) | 2026-10-27 |
 | `comfyui.workflow` | [Documentation](https://docs.comfy.org/tutorials/flux/flux-1-text-to-image) | 2026-10-27 |
 | `deepgram.nova-3` | [Documentation](https://developers.deepgram.com/docs/pre-recorded-audio) | 2026-10-27 |
+| `deepseek.flash` | [Documentation](https://api-docs.deepseek.com/quick_start/pricing) | 2026-11-08 |
+| `deepseek.v4-pro` | [Documentation](https://api-docs.deepseek.com/quick_start/pricing) | 2026-11-08 |
 | `elevenlabs.flash-v2-5` | [Documentation](https://elevenlabs.io/docs/overview/models) | 2026-10-27 |
 | `elevenlabs.multilingual-v2` | [Documentation](https://elevenlabs.io/docs/overview/models) | 2026-10-27 |
 | `elevenlabs.music` | [Documentation](https://elevenlabs.io/docs/api-reference/music/compose) | 2026-10-27 |
@@ -77,6 +89,7 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `fal.minimax-speech28-hd` | [Documentation](https://fal.ai/models/fal-ai/minimax/speech-2.8-hd/api) | 2026-10-28 |
 | `fal.minimax-music3` | [Documentation](https://fal.ai/models/minimax/music-3/api) | 2026-10-28 |
 | `fal.pika25-i2v` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/image-to-video/api) | 2026-10-28 |
+| `fal.pika25-keyframes` | [Documentation](https://fal.ai/models/fal-ai/pika/v2.5/pikaframes/api) | 2026-11-06 |
 | `fal.heygen-avatar4` | [Documentation](https://fal.ai/models/fal-ai/heygen/avatar4/image-to-video/api) | 2026-10-28 |
 | `fal.heygen-lipsync-speed` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/speed/api) | 2026-10-28 |
 | `fal.heygen-lipsync-precision` | [Documentation](https://fal.ai/models/fal-ai/heygen/v3/lipsync/precision/api) | 2026-10-28 |
@@ -117,11 +130,14 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `google-veo.veo-3.1` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
 | `google-veo.veo-3.1-fast` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
 | `google-veo.veo-3.1-lite` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/veo/3-1-generate) | 2026-10-27 |
+| `groq.gpt-oss-120b` | [Documentation](https://console.groq.com/docs/models) | 2026-11-08 |
+| `groq.gpt-oss-20b` | [Documentation](https://console.groq.com/docs/models) | 2026-11-08 |
 | `higgsfield.genjutsu-motion-transfer` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/motion-transfer) | 2026-10-27 |
 | `higgsfield.genjutsu-object-swap` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/object-swap) | 2026-10-27 |
 | `higgsfield.genjutsu-restyle` | [Documentation](https://docs.higgsfield.ai/docs/models/genjutsu/restyle) | 2026-10-27 |
 | `higgsfield.kling-2.5-turbo-i2v` | [Documentation](https://docs.higgsfield.ai/docs) | 2026-10-27 |
 | `higgsfield.soul-2` | [Documentation](https://higgsfield.ai/soul-intro) | 2026-10-27 |
+| `higgsfield.soul-2-i2i` | [Documentation](https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference) | 2026-11-06 |
 | `higgsfield.soul-id-trainer` | [Documentation](https://open.higgsfield.ai/models/soul-id/api-reference) | 2026-10-27 |
 | `huggingface.gpt-oss-120b-groq` | [Documentation](https://huggingface.co/docs/inference-providers/en/guides/gpt-oss) | 2026-10-27 |
 | `kling.image_v2_1` | [Documentation](https://kling.ai/document-api/updates/api?date=2026-02-11) | 2026-10-27 |
@@ -134,6 +150,8 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `meshy.retexture` | [Documentation](https://docs.meshy.ai/en/api/retexture) | 2026-10-27 |
 | `meshy.retexture-image` | [Documentation](https://docs.meshy.ai/en/api/retexture) | 2026-10-27 |
 | `meshy.text-to-3d` | [Documentation](https://docs.meshy.ai/en/api/text-to-3d) | 2026-10-27 |
+| `mistral.large-4` | [Documentation](https://docs.mistral.ai/models/mistral-large-4-0) | 2026-11-08 |
+| `mistral.small-4` | [Documentation](https://docs.mistral.ai/models/mistral-small-4-0-26-03) | 2026-11-08 |
 | `openai-audio.mini-tts` | [Documentation](https://developers.openai.com/api/docs/deprecations) | 2026-10-27 |
 | `openai-audio.transcribe` | [Documentation](https://developers.openai.com/api/docs/models/gpt-transcribe) | 2026-10-27 |
 | `openai-images.flare` | [Documentation](https://developers.openai.com/api/docs/guides/image-prompting) | 2026-10-27 |
@@ -157,7 +175,29 @@ The Luma download limit is NodeCraft's own 256 MiB per-result bound, not a vendo
 | `tripo.image-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.multiview-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
 | `tripo.text-to-3d` | [Documentation](https://docs.tripo3d.ai/model-generation/text-to-model-v3-0-v3-1.html) | 2026-10-27 |
+| `vertex-llm.gemini-3.8-flash` | [Documentation](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/guides/gemini-3-8-flash) | 2026-11-09 |
+| `xai.grok-4.3` | [Documentation](https://docs.x.ai/developers/pricing) | 2026-11-08 |
+| `xai.grok-4.7` | [Documentation](https://docs.x.ai/developers/models) | 2026-11-08 |
 
 MiniMax's current video, speech and music models reuse Fal (#27): H3 at explicit 480P/768P,
 Speech 2.8 HD MP3 and Music 3 stereo WAV. Their native streamed-storage requirement and exact
 scope/rates are in [provider bounds](providers.md#minimax-video-speech-and-music-through-fal-27).
+
+Additional key-only chat model capabilities were checked on 2026-11-09. Perplexity retains
+its synchronous/streamed Sonar compatibility route, which the provider reformulates as Agent API
+requests; Hyperbolic uses its replacement `.ai/inference/v1` route. These entries expose text
+only even where the service can handle other modalities.
+
+| Model id | Primary capability source | Checked |
+| --- | --- | --- |
+| `together.gpt-oss-120b` | [Documentation](https://docs.together.ai/docs/serverless/models) | 2026-11-09 |
+| `moonshot.kimi-k3` | [Documentation](https://platform.kimi.ai/docs/guide/kimi-k3-quickstart) | 2026-11-09 |
+| `zai.glm-4.6` | [Documentation](https://docs.z.ai/guides/llm/glm-4.6) | 2026-11-09 |
+| `minimax.m3` | [Documentation](https://platform.minimax.io/docs/guides/models-intro) | 2026-11-09 |
+| `perplexity.sonar` | [Documentation](https://docs.perplexity.ai/docs/agent-api/migrate-from-sonar/overview) | 2026-11-09 |
+| `hyperbolic.glm-5.3-flash` | [Documentation](https://www.hyperbolic.ai/docs/inference/quickstart) | 2026-11-09 |
+| `mira.model` | [Documentation](https://docs.mira.network/network/get-started/introduction) | 2026-11-09 |
+| `cohere.command-a` | [Documentation](https://docs.cohere.com/docs/command-a) | 2026-11-09 |
+
+The Vertex chat catalog offers Gemini 3.8 Flash on the global route. Google's Cloud documentation
+marks Gemini 2.5 Flash retired on 2026-10-20; Gemini Developer API availability is separate.

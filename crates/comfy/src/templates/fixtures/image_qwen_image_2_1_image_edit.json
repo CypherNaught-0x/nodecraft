@@ -1,0 +1,1819 @@
+{
+  "id": "54bb395d-3e60-4c94-b525-85523901575b",
+  "links": [
+    [
+      707,
+      470,
+      0,
+      472,
+      0,
+      "IMAGE"
+    ],
+    [
+      708,
+      461,
+      0,
+      472,
+      1,
+      "IMAGE"
+    ],
+    [
+      704,
+      470,
+      0,
+      459,
+      9,
+      "IMAGE"
+    ],
+    [
+      728,
+      475,
+      0,
+      459,
+      10,
+      "IMAGE"
+    ],
+    [
+      672,
+      459,
+      0,
+      461,
+      0,
+      "IMAGE"
+    ]
+  ],
+  "inputs": [],
+  "outputs": [],
+  "nodes": [
+    {
+      "id": 459,
+      "type": "bc1c967a-7f6a-4be9-a372-dad16e4f28e3",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "prompt",
+          "label": "positive_prompt",
+          "type": "STRING",
+          "link": null,
+          "widget": {
+            "name": "prompt"
+          }
+        },
+        {
+          "name": "switch_1",
+          "label": "refine_prompt",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "switch_1"
+          }
+        },
+        {
+          "name": "steps",
+          "label": "steps",
+          "type": "INT",
+          "link": null,
+          "widget": {
+            "name": "steps"
+          }
+        },
+        {
+          "name": "switch",
+          "label": "custom_size",
+          "type": "BOOLEAN",
+          "link": null,
+          "widget": {
+            "name": "switch"
+          }
+        },
+        {
+          "name": "scheduler",
+          "label": "sampler",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "scheduler"
+          }
+        },
+        {
+          "name": "scheduler_1",
+          "label": "scheduler",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "scheduler_1"
+          }
+        },
+        {
+          "name": "device",
+          "label": "cache_device",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "device"
+          }
+        },
+        {
+          "name": "dtype",
+          "label": "dtype",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "dtype"
+          }
+        },
+        {
+          "name": "clip_name_1",
+          "label": "PE_model",
+          "type": "COMBO",
+          "link": null,
+          "widget": {
+            "name": "clip_name_1"
+          }
+        },
+        {
+          "name": "images.image_1",
+          "label": "image_1",
+          "type": "IMAGE",
+          "link": 704
+        },
+        {
+          "name": "images.image_2",
+          "label": "image_2",
+          "type": "IMAGE",
+          "link": 728
+        },
+        {
+          "name": "images.image_3",
+          "label": "image_3",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_4",
+          "label": "image_4",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_5_1",
+          "label": "image_5",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_6",
+          "label": "image_6",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_7",
+          "label": "image_7",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_8",
+          "label": "image_8",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_9",
+          "label": "image_9",
+          "type": "IMAGE",
+          "link": null
+        },
+        {
+          "name": "images.image_10",
+          "label": "image_10",
+          "type": "IMAGE",
+          "link": null
+        }
+      ],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            672
+          ]
+        }
+      ],
+      "widgets_values": [
+        0,
+        "NodeCraft synthetic fixture",
+        false,
+        false,
+        4096,
+        "NodeCraft synthetic fixture",
+        1,
+        25,
+        false,
+        1024,
+        1024,
+        "euler",
+        "simple",
+        891836227295375,
+        "fixture-model.safetensors",
+        "fixture-model.safetensors",
+        "fixture-model.safetensors",
+        "auto",
+        "default",
+        "fixture-model.safetensors"
+      ]
+    },
+    {
+      "id": 461,
+      "type": "SaveImageAdvanced",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "link": 672
+        }
+      ],
+      "outputs": [
+        {
+          "name": "images",
+          "type": "IMAGE",
+          "links": [
+            708
+          ]
+        }
+      ],
+      "widgets_values": [
+        "NodeCraft",
+        "png",
+        "8-bit",
+        "sRGB"
+      ]
+    },
+    {
+      "id": 463,
+      "type": "MarkdownNote",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 470,
+      "type": "LoadImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            704,
+            707
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": null
+        }
+      ],
+      "widgets_values": [
+        "fixture.png",
+        "NodeCraft synthetic fixture"
+      ]
+    },
+    {
+      "id": 472,
+      "type": "ImageCompare",
+      "mode": 0,
+      "inputs": [
+        {
+          "name": "image_a",
+          "type": "IMAGE",
+          "link": 707
+        },
+        {
+          "name": "image_b",
+          "type": "IMAGE",
+          "link": 708
+        }
+      ],
+      "outputs": [],
+      "widgets_values": []
+    },
+    {
+      "id": 475,
+      "type": "LoadImage",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "IMAGE",
+          "type": "IMAGE",
+          "links": [
+            728
+          ]
+        },
+        {
+          "name": "MASK",
+          "type": "MASK",
+          "links": []
+        }
+      ],
+      "widgets_values": [
+        "fixture.png",
+        "NodeCraft synthetic fixture"
+      ]
+    },
+    {
+      "id": 476,
+      "type": "MarkdownNote",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "widgets_values": [
+        ""
+      ]
+    },
+    {
+      "id": 501,
+      "type": "MarkdownNote",
+      "mode": 0,
+      "inputs": [],
+      "outputs": [],
+      "widgets_values": [
+        ""
+      ]
+    }
+  ],
+  "definitions": {
+    "subgraphs": [
+      {
+        "id": "bc1c967a-7f6a-4be9-a372-dad16e4f28e3",
+        "links": [
+          {
+            "id": 649,
+            "origin_id": 454,
+            "origin_slot": 0,
+            "target_id": 457,
+            "target_slot": 1,
+            "type": "VAE"
+          },
+          {
+            "id": 650,
+            "origin_id": 457,
+            "origin_slot": 0,
+            "target_id": -20,
+            "target_slot": 0,
+            "type": "IMAGE"
+          },
+          {
+            "id": 651,
+            "origin_id": 458,
+            "origin_slot": 0,
+            "target_id": 457,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 682,
+            "origin_id": 468,
+            "origin_slot": 0,
+            "target_id": 458,
+            "target_slot": 3,
+            "type": "LATENT"
+          },
+          {
+            "id": 684,
+            "origin_id": 456,
+            "origin_slot": 0,
+            "target_id": 468,
+            "target_slot": 1,
+            "type": "LATENT"
+          },
+          {
+            "id": 688,
+            "origin_id": 451,
+            "origin_slot": 0,
+            "target_id": 469,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 689,
+            "origin_id": 469,
+            "origin_slot": 0,
+            "target_id": 458,
+            "target_slot": 0,
+            "type": "MODEL"
+          },
+          {
+            "id": 722,
+            "origin_id": 474,
+            "origin_slot": 0,
+            "target_id": 458,
+            "target_slot": 1,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 723,
+            "origin_id": 474,
+            "origin_slot": 1,
+            "target_id": 458,
+            "target_slot": 2,
+            "type": "CONDITIONING"
+          },
+          {
+            "id": 724,
+            "origin_id": 474,
+            "origin_slot": 2,
+            "target_id": 468,
+            "target_slot": 0,
+            "type": "LATENT"
+          },
+          {
+            "id": 791,
+            "origin_id": 484,
+            "origin_slot": 0,
+            "target_id": 480,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 806,
+            "origin_id": 500,
+            "origin_slot": 0,
+            "target_id": 484,
+            "target_slot": 1,
+            "type": "STRING"
+          },
+          {
+            "id": 739,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 484,
+            "target_slot": 0,
+            "type": "STRING"
+          },
+          {
+            "id": 741,
+            "origin_id": -10,
+            "origin_slot": 2,
+            "target_id": 484,
+            "target_slot": 2,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 658,
+            "origin_id": -10,
+            "origin_slot": 6,
+            "target_id": 458,
+            "target_slot": 6,
+            "type": "FLOAT"
+          },
+          {
+            "id": 659,
+            "origin_id": -10,
+            "origin_slot": 7,
+            "target_id": 458,
+            "target_slot": 5,
+            "type": "INT"
+          },
+          {
+            "id": 703,
+            "origin_id": -10,
+            "origin_slot": 8,
+            "target_id": 468,
+            "target_slot": 2,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 660,
+            "origin_id": -10,
+            "origin_slot": 9,
+            "target_id": 456,
+            "target_slot": 0,
+            "type": "INT"
+          },
+          {
+            "id": 661,
+            "origin_id": -10,
+            "origin_slot": 10,
+            "target_id": 456,
+            "target_slot": 1,
+            "type": "INT"
+          },
+          {
+            "id": 662,
+            "origin_id": -10,
+            "origin_slot": 11,
+            "target_id": 458,
+            "target_slot": 7,
+            "type": "COMBO"
+          },
+          {
+            "id": 668,
+            "origin_id": -10,
+            "origin_slot": 12,
+            "target_id": 458,
+            "target_slot": 8,
+            "type": "COMBO"
+          },
+          {
+            "id": 667,
+            "origin_id": -10,
+            "origin_slot": 13,
+            "target_id": 458,
+            "target_slot": 4,
+            "type": "INT"
+          },
+          {
+            "id": 663,
+            "origin_id": -10,
+            "origin_slot": 14,
+            "target_id": 451,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 664,
+            "origin_id": -10,
+            "origin_slot": 15,
+            "target_id": 453,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 665,
+            "origin_id": -10,
+            "origin_slot": 16,
+            "target_id": 454,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 729,
+            "origin_id": -10,
+            "origin_slot": 17,
+            "target_id": 469,
+            "target_slot": 1,
+            "type": "COMBO"
+          },
+          {
+            "id": 730,
+            "origin_id": -10,
+            "origin_slot": 18,
+            "target_id": 469,
+            "target_slot": 2,
+            "type": "COMBO"
+          },
+          {
+            "id": 746,
+            "origin_id": -10,
+            "origin_slot": 19,
+            "target_id": 477,
+            "target_slot": 0,
+            "type": "COMBO"
+          },
+          {
+            "id": 721,
+            "origin_id": 453,
+            "origin_slot": 0,
+            "target_id": 474,
+            "target_slot": 0,
+            "type": "CLIP"
+          },
+          {
+            "id": 710,
+            "origin_id": -10,
+            "origin_slot": 20,
+            "target_id": 474,
+            "target_slot": 1,
+            "type": "IMAGE"
+          },
+          {
+            "id": 720,
+            "origin_id": 454,
+            "origin_slot": 0,
+            "target_id": 474,
+            "target_slot": 2,
+            "type": "VAE"
+          },
+          {
+            "id": 743,
+            "origin_id": 480,
+            "origin_slot": 0,
+            "target_id": 474,
+            "target_slot": 3,
+            "type": "STRING"
+          },
+          {
+            "id": 727,
+            "origin_id": -10,
+            "origin_slot": 5,
+            "target_id": 474,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 725,
+            "origin_id": -10,
+            "origin_slot": 0,
+            "target_id": 474,
+            "target_slot": 5,
+            "type": "INT"
+          },
+          {
+            "id": 716,
+            "origin_id": -10,
+            "origin_slot": 26,
+            "target_id": 474,
+            "target_slot": 7,
+            "type": "IMAGE"
+          },
+          {
+            "id": 717,
+            "origin_id": -10,
+            "origin_slot": 27,
+            "target_id": 474,
+            "target_slot": 8,
+            "type": "IMAGE"
+          },
+          {
+            "id": 718,
+            "origin_id": -10,
+            "origin_slot": 28,
+            "target_id": 474,
+            "target_slot": 9,
+            "type": "IMAGE"
+          },
+          {
+            "id": 719,
+            "origin_id": -10,
+            "origin_slot": 29,
+            "target_id": 474,
+            "target_slot": 10,
+            "type": "IMAGE"
+          },
+          {
+            "id": 711,
+            "origin_id": -10,
+            "origin_slot": 21,
+            "target_id": 474,
+            "target_slot": 12,
+            "type": "IMAGE"
+          },
+          {
+            "id": 712,
+            "origin_id": -10,
+            "origin_slot": 22,
+            "target_id": 474,
+            "target_slot": 13,
+            "type": "IMAGE"
+          },
+          {
+            "id": 713,
+            "origin_id": -10,
+            "origin_slot": 23,
+            "target_id": 474,
+            "target_slot": 14,
+            "type": "IMAGE"
+          },
+          {
+            "id": 714,
+            "origin_id": -10,
+            "origin_slot": 24,
+            "target_id": 474,
+            "target_slot": 15,
+            "type": "IMAGE"
+          },
+          {
+            "id": 715,
+            "origin_id": -10,
+            "origin_slot": 25,
+            "target_id": 474,
+            "target_slot": 16,
+            "type": "IMAGE"
+          },
+          {
+            "id": 750,
+            "origin_id": -10,
+            "origin_slot": 20,
+            "target_id": 485,
+            "target_slot": 0,
+            "type": "IMAGE"
+          },
+          {
+            "id": 779,
+            "origin_id": -10,
+            "origin_slot": 21,
+            "target_id": 485,
+            "target_slot": 1,
+            "type": "IMAGE"
+          },
+          {
+            "id": 780,
+            "origin_id": -10,
+            "origin_slot": 22,
+            "target_id": 485,
+            "target_slot": 2,
+            "type": "IMAGE"
+          },
+          {
+            "id": 781,
+            "origin_id": -10,
+            "origin_slot": 23,
+            "target_id": 485,
+            "target_slot": 3,
+            "type": "IMAGE"
+          },
+          {
+            "id": 782,
+            "origin_id": -10,
+            "origin_slot": 24,
+            "target_id": 485,
+            "target_slot": 4,
+            "type": "IMAGE"
+          },
+          {
+            "id": 783,
+            "origin_id": -10,
+            "origin_slot": 25,
+            "target_id": 485,
+            "target_slot": 5,
+            "type": "IMAGE"
+          },
+          {
+            "id": 784,
+            "origin_id": -10,
+            "origin_slot": 26,
+            "target_id": 485,
+            "target_slot": 6,
+            "type": "IMAGE"
+          },
+          {
+            "id": 785,
+            "origin_id": -10,
+            "origin_slot": 27,
+            "target_id": 485,
+            "target_slot": 7,
+            "type": "IMAGE"
+          },
+          {
+            "id": 786,
+            "origin_id": -10,
+            "origin_slot": 28,
+            "target_id": 485,
+            "target_slot": 8,
+            "type": "IMAGE"
+          },
+          {
+            "id": 787,
+            "origin_id": -10,
+            "origin_slot": 29,
+            "target_id": 485,
+            "target_slot": 9,
+            "type": "IMAGE"
+          },
+          {
+            "id": 800,
+            "origin_id": 477,
+            "origin_slot": 0,
+            "target_id": 500,
+            "target_slot": 0,
+            "type": "CLIP"
+          },
+          {
+            "id": 801,
+            "origin_id": 485,
+            "origin_slot": 0,
+            "target_id": 500,
+            "target_slot": 1,
+            "type": "IMAGE"
+          },
+          {
+            "id": 901,
+            "origin_id": 479,
+            "origin_slot": 0,
+            "target_id": 500,
+            "target_slot": 4,
+            "type": "STRING"
+          },
+          {
+            "id": 802,
+            "origin_id": -10,
+            "origin_slot": 1,
+            "target_id": 500,
+            "target_slot": 5,
+            "type": "STRING"
+          },
+          {
+            "id": 903,
+            "origin_id": -10,
+            "origin_slot": 4,
+            "target_id": 500,
+            "target_slot": 6,
+            "type": "INT"
+          },
+          {
+            "id": 902,
+            "origin_id": -10,
+            "origin_slot": 3,
+            "target_id": 500,
+            "target_slot": 8,
+            "type": "BOOLEAN"
+          },
+          {
+            "id": 804,
+            "origin_id": -10,
+            "origin_slot": 13,
+            "target_id": 500,
+            "target_slot": 7,
+            "type": "INT"
+          }
+        ],
+        "inputNode": {
+          "id": -10
+        },
+        "outputNode": {
+          "id": -20
+        },
+        "inputs": [
+          {
+            "name": "resolution",
+            "type": "INT",
+            "linkIds": [
+              725
+            ]
+          },
+          {
+            "name": "prompt",
+            "label": "positive_prompt",
+            "type": "STRING",
+            "linkIds": [
+              739,
+              802
+            ]
+          },
+          {
+            "name": "switch_1",
+            "label": "refine_prompt",
+            "type": "BOOLEAN",
+            "linkIds": [
+              741
+            ]
+          },
+          {
+            "name": "thinking",
+            "type": "BOOLEAN",
+            "linkIds": [
+              902
+            ]
+          },
+          {
+            "name": "max_length",
+            "type": "INT",
+            "linkIds": [
+              903
+            ]
+          },
+          {
+            "name": "negative_prompt",
+            "type": "STRING",
+            "linkIds": [
+              727
+            ]
+          },
+          {
+            "name": "cfg",
+            "type": "FLOAT",
+            "linkIds": [
+              658
+            ]
+          },
+          {
+            "name": "steps",
+            "label": "steps",
+            "type": "INT",
+            "linkIds": [
+              659
+            ]
+          },
+          {
+            "name": "switch",
+            "label": "custom_size",
+            "type": "BOOLEAN",
+            "linkIds": [
+              703
+            ]
+          },
+          {
+            "name": "width",
+            "type": "INT",
+            "linkIds": [
+              660
+            ]
+          },
+          {
+            "name": "height",
+            "type": "INT",
+            "linkIds": [
+              661
+            ]
+          },
+          {
+            "name": "scheduler",
+            "label": "sampler",
+            "type": "COMBO",
+            "linkIds": [
+              662
+            ]
+          },
+          {
+            "name": "scheduler_1",
+            "label": "scheduler",
+            "type": "COMBO",
+            "linkIds": [
+              668
+            ]
+          },
+          {
+            "name": "seed",
+            "type": "INT",
+            "linkIds": [
+              667,
+              804
+            ]
+          },
+          {
+            "name": "unet_name",
+            "type": "COMBO",
+            "linkIds": [
+              663
+            ]
+          },
+          {
+            "name": "clip_name",
+            "type": "COMBO",
+            "linkIds": [
+              664
+            ]
+          },
+          {
+            "name": "vae_name",
+            "type": "COMBO",
+            "linkIds": [
+              665
+            ]
+          },
+          {
+            "name": "device",
+            "label": "cache_device",
+            "type": "COMBO",
+            "linkIds": [
+              729
+            ]
+          },
+          {
+            "name": "dtype",
+            "label": "dtype",
+            "type": "COMBO",
+            "linkIds": [
+              730
+            ]
+          },
+          {
+            "name": "clip_name_1",
+            "label": "PE_model",
+            "type": "COMBO",
+            "linkIds": [
+              746
+            ]
+          },
+          {
+            "name": "images.image_1",
+            "label": "image_1",
+            "type": "IMAGE",
+            "linkIds": [
+              710,
+              750
+            ]
+          },
+          {
+            "name": "images.image_2",
+            "label": "image_2",
+            "type": "IMAGE",
+            "linkIds": [
+              711,
+              779
+            ]
+          },
+          {
+            "name": "images.image_3",
+            "label": "image_3",
+            "type": "IMAGE",
+            "linkIds": [
+              712,
+              780
+            ]
+          },
+          {
+            "name": "images.image_4",
+            "label": "image_4",
+            "type": "IMAGE",
+            "linkIds": [
+              713,
+              781
+            ]
+          },
+          {
+            "name": "images.image_5_1",
+            "label": "image_5",
+            "type": "IMAGE",
+            "linkIds": [
+              714,
+              782
+            ]
+          },
+          {
+            "name": "images.image_6",
+            "label": "image_6",
+            "type": "IMAGE",
+            "linkIds": [
+              715,
+              783
+            ]
+          },
+          {
+            "name": "images.image_7",
+            "label": "image_7",
+            "type": "IMAGE",
+            "linkIds": [
+              716,
+              784
+            ]
+          },
+          {
+            "name": "images.image_8",
+            "label": "image_8",
+            "type": "IMAGE",
+            "linkIds": [
+              717,
+              785
+            ]
+          },
+          {
+            "name": "images.image_9",
+            "label": "image_9",
+            "type": "IMAGE",
+            "linkIds": [
+              718,
+              786
+            ]
+          },
+          {
+            "name": "images.image_10",
+            "label": "image_10",
+            "type": "IMAGE",
+            "linkIds": [
+              719,
+              787
+            ]
+          }
+        ],
+        "outputs": [
+          {
+            "name": "IMAGE",
+            "type": "IMAGE",
+            "linkIds": [
+              650
+            ]
+          }
+        ],
+        "nodes": [
+          {
+            "id": 451,
+            "type": "UNETLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "unet_name",
+                "type": "COMBO",
+                "link": 663,
+                "widget": {
+                  "name": "unet_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  688
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 453,
+            "type": "CLIPLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip_name",
+                "type": "COMBO",
+                "link": 664,
+                "widget": {
+                  "name": "clip_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": [
+                  721
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              "qwen_image",
+              "default"
+            ]
+          },
+          {
+            "id": 454,
+            "type": "VAELoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "vae_name",
+                "type": "COMBO",
+                "link": 665,
+                "widget": {
+                  "name": "vae_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "VAE",
+                "type": "VAE",
+                "links": [
+                  649,
+                  720
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors"
+            ]
+          },
+          {
+            "id": 456,
+            "type": "EmptyLatentImage",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "width",
+                "type": "INT",
+                "link": 660,
+                "widget": {
+                  "name": "width"
+                }
+              },
+              {
+                "name": "height",
+                "type": "INT",
+                "link": 661,
+                "widget": {
+                  "name": "height"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "LATENT",
+                "type": "LATENT",
+                "links": [
+                  684
+                ]
+              }
+            ],
+            "widgets_values": [
+              1024,
+              1024,
+              1
+            ]
+          },
+          {
+            "id": 457,
+            "type": "VAEDecode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "samples",
+                "type": "LATENT",
+                "link": 651
+              },
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 649
+              }
+            ],
+            "outputs": [
+              {
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "links": [
+                  650
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 458,
+            "type": "KSampler",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 689
+              },
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "link": 722
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "link": 723
+              },
+              {
+                "name": "latent_image",
+                "type": "LATENT",
+                "link": 682
+              },
+              {
+                "name": "seed",
+                "type": "INT",
+                "link": 667,
+                "widget": {
+                  "name": "seed"
+                }
+              },
+              {
+                "name": "steps",
+                "type": "INT",
+                "link": 659,
+                "widget": {
+                  "name": "steps"
+                }
+              },
+              {
+                "name": "cfg",
+                "type": "FLOAT",
+                "link": 658,
+                "widget": {
+                  "name": "cfg"
+                }
+              },
+              {
+                "name": "sampler_name",
+                "type": "COMBO",
+                "link": 662,
+                "widget": {
+                  "name": "sampler_name"
+                }
+              },
+              {
+                "name": "scheduler",
+                "type": "COMBO",
+                "link": 668,
+                "widget": {
+                  "name": "scheduler"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "LATENT",
+                "type": "LATENT",
+                "links": [
+                  651
+                ]
+              }
+            ],
+            "widgets_values": [
+              0,
+              "randomize",
+              25,
+              1,
+              "NodeCraft synthetic fixture",
+              "simple",
+              1
+            ]
+          },
+          {
+            "id": 468,
+            "type": "ComfySwitchNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "on_false",
+                "type": "LATENT",
+                "link": 724
+              },
+              {
+                "name": "on_true",
+                "type": "LATENT",
+                "link": 684
+              },
+              {
+                "name": "switch",
+                "type": "BOOLEAN",
+                "link": 703,
+                "widget": {
+                  "name": "switch"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output",
+                "type": "LATENT",
+                "links": [
+                  682
+                ]
+              }
+            ],
+            "widgets_values": [
+              false
+            ]
+          },
+          {
+            "id": 469,
+            "type": "QwenImage21Cache",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "model",
+                "type": "MODEL",
+                "link": 688
+              },
+              {
+                "name": "device",
+                "type": "COMBO",
+                "link": 729,
+                "widget": {
+                  "name": "device"
+                }
+              },
+              {
+                "name": "dtype",
+                "type": "COMBO",
+                "link": 730,
+                "widget": {
+                  "name": "dtype"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "MODEL",
+                "type": "MODEL",
+                "links": [
+                  689
+                ]
+              }
+            ],
+            "widgets_values": [
+              "auto",
+              "default"
+            ]
+          },
+          {
+            "id": 474,
+            "type": "TextEncodeQwenImage21",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 721
+              },
+              {
+                "name": "images.image_1",
+                "type": "IMAGE",
+                "link": 710
+              },
+              {
+                "name": "vae",
+                "type": "VAE",
+                "link": 720
+              },
+              {
+                "name": "prompt",
+                "type": "STRING",
+                "link": 743,
+                "widget": {
+                  "name": "prompt"
+                }
+              },
+              {
+                "name": "negative_prompt",
+                "type": "STRING",
+                "link": 727,
+                "widget": {
+                  "name": "negative_prompt"
+                }
+              },
+              {
+                "name": "resolution",
+                "type": "INT",
+                "link": 725,
+                "widget": {
+                  "name": "resolution"
+                }
+              },
+              {
+                "name": "images.image_12",
+                "type": "IMAGE",
+                "link": null
+              },
+              {
+                "name": "images.image_7",
+                "type": "IMAGE",
+                "link": 716
+              },
+              {
+                "name": "images.image_8",
+                "type": "IMAGE",
+                "link": 717
+              },
+              {
+                "name": "images.image_9",
+                "type": "IMAGE",
+                "link": 718
+              },
+              {
+                "name": "images.image_10",
+                "type": "IMAGE",
+                "link": 719
+              },
+              {
+                "name": "images.image_11",
+                "type": "IMAGE",
+                "link": null
+              },
+              {
+                "name": "images.image_2",
+                "type": "IMAGE",
+                "link": 711
+              },
+              {
+                "name": "images.image_3",
+                "type": "IMAGE",
+                "link": 712
+              },
+              {
+                "name": "images.image_4",
+                "type": "IMAGE",
+                "link": 713
+              },
+              {
+                "name": "images.image_5",
+                "type": "IMAGE",
+                "link": 714
+              },
+              {
+                "name": "images.image_6",
+                "type": "IMAGE",
+                "link": 715
+              }
+            ],
+            "outputs": [
+              {
+                "name": "positive",
+                "type": "CONDITIONING",
+                "links": [
+                  722
+                ]
+              },
+              {
+                "name": "negative",
+                "type": "CONDITIONING",
+                "links": [
+                  723
+                ]
+              },
+              {
+                "name": "latent",
+                "type": "LATENT",
+                "links": [
+                  724
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture",
+              "NodeCraft synthetic fixture",
+              1024
+            ]
+          },
+          {
+            "id": 477,
+            "type": "CLIPLoader",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip_name",
+                "type": "COMBO",
+                "link": 746,
+                "widget": {
+                  "name": "clip_name"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "CLIP",
+                "type": "CLIP",
+                "links": [
+                  800
+                ]
+              }
+            ],
+            "widgets_values": [
+              "fixture-model.safetensors",
+              "qwen_image",
+              "default"
+            ]
+          },
+          {
+            "id": 479,
+            "type": "PrimitiveStringMultiline",
+            "mode": 0,
+            "inputs": [],
+            "outputs": [
+              {
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  901
+                ]
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture"
+            ]
+          },
+          {
+            "id": 480,
+            "type": "PreviewAny",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "source",
+                "type": "*",
+                "link": 791
+              }
+            ],
+            "outputs": [
+              {
+                "name": "STRING",
+                "type": "STRING",
+                "links": [
+                  743
+                ]
+              }
+            ],
+            "widgets_values": []
+          },
+          {
+            "id": 484,
+            "type": "ComfySwitchNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "on_false",
+                "type": "STRING",
+                "link": 739
+              },
+              {
+                "name": "on_true",
+                "type": "STRING",
+                "link": 806
+              },
+              {
+                "name": "switch",
+                "type": "BOOLEAN",
+                "link": 741,
+                "widget": {
+                  "name": "switch"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "output",
+                "type": "STRING",
+                "links": [
+                  791
+                ]
+              }
+            ],
+            "widgets_values": [
+              false
+            ]
+          },
+          {
+            "id": 485,
+            "type": "BatchImagesNode",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "images.image0",
+                "type": "IMAGE",
+                "link": 750
+              },
+              {
+                "name": "images.image1",
+                "type": "IMAGE",
+                "link": 779
+              },
+              {
+                "name": "images.image5",
+                "type": "IMAGE",
+                "link": 780
+              },
+              {
+                "name": "images.image6",
+                "type": "IMAGE",
+                "link": 781
+              },
+              {
+                "name": "images.image7",
+                "type": "IMAGE",
+                "link": 782
+              },
+              {
+                "name": "images.image8",
+                "type": "IMAGE",
+                "link": 783
+              },
+              {
+                "name": "images.image9",
+                "type": "IMAGE",
+                "link": 784
+              },
+              {
+                "name": "images.image10",
+                "type": "IMAGE",
+                "link": 785
+              },
+              {
+                "name": "images.image11",
+                "type": "IMAGE",
+                "link": 786
+              },
+              {
+                "name": "images.image12",
+                "type": "IMAGE",
+                "link": 787
+              },
+              {
+                "name": "images.image13",
+                "type": "IMAGE",
+                "link": null
+              },
+              {
+                "name": "images.image2",
+                "type": "IMAGE",
+                "link": null
+              }
+            ],
+            "outputs": [
+              {
+                "name": "IMAGE",
+                "type": "IMAGE",
+                "links": [
+                  801
+                ]
+              }
+            ],
+            "widgets_values": null
+          },
+          {
+            "id": 500,
+            "type": "TextGenerate",
+            "mode": 0,
+            "inputs": [
+              {
+                "name": "clip",
+                "type": "CLIP",
+                "link": 800
+              },
+              {
+                "name": "image",
+                "type": "IMAGE",
+                "link": 801
+              },
+              {
+                "name": "video",
+                "type": "IMAGE",
+                "link": null
+              },
+              {
+                "name": "audio",
+                "type": "AUDIO",
+                "link": null
+              },
+              {
+                "name": "system_prompt",
+                "type": "STRING",
+                "link": 901
+              },
+              {
+                "name": "prompt",
+                "type": "STRING",
+                "link": 802,
+                "widget": {
+                  "name": "prompt"
+                }
+              },
+              {
+                "name": "max_length",
+                "type": "INT",
+                "link": 903,
+                "widget": {
+                  "name": "max_length"
+                }
+              },
+              {
+                "name": "sampling_mode.seed",
+                "type": "INT",
+                "link": 804,
+                "widget": {
+                  "name": "sampling_mode.seed"
+                }
+              },
+              {
+                "name": "thinking",
+                "type": "BOOLEAN",
+                "link": 902,
+                "widget": {
+                  "name": "thinking"
+                }
+              }
+            ],
+            "outputs": [
+              {
+                "name": "generated_text",
+                "type": "STRING",
+                "links": [
+                  806
+                ]
+              },
+              {
+                "name": "thinking",
+                "type": "STRING",
+                "links": null
+              }
+            ],
+            "widgets_values": [
+              "NodeCraft synthetic fixture",
+              4096,
+              "on",
+              1,
+              20,
+              0.95,
+              0,
+              1,
+              0,
+              0,
+              true,
+              true,
+              "auto"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}

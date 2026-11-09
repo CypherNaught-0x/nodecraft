@@ -124,9 +124,9 @@ fn a_dropped_folder_becomes_one_card_and_dropping_on_it_refills_it() {
     let scratch = shoot("drop");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &scratch.0);
     let added = folders(&h);
-    let [card] = added.as_slice() else { panic!("one Folder card: {:?}", h.state().notice) };
+    let [card] = added.as_slice() else { panic!("one Folder card: {:?}", h.state().notice()) };
     assert_eq!(folder::stored(card).unwrap().len(), 3, "the images; the text is left out");
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("Added 3 files") && n.contains("notes.txt")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("Added 3 files") && n.contains("notes.txt")), "{:?}", h.state().notice());
     assert!(h.state().selection.contains(card.id));
     // The card says what it holds and shows its images.
     h.run();
@@ -170,7 +170,7 @@ fn an_empty_folder_card_imports_from_its_button() {
     finish(&mut h);
     let card = folders(&h).into_iter().next().unwrap();
     assert_eq!(card.id, id);
-    assert_eq!(folder::values(&card, folder::ALL_NAMES).unwrap().len(), 2, "{:?}", h.state().notice);
+    assert_eq!(folder::values(&card, folder::ALL_NAMES).unwrap().len(), 2, "{:?}", h.state().notice());
     assert_eq!(folder::modality(&card).unwrap(), nodecraft_types::Modality::Text);
 }
 

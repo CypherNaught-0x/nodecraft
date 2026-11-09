@@ -23,6 +23,9 @@ use std::sync::{Arc, Mutex};
 
 /// SOUL 2 text to image. Higgsfield's SOUL 1 lives on another path; this is the v2 model.
 pub const SOUL: &str = "higgsfield-ai/soul/v2/standard";
+/// SOUL 2 image to image (#1043): a prompt and one scene image, optionally drawn with a Soul ID.
+/// Checked 2026-11-06 against https://open.higgsfield.ai/models/higgsfield-ai/soul/v2/image-to-image/api-reference.
+pub const SOUL_I2I: &str = "higgsfield-ai/soul/v2/image-to-image";
 /// Kling 2.5 Turbo Pro: one image animated into a 5 or 10 second clip.
 pub const KLING_I2V: &str = "kling-video/v2.5-turbo/pro/image-to-video";
 /// Genjutsu motion transfer: the source video's motion, performed by the reference images' subjects.
@@ -175,6 +178,18 @@ pub struct SoulId {
 pub struct SoulIds {
     pub ids: Vec<SoulId>,
     pub skipped: usize,
+}
+
+/// The Soul ID a trained descriptor names, as the trainer writes it (#680): Higgsfield's, from
+/// the Soul ID trainer, for SOUL 2, its weights the documented
+/// `{API}/v1/custom-references/{id}` of a UUID. `None` for any other style, so a hand-edited or
+/// foreign descriptor never becomes an id a request names. Lowercased, as requests send it.
+pub fn soul_id(style: &nodecraft_media::style::Style) -> Option<String> {
+    if style.provider != "higgsfield" || style.trainer != SOUL_TRAINER || style.family != SOUL_FAMILY {
+        return None;
+    }
+    let id = style.weights.strip_prefix(API)?.strip_prefix("/v1/custom-references/")?;
+    request::uuid(id).then(|| id.to_ascii_lowercase())
 }
 
 /// Where a Soul ID's training stands.
@@ -610,6 +625,7 @@ impl Higgsfield {
     fn record(data: &serde_json::Value) -> Result<(&'static str, u64), ProviderError> {
         let model = match data.get("model").and_then(serde_json::Value::as_str) {
             Some(SOUL) => SOUL,
+            Some(SOUL_I2I) => SOUL_I2I,
             Some(KLING_I2V) => KLING_I2V,
             Some(MOTION_TRANSFER) => MOTION_TRANSFER,
             Some(OBJECT_SWAP) => OBJECT_SWAP,
@@ -617,7 +633,7 @@ impl Higgsfield {
             Some(SOUL_TRAINER) => SOUL_TRAINER,
             _ => return Err(invalid("Higgsfield handle record refused")),
         };
-        let count = data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || *n == 1));
+        let count = data.get("count").and_then(serde_json::Value::as_u64).filter(|n| matches!(n, 1 | 4) && (model == SOUL || model == SOUL_I2I || *n == 1));
         match (data.get("v").and_then(serde_json::Value::as_u64), count) {
             (Some(1), Some(count)) => Ok((model, count)),
             _ => Err(invalid("Higgsfield handle record refused")),

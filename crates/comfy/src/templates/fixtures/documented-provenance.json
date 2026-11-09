@@ -1,0 +1,102 @@
+{
+  "LoraLoaderModelOnly": {
+    "url": "https://docs.comfy.org/built-in-nodes/LoraLoaderModelOnly",
+    "documentation_sha256": "8c81fde99ce859b90a3c6d19da0a49b542319c8c1655b3f0eb69a07c56c5eeb2",
+    "source_fingerprint": null
+  },
+  "MiniMaxH3ImageToVideo": {
+    "url": "https://docs.comfy.org/built-in-nodes/MiniMaxH3ImageToVideo",
+    "documentation_sha256": "da6e3fb306ceecb12b8ff459d41e8d783738345990c986327552016af57102f7",
+    "source_fingerprint": "d1bdf3f8c66ef20ff11c35203d2c266a88dcf8cc00c65dbb0aea2b1dd16befd6"
+  },
+  "RandomNoise": {
+    "url": "https://docs.comfy.org/built-in-nodes/RandomNoise",
+    "documentation_sha256": "435da0fea22ef2ea7aa9e5809f56eabd161c4f772e59466159dc9b074b8b30b7",
+    "source_fingerprint": "b55ff98c636c55f064ede82c6848ffa163d1fd9b0cf6195f4a35603cfbe2bc1e"
+  },
+  "ResolutionSelector": {
+    "url": "https://docs.comfy.org/built-in-nodes/ResolutionSelector",
+    "documentation_sha256": "c0b4d93303ed73222a498e95f829fc57632684f0d2058f0bb773d7605655f779",
+    "source_fingerprint": "dd4c7f977ed69a873a48da4b01c5c8f0b6563cfd743740235fc0ad5762579697"
+  },
+  "SamplerCustomAdvanced": {
+    "url": "https://docs.comfy.org/built-in-nodes/SamplerCustomAdvanced",
+    "documentation_sha256": "64d864d7c26b1b673cb997da4ba09427ea9efe7b1507e96f71cdcbf6559abd31",
+    "source_fingerprint": "23cffad0f7cf74dcd494c2828b2116bb4d00a1e55e42ded074b587ac20183290"
+  },
+  "SaveVideo": {
+    "url": "https://docs.comfy.org/built-in-nodes/SaveVideo",
+    "documentation_sha256": "4e4d21768849071797f831fa1d87613378ccf9861a8c51a6fbad2fb070d4c4dd",
+    "source_fingerprint": "8078f692b5c366447a1b08f351637baff901e489f2389e7a26c945661f75c37a"
+  },
+  "LoraLoader": {
+    "url": "https://docs.comfy.org/built-in-nodes/LoraLoader",
+    "documentation_sha256": "d148959739cb07d08836ef1fb2b1d69bac6246ac7aaeaaea9a717c2501584a20",
+    "source_fingerprint": null
+  },
+  "ManualSigmas": {
+    "url": "https://docs.comfy.org/built-in-nodes/ManualSigmas",
+    "documentation_sha256": "e972d40680ff92e28c50e7f5eef3c4919f77eefca29273b4a71026dbe344c913",
+    "source_fingerprint": "19d938ef0eac7343a3138393a039f63632b0763e3884636653c06b91b6f44ed6"
+  },
+  "PreviewAny": {
+    "url": "https://docs.comfy.org/built-in-nodes/PreviewAny",
+    "documentation_sha256": "5f14f7a19328183e329bd63ed3807dd93460c7dc362c051e7858af504ffae9d5",
+    "source_fingerprint": "66b5283b2d7d43e679c0bc6cdcad54c92539a986763333972e722b39c7963be8"
+  },
+  "ResizeImageMaskNode": {
+    "url": "https://docs.comfy.org/built-in-nodes/ResizeImageMaskNode",
+    "documentation_sha256": "132232a7b0270cac6d5b055e69398b990fc67692c05c212fec5aabd78706a8cb",
+    "source_fingerprint": "9ac0b153608ac971bb11d9d12ebd1f0f4d6e926604e8727a1bc3a311d95fbc03"
+  },
+  "TextGenerateLTX2Prompt": {
+    "url": "https://docs.comfy.org/built-in-nodes/TextGenerateLTX2Prompt",
+    "documentation_sha256": "04feba977f73d1ae6e9e64bbb90bf6c99b4b398a8d9321b94e6e0e9e1d19d617",
+    "source_fingerprint": "a601a8bff65e8ee148d09f04ac0afc201dbc9ba5e09a65856400e9be37e085bb"
+  },
+  "VAEDecodeTiled": {
+    "url": "https://docs.comfy.org/built-in-nodes/VAEDecodeTiled",
+    "documentation_sha256": "c285e304d886ed9f0cbb9c895c88c00312eed52575ffed872ebabee32543f17b",
+    "source_fingerprint": "04136ba1abd0c74e780dc405f916a08b809630ae4f41c183049535488b40fd96"
+  },
+  "QwenImage21Cache": {
+    "url": "https://docs.comfy.org/built-in-nodes/QwenImage21Cache",
+    "documentation_sha256": "959334e4654ff7bc0d57a46de334ed67424678f49cacfa4e22460fd30f8523fe",
+    "source_fingerprint": "0c10cdb465d1ee4063273ffbb4913def3830f7e329694cd0a2e292d6f3c37ae4"
+  },
+  "SaveImageAdvanced": {
+    "url": "https://docs.comfy.org/built-in-nodes/SaveImageAdvanced",
+    "documentation_sha256": "a092d15f90679df8832b90ed6df2291c2b86e318f89832130f7571927f83c903",
+    "source_fingerprint": "ebbb78aedbfeb48239d900eee2170e04899e2b5b841a720209258f68dd6241f8"
+  },
+  "TextEncodeQwenImage21": {
+    "url": "https://docs.comfy.org/built-in-nodes/TextEncodeQwenImage21",
+    "documentation_sha256": "72be7f806e9c8518e02ad06c380941b407d416c5b2a0348c28ffc79af210e81c",
+    "source_fingerprint": "3870f04597d12b593498c12ca139428af2d717b65aa40c889de9373ae9eb475e"
+  },
+  "TextGenerate": {
+    "url": "https://docs.comfy.org/built-in-nodes/TextGenerate",
+    "documentation_sha256": "52eb748dae09332490ffa8f2de0465d046f469adfa68bb88cfe04d358441e685",
+    "source_fingerprint": "e0854b0ce5a41e195a2634f4739c22c7dd0df1f2309cb8a02b506b8791bf3bee"
+  },
+  "ModelSamplingSD3": {
+    "url": "https://docs.comfy.org/built-in-nodes/ModelSamplingSD3",
+    "documentation_sha256": "95abab1d92d9b5d8e361ac1351be59cdadfd28bc1ca9141308cf67d10b0a1e24",
+    "source_fingerprint": "a77e38c2cebf6f21f841a953ec5c59096eaf60ffc205c24f34f635e54c5718cb"
+  },
+  "WanImageToVideo": {
+    "url": "https://docs.comfy.org/built-in-nodes/WanImageToVideo",
+    "documentation_sha256": "0bd6429a7a726b38326da751b5e4c36d84128b2f084de9f123978c68303d8264",
+    "source_fingerprint": "3000c1c816d2c123fc5bc46ea1f193c52c0f81a2f8c4a9110d8a4fa909185aea"
+  },
+  "StringConcatenate": {
+    "url": "https://docs.comfy.org/built-in-nodes/StringConcatenate",
+    "documentation_sha256": "70ca78ace678b88d447b4a28b27a8d06ad6d6ccdb8b2591bec1583d0393d4fca",
+    "source_fingerprint": "ea6fa7948d07e87b7ea3aeaf4f38c4cfdbfa5c5bd56d9f2935f94f1775686d08"
+  },
+  "MiniMaxH3ReferenceToVideo": {
+    "url": "https://docs.comfy.org/built-in-nodes/MiniMaxH3ReferenceToVideo",
+    "documentation_sha256": "330cc59289a8e8f72dc71d6590b6bfb691ab8f7c390eb8cf88ef030f4f1afa66",
+    "source_fingerprint": "47df0d6d13cb02aa4f69b50a7f8d0f6c1639c1fb5e0f69bf8fc57dd4cb752db8"
+  }
+}

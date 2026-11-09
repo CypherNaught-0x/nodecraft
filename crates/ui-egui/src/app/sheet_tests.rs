@@ -127,15 +127,28 @@ fn prompts(app: &NodeCraftApp, canvas: CanvasId) -> Vec<String> {
 
 fn press(h: &mut Harness<'static, NodeCraftApp>, role: Role, label: &str) {
     crate::app::topbar_tests::reveal(h, label);
+    settle(h);
     let pos = h.get_by_role_and_label(role, label).rect().center();
     click(h, pos);
+}
+
+/// A few frames for layouts that measure over two (the grid, a growing panel), so a control is
+/// read where it will be clicked. A worker may keep repainting, so a fixed number is stepped.
+fn settle(h: &mut Harness<'static, NodeCraftApp>) {
+    for _ in 0..4 {
+        let ctx = h.ctx.clone();
+        h.state_mut().tick_runs(&ctx);
+        h.step();
+    }
 }
 
 fn click(h: &mut Harness<'static, NodeCraftApp>, pos: Pos2) {
     h.hover_at(pos);
     h.run();
+    // Press and release one frame apart: `run` can step many frames while something repaints, and
+    // a press held past egui's longest click no longer counts as a click.
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
-    h.run();
+    h.step();
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.run();
 }
@@ -155,7 +168,7 @@ fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&NodeCraft
         if done(h.state()) {
             return;
         }
-        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(5));
     }
 }
@@ -569,9 +582,12 @@ fn history_of(app: &NodeCraftApp, row: NodeId) -> Vec<nodecraft_types::Generatio
 }
 
 fn show_grid(h: &mut Harness<'static, NodeCraftApp>) {
+    settle(h);
     let at = h.get_by_label("Grid").rect().center();
     click(h, at);
     assert_eq!(h.state().sheet.mode, super::sheet_view::ViewMode::Grid);
+    // The grid lays its tiles out over two frames: read them where they settle.
+    settle(h);
 }
 
 #[test]
@@ -597,6 +613,7 @@ fn the_grid_shows_rows_with_results_badged_and_selects_and_sends_them_to_the_can
     h.run();
 
     // Clicking a tile selects its row, as its checkbox does in the table.
+    settle(&mut h);
     let owl = h.get_by_label("Row 2").rect().center();
     click(&mut h, owl);
     assert!(h.state().selection.contains(rows[1]) && !h.state().selection.contains(rows[0]));
@@ -608,7 +625,7 @@ fn the_grid_shows_rows_with_results_badged_and_selects_and_sends_them_to_the_can
     let recorded: serde_json::Value = serde_json::from_str(recorded).unwrap();
     assert_eq!(recorded["row"], json!(rows[1]));
     assert_eq!(recorded["generation"], json!(history_of(h.state(), rows[1])[0]));
-    assert_eq!(h.state().notice.as_deref(), Some("Sent 1 result to \"Canvas\"."));
+    assert_eq!(h.state().notice(), Some("Sent 1 result to \"Canvas\"."));
     assert!(h.state().on_sheet(), "the sheet stays open");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
@@ -628,9 +645,16 @@ fn a_row_run_again_keeps_its_older_result_and_the_grid_steps_through_them() {
     assert!(h.query_by_label("Done 2/2").is_some(), "the table says which result of how many");
     show_grid(&mut h);
     assert!(h.query_by_label("2 of 2").is_some());
-    assert!(h.get_by_role_and_label(Role::Button, "›").accesskit_node().is_disabled());
-    press(&mut h, Role::Button, "‹");
-    assert_eq!(active(&h), Some(history[0]), "the older result is active again");
+    assert!(h.get_by_role_and_label(Role::Button, "Next result, row 1").accesskit_node().is_disabled());
+    press(&mut h, Role::Button, "Previous result, row 1");
+    assert_eq!(
+        active(&h),
+        Some(history[0]),
+        "the older result is active again; history now {:?}, was {history:?}; notice {:?}; 1 of 2 shown {}",
+        history_of(h.state(), row),
+        h.state().notice(),
+        h.query_by_label("1 of 2").is_some()
+    );
     assert!(h.query_by_label("1 of 2").is_some());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
@@ -649,7 +673,7 @@ fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
     let first = h.query_all_by_role(Role::CheckBox).next().unwrap().rect().center();
     click(&mut h, first);
     press(&mut h, Role::Button, "Export 1");
-    frames_until(&mut h, |app| app.export_pending() && app.notice.is_none());
+    frames_until(&mut h, |app| app.export_pending() && app.notices.is_empty());
     h.run();
     assert!(h.query_by_label_contains("1 media files; 1 ready").is_some(), "only the selected row's active result");
     // The save repaints while its worker writes, so this click is stepped, not settled.
@@ -660,9 +684,18 @@ fn export_asks_for_a_folder_and_saves_the_chosen_rows_active_results() {
     h.step();
     h.event(egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
     h.step();
-    frames_until(&mut h, |_| std::fs::read_dir(dir.path()).unwrap().count() >= 2);
-    let mut names: Vec<String> = std::fs::read_dir(dir.path()).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
-    names.sort();
+    let names_in = |dir: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir).unwrap().map(|entry| entry.unwrap().file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        names
+    };
+    // The save stages its files in a hidden folder first, so wait for the finished set rather
+    // than an entry count (the staging folder alone used to satisfy `>= 2`).
+    frames_until(&mut h, |_| {
+        let names = names_in(dir.path());
+        names.iter().any(|name| name == "workflow-results.json") && !names.iter().any(|name| name.starts_with(".nodecraft-results-"))
+    });
+    let names = names_in(dir.path());
     assert!(names.iter().any(|name| name == "workflow-results.json"), "{names:?}");
     assert_eq!(names.iter().filter(|name| name.ends_with(".png")).count(), 1, "{names:?}");
 }
@@ -774,7 +807,52 @@ fn a_document_this_session_can_only_view_takes_no_results() {
     h.run();
     press(&mut h, Role::Button, "Send 1 to canvas");
     assert!(h.state().session.document().canvases().get(&C).unwrap().nodes().is_empty());
-    assert!(h.state().notice.is_some(), "the refusal is shown");
+    assert!(h.state().notice().is_some(), "the refusal is shown");
 }
 
 pub(super) mod batch;
+
+/// #1113: a disabled sheet control still says why when hovered, instead of losing its tooltip.
+#[test]
+fn disabled_run_selected_and_cancel_explain_themselves() {
+    let mut h = on_sheet(&["a fox", "an owl"]);
+    for (label, why) in [("Run selected", "Select at least one row to run"), ("Cancel", "No rows are queued or running")] {
+        let button = h.get_by_role_and_label(Role::Button, label);
+        assert!(button.accesskit_node().is_disabled(), "{label} starts disabled");
+        button.hover();
+        for _ in 0..90 {
+            h.step();
+        }
+        assert!(h.query_by_label(why).is_some(), "{label} explains: {why}");
+        h.hover_at(egui::Pos2::ZERO);
+        h.run();
+    }
+}
+
+/// #1118: a sheet's controls all have spoken names, not bare glyphs.
+#[test]
+fn a_sheets_controls_have_names() {
+    let h = on_sheet(&["a fox", "an owl"]);
+    assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new());
+}
+
+#[test]
+fn escape_dismisses_a_focused_notice_on_a_sheet() {
+    // The sheet draws the notice stack too, so a focused notice takes its Escape there (#1110).
+    let mut h = scene(&[]);
+    open_sheets(&mut h);
+    h.get_by_role_and_label(Role::TextInput, "Title").focus();
+    h.run();
+    h.event(egui::Event::Text("Owls".into()));
+    h.run();
+    press(&mut h, Role::Button, "New sheet");
+    assert!(h.state().on_sheet());
+    h.state_mut().notices.error("Sheet problem");
+    h.run();
+    h.get_by_label("Dismiss notice").focus();
+    h.run();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
+    assert!(h.state().on_sheet(), "the Escape went to the notice only");
+}

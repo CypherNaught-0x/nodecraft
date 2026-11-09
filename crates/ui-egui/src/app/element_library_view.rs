@@ -257,7 +257,7 @@ impl NodeCraftApp {
                                 if ui.checkbox(&mut shared, "Shared").on_hover_text("Mark it meant for others; Elements are private until you do").changed() {
                                     action = Some(Action::Share { name: entry.name.clone(), shared });
                                 }
-                                ui.menu_button("…", |ui| {
+                                let more = ui.menu_button("…", |ui| {
                                     if ui
                                         .button("Rename")
                                         .on_hover_text("Elements already on a canvas update from it only if they carry its new name")
@@ -279,6 +279,10 @@ impl NodeCraftApp {
                                         ui.close();
                                     }
                                 });
+                                // The glyph alone isn't a name (#1118).
+                                let more_name = format!("More for {}", sheet_view::line(&entry.name));
+                                more.response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, &more_name));
+                                more.response.on_hover_text("Rename, export or remove it");
                             });
                         }
                         if !listing.damaged.is_empty() {
@@ -403,8 +407,8 @@ impl NodeCraftApp {
         }
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.element_import_pick())) {
             Ok(Some(pick)) => self.element_library.importing = Some(pick),
-            Ok(None) => self.notice = Some("Importing an Element works in the desktop app.".into()),
-            Err(_) => self.notice = Some("The file picker failed; nothing was imported.".into()),
+            Ok(None) => self.notices.warning("Importing an Element works in the desktop app."),
+            Err(_) => self.notices.error("The file picker failed; nothing was imported."),
         }
     }
 
@@ -438,7 +442,7 @@ impl NodeCraftApp {
             Ok(Poll::Ready(None)) => return,
             Ok(Poll::Ready(Some(path))) => path,
             Err(_) => {
-                self.notice = Some("The file picker failed; nothing was imported.".into());
+                self.notices.error("The file picker failed; nothing was imported.");
                 return;
             }
         };
@@ -470,8 +474,8 @@ impl NodeCraftApp {
         // What the library holds may have changed, even for a refused request (another window).
         self.element_library.listed = None;
         match result {
-            Ok(()) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(()) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

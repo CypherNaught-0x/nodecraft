@@ -135,7 +135,7 @@ impl TurnInto {
         let area = egui::Area::new(egui::Id::new("turn_into_menu")).order(egui::Order::Foreground).fixed_pos(self.screen).show(ctx, |ui| {
             egui::Frame::NONE
                 .fill(t.panel_fill)
-                .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+                .stroke(egui::Stroke::new(t.stroke_hairline, t.panel_stroke))
                 .corner_radius(t.panel_radius)
                 .inner_margin(t.control_gap * 2.0)
                 .show(ui, |ui| {
@@ -159,12 +159,12 @@ impl TurnInto {
                     scroll.show_rows(ui, row_height, entries.len(), |ui, range| {
                         for row in range {
                             let Some(entry) = entries.get(row) else { continue };
-                            let text = match entry.key {
-                                Some(key) => format!("{}    {}", entry.label, key.to_ascii_uppercase()),
-                                None => entry.label.clone(),
-                            };
-                            let response = ui
-                                .add(egui::Button::selectable(row == self.highlighted, text).truncate().min_size(Vec2::new(ui.available_width(), row_height)));
+                            let selected = row == self.highlighted;
+                            let mut button = egui::Button::selectable(selected, entry.label.as_str()).truncate();
+                            if let Some(key) = entry.key {
+                                button = button.right_text(crate::palette::shortcut_chip(ui.ctx(), &key.to_ascii_uppercase().to_string(), selected, t));
+                            }
+                            let response = ui.add(button.min_size(Vec2::new(ui.available_width(), row_height)));
                             response.widget_info(|| {
                                 egui::WidgetInfo::selected(egui::WidgetType::Button, true, row == self.highlighted, format!("{title} {}", entry.label))
                             });

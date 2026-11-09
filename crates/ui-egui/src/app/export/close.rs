@@ -34,7 +34,10 @@ impl NodeCraftApp {
             }
             return;
         }
-        let busy = self.exports.work.is_some() || self.results_watch().is_some() || self.session.export_status().is_some_and(|status| status.result.is_none());
+        let busy = self.exports.work.is_some()
+            || self.results_watch().is_some()
+            || self.card_watch().is_some()
+            || self.session.export_status().is_some_and(|status| status.result.is_none());
         if matches!(self.exports.closing, Closing::Asking) && !busy {
             self.exports.closing = Closing::Idle;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -48,8 +51,16 @@ impl NodeCraftApp {
         }
     }
 
+    fn card_watch(&self) -> Option<ExportWatch> {
+        self.exports.card.as_ref().map(|(watch, _)| watch).filter(|watch| watch.status().result.is_none()).cloned()
+    }
+
     fn cancel_export_and_close(&mut self, ctx: &egui::Context) {
-        let watch = self.results_watch().or_else(|| self.session.export_watch());
+        let watch = self
+            .results_watch()
+            .or_else(|| self.exports.work.as_ref().and_then(|work| work.watch()).filter(|watch| watch.status().result.is_none()))
+            .or_else(|| self.card_watch())
+            .or_else(|| self.session.export_watch());
         if let Some(watch) = &watch {
             let status = watch.status();
             if status.result.is_none()
@@ -58,7 +69,7 @@ impl NodeCraftApp {
                 && let Err(error) = self.session.dispatch("export.cancel", &serde_json::json!({"id": status.id}))
                 && watch.status().cancellable
             {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         }

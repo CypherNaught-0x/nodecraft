@@ -45,6 +45,13 @@ pub struct GpuOptions {
     pub power_preference: wgpu::PowerPreference,
     pub force_fallback_adapter: bool,
 }
+impl GpuOptions {
+    /// Options that allow no backend: a request for a GPU with them is always `Unavailable`
+    /// (hosts' fallback tests).
+    pub fn without_backends() -> Self {
+        Self { backends: wgpu::Backends::empty(), ..Self::default() }
+    }
+}
 impl Default for GpuOptions {
     fn default() -> Self {
         Self { backends: wgpu::Backends::all(), power_preference: wgpu::PowerPreference::None, force_fallback_adapter: false }

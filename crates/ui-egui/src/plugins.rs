@@ -80,6 +80,12 @@ pub struct Consent {
     pub required: Vec<String>,
     pub optional: Vec<String>,
     pub origins: Vec<String>,
+    /// Those of `origins` that receive a key (each keyed provider's API); `None` from a host
+    /// that doesn't say.
+    pub key_origins: Option<Vec<String>>,
+    /// What its provider templates say of their services, one line each: the publisher's word,
+    /// shown so the person can weigh it, never part of the grant (#174).
+    pub claims: Vec<String>,
     /// The optional capabilities ticked.
     pub chosen: BTreeSet<String>,
 }
@@ -130,6 +136,30 @@ pub struct PluginsPanel {
     chosen: Option<String>,
     /// The host's store lasts only for this session.
     session_only: bool,
+}
+
+/// Publisher claims shown before the rest fold away.
+const SHOWN_CLAIMS: usize = 6;
+
+/// The publisher's claims in a rights answer, as lines to show.
+fn claim_lines(v: Option<&Value>) -> Vec<String> {
+    let mut lines = Vec::new();
+    for claim in v.and_then(Value::as_array).into_iter().flatten().take(16) {
+        let provider = claim.get("provider").and_then(Value::as_str).unwrap_or("A provider");
+        for price in claim.get("prices").and_then(Value::as_array).into_iter().flatten().take(64) {
+            let model = price.get("model").and_then(Value::as_str).unwrap_or_default();
+            let money = price.get("price").cloned().and_then(|p| serde_json::from_value::<nodecraft_types::Money>(p).ok());
+            if let Some(money) = money {
+                lines.push(format!("{provider} · {model}: {money} a job"));
+            }
+        }
+        if let Some(header) = claim.get("idempotency_header").and_then(Value::as_str) {
+            lines.push(format!(
+                "{provider}: says its service won't bill twice for a job sent again with the same {header}. NodeCraft never sends a job again on this; a job whose answer is lost is marked as possibly charged."
+            ));
+        }
+    }
+    lines
 }
 
 /// The strings in a JSON array, at most [`MAX_ITEMS`].
@@ -293,6 +323,8 @@ impl PluginsPanel {
                     required: strings(answer.get("required")),
                     optional: strings(answer.get("optional")),
                     origins: strings(answer.get("origins")),
+                    key_origins: answer.get("key_origins").map(|k| strings(Some(k))),
+                    claims: claim_lines(answer.get("claims")),
                     chosen: BTreeSet::new(),
                 });
             }
@@ -499,12 +531,17 @@ impl PluginsPanel {
         ui.horizontal(|ui| {
             ui.checkbox(&mut self.update, "It updates an installed package");
             let ready = !self.location.trim().is_empty() && !self.checking();
-            if ui.add_enabled(ready, egui::Button::new("Check")).on_hover_text("See what it is before installing anything").clicked() {
+            if ui
+                .add_enabled(ready, egui::Button::new("Check"))
+                .on_hover_text("See what it is before installing anything")
+                .on_disabled_hover_text("Enter the package's file or address first; one check runs at a time")
+                .clicked()
+            {
                 self.check(session);
             }
         });
         let Some(preview) = self.preview.clone() else { return };
-        egui::Frame::NONE.inner_margin(t.card_padding).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius).show(ui, |ui| {
+        crate::theme::panel_frame(t).show(ui, |ui| {
             preview_body(ui, &preview.report, t);
             if self.drops_grant(&preview) {
                 ui.label(egui::RichText::new("Updating removes its grant: it can't run until you grant it again.").color(t.danger));
@@ -570,6 +607,7 @@ impl PluginsPanel {
                         && ui
                             .add_enabled(!self.pending.values().any(|ask| matches!(ask, Ask::Reload)), egui::Button::new("Reload"))
                             .on_hover_text(format!("Install its file {} again, if it changed", row.reload_file.as_deref().unwrap_or_default()))
+                            .on_disabled_hover_text("Another reload is running; wait for it to finish")
                             .clicked()
                     {
                         self.reload(session, id);
@@ -608,7 +646,7 @@ impl PluginsPanel {
 
     /// What granting would allow, with the optional capabilities to tick.
     fn consent_body(&mut self, ui: &mut egui::Ui, session: &mut Session, mut consent: Consent, t: &Tokens) {
-        egui::Frame::NONE.inner_margin(t.card_padding).stroke(egui::Stroke::new(1.0, t.panel_stroke)).corner_radius(t.panel_radius).show(ui, |ui| {
+        crate::theme::panel_frame(t).show(ui, |ui| {
             if consent.required.is_empty() && consent.optional.is_empty() {
                 ui.label(egui::RichText::new(format!("Let {} run? It asks for nothing beyond its own work.", consent.package_id)).color(t.text));
             } else {
@@ -629,8 +667,24 @@ impl PluginsPanel {
                 }
             }
             let network = consent.required.iter().chain(consent.chosen.iter()).any(|c| c == "network");
-            if network && !consent.origins.is_empty() {
-                ui.label(egui::RichText::new(format!("It may reach: {}", consent.origins.join(", "))).color(t.text_muted));
+            if network {
+                origin_lines(ui, &consent.origins, consent.key_origins.as_deref(), t);
+            }
+            if !consent.claims.is_empty() {
+                ui.add_space(t.control_gap);
+                ui.label(egui::RichText::new("Its publisher says (NodeCraft can't check this):").color(t.text));
+                for line in consent.claims.iter().take(SHOWN_CLAIMS) {
+                    ui.label(egui::RichText::new(line).color(t.text_muted));
+                }
+                // A package with many models keeps the Grant button in reach.
+                if consent.claims.len() > SHOWN_CLAIMS {
+                    let more = consent.claims.len() - SHOWN_CLAIMS;
+                    egui::CollapsingHeader::new(format!("{more} more")).id_salt("plugin-claims").show(ui, |ui| {
+                        for line in consent.claims.iter().skip(SHOWN_CLAIMS) {
+                            ui.label(egui::RichText::new(line).color(t.text_muted));
+                        }
+                    });
+                }
             }
             let mut grant = false;
             let mut cancel = false;
@@ -701,10 +755,8 @@ fn preview_body(ui: &mut egui::Ui, report: &Value, t: &Tokens) {
             } else {
                 ui.label(egui::RichText::new(format!("If granted, it may {}.", asks.join("; "))).color(t.text));
             }
-            let origins = strings(rights.get("origins"));
-            if !origins.is_empty() {
-                ui.label(egui::RichText::new(format!("Addresses it may reach: {}", origins.join(", "))).color(t.text_muted));
-            }
+            let keyed = rights.get("key_origins").map(|k| strings(Some(k)));
+            origin_lines(ui, &strings(rights.get("origins")), keyed.as_deref(), t);
         }
         None => {}
     }
@@ -810,3 +862,22 @@ mod pick {
 
 #[cfg(test)]
 mod tests;
+
+/// The addresses a grant covers: where a key is sent, apart from where results only come from
+/// (#174 review). Without `keyed` (a host that doesn't say), one list, as before.
+fn origin_lines(ui: &mut egui::Ui, origins: &[String], keyed: Option<&[String]>, t: &Tokens) {
+    if origins.is_empty() {
+        return;
+    }
+    let Some(keyed) = keyed else {
+        ui.label(egui::RichText::new(format!("It may reach: {}", origins.join(", "))).color(t.text_muted));
+        return;
+    };
+    let (sent, others): (Vec<&str>, Vec<&str>) = origins.iter().map(String::as_str).partition(|o| keyed.iter().any(|k| k == o));
+    if !sent.is_empty() {
+        ui.label(egui::RichText::new(format!("It sends your key to: {}", sent.join(", "))).color(t.text));
+    }
+    if !others.is_empty() {
+        ui.label(egui::RichText::new(format!("It downloads results from, without the key: {}", others.join(", "))).color(t.text_muted));
+    }
+}

@@ -27,6 +27,7 @@ pub struct TagFilter {
     query: String,
     query_cursor: Option<usize>,
     query_results: Vec<TagId>,
+    query_build: Vec<TagId>,
     counts: Counts,
     pub results: Vec<NodeId>,
     pub current: Option<NodeId>,
@@ -47,7 +48,9 @@ pub struct TagFilter {
 #[derive(Default)]
 struct Counts {
     pending: bool,
+    ready: bool,
     cursor: Option<NodeId>,
+    building: BTreeMap<Option<TagId>, usize>,
     values: BTreeMap<Option<TagId>, usize>,
 }
 
@@ -56,13 +59,16 @@ impl TagFilter {
         let query: String = self.query_draft.trim().chars().take(QUERY_CHARS).flat_map(crate::search::fold).collect();
         if self.query != query {
             self.query = query;
-            self.restart_query();
+            self.restart_query(true);
         }
     }
 
-    fn restart_query(&mut self) {
+    fn restart_query(&mut self, changed: bool) {
         self.query_cursor = (!self.query.is_empty()).then_some(0);
-        self.query_results.clear();
+        self.query_build.clear();
+        if changed {
+            self.query_results.clear();
+        }
     }
 
     pub fn query_pending(&self) -> bool {
@@ -70,17 +76,11 @@ impl TagFilter {
     }
 
     pub fn visible_tags(&self) -> &[TagId] {
-        if self.query.is_empty() {
-            &self.presentation
-        } else if self.query_pending() {
-            &[]
-        } else {
-            &self.query_results
-        }
+        if self.query.is_empty() { &self.presentation } else { &self.query_results }
     }
 
     pub fn count(&self, tag: Option<TagId>) -> Option<usize> {
-        (!self.counts.pending).then(|| self.counts.values.get(&tag).copied().unwrap_or(0))
+        self.counts.ready.then(|| self.counts.values.get(&tag).copied().unwrap_or(0))
     }
 
     pub fn counts_pending(&self) -> bool {
@@ -103,11 +103,14 @@ impl TagFilter {
             if let Some(tag) = canvas.tags().get(id) {
                 let folded: String = label(&tag.title).chars().flat_map(crate::search::fold).collect();
                 if folded.contains(&self.query) {
-                    self.query_results.push(*id);
+                    self.query_build.push(*id);
                 }
             }
         }
         self.query_cursor = (end < self.presentation.len()).then_some(end);
+        if self.query_cursor.is_none() {
+            self.query_results = std::mem::take(&mut self.query_build);
+        }
     }
 
     fn tick_counts(&mut self, canvas: &nodecraft_graph::Canvas) {
@@ -116,9 +119,13 @@ impl TagFilter {
         for (id, node) in iter.by_ref().take(FRAME_NODES) {
             self.counts.cursor = Some(*id);
             self.last_work += 1;
-            *self.counts.values.entry(node.tag).or_default() += 1;
+            *self.counts.building.entry(node.tag).or_default() += 1;
         }
         self.counts.pending = iter.next().is_some();
+        if !self.counts.pending {
+            self.counts.values = std::mem::take(&mut self.counts.building);
+            self.counts.ready = true;
+        }
     }
 
     pub fn active(&self) -> bool {
@@ -152,9 +159,13 @@ impl TagFilter {
                 self.presentation.clear();
                 self.query_draft.clear();
                 self.query.clear();
+                self.query_results.clear();
+                self.counts = Counts::default();
             }
-            self.restart_query();
-            self.counts = Counts { pending: true, ..Counts::default() };
+            self.restart_query(false);
+            self.counts.pending = true;
+            self.counts.cursor = None;
+            self.counts.building.clear();
             if let Some(canvas) = p.canvases().get(&c) {
                 self.tags.retain(|id| canvas.tags().contains_key(id));
             } else {
@@ -244,6 +255,8 @@ impl TagFilter {
             self.scanning = false;
             self.counts.pending = false;
             self.query_cursor = None;
+            self.query_results.clear();
+            self.counts = Counts::default();
             return;
         };
         if self.open {
@@ -397,6 +410,39 @@ mod tests {
             filter.tick(&p, c, 1);
             assert_eq!(filter.visible_tags(), &[id], "{query}");
         }
+    }
+
+    #[test]
+    fn an_active_query_and_counts_stay_published_during_revision_refresh() {
+        let (mut p, c, tag) = fixture(1000);
+        let mut f = TagFilter { open: true, ..TagFilter::default() };
+        f.query_draft = "fixture".into();
+        f.update_query();
+        for _ in 0..16 {
+            f.tick(&p, c, 0);
+        }
+        // Use the actual tag label, independent of fixture wording.
+        f.query_draft = label(&p.canvases().get(&c).unwrap().tags().get(&tag).unwrap().title);
+        f.update_query();
+        for _ in 0..16 {
+            f.tick(&p, c, 0);
+        }
+        assert_eq!(f.visible_tags(), &[tag]);
+        let count = f.count(Some(tag));
+        assert!(count.is_some());
+        Change::RemoveNode { canvas: c, id: NodeId::from_bytes(0u128.to_be_bytes()) }.apply(&mut p).unwrap();
+        f.sync(&p, c, 1);
+        assert!(f.indexing && f.query_pending() && f.counts_pending());
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count);
+        f.tick(&p, c, 1);
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count);
+        for _ in 0..16 {
+            f.tick(&p, c, 1);
+        }
+        assert_eq!(f.visible_tags(), &[tag]);
+        assert_eq!(f.count(Some(tag)), count.map(|n| n - 1));
     }
 
     #[test]

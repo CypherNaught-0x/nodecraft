@@ -26,6 +26,10 @@ struct Binding {
 fn custom_endpoint(provider: &dyn Provider) -> Option<[u8; 32]> {
     provider.custom_base_url().map(|url| *blake3::Hasher::new().update(b"nodecraft.custom-endpoint.v1\0").update(url.as_bytes()).finalize().as_bytes())
 }
+/// The adapter's own cap on a run's jobs at once, such as a plugin template's (#174).
+fn own_limit(provider: &dyn Provider) -> Option<usize> {
+    provider.max_jobs_at_once().map(|n| n.max(1))
+}
 /// Captured immutable physical adapter and its typed logical identity.
 #[derive(Clone)]
 pub struct RegisteredProvider(Arc<Binding>);
@@ -41,16 +45,21 @@ impl RegisteredProvider {
         let serial = crate::execution_identity::nonce()?;
         let metered_comfy = provider.metered_comfy_workflows();
         let custom_endpoint = custom_endpoint(provider.as_ref());
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: None, metered_comfy, custom_endpoint })))
+        let limit = own_limit(provider.as_ref());
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit, metered_comfy, custom_endpoint })))
     }
     /// A named instance that runs at most `limit` of a run's jobs at once (#864), such as a
-    /// ComfyUI server with one GPU.
+    /// ComfyUI server with one GPU. An adapter that sets its own cap keeps the lower of the two.
     pub fn named_with_limit(provider: Arc<dyn Provider>, instance: ProviderInstanceId, limit: Option<usize>) -> Result<Self, Error> {
         let target = ProviderTarget::new(provider.id(), Some(instance))?;
         let serial = crate::execution_identity::nonce()?;
         let metered_comfy = provider.metered_comfy_workflows();
         let custom_endpoint = custom_endpoint(provider.as_ref());
-        Ok(Self(Arc::new(Binding { target, provider, serial, limit: limit.map(|n| n.max(1)), metered_comfy, custom_endpoint })))
+        let limit = match (limit.map(|n| n.max(1)), own_limit(provider.as_ref())) {
+            (Some(set), Some(own)) => Some(set.min(own)),
+            (set, own) => set.or(own),
+        };
+        Ok(Self(Arc::new(Binding { target, provider, serial, limit, metered_comfy, custom_endpoint })))
     }
     pub(crate) fn metered_comfy(&self) -> bool {
         self.0.metered_comfy

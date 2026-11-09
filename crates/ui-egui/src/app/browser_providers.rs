@@ -118,7 +118,7 @@ impl NodeCraftApp {
             Ok(Some(settings)) => settings,
             Ok(None) => return,
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         };
@@ -127,14 +127,14 @@ impl NodeCraftApp {
         if let Some(fetcher) = &mut self.option_fetch
             && let Some(notice) = fetcher.invalidate(&mut self.session)
         {
-            self.notice = Some(notice);
+            self.notices.error(notice);
         }
         self.session.swap_resource::<nodecraft_types::OptionLists>(None);
         self.schemas.forget_listed();
         if let Some(runs) = &mut self.runs
             && let Err(error) = runs.settings_changed(&mut self.session, &settings)
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
     }
 }

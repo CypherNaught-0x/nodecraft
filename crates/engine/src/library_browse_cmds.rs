@@ -28,7 +28,7 @@ pub const TEXT_PREVIEW_CHARS: usize = 120;
 /// How deep nested lists in a parameter are searched for media.
 const MAX_LIST_DEPTH: usize = 4;
 /// The style family of Higgsfield Soul IDs (`docs/decisions/2026-10-22-soul-id-training.md`).
-pub const SOUL_ID_FAMILY: &str = "soul-2";
+pub const SOUL_ID_FAMILY: &str = crate::soul_ids::FAMILY;
 
 /// The kinds of asset the Assets browser lists. Text values and trained styles are listed by
 /// the History and Styles browsers instead.
@@ -466,13 +466,21 @@ fn style_request(value: &Json) -> Result<(usize, usize, Option<String>), Error> 
 fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
     let (offset, limit, query) = style_request(value)?;
     let canvases = canvases(c.document, None)?;
+    let lists = c.resources.get::<nodecraft_types::OptionLists>();
     let mut listed = Vec::new();
+    let mut account_bound = 0usize;
     for canvas in &canvases {
         for node in canvas.nodes().values().filter(|n| n.kind == STYLE_KIND) {
             let style = crate::style_cmds::active_style(node);
+            let bound = style.is_some_and(crate::soul_ids::bound);
+            if bound {
+                account_bound = account_bound.saturating_add(1);
+            }
             let family = style.and_then(crate::style_cmds::family);
             // Descriptors are small and resident; one that isn't has no provider or trigger listed.
             let descriptor = style.and_then(|s| c.assets.get(&s.hash)).and_then(|bytes| nodecraft_media::style::decode(bytes).ok());
+            // A style whose file is gone from the project can't be used until it is trained again.
+            let present = style.is_some_and(|s| c.assets.contains(&s.hash));
             let trainer = match node.params.get(MODEL) {
                 Some(Value::Text(id)) if !id.is_empty() => Some(id.as_str()),
                 _ => None,
@@ -481,25 +489,38 @@ fn styles(c: &Context<'_>, value: &Json) -> Result<Effect, Error> {
             if !matches(query.as_deref(), &[label(node), canvas.title(), family.unwrap_or_default(), trigger, trainer.unwrap_or_default()]) {
                 continue;
             }
+            // A Soul ID is a handle to one account's identity, never a portable file: say which
+            // id it names and whether the account whose list was fetched has it.
+            let soul_id = style.filter(|_| bound).and_then(|s| crate::soul_ids::id(c.assets, s));
+            // A descriptor that is missing or doesn't name an id can't be checked on any account.
+            let available = bound.then(|| soul_id.as_deref().map_or("unreadable", |id| crate::soul_ids::availability(lists, id).as_str()));
             listed.push(json!({
                 "canvas": canvas.id(),
                 "canvas_title": canvas.title(),
                 "id": node.id,
                 "title": node.title,
                 "trainer": trainer,
-                "ready": family.is_some(),
+                "ready": family.is_some() && present,
+                // What to do when it isn't: the same reason style.list gives.
+                "reason": crate::style_cmds::unready(c.assets, node),
                 "family": family,
                 "identity": family == Some(SOUL_ID_FAMILY),
                 "trigger": descriptor.as_ref().map(|d| d.trigger.clone()),
                 // The weights (or the identity) stay with the provider that trained them: the
                 // project keeps a handle that only that provider can use.
                 "kept_by": descriptor.as_ref().map(|d| d.provider.clone()),
+                "portable": !bound,
+                "soul_id": soul_id,
+                "available": available,
             }));
         }
     }
     let total = listed.len();
     let entries: Vec<Json> = listed.into_iter().skip(offset).take(limit).collect();
-    Ok(Effect::None { result: json!({"styles": entries, "total": total, "offset": offset, "limit": limit}) })
+    Ok(Effect::None {
+        result: json!({"styles": entries, "total": total, "offset": offset, "limit": limit, "account_bound": account_bound,
+        "soul_id_uses": crate::soul_ids::handles(c.document).uses}),
+    })
 }
 
 // Enabled checks only the request, so asking (as the palette does every frame) never walks
@@ -571,7 +592,7 @@ pub fn specs() -> Vec<CommandSpec> {
             shortcut: None,
             alternate_shortcuts: &[],
             input_schema: styles_schema,
-            params_doc: "{query?, offset?: 0, limit?: 1-200 (50)} -> {styles: [{canvas, canvas_title, id, title, trainer, ready, family, identity, trigger, kept_by}], total, offset, limit}; every Train style card on every canvas of the open project. `identity` marks a Soul ID (family soul-2); `kept_by` names the provider that holds the weights or identity: the project keeps only a handle that provider's account can use. Read-only. Wire one into a card on its canvas with style.use; style.list checks it against a card.",
+            params_doc: "{query?, offset?: 0, limit?: 1-200 (50)} -> {styles: [{canvas, canvas_title, id, title, trainer, ready, family, identity, trigger, kept_by, portable, soul_id, available}], total, offset, limit, account_bound, soul_id_uses}; every Train style card on every canvas of the open project. `identity` marks a Soul ID (family soul-2); `kept_by` names the provider that holds the weights or identity: the project keeps only a handle that provider's account can use. A Soul ID is `portable: false`: it works only on the Higgsfield account that trained it, and exports refuse to write it out as a file. `soul_id` is the id it names; `available` is listed, unlisted (the account whose Soul IDs were last fetched doesn't have it), unchecked (no list fetched) or unreadable (its descriptor is missing or names no Soul ID), null for other styles. `account_bound` counts the Soul IDs on every canvas, whatever the query, and `soul_id_uses` the SOUL 2 cards that name a Soul ID (picked or set), with or without a Train style card here. Read-only. Wire one into a card on its canvas with style.use; style.list checks it against a card.",
             enabled: enabled_styles,
             run: styles,
         },

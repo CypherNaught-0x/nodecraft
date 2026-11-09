@@ -67,14 +67,14 @@ fn dragging_to_each_new_input_updates_the_legacy_card_and_undo_restores_it() {
         let mut h = harness(false);
         let before = h.state().session.document().clone();
         assert_eq!(saved_inputs(&h), ["clips"]);
-        assert_eq!(h.query_all_by_label("audio input").count(), 2);
-        assert_eq!(h.query_all_by_label("stills input").count(), 2);
+        assert_eq!(h.query_all_by_label_contains("Audio input of").count(), 2);
+        assert_eq!(h.query_all_by_label_contains("Stills input of").count(), 2);
         let shown = h.state().input_ports.get(before.canvases().get(&C).unwrap().nodes().get(&OLD).unwrap());
         assert_eq!(shown.iter().map(|input| input.name.as_str()).collect::<Vec<_>>(), ["clips", "audio", "stills"]);
         let from = point(&h, source, Side::Output, "out");
         let to = point(&h, OLD, Side::Input, port);
         super::tests::wire_drag(&mut h, from, to);
-        assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice);
+        assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice());
         let canvas = h.state().session.document().canvases().get(&C).unwrap();
         assert!(canvas.edges().values().any(|e| e.from.node == source && e.to.node == OLD && e.to.port == port));
         let after = h.state().session.document().clone();
@@ -99,7 +99,7 @@ fn picking_up_a_wire_can_drop_on_a_legacy_cards_new_input() {
     let from = point(&h, OTHER, Side::Input, "audio");
     let to = point(&h, OLD, Side::Input, "audio");
     super::tests::wire_drag(&mut h, from, to);
-    assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice);
+    assert_eq!(saved_inputs(&h), ["clips", "audio", "stills"], "notice: {:?}", h.state().notice());
     let canvas = h.state().session.document().canvases().get(&C).unwrap();
     assert_eq!(canvas.edges().len(), 1);
     assert_eq!(canvas.edges().get(&EdgeId::from_bytes([66; 16])).unwrap().to.node, OLD);

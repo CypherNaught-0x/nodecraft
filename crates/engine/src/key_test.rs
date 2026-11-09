@@ -68,6 +68,25 @@ pub type ProviderSettingsSource = Arc<dyn Fn() -> Vec<crate::settings::ProviderS
 pub const REDIRECTED: &str =
     "this key is set up for a custom base URL, so NodeCraft doesn't send it to the provider's own API to check it; a run shows whether the server accepts it";
 
+/// The custom base URL `account`'s key is set up for, by `host`'s settings, when there is exactly
+/// one to check it at (#962): every view must redirect the account to the same usable one, so a
+/// check never goes where a run wouldn't. A view that doesn't redirect it (a hand edit runs
+/// don't follow yet, or a reset the file didn't take) means no check: [`redirected`] still keeps
+/// the key from the provider's own API.
+pub fn redirected_to(host: &KeyTestHost, account: &Account) -> Option<nodecraft_providers::base_url::BaseUrl> {
+    let views = host.providers.as_ref()?();
+    let mut found: Option<nodecraft_providers::base_url::BaseUrl> = None;
+    for view in &views {
+        let url = crate::custom_endpoints::account_base_url(view, account.as_str())?;
+        match &found {
+            Some(seen) if seen.as_str() != url.as_str() => return None,
+            Some(_) => {}
+            None => found = Some(url),
+        }
+    }
+    found
+}
+
 /// Whether `account`'s key is set up for a custom base URL, by `host`'s settings.
 pub fn redirected(host: &KeyTestHost, account: &Account) -> bool {
     host.providers.as_ref().is_some_and(|read| read().iter().any(|view| crate::custom_endpoints::account_redirected(view, account.as_str())))
@@ -116,6 +135,19 @@ fn plan(account: &Account) -> Result<Probe, &'static str> {
     })
 }
 
+/// The check for `account`'s key at its custom base URL `base` (#962): the model list an
+/// OpenAI- or Anthropic-compatible server answers, at the address runs use. Free; `None` for an
+/// account whose providers take no custom base URL.
+fn plan_at(account: &Account, base: &nodecraft_providers::base_url::BaseUrl) -> Option<(Probe, String)> {
+    match account.as_str() {
+        "openai" => Some((probe("the custom server", "", "Authorization", "Bearer "), base.join("models"))),
+        "anthropic" => {
+            Some((Probe { extra: &[("anthropic-version", "2023-06-01")], ..probe("the custom server", "", "x-api-key", "") }, base.join("models?limit=1")))
+        }
+        _ => None,
+    }
+}
+
 /// Checks `key`, stored for `account`, over `http`. Costs nothing: a provider with no free check
 /// is answered unverifiable without a request.
 pub async fn check(account: &Account, key: &Secret, http: &dyn Http) -> Result<KeyCheck, Error> {
@@ -123,7 +155,19 @@ pub async fn check(account: &Account, key: &Secret, http: &dyn Http) -> Result<K
         Ok(probe) => probe,
         Err(why) => return Ok(KeyCheck::Unverifiable(why)),
     };
-    let mut request = HttpRequest::get(probe.url)
+    send(&probe, probe.url, key, http).await
+}
+
+/// Checks `key` at the custom base URL `base` its account is set up for (#962), as a run sends
+/// it there. The key goes to that server only, as in a run; [`REDIRECTED`] when there is no such
+/// check for the account.
+pub async fn check_at(account: &Account, key: &Secret, base: &nodecraft_providers::base_url::BaseUrl, http: &dyn Http) -> Result<KeyCheck, Error> {
+    let Some((probe, url)) = plan_at(account, base) else { return Ok(KeyCheck::Unverifiable(REDIRECTED)) };
+    send(&probe, &url, key, http).await
+}
+
+async fn send(probe: &Probe, url: &str, key: &Secret, http: &dyn Http) -> Result<KeyCheck, Error> {
+    let mut request = HttpRequest::get(url)
         .timeout_ms(TEST_TIMEOUT_MS)
         .max_response_bytes(MAX_REPLY_BYTES)
         .secret_header(probe.header, format!("{}{}", probe.scheme, key.expose()));
@@ -136,7 +180,7 @@ pub async fn check(account: &Account, key: &Secret, http: &dyn Http) -> Result<K
         let why: String = e.message.replace(key.expose(), "…").chars().take(200).collect();
         Error::new(kind, format!("couldn't reach {}: {why}", probe.provider))
     })?;
-    classify(&probe, &response)
+    classify(probe, &response)
 }
 
 /// What an answer says about the key, from its status (and Google's reason for a 400).
@@ -235,6 +279,33 @@ mod tests {
         assert!(http.sent.lock().unwrap()[0].headers.contains(&("anthropic-version".into(), "2023-06-01".into())));
     }
 
+    /// A key set up for a custom base URL is checked at that server's model list (#962), with the
+    /// header its dialect takes, and nowhere else.
+    #[test]
+    fn a_key_for_a_custom_server_is_checked_there() {
+        let base = nodecraft_providers::base_url::BaseUrl::parse("https://gateway.example/v1").unwrap();
+        for (account, url, header) in
+            [("openai", "https://gateway.example/v1/models", "authorization"), ("anthropic", "https://gateway.example/v1/models?limit=1", "x-api-key")]
+        {
+            let http = Fixture::status(200, r#"{"data": []}"#);
+            let checked = futures::executor::block_on(check_at(&Account::new(account).unwrap(), &Secret::new(KEY).unwrap(), &base, &http));
+            assert_eq!(checked, Ok(KeyCheck::Verified), "{account}");
+            let sent = http.sent.lock().unwrap();
+            let [request] = sent.as_slice() else { panic!("{account}") };
+            assert_eq!(request.url, url);
+            assert!(request.secret_headers.contains(&header.to_owned()), "{account}");
+        }
+        // A rejection names the server, not the provider's own API.
+        let http = Fixture::status(401, "{}");
+        let rejected = futures::executor::block_on(check_at(&Account::new("openai").unwrap(), &Secret::new(KEY).unwrap(), &base, &http)).unwrap_err();
+        assert!(rejected.message.contains("the custom server"), "{rejected:?}");
+        // An account none of whose providers take a base URL isn't sent anywhere.
+        let http = Fixture::status(200, "{}");
+        let other = futures::executor::block_on(check_at(&Account::new("replicate").unwrap(), &Secret::new(KEY).unwrap(), &base, &http));
+        assert_eq!(other, Ok(KeyCheck::Unverifiable(REDIRECTED)));
+        assert!(http.sent.lock().unwrap().is_empty());
+    }
+
     #[test]
     fn a_provider_without_a_free_check_is_unverifiable() {
         // Nothing is sent where there is nothing free to ask.
@@ -244,6 +315,12 @@ mod tests {
             ("fal", NO_CHECK),
             ("magnific", NO_CHECK),
             ("kling", NO_CHECK),
+            // bedrock-runtime has no OpenAI model list, and its other routes need a Region (#46).
+            ("bedrock", NO_CHECK),
+            // AWS access keys only sign requests (#1163); nothing free checks them.
+            ("bedrock:aws-access-key-id", NO_CHECK),
+            ("bedrock:aws-secret-access-key", NO_CHECK),
+            ("bedrock:aws-session-token", NO_CHECK),
             ("google-cloud", NO_CHECK),
             ("comfyui:gpu-box:8188", NO_CHECK),
         ] {

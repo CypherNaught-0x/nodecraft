@@ -26,6 +26,7 @@ use nodecraft_types::{Error, ErrorKind, NodeId};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
+mod bedrock;
 pub(crate) mod comfy_profile;
 
 /// Why an adapter can't run, in words a person can act on.
@@ -60,9 +61,22 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
     match adapter {
         "openai" | "openai-images" | "openai-audio" => Some("openai"),
         "anthropic" => Some("anthropic"),
+        "deepseek" => Some("deepseek"),
+        "mistral" => Some("mistral"),
+        "groq" => Some("groq"),
+        "xai" => Some("xai"),
+        "together" => Some("together"),
+        "moonshot" => Some("moonshot"),
+        "zai" => Some("zai"),
+        "minimax" => Some("minimax"),
+        "perplexity" => Some("perplexity"),
+        "hyperbolic" => Some("hyperbolic"),
+        "mira" => Some("mira"),
+        "cohere" => Some("cohere"),
         "deepgram" => Some("deepgram"),
         "stability" => Some("stability"),
         "azure-openai" => Some("azure-openai"),
+        "bedrock" => Some("bedrock"),
         "huggingface" => Some("huggingface"),
         "litellm" => Some("litellm"),
         "replicate" => Some("replicate"),
@@ -73,7 +87,7 @@ pub fn key_account(adapter: &str) -> Option<&'static str> {
         "seedance" => Some("seedream"),
         "gemini-images" | "gemini-llm" => Some("gemini"),
         "gemini-video" => Some("gemini"),
-        "google-veo" | "google-tts" | "google-gemini-images" => Some(nodecraft_providers::google_cloud::ACCOUNT),
+        "google-veo" | "google-tts" | "google-gemini-images" | "vertex-llm" => Some(nodecraft_providers::google_cloud::ACCOUNT),
         "fal" => Some("fal"),
         "magnific" => Some("magnific"),
         "tripo" => Some("tripo"),
@@ -298,6 +312,18 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
         // Chat models (#503): the LLM client, keyed by its endpoint id.
         "openai" => Arc::new(chat("openai", Endpoint::openai, env)?),
         "anthropic" => Arc::new(chat("anthropic", Endpoint::anthropic, env)?),
+        "deepseek" => Arc::new(chat("deepseek", Endpoint::deepseek, env)?),
+        "mistral" => Arc::new(chat("mistral", Endpoint::mistral, env)?),
+        "groq" => Arc::new(chat("groq", Endpoint::groq, env)?),
+        "xai" => Arc::new(chat("xai", Endpoint::xai, env)?),
+        "together" => Arc::new(chat("together", Endpoint::together, env)?),
+        "moonshot" => Arc::new(chat("moonshot", Endpoint::moonshot, env)?),
+        "zai" => Arc::new(chat("zai", Endpoint::zai, env)?),
+        "minimax" => Arc::new(chat("minimax", Endpoint::minimax, env)?),
+        "perplexity" => Arc::new(chat("perplexity", Endpoint::perplexity, env)?),
+        "hyperbolic" => Arc::new(chat("hyperbolic", Endpoint::hyperbolic, env)?),
+        "mira" => Arc::new(chat("mira", Endpoint::mira, env)?),
+        "cohere" => Arc::new(chat("cohere", Endpoint::cohere, env)?),
         "azure-openai" => {
             let url = env.settings.azure_openai_url.as_deref().filter(|url| !url.trim().is_empty()).ok_or_else(|| {
                 let why = if cfg!(target_arch = "wasm32") {
@@ -310,6 +336,31 @@ pub fn make(slot: &str, env: &HostEnv<'_>) -> Result<Arc<dyn Provider>, Readines
             let endpoint = Endpoint::azure_openai(url, ApiKey::from(&needs_key(env.keys, "azure-openai")?)).map_err(adapter_error)?;
             Arc::new(llm(endpoint, env))
         }
+        // Bedrock's OpenAI-compatible route (#46): a Region code and, from the keychain, a
+        // Bedrock API key or else AWS access keys signed with SigV4 (#1163). No AWS credential
+        // discovery (environment, profiles, instance metadata).
+        "bedrock" => {
+            let region = env.settings.bedrock_region.as_deref().map(str::trim).filter(|region| !region.is_empty()).ok_or_else(|| {
+                let why = if cfg!(target_arch = "wasm32") {
+                    "Amazon Bedrock needs a custom browser host to supply its AWS Region; the built-in browser cannot configure it"
+                } else {
+                    "set bedrock_region in provider settings to an AWS Region code such as us-east-1"
+                };
+                Readiness::NotSetUp(why.into())
+            })?;
+            nodecraft_providers::llm::validate_bedrock_region(region).map_err(|error| Readiness::NotSetUp(error.message))?;
+            let auth = bedrock::auth(env.keys, nodecraft_providers::aws::system_seconds())?;
+            Arc::new(LlmClient::bedrock_chat(region, auth, env.http.clone()).map_err(adapter_error)?)
+        }
+        "vertex-llm" => Arc::new(
+            LlmClient::vertex(
+                "global",
+                &needs_key(env.keys, nodecraft_providers::google_cloud::ACCOUNT)?,
+                env.http.clone(),
+                nodecraft_providers::google_cloud::system_clock(),
+            )
+            .map_err(adapter_error)?,
+        ),
         "huggingface" => Arc::new(nodecraft_providers::huggingface::HuggingFace::new(&needs_key(env.keys, "huggingface")?, env.http.clone())),
         "litellm" => {
             let url = crate::browser_providers::server_url(env.settings.litellm_url.as_deref())

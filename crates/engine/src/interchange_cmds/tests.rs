@@ -153,7 +153,7 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
         ("crop_right", json!({"crop_right": 100}), vec!["crop: crop_right not written: the clip exports uncropped; crop it in the other editor".into()]),
         ("crop_bottom", json!({"crop_bottom": 100}), vec!["crop: crop_bottom not written: the clip exports uncropped; crop it in the other editor".into()]),
         ("rotation", json!({"rotation": 45}), vec!["rotation: not written: the clip exports upright; rotate it in the other editor".into()]),
-        ("opacity", json!({"opacity": 700}), vec!["opacity: not written: the clip exports fully opaque; set its opacity in the other editor".into()]),
+        ("opacity", json!({"opacity": 700}), vec![]),
         (
             "all_features",
             json!({"speed": 2000, "pos_x": 250, "pos_y": 750, "scale": 1500, "crop_left": 100, "crop_top": 100, "crop_right": 100, "crop_bottom": 100, "rotation": 45, "opacity": 700}),
@@ -163,7 +163,6 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
                 "scale: not written: the clip exports at the editor's default fitted size; resize it there".into(),
                 "crop: crop_left, crop_top, crop_right, crop_bottom not written: the clip exports uncropped; crop it in the other editor".into(),
                 "rotation: not written: the clip exports upright; rotate it in the other editor".into(),
-                "opacity: not written: the clip exports fully opaque; set its opacity in the other editor".into(),
             ],
         ),
     ];
@@ -184,6 +183,11 @@ fn archived_reports_name_each_untranslated_clip_field_without_default_noise() {
         assert_eq!(report.contains("No losses detected."), expected.is_empty(), "{name}: {report}");
     }
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod background;
+#[cfg(not(target_arch = "wasm32"))]
+mod samples;
 
 #[test]
 fn file_names_keep_letters_and_lose_the_rest() {

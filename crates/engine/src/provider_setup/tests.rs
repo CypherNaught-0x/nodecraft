@@ -83,6 +83,7 @@ fn without_keys_or_a_server_every_paid_adapter_says_what_to_do_and_nothing_is_se
     assert_eq!(setup.readiness("seedance"), Some(&Readiness::NeedsKey { account: "seedream".into() }), "the ModelArk key Seedream uses");
     assert_eq!(setup.readiness("google-veo"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("google-tts"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
+    assert_eq!(setup.readiness("vertex-llm"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("google-gemini-images"), Some(&Readiness::NeedsKey { account: "google-cloud".into() }));
     assert_eq!(setup.readiness("fal"), Some(&Readiness::NeedsKey { account: "fal".into() }));
     assert_eq!(setup.readiness("tripo"), Some(&Readiness::NeedsKey { account: "tripo".into() }));
@@ -105,7 +106,20 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     for account in [
         "openai",
         "azure-openai",
+        "bedrock",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
+        "together",
+        "moonshot",
+        "zai",
+        "minimax",
+        "perplexity",
+        "hyperbolic",
+        "mira",
+        "cohere",
         "replicate",
         "runway",
         "bfl",
@@ -127,8 +141,11 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
     }
     keys.set(&Account::new("google-cloud").unwrap(), &Secret::new(SERVICE_ACCOUNT).unwrap()).unwrap();
     let http = Arc::new(Wire::default());
-    let settings =
-        ProviderSettings { azure_openai_url: Some("https://demo.openai.azure.com".into()), ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt") };
+    let settings = ProviderSettings {
+        azure_openai_url: Some("https://demo.openai.azure.com".into()),
+        bedrock_region: Some("us-east-1".into()),
+        ..ProviderSettings::with_comfyui("http://gpu-box:8188", "salt")
+    };
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
     for (adapter, readiness) in setup.adapters() {
@@ -139,6 +156,18 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "openai-images",
         "openai",
         "anthropic",
+        "deepseek",
+        "mistral",
+        "groq",
+        "xai",
+        "together",
+        "moonshot",
+        "zai",
+        "minimax",
+        "perplexity",
+        "hyperbolic",
+        "mira",
+        "cohere",
         "replicate",
         "runway",
         "seedream",
@@ -148,6 +177,7 @@ fn with_keys_and_a_server_every_adapter_is_built_bound_and_selectable() {
         "google-veo",
         "google-tts",
         "google-gemini-images",
+        "vertex-llm",
         "fal",
         "tripo",
         "meshy",
@@ -300,6 +330,86 @@ fn azure_uses_its_own_keychain_account_and_preserves_the_catalog_deployment() {
 }
 
 #[test]
+fn bedrock_uses_its_own_keychain_account_region_and_catalog_model() {
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    assert_eq!(key_account("bedrock"), Some("bedrock"));
+    for region in [None, Some(""), Some("  ")] {
+        let settings = ProviderSettings { bedrock_region: region.map(Into::into), ..Default::default() };
+        assert!(matches!(make("bedrock", &env(&keys, &http, &settings)), Err(Readiness::NotSetUp(_))), "{region:?}");
+    }
+    for region in ["US-EAST-1", "eu-central", "useast1", "us-east-1/../x", "cn-north-1", "us-east-1.evil.example"] {
+        let settings = ProviderSettings { bedrock_region: Some(region.into()), ..Default::default() };
+        let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("{region} must refuse") };
+        assert!(!why.contains(region), "{why}");
+    }
+    let settings = ProviderSettings { bedrock_region: Some(" us-west-2 ".into()), ..Default::default() };
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock".into() }));
+    const KEY: &str = "bedrock-public-fixture-46";
+    keys.set(&Account::new("bedrock").unwrap(), &Secret::new(KEY).unwrap()).unwrap();
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit(), "a lost Bedrock reply may already be billed");
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-46".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "openai.gpt-oss-120b-1:0");
+    assert!(requests[0].headers.iter().any(|(name, value)| name == "Authorization" && value == &format!("Bearer {KEY}")));
+    assert!(requests[0].secret_headers.iter().any(|name| name == "authorization"));
+    assert!(!format!("{:?}", requests[0]).contains(KEY));
+}
+
+/// With no Bedrock API key, stored AWS access keys sign the same route with SigV4 (#1163). The
+/// credentials are AWS's published examples, never real ones.
+#[test]
+fn bedrock_signs_with_stored_aws_credentials_when_there_is_no_api_key() {
+    const ACCESS: &str = "AKIDEXAMPLE";
+    const SECRET: &str = "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY";
+    const TOKEN: &str = "public-fixture-session-token-1163";
+    let keys = MemoryStore::default();
+    let http = Arc::new(Wire::default());
+    let settings = ProviderSettings { bedrock_region: Some("us-west-2".into()), ..Default::default() };
+    let set = |name: &str, value: &str| keys.set(&Account::new(name).unwrap(), &Secret::new(value).unwrap()).unwrap();
+    set("bedrock:aws-access-key-id", ACCESS);
+    assert_eq!(make("bedrock", &env(&keys, &http, &settings)).err(), Some(Readiness::NeedsKey { account: "bedrock:aws-secret-access-key".into() }));
+    set("bedrock:aws-secret-access-key", SECRET);
+    set("bedrock:aws-session-token", TOKEN);
+    set("bedrock:aws-expiration", "2015-08-30T12:36:00Z");
+    let Err(Readiness::NotSetUp(why)) = make("bedrock", &env(&keys, &http, &settings)) else { panic!("expired credentials must refuse") };
+    assert!(why.contains("expired"), "{why}");
+    set("bedrock:aws-expiration", "9999-12-31T23:59:59Z");
+    let provider = make("bedrock", &env(&keys, &http, &settings)).unwrap();
+    assert_eq!(provider.id(), "bedrock");
+    assert!(!provider.retry_ambiguous_submit());
+    let job = ProviderJob {
+        model: "openai.gpt-oss-120b-1:0".into(),
+        params: Default::default(),
+        inputs: vec![nodecraft_providers::JobInput::Text { role: "prompt".into(), text: "hello".into() }],
+        idempotency_key: "bedrock-1163".into(),
+    };
+    let _ = futures::executor::block_on(provider.submit(&job));
+    let requests = http.1.lock().unwrap();
+    let [request] = requests.as_slice() else { panic!("one request") };
+    assert_eq!(request.url, "https://bedrock-runtime.us-west-2.amazonaws.com/openai/v1/chat/completions");
+    let header = |name: &str| request.headers.iter().find(|(n, _)| n.eq_ignore_ascii_case(name)).map(|(_, v)| v.as_str());
+    let authorization = header("authorization").unwrap();
+    assert!(authorization.starts_with(&format!("AWS4-HMAC-SHA256 Credential={ACCESS}/")), "{authorization}");
+    assert!(authorization.contains("/us-west-2/bedrock/aws4_request, SignedHeaders=content-type;host;x-amz-content-sha256;x-amz-date;x-amz-security-token,"));
+    assert_eq!(header("x-amz-security-token"), Some(TOKEN));
+    assert!(request.secret_headers.iter().any(|name| name == "x-amz-security-token"));
+    let printed = format!("{request:?} {:?}", make("bedrock", &env(&keys, &http, &settings)).err());
+    assert!(!printed.contains(SECRET) && !printed.contains(TOKEN), "{printed}");
+}
+
+#[test]
 fn the_test_path_binds_whatever_the_maker_gives_through_the_same_routing() {
     let catalog = Catalog::builtin().unwrap();
     let mut asked = Vec::new();
@@ -343,7 +453,7 @@ fn a_damaged_google_cloud_key_fails_every_google_cloud_adapter_without_quoting_i
     let settings = ProviderSettings::default();
     let env = env(&keys, &http, &settings);
     let setup = build(&catalog, |adapter| make(adapter, &env));
-    for adapter in ["google-veo", "google-tts", "google-gemini-images"] {
+    for adapter in ["google-veo", "google-tts", "google-gemini-images", "vertex-llm"] {
         let Some(Readiness::Failed(why)) = setup.readiness(adapter) else { panic!("{adapter}: {:?}", setup.readiness(adapter)) };
         assert!(why.contains("paste the service-account key file again") && !why.contains("zzz"), "{adapter}: {why}");
     }

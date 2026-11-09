@@ -149,7 +149,7 @@ impl NodeCraftApp {
             return;
         };
         let Some(port) = image_output(source) else {
-            self.notice = Some("This card has no single image to paint over.".into());
+            self.notices.warning("This card has no single image to paint over.");
             return;
         };
         let revision = self.session.revision();
@@ -159,7 +159,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edge", node, revision, 0)),
             ids::edge_id(document, ("mask-edge", node, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let pos = mask_cmds::beside(source.pos, 1.0);
@@ -167,22 +167,22 @@ impl NodeCraftApp {
             json!({"canvas": self.canvas, "from": Endpoint { node, port: port.into() }, "expand": expand, "mask": mask, "edges": [first, second], "pos": pos});
         match self.session.dispatch("mask.create", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(mask);
                 self.mask_editor = Some(MaskEditor::new(self.canvas, mask));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
     fn mask_dispatch(&mut self, command: &str, params: &serde_json::Value) -> bool {
         match self.session.dispatch(command, params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 true
             }
             Err(error) => {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -286,7 +286,11 @@ impl NodeCraftApp {
                     .response
                     .labelled_by(label.id);
                 let ready = !editor.prompt.trim().is_empty() && chosen.is_some();
-                create = ui.add_enabled(ready, egui::Button::new("Create edit")).on_hover_text("Add a generation card that redraws the masked area").clicked();
+                create = ui
+                    .add_enabled(ready, egui::Button::new("Create edit"))
+                    .on_hover_text("Add a generation card that redraws the masked area")
+                    .on_disabled_hover_text("Describe the edit and choose a model first")
+                    .clicked();
                 close |= ui.button("Close").clicked();
             });
         });
@@ -313,7 +317,7 @@ impl NodeCraftApp {
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 0)),
             ids::edge_id(document, ("mask-edit-edge", editor.mask, revision, 1)),
         ) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return false;
         };
         let model = editor.model.clone().filter(|m| models.contains(m)).or_else(|| models.first().cloned());
@@ -437,7 +441,7 @@ fn paint_area(
     // The stroke in progress, and the brush under the pointer.
     let painter = ui.painter().with_clip_rect(frame);
     if let Some(stroke) = &editor.stroke {
-        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(0.6) } else { t.mask_overlay };
+        let colour = if stroke.erase { t.canvas_bg.gamma_multiply(t.dim) } else { t.mask_overlay };
         let points: Vec<Pos2> = stroke.points.iter().map(|p| at(p[0] * frame_w, p[1] * frame_h)).collect();
         for pair in points.windows(2) {
             if let [a, b] = pair {

@@ -65,6 +65,12 @@ impl PreviewAssetRead {
         self.entry.memory.as_deref()
     }
 
+    /// Clones insertion-verified immutable resident ownership, without reading or rehashing.
+    /// Browser worker transfers copy these bytes; the store's save/export original stays intact.
+    pub fn resident_owned(&self) -> Option<Arc<[u8]>> {
+        self.entry.memory.clone()
+    }
+
     fn range(&self) -> Result<(AssetRange, Option<u32>), PreviewReadError> {
         if let Some(bytes) = &self.entry.memory {
             let range = AssetRange::new(Arc::new(MemorySource::new(bytes.clone())), 0, self.byte_len()).map_err(|_| PreviewReadError::Corrupt)?;

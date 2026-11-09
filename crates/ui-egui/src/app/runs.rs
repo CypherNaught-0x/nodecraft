@@ -12,14 +12,17 @@
 //! followed again once their provider is set up ([`Runs::resume_waiting`]), and quitting leaves
 //! running jobs at the provider instead of cancelling them.
 use super::generate::RunKind;
+use crate::notices::{NoticeKind, RunEvent};
 use nodecraft_engine::{
     Session,
     jobs::JobBudget,
+    plugin_providers::GrantCheck,
     plugin_runtime::{PluginSnapshot, is_plugin},
     provider_routing::{ProviderRouting, RegisteredProvider},
     provider_setup::{self, HostEnv, ProviderSetup, Readiness},
     run_host::{HeldView, RunHost, RunNotice},
     run_jobs::{JobKey, JobState, JobView},
+    run_journal::PluginGrant,
     secrets::SecretStore,
     settings::ProviderSettings,
 };
@@ -110,14 +113,17 @@ pub(super) type Make = Box<dyn Fn(&str, &ProviderSettings) -> Result<Arc<dyn Pro
 /// can't aim a request at the person's own network.
 struct PluginMaker {
     board: Board,
+    /// Asks the plugin store whether a broker's grant still holds before it sends anything.
+    grants: Grants,
     #[cfg(not(target_arch = "wasm32"))]
     http: Result<Arc<dyn Http>, String>,
 }
 
 impl PluginMaker {
-    fn new(board: Board) -> Self {
+    fn new(board: Board, grants: Grants) -> Self {
         Self {
             board,
+            grants,
             #[cfg(not(target_arch = "wasm32"))]
             http: nodecraft_providers::http::ReqwestHttp::public_only().map(|h| Arc::new(h) as Arc<dyn Http>).map_err(|e| e.message),
         }
@@ -128,13 +134,14 @@ impl PluginMaker {
         let provider = self.board.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(adapter).cloned();
         let provider = provider.ok_or_else(|| Readiness::NotSetUp("that plugin isn't enabled".into()))?;
         let http = self.http.clone().map_err(Readiness::Failed)?;
-        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http)
+        let grants = self.grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner).clone();
+        nodecraft_engine::plugin_providers::broker(adapter, &provider, keys, http, grants)
     }
 
     /// The browser can't keep a request to public addresses, so plugin providers don't run there.
     #[cfg(target_arch = "wasm32")]
     fn make(&self, _: &str, _: &dyn SecretStore) -> Result<Arc<dyn Provider>, Readiness> {
-        let _ = &self.board;
+        let _ = (&self.board, &self.grants);
         Err(Readiness::NotSetUp("plugin providers run in the desktop app only".into()))
     }
 }
@@ -237,7 +244,7 @@ pub(super) struct Tick {
     /// A card stopped waiting for its provider without being quoted (it's on another canvas).
     pub abandoned: bool,
     /// Something to tell the person: a run that couldn't start or a provider that can't run.
-    pub notice: Option<String>,
+    pub notice: Option<(NoticeKind, String)>,
     /// Providers answered `run.estimate` requests (#663), or they couldn't ask them.
     pub estimated: Vec<Estimated>,
     /// A Soul ID training was recorded, so the account's Soul IDs are worth fetching again (#680).
@@ -290,10 +297,15 @@ pub(super) struct Runs {
     runtime: Arc<dyn Runtime>,
     #[cfg(not(target_arch = "wasm32"))]
     http: Option<Arc<dyn Http>>,
+    /// The provider settings `keys.test` checks against as the app last saved them, so Test
+    /// follows an endpoint changed in the keys panel (#962).
+    #[cfg(not(target_arch = "wasm32"))]
+    key_settings: Arc<Mutex<ProviderSettings>>,
     /// Why the run journal couldn't be opened, told on the first frame.
     journal_problem: Option<String>,
     /// The plugin providers the provider thread may build brokers for (#174).
     plugins: Board,
+    plugin_grants: Grants,
     /// Whether the plugin store has been read, so a plugin missing from `plugins` is gone and
     /// not just still loading.
     plugins_known: bool,
@@ -301,6 +313,8 @@ pub(super) struct Runs {
 
 /// The session's plugins as the provider thread last saw them.
 type Board = Arc<Mutex<Arc<PluginSnapshot>>>;
+/// How brokers recheck their grant, shared with the provider thread.
+type Grants = Arc<Mutex<GrantCheck>>;
 
 impl Runs {
     /// The runtime, HTTP client and provider thread, with adapters reading their keys from
@@ -317,7 +331,8 @@ impl Runs {
         #[cfg(not(target_arch = "wasm32"))]
         let key_http = Arc::clone(&http);
         let board = Board::default();
-        let plugins = PluginMaker::new(Arc::clone(&board));
+        let grants = Grants::new(Mutex::new(GrantCheck::this_window()));
+        let plugins = PluginMaker::new(Arc::clone(&board), Arc::clone(&grants));
         let mut runs = Self::with_maker(
             services,
             Box::new(move |adapter, settings| {
@@ -329,6 +344,7 @@ impl Runs {
             }),
         )?;
         runs.plugins = board;
+        runs.plugin_grants = grants;
         #[cfg(not(target_arch = "wasm32"))]
         {
             runs.http = Some(key_http);
@@ -356,6 +372,12 @@ impl Runs {
         Ok(())
     }
 
+    /// How plugin brokers built from now on recheck their grant before each request (#174): the
+    /// desktop reads the shared plugin store, so a revoke in another window stops them at once.
+    pub(super) fn set_plugin_grants(&mut self, grants: GrantCheck) {
+        *self.plugin_grants.lock().unwrap_or_else(std::sync::PoisonError::into_inner) = grants;
+    }
+
     /// [`Self::new`] with adapters built by `make`.
     pub(super) fn with_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
         Self::on(services, Maker::spawn(make)?)
@@ -365,6 +387,13 @@ impl Runs {
     #[cfg(test)]
     pub(super) fn with_inline_maker(services: &mut nodecraft_engine::commands::Services, make: Make) -> Result<Self, Error> {
         Self::on(services, Maker::inline(make))
+    }
+
+    /// Gives `keys.test` checks `http`, as [`Self::new`] gives them the runs' client.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub(super) fn with_key_http(mut self, http: Arc<dyn Http>) -> Self {
+        self.http = Some(http);
+        self
     }
 
     fn on(services: &mut nodecraft_engine::commands::Services, maker: Maker) -> Result<Self, Error> {
@@ -389,9 +418,9 @@ impl Runs {
             session: id.iter().map(|b| format!("{b:02x}")).collect(),
             wall_clock_ms: wall_clock_ms(),
         };
-        // The desktop plays a speech card's sound while it arrives (#875); the browser can't
-        // play sound yet, so it doesn't ask for previews.
-        let host = RunHost::new(runtime, budget).with_previews(cfg!(not(target_arch = "wasm32")));
+        // A speech card plays its sound while it arrives (#875), on the desktop and, with the
+        // page's own player and `fetch` stream, in the browser (#1070).
+        let host = RunHost::new(runtime, budget).with_previews(true);
         host.register(services)?;
         host.register_estimates(services)?;
         host.register_ownership(services)?;
@@ -415,8 +444,11 @@ impl Runs {
             runtime: key_runtime,
             #[cfg(not(target_arch = "wasm32"))]
             http: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            key_settings: Arc::default(),
             journal_problem: None,
             plugins: Board::default(),
+            plugin_grants: Grants::new(Mutex::new(GrantCheck::this_window())),
             plugins_known: false,
         })
     }
@@ -424,13 +456,27 @@ impl Runs {
     /// Where the keychain worker sends `keys.test` checks: the runs' own runtime and HTTP client,
     /// so a check goes out like a run's request does. `None` for a test host without a client.
     #[cfg(not(target_arch = "wasm32"))]
-    pub(super) fn key_test_host(&self, loaded: nodecraft_engine::settings::ProviderSettings) -> Option<nodecraft_engine::key_test::KeyTestHost> {
+    /// `dir` is the settings folder the app's store writes, read afresh at each check.
+    pub(super) fn key_test_host(
+        &self,
+        loaded: nodecraft_engine::settings::ProviderSettings,
+        dir: Option<std::path::PathBuf>,
+    ) -> Option<nodecraft_engine::key_test::KeyTestHost> {
         let http = self.http.clone()?;
-        // The settings loaded at startup and the file as it is now, read at each check: either
-        // marking the account redirected is enough (#960), so an unreadable file never lowers
-        // protection below what was loaded.
-        let providers: nodecraft_engine::key_test::ProviderSettingsSource =
-            Arc::new(move || vec![loaded.clone(), nodecraft_engine::settings::peek().providers]);
+        self.keep_key_settings(&loaded);
+        // The settings as the app last saved them (first those loaded at startup) and the file
+        // as it is now, read at each check: either marking the account redirected is enough
+        // (#960), so an unreadable file never lowers protection below what was loaded, and a
+        // check goes to a custom endpoint only when both name the same one (#962).
+        let kept = Arc::clone(&self.key_settings);
+        let providers: nodecraft_engine::key_test::ProviderSettingsSource = Arc::new(move || {
+            let saved = kept.lock().map(|settings| settings.clone()).unwrap_or_else(|poisoned| poisoned.into_inner().clone());
+            let file = match &dir {
+                Some(dir) => nodecraft_engine::settings::peek_at(dir),
+                None => nodecraft_engine::settings::peek(),
+            };
+            vec![saved, file.providers]
+        });
         Some(nodecraft_engine::key_test::KeyTestHost { runtime: Arc::clone(&self.runtime), http, providers: Some(providers) })
     }
 
@@ -492,9 +538,15 @@ impl Runs {
                 if !self.plugins_known {
                     continue;
                 }
-                let granted = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).is_some();
-                if !granted {
+                let current = self.plugins.lock().unwrap_or_else(std::sync::PoisonError::into_inner).provider(&adapter).map(|p| PluginGrant::of(&p.stamp));
+                let Some(current) = current else {
                     self.host.abandon(project, &adapter, "its plugin is no longer enabled or granted");
+                    continue;
+                };
+                // Only jobs sent under the grant that stands now are followed; the broker checks
+                // that grant against the store before every poll.
+                self.host.abandon_other_grants(project, &adapter, &current);
+                if !self.host.waiting_targets(project).contains(&target) {
                     continue;
                 }
             }
@@ -660,10 +712,20 @@ impl Runs {
         Ok(())
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    fn keep_key_settings(&self, settings: &ProviderSettings) {
+        match self.key_settings.lock() {
+            Ok(mut kept) => *kept = settings.clone(),
+            Err(poisoned) => *poisoned.into_inner() = settings.clone(),
+        }
+    }
+
     pub(super) fn settings_changed(&mut self, session: &mut Session, settings: &ProviderSettings) -> Result<(), Error> {
         if let Some(waiting) = &mut self.waiting {
             waiting.settings = settings.clone();
         }
+        #[cfg(not(target_arch = "wasm32"))]
+        self.keep_key_settings(settings);
         self.forget_adapters(session)
     }
 
@@ -690,7 +752,9 @@ impl Runs {
                 self.waiting = None;
             }
         }
-        let mut notices: Vec<String> = self.journal_problem.take().into_iter().collect();
+        // Each run event says what kind of notice it is in one place, `NoticeKind::of_run`.
+        let mut notices: Vec<(NoticeKind, String)> =
+            self.journal_problem.take().map(|problem| (NoticeKind::of_run(RunEvent::Unsaved), problem)).into_iter().collect();
         for notice in self.host.pump(session) {
             match notice {
                 RunNotice::Started { canvas, nodes } => {
@@ -707,25 +771,21 @@ impl Runs {
                     self.failed.remove(&(canvas, node));
                 }
                 RunNotice::Failed { canvas, node, reason } | RunNotice::Unaccounted { canvas, node, reason } => {
-                    notices.push(format!("A run failed: {reason}"));
+                    notices.push((NoticeKind::of_run(RunEvent::Failed), format!("A run failed: {reason}")));
                     self.failed.insert((canvas, node), reason);
                 }
                 RunNotice::Placed { canvas, node } => {
-                    notices.push("The held result is on the canvas.".into());
+                    notices.push((NoticeKind::of_run(RunEvent::Placed), "The held result is on the canvas.".into()));
                     self.failed.remove(&(canvas, node));
                 }
-                RunNotice::Refused { reason } => notices.push(format!("The run didn't start: {reason}")),
-                RunNotice::Unsaved { reason } => notices.push(format!("Runs can't be kept for a restart: {reason}")),
+                RunNotice::Refused { reason } => notices.push((NoticeKind::of_run(RunEvent::Refused), format!("The run didn't start: {reason}"))),
+                RunNotice::Unsaved { reason } => notices.push((NoticeKind::of_run(RunEvent::Unsaved), format!("Runs can't be kept for a restart: {reason}"))),
                 RunNotice::Estimated { request, unquoted, .. } => tick.estimated.push(Estimated::Answered { request, unquoted }),
                 RunNotice::NotEstimated { request, reason } => tick.estimated.push(Estimated::Failed { request, reason }),
                 RunNotice::Finished { .. } => {}
             }
         }
-        // The first says why; the rest are on their cards.
-        tick.notice = notices.first().map(|first| match notices.len().saturating_sub(1) {
-            0 => first.clone(),
-            more => format!("{first} (and {more} more)"),
-        });
+        tick.notice = headline(&notices);
         self.running = self.host.running();
         self.jobs = self.host.jobs();
         self.held = self.host.held_results();
@@ -827,6 +887,10 @@ impl Runs {
     /// Whether anything is in progress, so the next frame comes without input.
     pub(super) fn is_busy(&self) -> bool {
         self.host.is_busy() || self.host.is_estimating() || !self.asked.is_empty()
+    }
+    /// The last pump at quit (#367): records what has finished, starts and sends nothing.
+    pub(super) fn record_for_quit(&mut self, session: &mut Session) {
+        let _ = self.host.pump_for_quit(session);
     }
     pub(super) fn is_preparing_results(&self) -> bool {
         self.host.is_preparing_results()
@@ -1038,13 +1102,34 @@ fn adapters_of(session: &Session, canvas: CanvasId, settings: &ProviderSettings)
     (adapters, expanded.inner)
 }
 
+/// One notice for a tick's run events: as severe as the worst, in the words of the first event of
+/// that kind; the rest are on their cards.
+fn headline(notices: &[(NoticeKind, String)]) -> Option<(NoticeKind, String)> {
+    let kind = notices.iter().map(|(kind, _)| *kind).max()?;
+    let (_, first) = notices.iter().find(|(each, _)| *each == kind)?;
+    Some(match notices.len().saturating_sub(1) {
+        0 => (kind, first.clone()),
+        more => (kind, format!("{first} (and {more} more)")),
+    })
+}
+
 #[cfg(all(test, not(target_arch = "wasm32")))]
 mod plugin_maker_tests {
     use super::*;
 
     #[test]
+    fn a_batched_run_notice_leads_with_its_worst_event() {
+        let notices = [
+            (NoticeKind::of_run(RunEvent::Placed), "The held result is on the canvas.".to_owned()),
+            (NoticeKind::of_run(RunEvent::Failed), "A run failed: over budget".to_owned()),
+        ];
+        assert_eq!(headline(&notices), Some((NoticeKind::Error, "A run failed: over budget (and 1 more)".to_owned())));
+        assert_eq!(headline(&[]), None);
+    }
+
+    #[test]
     fn a_plugin_provider_runs_only_while_the_session_publishes_it() {
-        let maker = PluginMaker::new(Board::default());
+        let maker = PluginMaker::new(Board::default(), Grants::default());
         let keys = nodecraft_engine::secrets::MemoryStore::default();
         match maker.make("plugin.io.example.acme.acme", &keys) {
             Err(Readiness::NotSetUp(why)) => assert_eq!(why, "that plugin isn't enabled"),
@@ -1099,6 +1184,7 @@ mod plugin_maker_tests {
             recipe: None,
             launches: 0,
             staged: None,
+            plugin: None,
         };
         let journal = nodecraft_engine::run_journal::FileJournal::at(path.clone());
         journal.save(&Journal { version: JOURNAL_VERSION, usage, submitted: vec![job] }).unwrap();
@@ -1138,7 +1224,10 @@ mod plugin_maker_tests {
         runs.resume_waiting(&session, &settings);
         assert!(!runs.has_waiting());
         let tick = runs.tick(&mut session, C);
-        assert_eq!(tick.notice.as_deref(), Some("A run failed: it couldn't be followed after a restart: its plugin is no longer enabled or granted"));
+        assert_eq!(
+            tick.notice.as_ref().map(|(kind, text)| (*kind, text.as_str())),
+            Some((NoticeKind::Error, "A run failed: it couldn't be followed after a restart: its plugin is no longer enabled or granted"))
+        );
         assert!(runs.failure(C, N).is_some());
         assert!(asked.lock().unwrap().is_empty(), "no provider was asked for: {:?}", asked.lock().unwrap());
         let saved = journal.load().unwrap().unwrap();

@@ -125,7 +125,7 @@ fn a_body_drop_connects_its_compatible_input_in_one_undo_at_every_zoom() {
         h.drop_at(to);
         h.run();
         let edges = h.state().session.document().canvases().get(&h.state().canvas).unwrap().edges();
-        assert_eq!(edges.len(), 1, "body drop must connect at zoom {zoom}; notice={:?}", h.state().notice);
+        assert_eq!(edges.len(), 1, "body drop must connect at zoom {zoom}; notice={:?}", h.state().notice());
         let edge = edges.values().next().unwrap();
         assert_eq!((edge.from.node, edge.to.node), (SOURCE, TARGET));
         h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();

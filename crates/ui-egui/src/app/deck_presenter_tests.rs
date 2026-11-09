@@ -29,7 +29,7 @@ fn decks(h: &Harness<'static, NodeCraftApp>) -> Vec<NodeId> {
 }
 
 fn index(h: &Harness<'static, NodeCraftApp>) -> usize {
-    h.state().presenter.as_ref().map(|p| p.index).unwrap_or_else(|| panic!("not presenting: {:?}", h.state().notice))
+    h.state().presenter.as_ref().map(|p| p.index).unwrap_or_else(|| panic!("not presenting: {:?}", h.state().notice()))
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn presenting_a_selection_makes_a_deck_and_the_keys_move_through_it() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     let deck = decks(&h);
-    assert_eq!(deck.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(deck.len(), 1, "{:?}", h.state().notice());
     assert_eq!(index(&h), 0);
     let node = h.state().session.document().canvases().get(&h.state().canvas).unwrap().nodes().get(&deck[0]).unwrap().clone();
     let slides = nodecraft_engine::deck_cmds::stored(&node).unwrap().slides;

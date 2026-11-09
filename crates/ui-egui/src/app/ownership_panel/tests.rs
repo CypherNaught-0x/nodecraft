@@ -76,6 +76,7 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     h.get_by_label("Session a");
     h.get_by_label("1 charge");
     press(&mut h, Role::Button, "Review");
+    crate::app::panel_check::check_open_panels(&h, "Charges to review");
 
     // What was known at import, then the charge itself.
     h.get_by_label("The earlier total could hold up to");
@@ -90,7 +91,7 @@ fn a_person_reviews_previews_and_confirms_who_holds_a_quarantined_charge() {
     press(&mut h, Role::Button, "Preview");
     press(&mut h, Role::Button, "Confirm");
 
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Recorded which total holds 1 charge of session a.")));
+    assert!(h.state().notice().is_some_and(|notice| notice.starts_with("Recorded which total holds 1 charge of session a.")));
     h.get_by_label("No quarantined charges are waiting for review (1 decision recorded).");
     // The decision was saved in the run journal before it was kept.
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
@@ -152,7 +153,7 @@ fn a_person_settles_a_reconciled_charge_at_the_billed_amount() {
     press(&mut h, Role::Button, "Preview");
     h.get_by_label_contains("Settles at");
     press(&mut h, Role::Button, "Confirm");
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Settled the charge old at")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|notice| notice.starts_with("Settled the charge old at")), "{:?}", h.state().notice());
     assert!(h.query_by_label("Reconciled charges still open").is_none());
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert_eq!(saved.usage.charge_resolutions().len(), 1, "saved in the run journal");
@@ -173,7 +174,7 @@ fn a_person_releases_a_charge_that_was_never_billed() {
     press(&mut h, Role::Button, "Preview");
     h.get_by_label_contains("Leaves the totals");
     press(&mut h, Role::Button, "Confirm");
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Released the charge old")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|notice| notice.starts_with("Released the charge old")), "{:?}", h.state().notice());
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     assert!(saved.usage.resolvable_charges().is_empty());
     drop(h);
@@ -199,7 +200,7 @@ fn without_quarantined_charges_the_review_says_so() {
     h.state_mut().dispatch_palette_command("usage.ownership");
     h.run();
     assert!(h.state().ownership.is_none());
-    assert!(h.state().notice.is_some());
+    assert!(h.state().notice().is_some());
 }
 
 #[test]
@@ -304,7 +305,7 @@ fn a_person_settles_a_charge_that_may_have_been_billed_at_the_billed_amount() {
     press(&mut h, Role::Button, "Preview");
     assert!(confirm_enabled(&h));
     press(&mut h, Role::Button, "Confirm");
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.starts_with("Settled the charge lost at 0.05 USD")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|notice| notice.starts_with("Settled the charge lost at 0.05 USD")), "{:?}", h.state().notice());
     assert!(h.query_by_label("Charges that may have been billed").is_none(), "nothing left to decide");
     let saved = Journal::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
     let records: Vec<_> = saved.usage.billing_resolutions().cloned().collect();

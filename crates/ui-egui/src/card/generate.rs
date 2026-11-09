@@ -1,5 +1,5 @@
 //! The generation card's composer (#83): the prompt with a submit arrow and the variation
-//! counter. The arrow, Cmd/Ctrl+Enter in the prompt and Enter on the focused card ask the app to
+//! counter. The arrow, Command+Enter in the prompt and Enter on the focused card ask the app to
 //! generate; the app quotes the run and asks before anything is spent.
 use super::*;
 use nodecraft_exec::variations::MAX_VARIATIONS;
@@ -244,6 +244,8 @@ pub struct Variations {
     pub cards: bool,
     /// The card asks for several variations with a pinned seed.
     pub alike: bool,
+    /// The card reuses an identical earlier result instead of paying again (#91, #1059).
+    pub cache: bool,
 }
 
 /// Draws the composer at the top of `area` and returns the space left under it. The prompt and
@@ -308,9 +310,20 @@ pub(super) fn show(ui: &mut egui::Ui, area: Rect, composer: Composer<'_>, editor
                 counter(ui, node, spec, editable(&spec.name), intents, t);
             }
             variations(ui, node, shown_variations, intents, t);
+            reuse(ui, shown_variations.cache, intents, t);
             // Only as tall as the button, so the row never stretches to the card's height.
             ui.allocate_ui_with_layout(Vec2::new(ui.available_width(), t.submit_size), egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if submit(ui, t).on_hover_text("Generate (Enter on the card, or Cmd/Ctrl+Enter in the prompt). Shows the price first.").clicked() {
+                // With nothing set up to generate, the tooltip names the missing setup (#1119).
+                let ready = ui.ctx().data(|data| data.get_temp::<bool>(crate::app::empty_canvas::providers_ready_id())).unwrap_or(true);
+                let hover = if ready {
+                    format!(
+                        "Generate (Enter on the card, or {} in the prompt). Shows the price first.",
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
+                    )
+                } else {
+                    format!("{}. Open API keys or ComfyUI in the top bar.", crate::app::empty_canvas::NO_PROVIDER)
+                };
+                if submit(ui, t).on_hover_text(hover).clicked() {
                     intents.push(Intent::Generate);
                 }
             });
@@ -406,6 +419,29 @@ fn variations(ui: &mut egui::Ui, node: &Node, shown: Variations, intents: &mut V
     });
 }
 
+/// Whether the card reuses an identical earlier result (#1059): a run whose inputs and settings
+/// match a result already made, on this card or another, takes that result for free instead of
+/// paying again. Off by default for model cards, since a model asked again may answer differently.
+fn reuse(ui: &mut egui::Ui, on: bool, intents: &mut Vec<Intent>, t: &Tokens) {
+    let (text, hint) = if on {
+        (
+            "reuses results",
+            "A run with the same inputs and settings as a result already made reuses it, free, instead of asking the model again. Click to ask the model every time.",
+        )
+    } else {
+        (
+            "runs fresh",
+            "Every run asks the model again, and a paid model charges for it. Click to reuse a result already made with the same inputs and settings, free.",
+        )
+    };
+    let color = if on { t.text } else { t.text_muted };
+    let r = ui.add(egui::Button::new(egui::RichText::new(text).color(color)).small().selected(on)).on_hover_text(hint);
+    r.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, true, on, "Reuse identical results"));
+    if r.clicked() {
+        intents.push(Intent::Cache(!on));
+    }
+}
+
 /// The round submit button with a painted up arrow; no font glyph or icon asset.
 fn submit(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
     let size = Vec2::splat(t.submit_size);
@@ -423,7 +459,12 @@ fn submit(ui: &mut egui::Ui, t: &Tokens) -> egui::Response {
         });
     }
     let painter = ui.painter();
-    let fill = if response.hovered() { t.accent } else { t.text };
+    // Rest, hover and press each look different (#1112).
+    let fill = match crate::theme::State::of(&response) {
+        crate::theme::State::Rest => t.text,
+        crate::theme::State::Hovered => t.accent,
+        crate::theme::State::Pressed => t.accent.lerp_to_gamma(t.text, 0.3),
+    };
     painter.circle_filled(rect.center(), rect.width() / 2.0, fill);
     let c = rect.center();
     let arm = rect.width() * 0.22;

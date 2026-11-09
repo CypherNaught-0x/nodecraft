@@ -12,7 +12,10 @@ fn stale_palette_action_is_available_without_empty_params() {
 }
 
 use egui::accesskit::Role;
-use egui_kittest::{Harness, kittest::Queryable};
+use egui_kittest::{
+    Harness,
+    kittest::{NodeT, Queryable},
+};
 use nodecraft_graph::{Edge, Endpoint, Generation, Port};
 use nodecraft_nodes::{Category, JobSpec, ModeId, NodeDescriptor, NodeKind, PlanCtx};
 use nodecraft_types::{Blake3, EdgeId, GenerationId, Modality, PortType};
@@ -46,7 +49,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>, query: &str) {
         }
     }
     h.run();
-    assert!(h.state().palette.is_some(), "opening {query}; snapshot={} notice={:?}", h.state().stale_snapshot.is_some(), h.state().notice);
+    assert!(h.state().palette.is_some(), "opening {query}; snapshot={} notice={:?}", h.state().stale_snapshot.is_some(), h.state().notice());
     h.event(egui::Event::Text(query.into()));
     h.run();
 }
@@ -166,7 +169,7 @@ fn actual_palette_report_preserves_state_and_shared_cause_count_without_rehashin
     let status_revision = h.state().session.status_revision();
     let selection = h.state().selection.clone();
     let view = h.state().view;
-    h.state_mut().notice = Some("Existing notice".into());
+    h.state_mut().notices.error("Existing notice");
     open(&mut h, "List stale results");
     assert_eq!(calls.load(Ordering::SeqCst), 0, "opening/filtering must not hash");
     h.key_press(egui::Key::Enter);
@@ -406,7 +409,7 @@ fn actual_engine_router_budget_failure_is_visible_instead_of_zero_success() {
     // Avoid rendering this deliberately large router fixture; exercise the same chosen-command handler.
     app.dispatch_palette_command("canvas.stale");
     assert!(app.stale_snapshot.is_none());
-    let notice = app.notice.as_deref().unwrap();
+    let notice = app.notice().unwrap();
     assert!(notice.contains("invalid_input"));
     assert!(notice.contains("routers"));
     assert!(!notice.contains("0 stale"));
@@ -434,7 +437,7 @@ fn newly_chosen_query_installs_in_activation_frame_and_preserves_other_notices()
     // egui may perform the first Area sizing pass before exposing its accessibility children.
     h.run();
     assert!(visible(&h));
-    h.state_mut().notice = Some("Unrelated failure".into());
+    h.state_mut().notices.error("Unrelated failure");
     h.run();
     h.get_by_label("Unrelated failure");
     assert!(visible(&h));
@@ -463,7 +466,7 @@ fn performance_palette_report_keeps_main_clipboard_behavior() {
     h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
     h.step();
     assert!(h.state().palette.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some("Performance report copied to the clipboard."));
+    assert_eq!(h.state().notice(), Some("Performance report copied to the clipboard."));
     let copied = h
         .output()
         .platform_output
@@ -516,7 +519,7 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     h.event(egui::Event::Text("Retain this public unsaved draft".into()));
     h.run();
     h.state_mut().view.zoom = 0.15;
-    h.state_mut().notice = Some("Keep this unrelated notice".into());
+    h.state_mut().notices.error("Keep this unrelated notice");
     h.run();
     assert!(h.state().editors.values().any(|editor| editor.hidden_dirty));
     let drafts: Vec<_> = h.state().editors.iter().map(|(id, editor)| (*id, editor.draft_count(), editor.hidden_dirty)).collect();
@@ -535,7 +538,7 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     assert!(h.query_by_role_and_label(Role::Button, "Dismiss check").is_none());
     h.get_by_label("Keep this unrelated notice");
     h.get_by_role_and_label(Role::Button, "Discard drafts");
-    assert_eq!(h.state().notice.as_deref(), Some("Keep this unrelated notice"));
+    assert_eq!(h.state().notice(), Some("Keep this unrelated notice"));
     assert_eq!(h.state().session.document(), &document);
     assert_eq!(h.state().session.revision(), revision);
     assert_eq!(h.state().session.events_since(0).unwrap(), events);
@@ -547,4 +550,220 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     h.state_mut().view.zoom = 1.0;
     h.run();
     assert_eq!(h.get_by_role_and_label(Role::MultilineTextInput, "Text").value().as_deref(), Some("Retain this public unsaved draft"));
+}
+
+const UNCHECKED: &str = "Inputs can't be checked";
+/// The whole text of the badge's tooltip (a label's text is its accessible value).
+fn tooltip(h: &Harness<'static, NodeCraftApp>) -> String {
+    h.get_by_label_contains("Can't check whether").accesskit_node().value().unwrap_or_default()
+}
+/// The diagnostic fixture with its two consumers spread apart, so neither card covers the
+/// other's badge, and the first one's badge hovered until its tooltip shows.
+fn unchecked_scene(h: &mut Harness<'static, NodeCraftApp>) -> String {
+    for (n, x) in [(1u8, 0.0), (20, 0.0), (21, 380.0)] {
+        let y = if n == 1 { 0.0 } else { 260.0 };
+        h.state_mut().session.dispatch("node.move", &json!({"canvas":C,"id":id(n),"pos":{"x":x,"y":y}})).unwrap();
+    }
+    h.run();
+    let badge = h.get_by_label(UNCHECKED).rect();
+    h.hover_at(badge.center());
+    for _ in 0..60 {
+        h.step();
+    }
+    h.run();
+    format!("Upstream card \u{201c}Public fixture\u{201d} failed (unsupported): upstream source {} is invalid: Choose a supported source", id(1))
+}
+#[test]
+fn an_unhashable_card_shows_cant_check_with_its_reason_on_hover() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    let reason = unchecked_scene(&mut h);
+    assert_eq!(h.query_all_by_label(UNCHECKED).count(), 1, "the report names only the first unhashable card");
+    assert_eq!(h.state().stale_badges.as_ref().and_then(|b| b.unchecked.as_ref()).map(|(n, _)| *n), Some(id(20)));
+    assert!(h.query_by_label(STALE).is_none(), "an unhashable result is not offered a refresh");
+    let tip = tooltip(&h);
+    assert!(tip.contains(&reason), "{tip}");
+    assert!(tip.contains("\n1 more result can't be checked either"), "{tip}");
+    // Once the source is valid again, the next revision's check shows the result is stale.
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.run();
+    assert!(h.query_by_label(UNCHECKED).is_none());
+    assert!(h.query_by_label_contains("Can't check whether").is_none());
+    assert_eq!(h.query_all_by_label(STALE).count(), 2);
+}
+const STALE: &str = "Stale result: refresh";
+#[test]
+fn badge_precedence_is_mask_then_cant_check_then_stale() {
+    let (app, _, _) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    // A card both unhashable and stale shows only that its inputs can't be checked.
+    h.state_mut().stale_badges.as_mut().unwrap().nodes.insert(id(20));
+    h.run();
+    assert_eq!(h.query_all_by_label(UNCHECKED).count(), 1);
+    assert!(h.query_by_label(STALE).is_none(), "an unhashable card is never offered a refresh");
+    // A drifted mask on that card shows the mask badge in that place instead.
+    h.state_mut().mask_badges.as_mut().unwrap().masks.insert(id(20), super::mask_badges::Drift::Changed);
+    h.run();
+    h.get_by_label("Mask image changed: check the strokes");
+    assert!(h.query_by_label(UNCHECKED).is_none());
+    assert!(h.query_by_label(STALE).is_none());
+}
+#[test]
+fn the_unchecked_hover_is_bounded_sanitised_and_refuses_malformed_diagnostics() {
+    let report = |reason: &str| json!({"nodes":[],"unknown_total":1,"unknown":{"node":id(20),"cause":id(20),"kind":"invalid_input","reason":reason}});
+    let (node, text) = super::stale_badges::unchecked(&report("Bad\n\u{202e}value\u{2066}\t"), |_| None).unwrap();
+    assert_eq!(node, id(20));
+    assert!(text.contains("This card failed (invalid_input): Bad  value  "), "{text}");
+    assert!(!text.chars().any(|c| c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}')));
+    assert!(!text.contains("more result"));
+    let longest = super::stale_badges::unchecked(&report(&"é".repeat(256)), |_| None).unwrap().1;
+    assert!(longest.len() <= 1536);
+    assert!(super::stale_badges::unchecked(&report(&"x".repeat(513)), |_| None).is_none());
+    assert!(super::stale_badges::unchecked(&json!({"nodes":[],"unknown_total":0,"unknown":null}), |_| None).is_none());
+    assert!(super::stale_badges::unchecked(&json!({}), |_| None).is_none());
+    for (field, value) in [("node", json!("bad")), ("cause", json!("x".repeat(36))), ("kind", json!("hostile_kind")), ("reason", json!(7))] {
+        let mut bad = report("Reason");
+        bad["unknown"][field] = value;
+        assert!(super::stale_badges::unchecked(&bad, |_| None).is_none(), "{field}");
+    }
+    // A diagnostic needs a count of at least one, as the palette summary requires.
+    for total in [json!(null), json!(0), json!("1")] {
+        let mut bad = report("Reason");
+        bad["unknown_total"] = total;
+        assert!(super::stale_badges::unchecked(&bad, |_| None).is_none());
+    }
+    let mut bad = report("Reason");
+    bad.as_object_mut().unwrap().remove("unknown_total");
+    assert!(super::stale_badges::unchecked(&bad, |_| None).is_none());
+    // An upstream cause is named by its sanitised, bounded title, never by its id again.
+    let mut upstream = report("upstream source is invalid");
+    upstream["unknown"]["cause"] = json!(id(1));
+    upstream["unknown_total"] = json!(3);
+    let named = |title: &'static str| move |n: NodeId| (n == id(1)).then(|| title.to_owned());
+    let text = super::stale_badges::unchecked(&upstream, named("Sky\n\u{202e}prompt")).unwrap().1;
+    assert!(text.contains("Upstream card \u{201c}Sky  prompt\u{201d} failed (invalid_input): upstream source is invalid"), "{text}");
+    assert!(!text.contains(&id(1).to_string()));
+    assert!(text.contains("\n2 more results can't be checked either"), "{text}");
+    let long = super::stale_badges::unchecked(&upstream, named(Box::leak("t".repeat(4000).into_boxed_str()))).unwrap().1;
+    assert!(long.contains(&format!("\u{201c}{}\u{2026}\u{201d}", "t".repeat(128))), "the title is cut at 128 bytes");
+    assert!(super::stale_badges::unchecked(&upstream, named("  ")).unwrap().1.contains("An upstream card failed"));
+    assert!(super::stale_badges::unchecked(&upstream, |_| None).unwrap().1.contains("An upstream card failed"));
+}
+#[test]
+#[ignore = "native GPU evidence; set NODECRAFT_STALE254_RENDER_ROOT"]
+fn unchecked_badge_native_capture() {
+    let root = std::path::PathBuf::from(std::env::var_os("NODECRAFT_STALE254_RENDER_ROOT").unwrap());
+    std::fs::create_dir_all(&root).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut app, _, _) = diagnostic();
+        app.theme = theme;
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .with_size(Vec2::new(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        let reason = unchecked_scene(&mut h);
+        let tip = tooltip(&h);
+        assert!(tip.contains(&reason), "{tip}");
+        h.render().unwrap().save(root.join(format!("{theme:?}-unchecked-badge.png"))).unwrap();
+    }
+}
+
+/// #1112: a stale badge's fill answers hover and press, keeping its warning colour at rest.
+#[test]
+fn a_stale_badge_changes_colour_on_hover_and_press() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.hover_at(Pos2::new(990.0, 690.0));
+    h.run();
+    let t = *h.state().theme.tokens();
+    let fills = |h: &Harness<'static, NodeCraftApp>, fill: egui::Color32| {
+        h.output().shapes.iter().filter(|clipped| matches!(&clipped.shape, egui::epaint::Shape::Rect(r) if r.fill == fill)).count()
+    };
+    let hover = crate::theme::State::Hovered.tint(t.stale, t.text);
+    let press = crate::theme::State::Pressed.tint(t.stale, t.text);
+    assert_eq!(fills(&h, t.stale), 2, "two badges at rest");
+    let badge = h.get_all_by_label(STALE).next().unwrap().rect();
+    h.hover_at(badge.center());
+    h.run();
+    assert_eq!((fills(&h, t.stale), fills(&h, hover)), (1, 1), "the hovered badge lifts");
+    h.event(egui::Event::PointerButton { pos: badge.center(), button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.step();
+    h.step();
+    assert_eq!(fills(&h, press), 1, "the held badge lifts further");
+}
+
+#[test]
+#[ignore = "writes public-safe File and badge screenshots to NODECRAFT_REVIEW_EVIDENCE"]
+fn render_control_states1112_evidence() {
+    let folder = std::path::PathBuf::from(std::env::var_os("NODECRAFT_REVIEW_EVIDENCE").unwrap());
+    std::fs::create_dir_all(&folder).unwrap();
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (mut app, _, rejected) = diagnostic();
+        app.theme = theme;
+        let mut h = Harness::builder()
+            .wgpu()
+            .with_step_dt(1.0 / 60.0)
+            .with_max_steps(120)
+            .with_size(Vec2::new(1000.0, 700.0))
+            .build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+        crate::theme::apply(&h.ctx, theme);
+        unchecked_scene(&mut h);
+        rejected.store(false, Ordering::SeqCst);
+        h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+        h.hover_at(Pos2::new(990.0, 690.0));
+        h.run();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-rest.png"))).unwrap();
+        let at = h.get_all_by_label(STALE).next().unwrap().rect().center();
+        h.hover_at(at);
+        h.step();
+        h.step();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-hover.png"))).unwrap();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+        h.step();
+        h.step();
+        h.render().unwrap().save(folder.join(format!("badge-{theme:?}-pressed.png"))).unwrap();
+        h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+        h.run();
+        // Close the priced refresh question before opening File.
+        h.state_mut().run_confirm = None;
+        h.run();
+        h.get_by_label("File").click();
+        h.run();
+        h.render().unwrap().save(folder.join(format!("file-{theme:?}-controls.png"))).unwrap();
+    }
+}
+
+/// #1114: at 50% zoom the stale badge is about 10 screen points tall, but its hit rect is at
+/// least 24 x 24, and a click in that rect's corner refreshes.
+#[test]
+fn a_stale_badge_is_a_24_point_target_at_half_zoom() {
+    let (app, _, rejected) = diagnostic();
+    let mut h = ui(app);
+    unchecked_scene(&mut h);
+    rejected.store(false, Ordering::SeqCst);
+    h.state_mut().session.dispatch("node.title", &json!({"canvas":C,"id":id(21),"title":"Public consumer"})).unwrap();
+    h.run();
+    let zoom = 0.5;
+    let view = h.state().view;
+    h.state_mut().view = crate::canvas::CanvasView { pan: view.pan, zoom };
+    h.run();
+    let badge = h.get_all_by_label(STALE).next().expect("a stale badge").rect();
+    assert!(badge.width() >= 24.0 && badge.height() >= 24.0, "hit rect {badge:?}");
+    assert!(h.state().run_confirm.is_none() && h.state().notice().is_none());
+    // The hit rect never rises into the card above it, so its bottom-left corner is clear of it.
+    let card = h.state().view.rect_to_screen(h.state().viewport.min, *h.state().painted.get(&id(21)).unwrap());
+    assert!(badge.top() >= card.bottom() - 0.01, "the hit rect {badge:?} stays below the card {card:?}");
+    let corner = badge.left_bottom() + Vec2::new(1.0, -1.0);
+    h.hover_at(corner);
+    h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: true, modifiers: egui::Modifiers::NONE });
+    h.event(egui::Event::PointerButton { pos: corner, button: egui::PointerButton::Primary, pressed: false, modifiers: egui::Modifiers::NONE });
+    h.run();
+    assert!(h.state().run_confirm.is_some() || h.state().notice().is_some(), "the corner click asked to refresh");
 }

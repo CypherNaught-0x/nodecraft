@@ -4,8 +4,15 @@ use super::*;
 use std::sync::{
     Arc, Mutex, MutexGuard, TryLockError,
     atomic::{AtomicU64, Ordering},
-    mpsc::{SyncSender, TrySendError, sync_channel},
+    mpsc::{RecvTimeoutError, SyncSender, TrySendError, sync_channel},
 };
+use std::time::Duration;
+
+/// How often an open store is read again for changes another NodeCraft window made, such as a
+/// revoked grant (#174). A read that finds the index and grants unchanged publishes nothing.
+pub const REREAD: Duration = Duration::from_secs(5);
+/// A store's index and grants as read, to tell whether either changed.
+type StoreBytes = (Option<Vec<u8>>, Option<Vec<u8>>);
 
 /// Total retained operations, including unread completions, per registered host.
 pub const MAX_PENDING: usize = 16;
@@ -41,9 +48,11 @@ struct Published {
     loaded: bool,
 }
 
-/// Publishes what `store` may run now, if that changed.
-fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
-    let (next, complete) = crate::plugin_runtime::PluginSnapshot::read(store);
+/// Publishes what `store` may run now, if that changed; whether the store could be read. One that
+/// couldn't (grants unreadable, or busy in another window) publishes nothing: the plugins already
+/// published stay, and only a store read in full may withdraw one (#174).
+fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) -> bool {
+    let Ok((next, complete)) = crate::plugin_runtime::PluginSnapshot::read_store(store) else { return false };
     // Only snapshots are stored under this lock, so a poisoned one still holds a whole one.
     let mut published = published.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
     if published.loaded != complete || !published.plugins.same(&next) {
@@ -51,6 +60,7 @@ fn publish<B: StoreBackend>(published: &Mutex<Published>, store: &Store<B>) {
         published.plugins = next;
         published.loaded = complete;
     }
+    true
 }
 
 fn stopped() -> Error {
@@ -155,7 +165,16 @@ impl PluginWorker {
     /// `factory`, including native directory/index initialization, runs on the first request.
     /// A normal initialization error can be retried by a later explicit request. A backend panic
     /// stops this worker: no accepted operation is automatically replayed.
-    pub fn spawn<B, F>(mut factory: F, host: PluginHost) -> Result<Arc<Self>, Error>
+    pub fn spawn<B, F>(factory: F, host: PluginHost) -> Result<Arc<Self>, Error>
+    where
+        B: StoreBackend + Send + 'static,
+        F: FnMut() -> Result<Store<B>, Error> + Send + 'static,
+    {
+        Self::spawn_rereading(factory, host, REREAD)
+    }
+
+    /// [`Self::spawn`], reading an open store again every `every` for changes made elsewhere.
+    pub fn spawn_rereading<B, F>(mut factory: F, host: PluginHost, every: Duration) -> Result<Arc<Self>, Error>
     where
         B: StoreBackend + Send + 'static,
         F: FnMut() -> Result<Store<B>, Error> + Send + 'static,
@@ -174,8 +193,18 @@ impl PluginWorker {
         std::thread::Builder::new()
             .name("nodecraft-plugins".into())
             .spawn(move || {
-                let mut store = None;
-                for job in inbox {
+                let mut store: Option<Store<B>> = None;
+                // The index and grants the last timed read published from.
+                let mut seen: Option<StoreBytes> = None;
+                loop {
+                    let (job, timed) = match inbox.recv_timeout(every) {
+                        Ok(job) => (job, false),
+                        // Only a store a request has opened is read again: until then nothing
+                        // was published from it.
+                        Err(RecvTimeoutError::Timeout) if store.is_some() => (Job { id: String::new(), request: Value::Null }, true),
+                        Err(RecvTimeoutError::Timeout) => continue,
+                        Err(RecvTimeoutError::Disconnected) => break,
+                    };
                     if job.id.is_empty() {
                         if lock(&shared).stopped {
                             break;
@@ -185,8 +214,19 @@ impl PluginWorker {
                                 store = Some(factory()?);
                             }
                             let store = store.as_mut().ok_or_else(stopped)?;
+                            // Read before the store is: a write landing between the two reads
+                            // then leaves `seen` older than what was published, so the next read
+                            // publishes again, never the other way round. Unchanged bytes skip
+                            // the store's lock and the publish altogether.
+                            let now = (store.backend().read_index()?, store.backend().read_grants()?);
+                            if timed && seen.as_ref() == Some(&now) {
+                                return Ok(());
+                            }
                             store.refresh()?;
-                            publish(&publishing, store);
+                            // A read that couldn't be finished is tried again on the next tick.
+                            if publish(&publishing, store) {
+                                seen = Some(now);
+                            }
                             Ok::<(), Error>(())
                         }));
                         if refreshed.is_err() {
@@ -213,7 +253,7 @@ impl PluginWorker {
                         let store = store.as_mut().ok_or_else(stopped)?;
                         let result = handle(store, &host, &job.request);
                         // Whatever the request did, what may run is published from the store.
-                        publish(&publishing, store);
+                        let _ = publish(&publishing, store);
                         result
                     }));
                     match result {

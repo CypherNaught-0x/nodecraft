@@ -34,3 +34,8 @@ resvg = { version = "=0.45.1", default-features = false }
 roxmltree = "=0.20.0"
 svgtypes = "=0.15.3"
 quick-xml = { version = "=0.41.0", default-features = false }
+# ZIP32's mandatory integrity checksum for the original bounded USDZ container.
+crc32fast = "=1.5.2"
+
+[dev-dependencies]
+proptest = { workspace = true }

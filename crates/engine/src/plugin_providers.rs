@@ -8,6 +8,17 @@
 //! carries the grant it was published under and is flagged revoked once that grant is gone, and
 //! its broker sends nothing after that: no paid request, and no poll, cancel or download of a
 //! job it sent before.
+//!
+//! Its template's `limits.concurrency` holds in two places: a run sends it no more jobs at once
+//! (the broker sets its scheduler lane's cap), and every broker built for it shares one
+//! [`RequestGate`], so all runs and jobs followed after a restart together keep that many
+//! requests in flight at most. The providers of one package share a [`ByteBudget`] as well: their
+//! jobs' downloads hold at most two jobs' worth of bytes in memory at once.
+//!
+//! Before each paid submit, and each poll, cancel or download, the broker asks a [`GrantCheck`]
+//! whether the grant it was published under still holds. On the desktop that reads the store's
+//! grants afresh, so a grant revoked in another NodeCraft window sharing the store stops new work
+//! here at once, before this window has read the store again.
 use crate::plugin_runtime::PluginStamp;
 use crate::secrets::{Account, SecretStore};
 use nodecraft_catalog::{InputRole, ModeSpec, ModelDescriptor, Price, Pricing, model::is_id};
@@ -16,7 +27,7 @@ use nodecraft_plugin::manifest::{Capability, RegistrationKind, Runtime};
 use nodecraft_plugin_store::Package;
 use nodecraft_plugin_store::grants::Grant;
 use nodecraft_providers::Provider;
-use nodecraft_providers::broker::{Broker, Template};
+use nodecraft_providers::broker::{Broker, ByteBudget, RequestGate, Standing, Template};
 use nodecraft_providers::http::Http;
 use nodecraft_types::Modality;
 use std::sync::Arc;
@@ -29,17 +40,71 @@ const PROMPT: &str = "prompt";
 /// The most catalog models one package publishes; templates past it are left out.
 pub const MAX_PACKAGE_MODELS: usize = 256;
 
+/// Whether the grant a plugin provider was published under still holds, asked right before the
+/// broker sends anything.
+#[derive(Clone)]
+pub struct GrantCheck(Option<Holds>);
+
+/// Whether a stamp's grant holds, as the store says: `Ok(false)` when it doesn't, an error when
+/// the store can't be read just now.
+type Holds = Arc<dyn Fn(&PluginStamp) -> Result<bool, nodecraft_types::Error> + Send + Sync>;
+
+impl std::fmt::Debug for GrantCheck {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() { "GrantCheck(store)" } else { "GrantCheck(this window)" })
+    }
+}
+
+impl Default for GrantCheck {
+    fn default() -> Self {
+        Self::this_window()
+    }
+}
+
+impl GrantCheck {
+    /// Only what this window last read of the store: a session store no other window shares
+    /// (the browser's), or a test's.
+    pub fn this_window() -> Self {
+        Self(None)
+    }
+
+    /// Reads the store folder at `root` each time it is asked (`store::standing_at`): the
+    /// stamp's digest must be its package's active, enabled version and its grant the live one,
+    /// at its epoch. Nothing is created and no lock is taken; each file is read only up to its
+    /// own limit.
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn folder(root: std::path::PathBuf) -> Self {
+        Self(Some(Arc::new(move |stamp: &PluginStamp| nodecraft_plugin_store::store::standing_at(&root, &stamp.package, &stamp.digest, stamp.epoch))))
+    }
+
+    /// What stands of `stamp`'s grant: withdrawn when the store says it no longer holds, and
+    /// unknown (asked again later, never taken as a revoke) when the store can't be read.
+    pub fn standing(&self, stamp: &PluginStamp) -> Standing {
+        match self.0.as_ref().map(|check| check(stamp)) {
+            None | Some(Ok(true)) => Standing::Granted,
+            Some(Ok(false)) => Standing::Withdrawn,
+            Some(Err(_)) => Standing::Unknown,
+        }
+    }
+}
+
 /// One granted provider template.
 #[derive(Debug)]
 pub struct PluginProvider {
     pub stamp: PluginStamp,
     pub template: Template,
     revoked: AtomicBool,
+    /// Its requests at once, for every broker built for it.
+    gate: Arc<RequestGate>,
+    /// What its package's jobs' downloads may hold in memory at once, shared by the package's
+    /// providers.
+    bytes: Arc<ByteBudget>,
 }
 
 impl PluginProvider {
-    pub(crate) fn new(stamp: PluginStamp, template: Template) -> Self {
-        Self { stamp, template, revoked: AtomicBool::new(false) }
+    pub(crate) fn new(stamp: PluginStamp, template: Template, bytes: Arc<ByteBudget>) -> Self {
+        let gate = RequestGate::new(usize::try_from(template.limits.concurrency).unwrap_or(1));
+        Self { stamp, template, revoked: AtomicBool::new(false), gate, bytes }
     }
 
     /// Whether its grant is gone: its broker sends no paid request any more.
@@ -70,6 +135,7 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
     let rights = &grant.rights;
     let mut out = Vec::new();
     let mut models = 0usize;
+    let bytes = ByteBudget::new(nodecraft_providers::broker::adapter::MAX_PACKAGE_BYTES);
     for (r, id) in package.manifest.registrations.iter().zip(package.manifest.registered_ids()) {
         if r.kind != RegistrationKind::Provider {
             continue;
@@ -77,7 +143,7 @@ pub(crate) fn of(package: &Package, grant: &Grant, stamp: &PluginStamp) -> Vec<(
         let Some(template) = package.files.get(&r.descriptor).and_then(|bytes| Template::decode(bytes).ok()) else { continue };
         let reaches = rights.capabilities.contains(&Capability::Network) && template.origins().all(|o| rights.origins.contains(o.as_str()));
         let keyed = template.credential.is_none() || rights.capabilities.contains(&Capability::Secret);
-        let provider = PluginProvider::new(stamp.clone(), template);
+        let provider = PluginProvider::new(stamp.clone(), template, Arc::clone(&bytes));
         // A credential with nowhere to be kept would list models that never run.
         let kept = provider.template.credential.is_none() || provider.key_account().is_some();
         models = models.saturating_add(provider.template.models.len());
@@ -132,12 +198,13 @@ pub fn models(id: &str, provider: &PluginProvider) -> Vec<ModelDescriptor> {
 }
 
 /// The broker for provider `id`, reading its credential from `keys`. It sends nothing once
-/// `provider` is revoked.
+/// `provider` is revoked, or once `grants` says its grant no longer holds.
 pub fn broker(
     id: &str,
     provider: &Arc<PluginProvider>,
     keys: &dyn SecretStore,
     http: Arc<dyn Http>,
+    grants: GrantCheck,
 ) -> Result<Arc<dyn Provider>, crate::provider_setup::Readiness> {
     use crate::provider_setup::Readiness;
     let key = match provider.key_account() {
@@ -146,7 +213,11 @@ pub fn broker(
         Some(name) => Some(crate::provider_setup::needs_key(keys, &name)?),
     };
     let held = Arc::clone(provider);
-    let broker = Broker::new(id, provider.template.clone(), key, http).map_err(|e| Readiness::Failed(e.message))?.granted(Arc::new(move || !held.is_revoked()));
+    let broker = Broker::new(id, provider.template.clone(), key, http)
+        .map_err(|e| Readiness::Failed(e.message))?
+        .standing(Arc::new(move || if held.is_revoked() { Standing::Withdrawn } else { grants.standing(&held.stamp) }))
+        .gated(Arc::clone(&provider.gate))
+        .budgeted(Arc::clone(&provider.bytes));
     Ok(Arc::new(broker))
 }
 

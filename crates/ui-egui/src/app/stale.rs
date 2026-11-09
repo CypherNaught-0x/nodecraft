@@ -5,7 +5,7 @@ use nodecraft_types::ProjectId;
 use std::sync::Arc;
 
 const MAX_TEXT: usize = 1536;
-const MAX_REASON: usize = 512;
+pub(super) const MAX_REASON: usize = 512;
 const MALFORMED: &str = "The staleness report could not be displayed safely.";
 
 pub(super) struct StaleSnapshot {
@@ -33,21 +33,23 @@ impl StaleSnapshot {
             && app.session.document().canvases().contains_key(&app.canvas)
     }
 }
-fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
+pub(super) fn append(text: &mut String, value: &str) -> Result<(), &'static str> {
     if text.len().checked_add(value.len()).is_none_or(|n| n > MAX_TEXT) {
         return Err(MALFORMED);
     }
     text.push_str(value);
     Ok(())
 }
-fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
+/// Appends `value` with control and bidirectional-override characters blanked, within `MAX_TEXT`.
+pub(super) fn normalized(text: &mut String, value: &str) -> Result<(), &'static str> {
     for c in value.chars() {
         let c = if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c };
         append(text, c.encode_utf8(&mut [0; 4]))?;
     }
     Ok(())
 }
-fn kind(value: &str) -> Option<&'static str> {
+/// The error kinds the report may name; anything else is refused.
+pub(super) fn kind(value: &str) -> Option<&'static str> {
     Some(match value {
         "invalid_input" => "invalid_input",
         "unsupported" => "unsupported",
@@ -115,37 +117,46 @@ fn summary(report: &serde_json::Value, total: usize) -> Result<String, &'static 
     Ok(text)
 }
 impl NodeCraftApp {
-    /// Run changed (⌘/Ctrl+Enter) or Run workflow (#965), from the shortcut or the palette:
+    /// Run changed (Command+Enter) or Run workflow (#965), from the shortcut or the palette:
     /// quotes the run and shows its confirmation, or says there is nothing to run.
-    pub(super) fn run_whole_command(&mut self, id: &str) {
+    /// Whether it ran: false when it was refused (and the notice says why).
+    pub(super) fn run_whole_command(&mut self, id: &str) -> bool {
         let kind = if id == "run.workflow" { super::generate::RunKind::Workflow } else { super::generate::RunKind::Changed };
-        if let Err(error) = self.request_whole(kind) {
-            self.notice = Some(error.message);
+        match self.request_whole(kind) {
+            Ok(_) => true,
+            Err(error) => {
+                self.notices.report(error);
+                false
+            }
         }
     }
     pub(super) fn palette_command_params(&self, id: &str) -> serde_json::Value {
         if matches!(id, "canvas.stale" | "run.changed" | "run.workflow") { json!({"canvas": self.canvas}) } else { json!({}) }
     }
-    pub(super) fn dispatch_palette_command(&mut self, id: &str) {
+    /// Runs a command chosen in the palette; whether it ran (the notice says why not).
+    pub(super) fn dispatch_palette_command(&mut self, id: &str) -> bool {
         // A run of the whole canvas opens its price confirmation; nothing starts from here.
         if matches!(id, "run.changed" | "run.workflow") {
-            self.run_whole_command(id);
-            return;
+            return self.run_whole_command(id);
         }
         // The review is read a page at a time in its panel.
         #[cfg(not(target_arch = "wasm32"))]
         if id == "usage.ownership" || id == "usage.unresolved" {
-            self.open_ownership_review();
-            return;
+            return self.open_ownership_review();
         }
         let stamp = (id == "canvas.stale").then(|| StaleSnapshot::capture(self));
         let result = self.session.dispatch(id, &self.palette_command_params(id));
         let Some(mut stamp) = stamp else {
-            match result {
-                Ok(_) => self.notice = None,
-                Err(error) => self.notice = Some(error.message),
-            }
-            return;
+            return match result {
+                Ok(_) => {
+                    self.notices.clear();
+                    true
+                }
+                Err(error) => {
+                    self.notices.report(error);
+                    false
+                }
+            };
         };
         self.stale_snapshot = None;
         let outcome = match result {
@@ -157,8 +168,8 @@ impl NodeCraftApp {
             Err(error) => {
                 let mut message = String::new();
                 if message.try_reserve_exact(MAX_TEXT).is_err() {
-                    self.notice = Some(MALFORMED.into());
-                    return;
+                    self.notices.error(MALFORMED);
+                    return false;
                 }
                 let _ = append(&mut message, "Staleness check failed (");
                 let category = match error.kind {
@@ -189,16 +200,20 @@ impl NodeCraftApp {
                     bytes += c.len_utf8();
                     let _ = normalized(&mut message, c.encode_utf8(&mut [0; 4]));
                 }
-                self.notice = Some(message);
-                return;
+                self.notices.error(message);
+                return false;
             }
         };
         match outcome {
             Ok(text) => {
                 stamp.text = text;
                 self.stale_snapshot = Some(stamp);
+                true
             }
-            Err(message) => self.notice = Some(message.into()),
+            Err(message) => {
+                self.notices.error(message);
+                false
+            }
         }
     }
     pub(super) fn show_notices(&mut self, ui: &egui::Ui, viewport: Rect, t: &Tokens) {
@@ -212,29 +227,36 @@ impl NodeCraftApp {
             .values()
             .any(|editor| editor.hidden_dirty)
             .then_some("Unsaved draft in a hidden node or field. Zoom or pan back to edit it, or discard drafts.");
-        let notice = self.notice.as_deref().or(hidden);
+        let escape = self.notice_escape.take();
         // A pending drop shows its own progress in this corner.
-        if (notice.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
+        if (!self.notices.is_empty() || hidden.is_some() || self.stale_snapshot.is_some()) && !self.drop_pending() {
             let mut dismiss_check = false;
+            let mut action = None;
             let notice_id = ui.id().with("notice");
             let previous_size = egui::AreaState::load(ui.ctx(), notice_id).map(|state| state.rect().size());
+            let width = t.notice_width.min((viewport.width() - 2.0 * t.card_padding).max(0.0));
             let area = egui::Area::new(notice_id)
                 .order(egui::Order::Foreground)
                 .anchor(egui::Align2::LEFT_BOTTOM, Vec2::new(t.card_padding, -t.card_padding))
                 .show(ui.ctx(), |ui| {
-                    egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding).show(ui, |ui| {
-                        ui.set_max_width((2.0 * t.card_width).min(viewport.width().max(0.0)));
-                        if let Some(notice) = notice {
-                            ui.label(notice);
-                        }
-                        if hidden.is_some() && ui.button("Discard drafts").clicked() {
-                            self.editors.clear();
-                        }
-                        if let Some(snapshot) = &self.stale_snapshot {
-                            ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
-                            dismiss_check = ui.small_button("Dismiss check").clicked();
-                        }
-                    });
+                    ui.set_width(width);
+                    ui.spacing_mut().item_spacing.y = t.control_gap;
+                    action = self.notices.show(ui, t, escape).action;
+                    if hidden.is_some() || self.stale_snapshot.is_some() {
+                        crate::theme::panel_frame(t).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            if let Some(hidden) = hidden {
+                                ui.add(egui::Label::new(hidden).wrap());
+                                if ui.button("Discard drafts").clicked() {
+                                    self.editors.clear();
+                                }
+                            }
+                            if let Some(snapshot) = &self.stale_snapshot {
+                                ui.add(egui::Label::new(snapshot.text.as_str()).wrap());
+                                dismiss_check = ui.small_button("Dismiss check").clicked();
+                            }
+                        });
+                    }
                 });
             // A changed bottom-anchored area needs a settled frame before its controls are hit-tested.
             if previous_size != Some(area.response.rect.size()) {
@@ -242,6 +264,9 @@ impl NodeCraftApp {
             }
             if dismiss_check {
                 self.stale_snapshot = None;
+            }
+            if let Some(command) = action {
+                self.run_palette_command(ui.ctx(), &command);
             }
             for (open, id) in [(self.palette.is_some(), "quick_add_palette"), (self.turn_into.is_some(), "turn_into_menu")] {
                 if open {

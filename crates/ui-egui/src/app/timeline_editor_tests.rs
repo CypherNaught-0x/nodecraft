@@ -46,7 +46,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>) {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(h.state().timeline_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().timeline_editor.is_some(), "{:?}", h.state().notice());
     h.run_steps(2);
 }
 
@@ -169,7 +169,7 @@ fn the_menu_opens_the_editor_on_the_wired_clips_and_trims_are_one_undo_step_each
     drag(&mut h, end, to);
     let clips = list(&mut h);
     let out = clips[0]["out_us"].as_u64().unwrap();
-    assert!(out.abs_diff(3_000_000) <= 50_000, "{out} {:?}", h.state().notice);
+    assert!(out.abs_diff(3_000_000) <= 50_000, "{out} {:?}", h.state().notice());
     assert_eq!(h.state().timeline_editor.as_ref().unwrap().selected.as_deref(), Some(auto(ONE).as_str()));
 
     let start = centre_of(&h, &format!("Trim start of {one}"));
@@ -194,7 +194,7 @@ fn dragging_a_clip_past_the_next_reorders_them() {
     // Past the middle of the second clip (5 s to 10 s at the stand-in length).
     let to = Pos2::new(screen_x(&h, 9_000_000), from.y);
     drag(&mut h, from, to);
-    assert_eq!(ids(&mut h), [auto(TWO), auto(ONE)], "{:?}", h.state().notice);
+    assert_eq!(ids(&mut h), [auto(TWO), auto(ONE)], "{:?}", h.state().notice());
     // A click without travel only selects.
     let back = centre_of(&h, &format!("{} on the track", clip_label(&h, TWO)));
     drag(&mut h, back, back);
@@ -215,7 +215,7 @@ fn the_playhead_splits_a_clip_and_keys_delete_and_close() {
     h.get_by_label("Split at playhead").click();
     h.run_steps(2);
     let clips = list(&mut h);
-    assert_eq!(clips.len(), 3, "{:?}", h.state().notice);
+    assert_eq!(clips.len(), 3, "{:?}", h.state().notice());
     assert_eq!((clips[0]["out_us"].as_u64(), clips[1]["in_us"].as_u64()), (Some(head), Some(head)));
     assert!(h.query_by_label(&format!("{one} (part 2)")).is_some());
 
@@ -230,7 +230,7 @@ fn the_playhead_splits_a_clip_and_keys_delete_and_close() {
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
     assert_eq!(list(&mut h).len(), 2);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("disable")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("disable")), "{:?}", h.state().notice());
 
     // Escape clears the selection, then closes.
     h.get_by_label(&one).click();
@@ -280,7 +280,7 @@ fn a_clip_is_sped_up_placed_and_turned_and_the_render_quality_picked() {
     }
     let two = list(&mut h)[1].clone();
     let got = (two["speed"].clone(), two["scale"].clone(), two["pos_x"].clone(), two["rotation"].clone());
-    assert_eq!(got, (json!(2000), json!(500), json!(250), json!(90)), "{:?}", h.state().notice);
+    assert_eq!(got, (json!(2000), json!(500), json!(250), json!(90)), "{:?}", h.state().notice());
     // Each field is one undo step; Fit to the frame puts it back in one.
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.run_steps(2);
@@ -300,7 +300,7 @@ fn a_clip_is_sped_up_placed_and_turned_and_the_render_quality_picked() {
     h.run_steps(3);
     let canvas = h.state().canvas;
     let node = h.state().session.document().canvases().get(&canvas).and_then(|c| c.nodes().get(&EDITOR)).cloned().unwrap();
-    assert_eq!(node.params.get("quality"), Some(&Value::Text("draft".into())), "{:?}", h.state().notice);
+    assert_eq!(node.params.get("quality"), Some(&Value::Text("draft".into())), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -311,7 +311,7 @@ fn tracks_are_added_hold_clips_dragged_onto_them_and_remove_once_empty() {
     h.run_steps(2);
     let canvas = h.state().canvas;
     let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
-    assert_eq!(listed["tracks"], json!([{"kind": "video"}, {"kind": "video"}]), "{:?}", h.state().notice);
+    assert_eq!(listed["tracks"], json!([{"kind": "video"}, {"kind": "video"}]), "{:?}", h.state().notice());
 
     // Dragged down onto the new lane and right by a second, it plays from there over the main track.
     let block = h.get_by_label(&format!("{one} on the track")).rect();
@@ -319,7 +319,7 @@ fn tracks_are_added_hold_clips_dragged_onto_them_and_remove_once_empty() {
     drag(&mut h, block.center(), to);
     let clips = list(&mut h);
     let moved = clips.iter().find(|c| c["id"] == json!(auto(ONE))).unwrap();
-    assert_eq!(moved["track"], json!(1), "{:?}", h.state().notice);
+    assert_eq!(moved["track"], json!(1), "{:?}", h.state().notice());
     let at = moved["at_us"].as_u64().unwrap();
     assert!(at.abs_diff(1_000_000) <= 50_000, "{at}");
     // Then along its lane, by another second.
@@ -341,7 +341,7 @@ fn tracks_are_added_hold_clips_dragged_onto_them_and_remove_once_empty() {
     h.get_by_label("Remove Picture track 1").click();
     h.run_steps(2);
     let listed = h.state_mut().session.dispatch("timeline.list", &json!({"canvas": canvas, "id": EDITOR})).unwrap();
-    assert_eq!(listed["tracks"], json!([{"kind": "video"}]), "{:?}", h.state().notice);
+    assert_eq!(listed["tracks"], json!([{"kind": "video"}]), "{:?}", h.state().notice());
 }
 
 /// Real lengths and thumbnails through installed tools: opt in with
@@ -468,7 +468,8 @@ fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
     h.state_mut().exports.answer = Some(path.clone());
     h.get_by_label("Export for another editor…").click();
     h.run_steps(3);
-    assert_eq!(h.state().notice.as_deref(), Some("Exported cut.zip."));
+    super::export_tests::finish(&mut h);
+    assert_eq!(h.state().notice(), Some("Exported cut.zip."));
     let zip = zip::ZipArchive::new(std::fs::File::open(&path).unwrap()).unwrap();
     let mut names: Vec<String> = zip.file_names().map(|name| name.unwrap().into_owned()).collect();
     names.sort();
@@ -476,6 +477,9 @@ fn the_editor_exports_an_interchange_archive_where_the_dialog_says() {
     assert!(names.iter().any(|n| n.ends_with(".fcpxml")) && names.contains(&"report.txt".to_owned()), "{names:?}");
     assert_eq!(h.state().session.revision(), revision, "exporting doesn't edit the project");
 }
+
+#[cfg(not(target_arch = "wasm32"))]
+mod interchange643;
 
 fn captions(h: &mut Harness<'static, NodeCraftApp>) -> Vec<serde_json::Value> {
     let canvas = h.state().canvas;
@@ -490,7 +494,7 @@ fn captions_are_added_at_the_playhead_edited_and_deleted_as_undo_steps() {
     h.get_by_label("Add caption").click();
     h.run_steps(2);
     let added = captions(&mut h);
-    assert_eq!(added.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 1, "{:?}", h.state().notice());
     assert_eq!((&added[0]["text"], &added[0]["start_us"], &added[0]["end_us"]), (&json!("Caption"), &json!(1_000_000), &json!(3_000_000)));
     // The new caption is picked, so the panel shows its fields.
     assert_eq!(h.state().timeline_editor.as_ref().unwrap().caption.as_deref(), Some("caption-1"));
@@ -503,7 +507,7 @@ fn captions_are_added_at_the_playhead_edited_and_deleted_as_undo_steps() {
     assert_eq!(captions(&mut h)[0]["position"], json!("top"));
     h.get_by_label("Show caption Caption").click();
     h.run_steps(2);
-    assert_eq!(captions(&mut h)[0]["enabled"], json!(false), "{:?}", h.state().notice);
+    assert_eq!(captions(&mut h)[0]["enabled"], json!(false), "{:?}", h.state().notice());
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.run_steps(2);
     assert_eq!(captions(&mut h)[0]["enabled"], json!(true));

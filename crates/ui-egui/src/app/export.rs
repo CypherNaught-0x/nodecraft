@@ -163,18 +163,18 @@ impl NodeCraftApp {
 
     pub(super) fn pick_export(&mut self, target: Target, name: &str) {
         if self.exports.pending.is_some() || self.exports.work.is_some() || self.exports.results.is_some() || self.exports.card.is_some() {
-            self.notice = Some("Another export is in progress; finish or cancel that first.".into());
+            self.notices.warning("Another export is in progress; finish or cancel that first.");
             return;
         }
         let folder = matches!(target, Target::Folder(..) | Target::Results(..) | Target::Card(..));
         let future = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| self.export_pick(name, folder))) {
             Ok(Some(future)) => future,
             Ok(None) => {
-                self.notice = Some("Exporting to a file works in the desktop app.".into());
+                self.notices.warning("Exporting to a file works in the desktop app.");
                 return;
             }
             Err(_) => {
-                self.notice = Some("The save dialog failed; nothing was exported.".into());
+                self.notices.error_for(crate::notices::EXPORT, "The save dialog failed; nothing was exported.");
                 return;
             }
         };
@@ -221,12 +221,12 @@ impl NodeCraftApp {
             Ok(Poll::Ready(None)) => return,
             Ok(Poll::Ready(Some(path))) => path,
             Err(_) => {
-                self.notice = Some("The save dialog failed; nothing was exported.".into());
+                self.notices.error_for(crate::notices::EXPORT, "The save dialog failed; nothing was exported.");
                 return;
             }
         };
         if !Arc::ptr_eq(&pending.session, &self.session.view_identity()) {
-            self.notice = Some("Another project opened while choosing where to save; nothing was exported.".into());
+            self.notices.warning("Another project opened while choosing where to save; nothing was exported.");
             return;
         }
         match pending.target {
@@ -236,17 +236,18 @@ impl NodeCraftApp {
                 params["path"] = json!(path);
                 // The dialog already asked before replacing a file.
                 params["overwrite"] = json!(true);
-                if command == "history.export" {
-                    self.exports.work = Some(work::Work::file(self, params, path));
+                if matches!(command, "history.export" | "timeline.export_interchange") {
+                    self.exports.work = Some(work::Work::file(self, command, params, path));
                     self.poll_export_work(ctx);
                     return;
                 }
                 match self.session.dispatch(command, &params) {
                     Ok(result) => {
                         let name: String = path.file_name().map(|n| n.to_string_lossy().chars().take(80).collect()).unwrap_or_default();
-                        self.notice = Some(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
+                        self.notices.settle(crate::notices::EXPORT);
+                        self.notices.success(format!("Exported {name}.{}{}", empty_boxes(missing(&result)), font_notice(font_fallbacks(&result))));
                     }
-                    Err(error) => self.notice = Some(error.message),
+                    Err(error) => self.notices.report_for(crate::notices::EXPORT, error),
                 }
             }
             Target::Folder(command, files) => {
@@ -288,10 +289,14 @@ impl NodeCraftApp {
                         }
                     }
                 }
-                self.notice = Some(match failed {
-                    None => format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts)),
-                    Some(why) => format!("Exported {written} of {total} files; {why}{}{}", empty_boxes(boxes), font_notice(fonts)),
-                });
+                match failed {
+                    None => {
+                        self.notices.settle(crate::notices::EXPORT);
+                        self.notices.success(format!("Exported {written} files.{}{}", empty_boxes(boxes), font_notice(fonts)));
+                    }
+                    // Some files were written: not a plain failure, but not done either.
+                    Some(why) => self.notices.warning(format!("Exported {written} of {total} files; {why}{}{}", empty_boxes(boxes), font_notice(fonts))),
+                }
             }
         }
     }

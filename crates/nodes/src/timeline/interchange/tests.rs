@@ -36,6 +36,17 @@ fn a_cross_transition_is_a_dissolve_centred_on_the_cut() {
 }
 
 #[test]
+fn a_whole_frame_fade_shortened_to_fit_has_its_own_loss() {
+    let (mut timeline, wires, sources) = crossing();
+    timeline.clips[0].fade_in_us = 5_000_000;
+    let out = fcpxml(&sequence(&timeline, &wires, &[Some(0), Some(1)], &sources)).unwrap();
+    assert!(
+        out.losses.iter().any(|loss| loss.clip.as_deref() == Some("fox") && loss.feature == "fade duration" && loss.detail == "fade shortened to fit the clip")
+    );
+    assert!(!out.losses.iter().any(|loss| loss.feature == "sub-frame timing"));
+}
+
+#[test]
 fn other_tracks_connect_to_what_is_under_them_on_lanes() {
     let (mut timeline, mut wires, mut sources) = crossing();
     timeline.tracks = vec![Track { kind: TrackKind::Video }, Track { kind: TrackKind::Audio }];
@@ -140,16 +151,11 @@ fn what_the_document_cannot_carry_is_listed() {
     seq.background = [255, 255, 255];
     let out = fcpxml(&seq).unwrap();
     let features: Vec<(&str, Option<&str>)> = out.losses.iter().map(|l| (l.feature, l.clip.as_deref())).collect();
-    for expected in [
-        ("disabled clip", Some("off")),
-        ("unconnected clip", Some("gone")),
-        ("sub-frame timing", Some("fox")),
-        ("fade", Some("fox")),
-        ("background colour", None),
-    ] {
+    for expected in [("disabled clip", Some("off")), ("unconnected clip", Some("gone")), ("sub-frame timing", Some("fox")), ("background colour", None)] {
         assert!(features.contains(&expected), "{expected:?} in {features:?}");
     }
-    assert!(out.xml.contains(r#"<adjust-volume amount="-96.00dB"/>"#), "a muted clip is silent: {}", out.xml);
+    assert!(out.xml.contains(r#"<adjust-volume amount="-96.00dB">"#), "a muted faded clip is silent: {}", out.xml);
+    assert!(!features.iter().any(|(feature, _)| *feature == "fade"));
 }
 
 #[test]

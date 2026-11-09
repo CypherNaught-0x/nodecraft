@@ -134,7 +134,7 @@ impl NodeCraftApp {
                     app.form = Some((revision, form));
                 }
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             }
@@ -173,7 +173,7 @@ impl NodeCraftApp {
 
         let mut asks = Vec::new();
         let mut close = false;
-        let notice = self.notice.clone();
+        let notice = self.notices.latest().cloned();
         let content = ctx.content_rect();
         let gap = t.control_gap * 2.0;
         let shell = egui::Frame::NONE.fill(t.panel_fill).inner_margin(gap);
@@ -193,7 +193,7 @@ impl NodeCraftApp {
                         asks.push(Ask::Command("edit.undo", json!({}), None));
                     }
                     if let Some(notice) = &notice {
-                        ui.label(egui::RichText::new(notice).color(t.danger));
+                        crate::notices::inline_notice(ui, &t, notice);
                     }
                 });
             });
@@ -234,7 +234,7 @@ impl NodeCraftApp {
             Ask::Fill(port, values, field) => match fill(app, &port, values) {
                 Ok(params) => ("app.input_set", params, field.map(EditTarget::Parameter)),
                 Err(message) => {
-                    self.notice = Some(message);
+                    self.notices.error(message);
                     return false;
                 }
             },
@@ -246,7 +246,7 @@ impl NodeCraftApp {
                 #[cfg(target_arch = "wasm32")]
                 {
                     let _ = (port, slot);
-                    self.notice = Some("Choosing a file works in the desktop app.".into());
+                    self.notices.warning("Choosing a file works in the desktop app.");
                 }
                 return true;
             }
@@ -254,7 +254,7 @@ impl NodeCraftApp {
                 return match self.request_runs(vec![app.node], super::generate::RunKind::Refresh) {
                     Ok(()) => true,
                     Err(error) => {
-                        self.notice = Some(error.message);
+                        self.notices.report(error);
                         false
                     }
                 };
@@ -274,7 +274,7 @@ impl NodeCraftApp {
         };
         match self.session.dispatch(command, &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 if let Some(target) = target {
                     app.editor.accepted(&target);
                 }
@@ -284,7 +284,7 @@ impl NodeCraftApp {
                 if let Some(target) = target {
                     app.editor.failed(target, error.message.clone());
                 }
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 false
             }
         }
@@ -328,7 +328,7 @@ impl NodeCraftApp {
             Ok(asset) => {
                 self.app_ask(app, Ask::Fill(port.to_owned(), placed(filled, many, slot, Value::Media(asset)), None), &t);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }
@@ -452,9 +452,15 @@ impl View<'_> {
         ui.horizontal(|ui| {
             let run = ui.add_enabled(
                 self.form.ready,
-                egui::Button::new(egui::RichText::new("Run").strong()).stroke(egui::Stroke::new(1.0, t.accent)).min_size(Vec2::new(t.app_thumbnail, 0.0)),
+                egui::Button::new(egui::RichText::new("Run").strong())
+                    .stroke(egui::Stroke::new(t.stroke_hairline, t.accent))
+                    .min_size(Vec2::new(t.app_thumbnail, 0.0)),
             );
-            if run.on_hover_text("Shows the price, then runs").clicked() {
+            if run
+                .on_hover_text("Shows the price, then runs")
+                .on_disabled_hover_text(self.form.blocked.clone().unwrap_or_else(|| "Fill in the inputs this form needs first".to_owned()))
+                .clicked()
+            {
                 asks.push(Ask::Run);
             }
             if let Some(price) = &self.form.price {
@@ -589,11 +595,20 @@ impl View<'_> {
     fn thumbnail(&self, ui: &mut egui::Ui, value: Option<&Value>, active: bool) -> egui::Response {
         let t = self.t;
         let (rect, response) = ui.allocate_exact_size(Vec2::splat(t.app_thumbnail), Sense::click());
-        let stroke = if active { egui::Stroke::new(2.0, t.accent) } else { egui::Stroke::new(1.0, t.panel_stroke) };
+        let stroke = if active {
+            egui::Stroke::new(t.stroke_strong, t.accent)
+        } else {
+            // A hovered or pressed thumbnail answers the pointer (#1112).
+            match crate::theme::State::of(&response) {
+                crate::theme::State::Rest => egui::Stroke::new(t.stroke_hairline, t.panel_stroke),
+                crate::theme::State::Hovered => egui::Stroke::new(t.stroke_hairline, t.card_stroke_hover),
+                crate::theme::State::Pressed => egui::Stroke::new(t.stroke_strong, t.card_stroke_hover),
+            }
+        };
         ui.painter().rect_filled(rect, f32::from(t.panel_radius) / 2.0, t.canvas_bg);
         match value {
             Some(Value::Media(asset)) => match self.thumbnails.get(&asset.hash) {
-                Some(preview) => crate::card::show_image(ui, rect.shrink(2.0), preview, None, t),
+                Some(preview) => crate::card::show_image(ui, rect.shrink(t.inset), preview, None, t),
                 None => caption(ui, rect, asset.mime.essence(), t),
             },
             Some(Value::Text(text)) => {
@@ -612,7 +627,7 @@ impl View<'_> {
 fn field<R>(ui: &mut egui::Ui, width: f32, t: &Tokens, add: impl FnOnce(&mut egui::Ui) -> R) -> R {
     egui::Frame::new()
         .fill(t.prompt_fill)
-        .stroke(egui::Stroke::new(1.0, t.panel_stroke))
+        .stroke(egui::Stroke::new(t.stroke_hairline, t.panel_stroke))
         .corner_radius(t.card_radius / 2)
         .inner_margin(t.control_gap)
         .show(ui, |ui| {

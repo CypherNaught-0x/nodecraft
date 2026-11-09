@@ -109,16 +109,16 @@ impl NodeCraftApp {
                         });
                         match spawned {
                             Ok(_) => app.loading = Some(Loading { phase: Phase::Reading(receive), ..loading }),
-                            Err(_) => self.notice = Some("The file couldn't be read; try again.".into()),
+                            Err(_) => self.notices.error("The file couldn't be read; try again."),
                         }
                     }
-                    Err(_) => self.notice = Some("The file picker failed; nothing was changed.".into()),
+                    Err(_) => self.notices.error("The file picker failed; nothing was changed."),
                 }
             }
             Phase::Reading(ref receive) => match receive.try_recv() {
                 Err(mpsc::TryRecvError::Empty) => app.loading = Some(loading),
-                Err(mpsc::TryRecvError::Disconnected) => self.notice = Some("The file couldn't be read; try again.".into()),
-                Ok(Err(message)) => self.notice = Some(message),
+                Err(mpsc::TryRecvError::Disconnected) => self.notices.error("The file couldn't be read; try again."),
+                Ok(Err(message)) => self.notices.error(message),
                 Ok(Ok((name, bytes))) => {
                     if let Some(probe) = crate::video::import::Probe::new(Arc::clone(&bytes)) {
                         loading.phase = Phase::Probing { name, bytes, probe };

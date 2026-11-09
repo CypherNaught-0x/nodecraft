@@ -1,13 +1,13 @@
-//! The progress window for a background save or open (#367). It shows which step the operation
-//! is on and offers Cancel while cancelling can still leave everything as it was: a save until
-//! its file is published, an open until its recovery checkpoint is. A quick save never shows it;
+//! The progress window for a background save, open or recovery (#367). It shows which step the
+//! operation is on and offers Cancel while cancelling can still leave everything as it was: a
+//! save until its file is published, an open or a recovery until its recovery checkpoint is. A quick save never shows it;
 //! the window appears only once an operation has run for [`SHOW_AFTER`].
 use super::*;
 use nodecraft_engine::file_cmds::{FileOperation, FileOperationKind, FilePhase};
 
 /// How long an operation runs before the window appears, in seconds of frame time, so the
 /// ordinary ~30 ms save doesn't flash a modal.
-pub(super) const SHOW_AFTER: f64 = 0.3;
+pub(in crate::app) const SHOW_AFTER: f64 = 0.3;
 
 /// What the window says about `operation`, and why Cancel is unavailable when it is.
 pub(super) struct Shown {
@@ -20,6 +20,7 @@ pub(super) fn describe(operation: FileOperation) -> Shown {
     let title = match operation.kind {
         FileOperationKind::Save => "Saving project…",
         FileOperationKind::Open => "Opening project…",
+        FileOperationKind::Recover => "Recovering unsaved work…",
     };
     let step = match (operation.kind, operation.phase) {
         _ if operation.cancel_requested => "Cancelling… the current step finishes first.",
@@ -28,6 +29,8 @@ pub(super) fn describe(operation: FileOperation) -> Shown {
         (FileOperationKind::Save, FilePhase::Checkpointing) => "Saved. Writing the recovery copy…",
         (FileOperationKind::Open, FilePhase::Preparing | FilePhase::Reading | FilePhase::Writing) => "Reading and checking the project file…",
         (FileOperationKind::Open, FilePhase::Checkpointing) => "Writing the recovery copy…",
+        (FileOperationKind::Recover, FilePhase::Preparing | FilePhase::Reading | FilePhase::Writing) => "Copying the recovered work's media…",
+        (FileOperationKind::Recover, FilePhase::Checkpointing) => "Writing the recovery copy…",
     };
     let cannot_cancel = if operation.cancel_requested {
         Some("Cancelling was already asked for.")
@@ -73,7 +76,7 @@ impl NodeCraftApp {
         if cancel {
             match self.session.dispatch("file.cancel", &json!({})) {
                 Ok(_) => ctx.request_repaint(),
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notices.report(error),
             }
         }
     }
@@ -95,6 +98,7 @@ mod tests {
         // An open is still undone by cancelling until its checkpoint is published.
         for phase in [FilePhase::Reading, FilePhase::Checkpointing] {
             assert!(op(FileOperationKind::Open, phase, false).cannot_cancel.is_none());
+            assert!(op(FileOperationKind::Recover, phase, false).cannot_cancel.is_none(), "a recovery cancels until its checkpoint publishes");
         }
         let asked = op(FileOperationKind::Open, FilePhase::Reading, true);
         assert!(asked.cannot_cancel.is_some() && asked.step.starts_with("Cancelling"));

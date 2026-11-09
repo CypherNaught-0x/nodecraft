@@ -27,6 +27,18 @@ fn elements(h: &Harness<'static, NodeCraftApp>) -> Vec<Node> {
 }
 
 fn right_click(h: &mut Harness<'static, NodeCraftApp>, id: NodeId) {
+    // Bring a card placed under the application row into the open canvas below it.
+    let below = h.state().topbar_rect().bottom() + h.state().theme.tokens().navigation_margin;
+    let top = {
+        let app = h.state();
+        let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();
+        let descriptor = app.session.kinds().get(&node.kind).ok().map(|k| k.descriptor());
+        app.view.rect_to_screen(app.viewport.min, card::world_rect(node, descriptor, app.theme.tokens())).min.y
+    };
+    if top < below {
+        h.state_mut().view.pan.y += below - top;
+        h.run();
+    }
     let pos = {
         let app = h.state();
         let node = app.session.document().canvases().get(&app.canvas).unwrap().nodes().get(&id).unwrap();
@@ -48,7 +60,7 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     assert!(h.query_by_label("Update from Elements library").is_none(), "nothing to update from yet");
     h.get_by_label("Save to Elements library").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     right_click(&mut h, id);
     assert!(h.query_by_label("Replace in Elements library").is_some(), "saved");
     assert!(h.query_by_label("Update from Elements library").is_some());
@@ -59,12 +71,13 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     h.get_by_label("Elements").click();
     h.run();
     assert!(h.query_by_label_contains("#element · general · 1 image").is_some());
+    assert_eq!(crate::a11y_check::unnamed_controls(&h), Vec::<String>::new(), "#1118: no glyph-only control");
     let before = h.state().session.document().clone();
     let expected = h.state().view.to_world(h.state().viewport.min, h.state().navigation.usable(h.state().viewport, h.state().theme.tokens()).center());
     h.get_by_label("Place").click();
     h.run();
     let placed: Vec<Node> = elements(&h).into_iter().filter(|n| n.id != id).collect();
-    assert_eq!(placed.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(placed.len(), 1, "{:?}", h.state().notice());
     assert_eq!(nodecraft_nodes::element::name(&placed[0]), Some("element-2"), "under a free name");
     assert!(h.state().selection.contains(placed[0].id));
     // Local evaluation may finish during the pointer-driven frame and append a history
@@ -85,14 +98,14 @@ fn an_element_is_saved_from_its_menu_and_placed_from_the_panel() {
     assert_eq!(h.state().session.document(), &before, "placing is one undo step");
 
     // Removing asks first.
-    h.get_by_label("…").click();
+    h.get_by_label_contains("More for ").click();
     h.run();
     h.get_all_by_label("Remove").last().unwrap().click();
     h.run();
     h.get_by_label("Keep").click();
     h.run();
     assert!(h.query_by_label_contains("#element · general").is_some(), "kept");
-    h.get_by_label("…").click();
+    h.get_by_label_contains("More for ").click();
     h.run();
     h.get_all_by_label("Remove").last().unwrap().click();
     h.run();
@@ -119,7 +132,7 @@ fn library(h: &mut Harness<'static, NodeCraftApp>) -> serde_json::Value {
 #[test]
 fn an_entry_is_renamed_in_the_panel_and_its_placed_element_still_updates() {
     let (mut h, id) = with_saved();
-    h.get_by_label("…").click();
+    h.get_by_label_contains("More for ").click();
     h.run();
     h.get_by_label("Rename").click();
     h.run();
@@ -131,12 +144,12 @@ fn an_entry_is_renamed_in_the_panel_and_its_placed_element_still_updates() {
     h.run();
     h.key_press(egui::Key::Enter);
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     assert_eq!(library(&mut h)[0]["name"], "Hero");
     assert!(h.query_by_label_contains("#Hero · general").is_some());
 
     // Escape keeps the name.
-    h.get_by_label("…").click();
+    h.get_by_label_contains("More for ").click();
     h.run();
     h.get_by_label("Rename").click();
     h.run();
@@ -167,22 +180,22 @@ fn an_entry_is_shared_exported_and_imported_from_the_panel() {
     let dir = tempfile::tempdir().unwrap();
     let file = dir.path().join("element.ncelement");
     h.state_mut().exports.answer = Some(file.clone());
-    h.get_by_label("…").click();
+    h.get_by_label_contains("More for ").click();
     h.run();
     h.get_by_label("Export…").click();
     h.run();
     h.run();
-    assert!(file.is_file(), "{:?}", h.state().notice);
+    assert!(file.is_file(), "{:?}", h.state().notice());
 
     // Importing over its own name asks first.
     h.state_mut().element_library.answer = Some(file.clone());
     h.get_by_label("Import…").click();
     h.run();
     h.run();
-    assert!(h.query_by_label_contains("already has an Element").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label_contains("already has an Element").is_some(), "{:?}", h.state().notice());
     h.get_by_label("Replace it").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     assert_eq!(library(&mut h)[0]["shared"], false, "an imported Element is private");
 }
 
@@ -215,7 +228,7 @@ fn update_takes_the_librarys_settings() {
     right_click(&mut h, id);
     h.get_by_label("Update from Elements library").click();
     h.run();
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     let node = elements(&h).into_iter().find(|n| n.id == id).unwrap();
     assert_eq!(node.params.get("guidelines"), Some(&Value::Text(String::new())));
 }

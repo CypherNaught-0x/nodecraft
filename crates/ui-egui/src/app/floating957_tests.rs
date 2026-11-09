@@ -197,7 +197,7 @@ fn every_panel_resizes_from_its_bottom_right_corner_and_keeps_its_top_left() {
 fn opening_search_moves_a_panel_out_from_under_it_with_its_close_button_reachable() {
     let mut h = harness(1600.0, 900.0);
     open(&mut h, "API keys");
-    let label = if cfg!(target_os = "macos") { "Search (⌘F)" } else { "Search (Ctrl+F)" };
+    let label = &crate::shortcut::with_shortcut(&h.ctx, "Search", "Command+F");
     open(&mut h, label);
     assert!(h.state().search.open);
     h.run();

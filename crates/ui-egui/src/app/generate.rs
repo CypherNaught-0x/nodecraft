@@ -18,7 +18,7 @@ pub(super) enum RunKind {
     Generate,
     /// Refresh a stale result (#211): the card with whatever upstream is stale or has no result.
     Refresh,
-    /// Run changed (#965, ⌘/Ctrl+Enter): every card on the canvas whose result is stale,
+    /// Run changed (#965, Command+Enter): every card on the canvas whose result is stale,
     /// part-made or missing, with the upstream it needs.
     Changed,
     /// Run workflow (#965): every generation and technique card on the canvas, and whatever
@@ -75,7 +75,7 @@ impl RunKind {
     }
 }
 
-/// What ⌘/Ctrl+Enter and Run workflow say when the canvas has nothing to run (#965).
+/// What Command+Enter and Run workflow say when the canvas has nothing to run (#965).
 pub(super) const NOTHING_TO_RUN: &str = "Nothing to run: every card's result is up to date.";
 /// The same for a canvas with no generation, action or technique cards at all.
 pub(super) const NO_WORKFLOW: &str = "Nothing to run: this canvas has no cards that generate or compute a result.";
@@ -252,7 +252,7 @@ impl NodeCraftApp {
     pub(super) fn partial_intent(&mut self, id: NodeId, keep: bool) {
         if let Some(runs) = &mut self.runs {
             let done = if keep { runs.keep_partial(&mut self.session, self.canvas, id) } else { runs.discard_partial(self.canvas, id) };
-            self.notice = done.err().map(|error| error.message);
+            self.notices.outcome(done);
         }
     }
 
@@ -307,7 +307,7 @@ impl NodeCraftApp {
             if let Some(runs) = &mut self.runs
                 && runs.route(&mut self.session, self.canvas, &nodes, kind, &stale, &settings)? == super::runs::Route::Waiting
             {
-                self.notice = Some(super::runs::SETTING_UP.into());
+                self.notices.info(super::runs::SETTING_UP);
                 return Ok(());
             }
         }
@@ -315,7 +315,7 @@ impl NodeCraftApp {
         let value = self.session.dispatch(command, &request)?;
         let quote = Quote::read(&value).ok_or_else(|| Error::new(ErrorKind::Internal, "the run's price could not be read; nothing was started"))?;
         if kind.whole() && quote.nothing() {
-            self.notice = Some(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN }.into());
+            self.notices.info(if nodes.is_empty() && kind == RunKind::Workflow { NO_WORKFLOW } else { NOTHING_TO_RUN });
             return Ok(());
         }
         let request = kind.estimate_request(self.canvas, &nodes);
@@ -390,7 +390,7 @@ impl NodeCraftApp {
         // Not while the recovery dialog decides which document is open: a result recorded now
         // would be lost if the person then recovers the other one.
         #[cfg(not(target_arch = "wasm32"))]
-        let deciding = self.recovery.is_some();
+        let deciding = self.recovery_deciding();
         #[cfg(target_arch = "wasm32")]
         let deciding = false;
         let settings = self.runs.as_ref().is_some_and(|runs| runs.has_waiting() && !deciding).then(|| self.provider_settings());
@@ -404,11 +404,13 @@ impl NodeCraftApp {
         if runs.is_busy() || runs.is_waiting() {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
         }
-        if (tick.ready.is_some() || tick.abandoned) && self.notice.as_deref() == Some(super::runs::SETTING_UP) {
-            self.notice = None;
+        if tick.ready.is_some() || tick.abandoned {
+            self.notices.dismiss_text(super::runs::SETTING_UP);
         }
-        if let Some(notice) = tick.notice {
-            self.notice = Some(notice);
+        if let Some((kind, notice)) = tick.notice {
+            // A run problem costs money if missed: it stays until dismissed, warnings too.
+            let notice = crate::notices::Notice::new(kind, notice);
+            self.notices.push_notice(if kind >= crate::notices::NoticeKind::Warning { notice.from_run() } else { notice });
         }
         for estimated in tick.estimated {
             self.estimated(estimated);
@@ -422,7 +424,7 @@ impl NodeCraftApp {
         if let Some((nodes, kind)) = tick.ready
             && let Err(error) = self.request_runs(nodes, kind)
         {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
     }
 
@@ -452,9 +454,19 @@ impl NodeCraftApp {
             }
             _ => 0,
         };
+        let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
+        let (mut open_keys, mut open_comfy) = (false, false);
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
             ui.set_width(t.dialog_width);
             ui.heading(confirm.kind.title());
+            // Nothing can generate until a provider is set up (#1119): say so, with the way there.
+            if !providers_ready {
+                ui.label(egui::RichText::new(super::empty_canvas::NO_PROVIDER).color(t.stale));
+                ui.horizontal(|ui| {
+                    open_keys = ui.button("Open API keys").clicked();
+                    open_comfy = ui.button("Open ComfyUI").clicked();
+                });
+            }
             let quote = &confirm.quote;
             if stale {
                 ui.label("The canvas changed after this price was quoted. Nothing was started.");
@@ -478,8 +490,9 @@ impl NodeCraftApp {
                 }
                 if quote.waiting > 0 {
                     ui.label(format!(
-                        "{} card(s) after a batch wait for this run's results: press ⌘/Ctrl+Enter (Run changed) again once it finishes.",
-                        quote.waiting
+                        "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
+                        quote.waiting,
+                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
                     ));
                 }
                 if busy > 0 {
@@ -564,6 +577,19 @@ impl NodeCraftApp {
             self.budgets.open();
             close = true;
         }
+        if open_keys || open_comfy {
+            self.keys.open |= open_keys;
+            #[cfg(not(target_arch = "wasm32"))]
+            {
+                self.comfy_server.open |= open_comfy;
+            }
+            // The browser build has no ComfyUI panel of its own: its providers panel sets servers up.
+            #[cfg(target_arch = "wasm32")]
+            if open_comfy && let Some(providers) = &mut self.browser_providers {
+                providers.open = true;
+            }
+            close = true;
+        }
         close |= modal.should_close();
         if start && busy == 0 && !stale && confirm.error.is_none() {
             let quote = &confirm.quote;
@@ -576,7 +602,7 @@ impl NodeCraftApp {
             }
             match self.session.dispatch("run.start", &confirm.kind.start_request(confirm.canvas, &confirm.nodes, accept)) {
                 Ok(_) => {
-                    self.notice = None;
+                    self.notices.clear();
                     close = true;
                 }
                 Err(error) => confirm.error = Some(error.message),
@@ -584,7 +610,7 @@ impl NodeCraftApp {
         }
         if requote {
             if let Err(error) = self.request_runs(confirm.nodes, confirm.kind) {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
             return true;
         }
@@ -657,7 +683,9 @@ impl NodeCraftApp {
             return intents;
         }
         let above = card::outer_insets(t, self.view.zoom, false).1 * self.view.zoom + t.toolbar_gap + t.toolbar_height;
-        let pos = Pos2::new(screen.left(), (screen.top() - above).max(viewport.top()));
+        // Held below the application row, which spans the canvas's top at most widths (#1115).
+        let top = viewport.top().max(self.topbar_rect().bottom() + t.navigation_gap).min(viewport.bottom());
+        let pos = Pos2::new(screen.left(), (screen.top() - above).max(top));
         let shown = |name: &str| cached.visible.contains(name);
         let editable = |name: &str| cached.enabled.as_ref().is_none_or(|names| names.contains(name));
         let canvas = self.session.document().canvases().get(&self.canvas);
@@ -692,7 +720,8 @@ impl NodeCraftApp {
                             }
                             let r = ui
                                 .add_enabled(editable(nodecraft_nodes::generation::MODEL), egui::Button::new(&short))
-                                .on_hover_text(format!("Model: {model}. Click to change it."));
+                                .on_hover_text(format!("Model: {model}. Click to change it."))
+                                .on_disabled_hover_text(format!("Model: {model}. It can't be changed here right now."));
                             r.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, r.enabled(), format!("Model {short}")));
                             if r.clicked() {
                                 intents.push((id, Intent::Model));
@@ -813,15 +842,15 @@ impl NodeCraftApp {
         let document = self.session.document();
         let seed = ("prompt-assist", id, self.session.revision());
         let (Some(node), Some(edge)) = (ids::node_id(document, seed), ids::edge_id(document, seed)) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         match self.session.dispatch("node.prompt_assist", &json!({"canvas": self.canvas, "node": id, "id": node, "edge": edge})) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(node);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -848,6 +877,8 @@ impl NodeCraftApp {
         let assets = self.session.assets();
         let preview = self.previews.request_asset(ctx, hash, edge, || assets.preview_read(&asset));
         let mut open = true;
+        // A tall image is shown smaller rather than past the bottom of the window (#959).
+        let room = crate::floating::body_room(ctx, egui::Id::new("image_viewer"), &t);
         crate::floating::panel(ctx, "Image", egui::Id::new("image_viewer"), crate::floating::Home::CenterTop, &t)
             .open(&mut open)
             .default_width(t.viewer_width)
@@ -859,6 +890,8 @@ impl NodeCraftApp {
                     _ => width,
                 };
                 let height = if height.is_finite() { height.clamp(1.0, width.max(1.0) * 4.0) } else { width };
+                // No taller than the room left; `show_image` fits the picture in, keeping its shape.
+                let height = if room >= 1.0 { height.min(room) } else { height };
                 let (area, _) = ui.allocate_exact_size(Vec2::new(width, height), Sense::hover());
                 card::show_image(ui, area, &preview, None, &t);
             });

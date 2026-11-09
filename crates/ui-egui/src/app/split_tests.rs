@@ -57,7 +57,7 @@ fn the_context_menu_splits_an_image_into_selected_nodes_in_one_undo_step() {
     assert_eq!(h.state().session.document(), &before);
     h.get_by_label("Split into 4 images").click();
     h.run();
-    assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice);
+    assert_eq!(count(&h), nodes + 4, "{:?}", h.state().notice());
     assert_eq!(h.state().selection.nodes().len(), 4, "the tiles are selected");
     let app = h.state();
     let canvas = app.session.document().canvases().get(&app.canvas).unwrap();

@@ -14,8 +14,21 @@ workspace = true
 # Everything is browser-only: on other targets the binary only says how to build it
 # (packaging/web/package.sh), so a native `cargo build --workspace` stays cheap.
 [target.'cfg(target_arch = "wasm32")'.dependencies]
+nodecraft-mesh-preview.workspace = true
+nodecraft-gpu.workspace = true
+wasm-bindgen = "0.2.129"
+js-sys = "0.3.106"
+blake3.workspace = true
 nodecraft-ui-egui = { workspace = true }
 eframe = { workspace = true, features = ["wgpu", "accesskit", "web_screen_reader"] }
 log = { workspace = true }
 wasm-bindgen-futures = "0.4.79"
 web-sys = { version = "0.3.106", features = ["Document", "Element", "HtmlCanvasElement", "HtmlElement", "Window"] }
+
+[features]
+mesh-conformance = ["nodecraft-mesh-preview/conformance"]
+
+[[bin]]
+name = "nodecraft-mesh-conformance"
+path = "src/bin/nodecraft-mesh-conformance.rs"
+required-features = ["mesh-conformance"]

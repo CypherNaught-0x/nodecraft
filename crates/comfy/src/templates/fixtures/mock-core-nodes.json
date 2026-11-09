@@ -1,0 +1,228 @@
+{
+  "LoadImage": {
+    "input": {
+      "required": {
+        "image": [
+          "COMBO",
+          {
+            "options": [],
+            "image_upload": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "IMAGE",
+      "MASK"
+    ],
+    "output_node": false
+  },
+  "SaveImage": {
+    "input": {
+      "required": {
+        "images": [
+          "IMAGE",
+          {}
+        ],
+        "filename_prefix": [
+          "STRING",
+          {}
+        ]
+      }
+    },
+    "output": [],
+    "output_node": true
+  },
+  "UNETLoader": {
+    "input": {
+      "required": {
+        "unet_name": [
+          "COMBO",
+          {
+            "options": []
+          }
+        ],
+        "weight_dtype": [
+          "COMBO",
+          {
+            "options": []
+          }
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "VAELoader": {
+    "input": {
+      "required": {
+        "vae_name": [
+          "COMBO",
+          {
+            "options": []
+          }
+        ]
+      }
+    },
+    "output": [
+      "VAE"
+    ],
+    "output_node": false
+  },
+  "VAEDecode": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "IMAGE"
+    ],
+    "output_node": false
+  },
+  "ModelSamplingAuraFlow": {
+    "input": {
+      "required": {
+        "model": [
+          "MODEL",
+          {}
+        ],
+        "shift": [
+          "FLOAT",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "MODEL"
+    ],
+    "output_node": false
+  },
+  "EmptyLatentAudio": {
+    "input": {
+      "required": {
+        "seconds": [
+          "FLOAT",
+          {}
+        ],
+        "batch_size": [
+          "INT",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "LATENT"
+    ],
+    "output_node": false
+  },
+  "VAEDecodeAudio": {
+    "input": {
+      "required": {
+        "samples": [
+          "LATENT",
+          {}
+        ],
+        "vae": [
+          "VAE",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "AUDIO"
+    ],
+    "output_node": false
+  },
+  "SaveAudioAdvanced": {
+    "input": {
+      "required": {
+        "audio": [
+          "AUDIO",
+          {}
+        ],
+        "filename_prefix": [
+          "STRING",
+          {}
+        ],
+        "format": [
+          "COMBO",
+          {
+            "options": []
+          }
+        ]
+      }
+    },
+    "output": [],
+    "output_node": true
+  },
+  "PrimitiveInt": {
+    "input": {
+      "required": {
+        "value": [
+          "INT",
+          {
+            "control_after_generate": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "INT"
+    ],
+    "output_node": false
+  },
+  "PrimitiveFloat": {
+    "input": {
+      "required": {
+        "value": [
+          "FLOAT",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "FLOAT"
+    ],
+    "output_node": false
+  },
+  "PrimitiveBoolean": {
+    "input": {
+      "required": {
+        "value": [
+          "BOOLEAN",
+          {}
+        ]
+      }
+    },
+    "output": [
+      "BOOLEAN"
+    ],
+    "output_node": false
+  },
+  "PrimitiveStringMultiline": {
+    "input": {
+      "required": {
+        "value": [
+          "STRING",
+          {
+            "multiline": true
+          }
+        ]
+      }
+    },
+    "output": [
+      "STRING"
+    ],
+    "output_node": false
+  }
+}

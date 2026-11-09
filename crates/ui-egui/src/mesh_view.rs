@@ -8,9 +8,10 @@
 //! per gesture; the renderer keeps only the current gesture's preview locally.
 use eframe::egui_wgpu::{self, wgpu};
 use egui::{FontId, Rect, Sense, Vec2};
-use nodecraft_gpu::mesh::{GpuMesh, MeshData, MeshRenderer, Orbit, Style, Target, View};
+use nodecraft_gpu::mesh::{GpuMesh, MeshRenderer, Orbit, Style, Target, View};
 use nodecraft_graph::Node;
-use nodecraft_media::{MeshFormat, MeshLimits, decode_mesh};
+use nodecraft_media::MeshFormat;
+use nodecraft_mesh_preview::Prepared;
 use nodecraft_types::{AssetRef, Blake3, Value};
 use std::{collections::HashMap, sync::Arc};
 
@@ -23,8 +24,8 @@ pub const MAX_MODEL_BYTES: usize = 512 * 1024 * 1024;
 pub const MAX_GPU_BYTES: u64 = 512 * 1024 * 1024;
 /// Most edges a wireframe draws; a model with more is drawn shaded instead.
 pub const MAX_EDGES: usize = 6_000_000;
-/// Largest model decoded inline where there's no worker (the browser build).
-pub const MAX_INLINE_BYTES: usize = 8 * 1024 * 1024;
+/// Browser original-byte bound; every browser model now uses the trusted worker.
+pub const MAX_BROWSER_INPUT_BYTES: usize = nodecraft_mesh_preview::MAX_INPUT;
 /// Offscreen images kept at once; the least recently drawn go first.
 const MAX_TARGETS: usize = 32;
 /// GPU memory the offscreen images may take together, in bytes; the least recently drawn go
@@ -36,6 +37,13 @@ const GPU_MESH_FRAMES: u64 = 600;
 const RETRY_FRAMES: u64 = 30;
 /// Frames a card's offscreen image survives without being drawn.
 const TARGET_FRAMES: u64 = 120;
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_BROWSER_MODEL_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(any(target_arch = "wasm32", test))]
+const BUDGET_UNAVAILABLE: &str = "Move another 3D model offscreen to free preview space";
+#[cfg(any(target_arch = "wasm32", test))]
+const MAX_WAITING_MODELS: usize = 8;
+const RANGE_UNAVAILABLE: &str = "3D preview unavailable at this coordinate range";
 
 /// The 3D model a node shows: a Source 3D node's asset, else the first model in its active result.
 pub fn mesh_of(node: &Node) -> Option<&AssetRef> {
@@ -60,49 +68,32 @@ pub fn mesh_of(node: &Node) -> Option<&AssetRef> {
 
 /// A decoded model, ready to upload.
 pub struct Model {
-    positions: Vec<[f32; 3]>,
-    normals: Vec<[f32; 3]>,
-    colors: Vec<[f32; 4]>,
-    indices: Vec<u32>,
-    edges: Option<Vec<u32>>,
+    prepared: Prepared,
     center: [f32; 3],
     radius: f32,
     bytes: usize,
 }
-
 impl Model {
+    fn prepared(prepared: Prepared) -> Result<Self, nodecraft_mesh_preview::Error> {
+        if Orbit::default().checked_view_projection(prepared.center(), prepared.radius(), 1.0).is_none() {
+            return Err(nodecraft_mesh_preview::Error::Coordinates);
+        }
+        Ok(Self { center: prepared.center(), radius: prepared.radius(), bytes: prepared.bytes(), prepared })
+    }
+    #[cfg(any(not(target_arch = "wasm32"), test))]
     fn decode(bytes: &[u8]) -> Result<Self, &'static str> {
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let mesh = decode_mesh(bytes, &MeshLimits::default()).map_err(|_| "Can't read this 3D model")?;
-            let bounds = mesh.bounds().ok_or("This 3D model is empty")?;
-            let edges = mesh.edges(MAX_EDGES);
-            let bytes = mesh
-                .positions
-                .len()
-                .saturating_mul(40)
-                .saturating_add(mesh.indices.len().saturating_mul(4))
-                .saturating_add(edges.as_ref().map_or(0, |e| e.len().saturating_mul(4)));
-            Ok(Self {
-                center: bounds.center(),
-                radius: bounds.radius(),
-                positions: mesh.positions,
-                normals: mesh.normals,
-                colors: mesh.colors,
-                indices: mesh.indices,
-                edges,
-                bytes,
+            nodecraft_mesh_preview::prepare_checked(bytes, nodecraft_mesh_preview::Profile::Native, |center, radius| {
+                Orbit::default().checked_view_projection(center, radius, 1.0).is_some()
             })
+            .and_then(Self::prepared)
+            .map_err(|e| e.message())
         }))
         .unwrap_or(Err("Can't read this 3D model"))
     }
-
     /// Triangles in the model.
     pub fn triangles(&self) -> usize {
-        self.indices.len() / 3
-    }
-
-    fn data(&self) -> MeshData<'_> {
-        MeshData { positions: &self.positions, normals: &self.normals, colors: &self.colors, indices: &self.indices, edges: self.edges.as_deref() }
+        self.prepared.layout().triangles as usize
     }
 }
 
@@ -121,6 +112,11 @@ enum Entry {
         used: u64,
     },
     Failed(&'static str),
+    /// Known exact result size; retry only after unused cache eviction reserves this headroom.
+    #[cfg(any(target_arch = "wasm32", test))]
+    Budget {
+        required: usize,
+    },
     /// A read that may work later (the store was busy): asked again from frame `at`.
     Retry {
         why: &'static str,
@@ -143,6 +139,12 @@ impl Failure {
     fn read(reason: nodecraft_format::PreviewReadError) -> Self {
         use nodecraft_format::PreviewReadError as E;
         Self { why: read_message(reason), retry: matches!(reason, E::Busy | E::Cancelled) }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn worker(reason: nodecraft_mesh_preview::Error) -> Self {
+        use nodecraft_mesh_preview::Error as E;
+        Self { why: reason.message(), retry: matches!(reason, E::Timeout | E::Unavailable | E::Cancelled) }
     }
 }
 
@@ -167,6 +169,7 @@ pub enum Capture {
     Turntable,
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 type Done = (Blake3, Result<Model, Failure>);
 
 /// The decoded-model cache. One per app.
@@ -175,8 +178,46 @@ pub struct Meshes {
     entries: HashMap<Blake3, Entry>,
     bytes: usize,
     clock: u64,
+    #[cfg(any(target_arch = "wasm32", test))]
+    session: Option<Arc<crate::navigation::SessionIdentity>>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    scope: Option<(nodecraft_types::ProjectId, nodecraft_types::CanvasId)>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    source_context: Option<nodecraft_format::AssetContext>,
+    #[cfg(any(target_arch = "wasm32", test))]
+    waiting: BrowserQueue,
+    #[cfg(target_arch = "wasm32")]
+    browser: nodecraft_mesh_preview::browser::Browser,
+    #[cfg(target_arch = "wasm32")]
+    browser_hash: Option<(Blake3, nodecraft_types::NodeId)>,
     #[cfg(not(target_arch = "wasm32"))]
     worker: Option<Worker>,
+}
+
+/// Waiting browser work contains only identity. Read original bytes at admission to the worker.
+#[cfg(any(target_arch = "wasm32", test))]
+#[derive(Default)]
+struct BrowserQueue(std::collections::VecDeque<(Blake3, nodecraft_types::NodeId)>);
+
+#[cfg(any(target_arch = "wasm32", test))]
+impl BrowserQueue {
+    fn push(&mut self, hash: Blake3, owner: nodecraft_types::NodeId) {
+        if self.0.len() < MAX_WAITING_MODELS && !self.0.iter().any(|(queued, _)| *queued == hash) {
+            self.0.push_back((hash, owner));
+        }
+    }
+
+    fn next_current<'a>(
+        &mut self,
+        mut current: impl FnMut(nodecraft_types::NodeId) -> Option<&'a AssetRef>,
+    ) -> Option<(nodecraft_types::NodeId, &'a AssetRef)> {
+        while let Some((hash, owner)) = self.0.pop_front() {
+            if let Some(asset) = current(owner).filter(|asset| asset.hash == hash) {
+                return Some((owner, asset));
+            }
+        }
+        None
+    }
 }
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -207,14 +248,54 @@ fn read_message(reason: nodecraft_format::PreviewReadError) -> &'static str {
     }
 }
 
-/// The source for a re-entry that only reads the cache. A named function has one type, so the
-/// recursive call in `Meshes::request` doesn't instantiate a new generic each time.
-#[cfg(target_arch = "wasm32")]
-fn unavailable_source() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError> {
-    Err(nodecraft_format::PreviewReadError::Unavailable)
-}
-
 impl Meshes {
+    /// A replacement browser scope has no authority over old preview jobs or caches.
+    #[cfg(any(target_arch = "wasm32", test))]
+    pub(crate) fn bind_session(
+        &mut self,
+        identity: Arc<crate::navigation::SessionIdentity>,
+        project: nodecraft_types::ProjectId,
+        canvas: nodecraft_types::CanvasId,
+        context: &nodecraft_format::AssetContext,
+    ) {
+        if self.session.as_ref().is_some_and(|old| !Arc::ptr_eq(old, &identity))
+            || self.scope.is_some_and(|old| old != (project, canvas))
+            || self.source_context.as_ref().is_some_and(|old| !old.same_instance(context))
+        {
+            *self = Self::default();
+        }
+        self.session = Some(identity);
+        self.scope = Some((project, canvas));
+        if self.source_context.is_none() {
+            self.source_context = Some(context.clone());
+        }
+    }
+    /// Recheck the active owner before adoption, and the next waiting owner before reading bytes.
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn poll_current<'a>(
+        &mut self,
+        ctx: &egui::Context,
+        assets: &nodecraft_format::AssetStore,
+        mut current: impl FnMut(nodecraft_types::NodeId) -> Option<&'a AssetRef>,
+    ) {
+        if self.browser_hash.is_some_and(|(hash, owner)| current(owner).is_none_or(|asset| asset.hash != hash)) {
+            self.browser.cancel();
+            if let Some((hash, _)) = self.browser_hash.take() {
+                self.entries.remove(&hash);
+            }
+        }
+        self.poll();
+        while !self.browser.busy() {
+            let Some((owner, asset)) = self.waiting.next_current(&mut current) else { break };
+            self.request(ctx, owner, asset, || assets.preview_read(asset));
+        }
+        // A pending offscreen card still needs its deadline checked. Visibility is not
+        // authority to cancel immutable model work; panning back must reuse its result.
+        if self.browser.busy() {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        }
+    }
+
     /// Decoded bytes held now.
     pub fn bytes(&self) -> usize {
         self.bytes
@@ -222,7 +303,15 @@ impl Meshes {
 
     /// Takes a finished decode; call once per frame.
     pub fn poll(&mut self) {
-        self.clock = self.clock.wrapping_add(1);
+        self.clock = self.clock.saturating_add(1);
+        #[cfg(target_arch = "wasm32")]
+        {
+            if let Some(result) = self.browser.poll() {
+                if let Some((hash, _)) = self.browser_hash.take() {
+                    self.finish(hash, result.and_then(Model::prepared).map_err(Failure::worker));
+                }
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
         {
             use std::sync::mpsc::TryRecvError;
@@ -248,11 +337,14 @@ impl Meshes {
     }
 
     fn finish(&mut self, hash: Blake3, result: Result<Model, Failure>) {
+        #[cfg(target_arch = "wasm32")]
+        while !self.entries.contains_key(&hash) && self.entries.len() >= 256 {
+            let old = self.entries.iter().find_map(|(hash, entry)| matches!(entry, Entry::Failed(_) | Entry::Retry { .. }).then_some(*hash));
+            let Some(old) = old else { break };
+            self.entries.remove(&old);
+        }
         let entry = match result {
-            Ok(model) => {
-                self.bytes = self.bytes.saturating_add(model.bytes);
-                Entry::Ready { model: Arc::new(model), used: self.clock }
-            }
+            Ok(model) => self.ready_entry(model),
             Err(Failure { why, retry: true }) => Entry::Retry { why, at: self.clock.saturating_add(RETRY_FRAMES) },
             Err(Failure { why, .. }) => Entry::Failed(why),
         };
@@ -262,11 +354,43 @@ impl Meshes {
         self.evict();
     }
 
+    fn ready_entry(&mut self, model: Model) -> Entry {
+        #[cfg(target_arch = "wasm32")]
+        if !self.reserve_budget(model.bytes, MAX_BROWSER_MODEL_BYTES) {
+            return Entry::Budget { required: model.bytes };
+        }
+        self.bytes = self.bytes.saturating_add(model.bytes);
+        Entry::Ready { model: Arc::new(model), used: self.clock }
+    }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn reserve_budget(&mut self, required: usize, limit: usize) -> bool {
+        let Some(headroom) = limit.checked_sub(required) else { return false };
+        self.evict_to(headroom);
+        self.bytes <= headroom
+    }
+
+    /// The browser has one active cache writer. Releasing this descriptor only after
+    /// reservation succeeds prevents repeat decodes under unchanged memory pressure.
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn retry_budget(&mut self, hash: Blake3, limit: usize) -> bool {
+        let Some(Entry::Budget { required }) = self.entries.get(&hash) else { return true };
+        let required = *required;
+        if !self.reserve_budget(required, limit) {
+            return false;
+        }
+        self.entries.remove(&hash);
+        true
+    }
+
     /// Drops least recently used models until under budget. A model shown this frame or the last
     /// one stays (this runs before the frame's requests): when the models on screen alone are
     /// over budget, the cache goes over rather than decoding them again and again.
     fn evict(&mut self) {
-        while self.bytes > MAX_MODEL_BYTES {
+        self.evict_to(MAX_MODEL_BYTES);
+    }
+    fn evict_to(&mut self, limit: usize) {
+        while self.bytes > limit {
             let oldest = self
                 .entries
                 .iter()
@@ -286,17 +410,30 @@ impl Meshes {
     pub fn request(
         &mut self,
         ctx: &egui::Context,
+        owner: nodecraft_types::NodeId,
         asset: &AssetRef,
         source: impl FnOnce() -> Result<nodecraft_format::PreviewAssetRead, nodecraft_format::PreviewReadError>,
     ) -> MeshPreview {
+        #[cfg(not(target_arch = "wasm32"))]
+        let _ = owner;
         let hash = asset.hash;
+        #[cfg(target_arch = "wasm32")]
+        if matches!(self.entries.get(&hash), Some(Entry::Budget { .. })) && (self.browser.busy() || !self.retry_budget(hash, MAX_BROWSER_MODEL_BYTES)) {
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return MeshPreview::Unavailable(BUDGET_UNAVAILABLE);
+        }
         match self.entries.get_mut(&hash) {
             Some(Entry::Ready { model, used }) => {
                 *used = self.clock;
                 return MeshPreview::Ready { hash, model: Arc::clone(model) };
             }
             Some(Entry::Failed(why)) => return MeshPreview::Unavailable(why),
-            Some(Entry::Pending) => return MeshPreview::Pending,
+            #[cfg(any(target_arch = "wasm32", test))]
+            Some(Entry::Budget { .. }) => return MeshPreview::Unavailable(BUDGET_UNAVAILABLE),
+            Some(Entry::Pending) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                return MeshPreview::Pending;
+            }
             Some(Entry::Retry { why, at }) if self.clock < *at => {
                 ctx.request_repaint_after(std::time::Duration::from_millis(250));
                 return MeshPreview::Unavailable(why);
@@ -307,6 +444,30 @@ impl Meshes {
         if self.worker.is_some() {
             // One decode at a time; this one starts when that one ends.
             return MeshPreview::Pending;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if self.browser.busy() {
+            self.waiting.push(hash, owner);
+            ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            return MeshPreview::Pending;
+        }
+        #[cfg(target_arch = "wasm32")]
+        if self.entries.len() >= 256 && !self.entries.contains_key(&hash) {
+            let old = self
+                .entries
+                .iter()
+                .filter_map(|(key, entry)| match entry {
+                    Entry::Failed(_) | Entry::Retry { .. } | Entry::Budget { .. } => Some((0, *key)),
+                    Entry::Ready { used, .. } if self.clock.saturating_sub(*used) > 1 => Some((*used, *key)),
+                    _ => None,
+                })
+                .min();
+            let Some((_, old)) = old else {
+                return MeshPreview::Unavailable("Move another 3D model offscreen to free preview space");
+            };
+            if let Some(Entry::Ready { model, .. }) = self.entries.remove(&old) {
+                self.bytes = self.bytes.saturating_sub(model.bytes);
+            }
         }
         let input = match source() {
             Ok(input) if input.hash() == hash => input,
@@ -342,14 +503,20 @@ impl Meshes {
         }
         #[cfg(target_arch = "wasm32")]
         {
-            let _ = ctx;
-            // No worker here: only a small model already in memory decodes inline.
-            let result = match input.resident() {
-                Some(bytes) if bytes.len() <= MAX_INLINE_BYTES => Model::decode(bytes).map_err(Failure::permanent),
-                _ => Err(Failure::permanent("3D preview not available here")),
-            };
-            self.finish(hash, result);
-            self.request(ctx, asset, unavailable_source)
+            let Some(bytes) = input.resident_owned() else { return self.failed(ctx, hash, Failure::permanent("3D preview unavailable here")) };
+            if input.byte_len() != bytes.len() as u64 || bytes.len() > MAX_BROWSER_INPUT_BYTES {
+                return self.failed(ctx, hash, Failure::permanent("This 3D model is too large to preview"));
+            }
+            let wake = ctx.clone();
+            match self.browser.start(*hash.as_bytes(), bytes, move || wake.request_repaint()) {
+                Ok(()) => {
+                    self.browser_hash = Some((hash, owner));
+                    self.entries.insert(hash, Entry::Pending);
+                    ctx.request_repaint_after(std::time::Duration::from_millis(250));
+                    MeshPreview::Pending
+                }
+                Err(error) => self.failed(ctx, hash, Failure::worker(error)),
+            }
         }
     }
 
@@ -418,7 +585,10 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
                 Style::Wireframe => "wireframe",
             };
             let triangles = model.triangles();
-            if gpu {
+            let available = view.orbit.checked_view_projection(model.center, model.radius, area.width() / area.height().max(1.0)).is_some();
+            if !available {
+                text(RANGE_UNAVAILABLE);
+            } else if gpu {
                 // Under the drawing: shows only if the GPU can't take the model.
                 text("Can't draw this 3D model here");
                 let ppp = ui.ctx().pixels_per_point();
@@ -449,12 +619,12 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
             } else {
                 text(&format!("3D model · {triangles} triangles"));
             }
-            controls(ui, area, view, t);
+            controls(ui, area, view, t, available);
             if before != (view.orbit, view.style) {
                 view.changed(response.dragged());
                 ui.ctx().request_repaint();
             }
-            format!("3D model, {triangles} triangles, {style} view")
+            if available { format!("3D model, {triangles} triangles, {style} view") } else { RANGE_UNAVAILABLE.to_owned() }
         }
         MeshPreview::Pending => {
             text("Loading 3D model…");
@@ -471,7 +641,7 @@ pub(crate) fn show(ui: &mut egui::Ui, area: Rect, zoom: f32, card: CardMesh<'_>,
 
 /// The style toggle and reset over the preview's bottom-left corner, the capture buttons over
 /// its bottom-right.
-fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
+fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens, preview_available: bool) {
     let style = match view.style {
         Style::Shaded => "Shaded",
         Style::Unlit => "Unlit",
@@ -494,6 +664,11 @@ fn controls(ui: &mut egui::Ui, area: Rect, view: &mut MeshView, t: &Tokens) {
     }
     if ui.put(reset_rect, egui::Button::new(font("Reset")).small()).on_hover_text("Back to the starting view").clicked() {
         view.orbit = Orbit::default();
+    }
+    if !preview_available {
+        // Reset can recover a zoom outside the camera's range; don't offer captures from
+        // that unusable view while waiting for the next frame's valid projection.
+        return;
     }
     let capture_width = width * 0.8;
     let views_rect =
@@ -539,7 +714,12 @@ impl MeshResources {
         if self.refused.contains_key(&hash) {
             return false;
         }
-        match GpuMesh::upload(device, queue, model.data()) {
+        #[cfg(target_arch = "wasm32")]
+        nodecraft_mesh_preview::browser::mark("nodecraft.mesh.upload_started");
+        let result = GpuMesh::upload_prepared(device, queue, &model.prepared);
+        #[cfg(target_arch = "wasm32")]
+        nodecraft_mesh_preview::browser::mark("nodecraft.mesh.upload_finished");
+        match result {
             Ok(mesh) => {
                 self.gpu_bytes = self.gpu_bytes.saturating_add(mesh.bytes());
                 self.meshes.insert(hash, (mesh, frame));
@@ -560,6 +740,13 @@ impl MeshResources {
     }
 
     fn prepare(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, encoder: &mut wgpu::CommandEncoder, call: &MeshCallback) {
+        let [width, height] = call.size;
+        if call.view.orbit.checked_view_projection(call.view.center, call.view.radius, width as f32 / height.max(1) as f32).is_none() {
+            if let Some(slot) = self.targets.get_mut(&call.slot) {
+                slot.drawn = None;
+            }
+            return;
+        }
         if !self.mesh(device, queue, call.hash, &call.model, call.frame) {
             return;
         }
@@ -670,5 +857,7 @@ impl egui_wgpu::CallbackTrait for MeshCallback {
     }
 }
 
+#[cfg(test)]
+mod range1019_tests;
 #[cfg(test)]
 mod tests;

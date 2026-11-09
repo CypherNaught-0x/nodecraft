@@ -56,7 +56,7 @@ fn opened() -> Harness<'static, NodeCraftApp> {
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    assert!(h.state().layer_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().layer_editor.is_some(), "{:?}", h.state().notice());
     h
 }
 
@@ -69,7 +69,7 @@ fn stored(h: &Harness<'static, NodeCraftApp>) -> Layers {
 }
 
 fn layer(h: &Harness<'static, NodeCraftApp>, id: &str) -> nodecraft_actions::layers::Layer {
-    stored(h).get(id).cloned().unwrap_or_else(|| panic!("no layer {id}: {:?}", h.state().notice))
+    stored(h).get(id).cloned().unwrap_or_else(|| panic!("no layer {id}: {:?}", h.state().notice()))
 }
 
 /// Frame pixels on screen, as the stage last drew them.
@@ -115,7 +115,7 @@ fn the_menu_opens_the_editor_and_a_drag_moves_a_layer_in_one_undo_step() {
 
     drag(&mut h, (200.0, 100.0), (250.0, 140.0));
     let moved = layer(&h, "text-1");
-    assert!(close(moved.x, 250.0) && close(moved.y, 140.0), "{moved:?} {:?}", h.state().notice);
+    assert!(close(moved.x, 250.0) && close(moved.y, 140.0), "{moved:?} {:?}", h.state().notice());
     let image = stored(&h).layers[0].clone();
     assert_eq!((image.x, image.y), (200.0, 100.0), "only the selected layer moves");
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
@@ -151,7 +151,7 @@ fn keys_nudge_and_delete_the_selection_and_escape_closes() {
     assert_eq!(layer(&h, "text-1").y, 90.0);
     h.key_press(egui::Key::Delete);
     h.run_steps(2);
-    assert!(stored(&h).get("text-1").is_none(), "{:?}", h.state().notice);
+    assert!(stored(&h).get("text-1").is_none(), "{:?}", h.state().notice());
     assert!(h.state().layer_editor.is_some());
     // Undo works inside the editor.
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
@@ -222,7 +222,7 @@ fn fields_change_the_selected_layer_and_the_frame() {
     h.get_by_role_and_label(egui::accesskit::Role::SpinButton, "Width").type_text("800");
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
-    assert_eq!(editor_node(&h).params.get("width"), Some(&Value::Unsigned(nodecraft_types::Unsigned(800))), "{:?}", h.state().notice);
+    assert_eq!(editor_node(&h).params.get("width"), Some(&Value::Unsigned(nodecraft_types::Unsigned(800))), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -276,7 +276,7 @@ fn a_text_layer_picks_a_project_font_and_a_missing_one_says_it_draws_as_lato() {
     h.run_steps(2);
     h.get_by_label("Lito").click();
     h.run_steps(3);
-    assert_eq!(font_of(&h), "Lito", "{:?}", h.state().notice);
+    assert_eq!(font_of(&h), "Lito", "{:?}", h.state().notice());
     let after = h.state().layer_editor.as_ref().unwrap().textures.get("text-1").map(|r| r.key);
     assert!(before.is_some() && after.is_some() && before != after, "rendered again");
     assert!(h.query_by_label_contains("draws as Lato").is_none());
@@ -294,7 +294,7 @@ fn a_text_layer_picks_a_project_font_and_a_missing_one_says_it_draws_as_lato() {
     h.run_steps(3);
     h.get_by_label("Remove Lito").click();
     h.run_steps(3);
-    assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).is_empty(), "{:?}", h.state().notice);
+    assert!(nodecraft_nodes::layers::fonts(&editor_node(&h)).is_empty(), "{:?}", h.state().notice());
     h.state_mut().layer_editor.as_mut().unwrap().selected = vec!["text-1".into()];
     h.run_steps(3);
     assert!(h.query_by_label_contains("Lito isn't held by this card, so it draws as Lato").is_some());

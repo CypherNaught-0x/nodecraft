@@ -32,7 +32,7 @@ impl NodeCraftApp {
             }
             if ui
                 .add_enabled(!targets.is_empty(), egui::Button::new("Model…"))
-                .on_hover_text(format!("Choose the model of {which}; settings the new model also has are kept, and the picker lists any it drops"))
+                .on_hover_text(format!("Choose the model of {which}; settings the new model also has are kept, and the picker lists any it drops")).on_disabled_hover_text("Add a row first")
                 .clicked()
             {
                 actions.push(Action::Model(targets.clone()));
@@ -87,7 +87,7 @@ impl NodeCraftApp {
                 actions.push(Action::Retry(retry));
             }
             let label = if running.is_empty() { "Cancel".to_owned() } else { format!("Cancel {}", running.len()) };
-            if ui.add_enabled(!running.is_empty(), egui::Button::new(label)).on_hover_text("Stop the rows that are queued or running").clicked() {
+            if ui.add_enabled(!running.is_empty(), egui::Button::new(label)).on_hover_text("Stop the rows that are queued or running").on_disabled_hover_text("No rows are queued or running").clicked() {
                 actions.push(Action::Cancel(running));
             }
         });
@@ -205,10 +205,10 @@ impl NodeCraftApp {
             crate::bulk::Intent::OpenModel { canvas, exact_ids, revision } => self.open_model_picker(canvas, exact_ids, revision),
         };
         match result {
-            Ok(()) => self.notice = None,
+            Ok(()) => self.notices.clear(),
             Err(error) => {
                 self.bulk.failed(error.message.clone());
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
         }
     }

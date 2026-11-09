@@ -23,6 +23,7 @@ mod comfy_partner_quotes;
 pub mod comfy_server_cmds;
 pub mod comfy_workflow_cmds;
 mod command_schemas;
+pub mod command_summary;
 pub mod commands;
 pub mod comment_cmds;
 pub mod copy_cmds;
@@ -86,12 +87,16 @@ pub mod plugin_providers;
 pub mod plugin_rights;
 pub mod plugin_runtime;
 pub mod plugin_text;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod plugin_try;
 pub mod private_cmds;
 pub mod provider_quotes;
 pub mod resolve_cmds;
 pub mod results_export;
+pub mod run_job_cmds;
 pub mod search_cmds;
 pub mod share_cmds;
+pub mod soul_ids;
 pub mod storage_window_cmds;
 pub mod style_cmds;
 
@@ -99,6 +104,7 @@ pub mod field_cmds;
 pub mod folder_cmds;
 pub mod generation_catalog;
 pub mod interchange_cmds;
+mod interchange_job;
 pub mod run_ceiling;
 pub mod run_cmds;
 pub mod run_host;
@@ -124,11 +130,12 @@ pub mod technique_node_cmds;
 pub mod timeline_captions;
 pub mod timeline_cmds;
 pub mod turn_into_cmds;
+pub mod ui_scale_cmds;
 pub mod update_check;
 pub mod update_install;
 pub mod url_import;
 
-pub use session::{DocChanged, PreparedImports, Session};
+pub use session::{DocChanged, PreparedImports, PreparedStorage, Session};
 
 pub mod provider_routing;
 pub mod provider_setup;

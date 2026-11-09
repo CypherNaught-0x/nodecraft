@@ -256,6 +256,7 @@ fn same_contract_renderer_uses_optional_composer_ownership() {
                     prompt_overlay: true,
                     variations: Default::default(),
                     export_folder: None,
+                    links: None,
                 };
                 *body = card::show(ui, &CanvasView::default(), &node, card, &mut editor, false, &theme::DARK).unwrap().response.rect;
             },
@@ -313,7 +314,7 @@ fn the_submit_arrow_quotes_first_and_starts_only_once_accepted() {
     press(&mut h, Role::Button, &accept);
     assert_eq!(runs.lock().unwrap().len(), 1, "exactly one accepted run reaches the host");
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 }
 
 #[test]
@@ -459,7 +460,7 @@ fn without_run_resources_generate_reports_why_instead_of_spending() {
     h.run();
     press(&mut h, Role::Button, "Generate");
     assert!(h.state().run_confirm.is_none());
-    assert!(h.state().notice.is_some(), "the person is told why nothing ran");
+    assert!(h.state().notice().is_some(), "the person is told why nothing ran");
 
     // The counter steps the model's own image count, found by its meaning tag.
     press(&mut h, Role::Button, "More images");
@@ -685,7 +686,7 @@ fn improve_prompt_adds_a_wired_text_card_and_selects_it() {
         h.render().unwrap().save(dir.join("assist582-before.png")).unwrap();
     }
     press(&mut h, Role::Button, "Improve prompt");
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
     if let Some(dir) = &shots {
         h.render().unwrap().save(dir.join("assist582-after.png")).unwrap();
     }
@@ -716,4 +717,47 @@ fn improve_prompt_waits_for_a_typed_prompt() {
     assert!(h.get_by_role_and_label(Role::Button, "Improve prompt").accesskit_node().is_disabled());
     press(&mut h, Role::Button, "Improve prompt");
     assert_eq!(h.state().session.document().canvases().get(&C).unwrap().nodes().len(), 1);
+}
+
+/// The card's reuse switch (#1059): off for a model card, pressed it turns result reuse on as one
+/// undo step, the card shows it, and a run whose identical result is already there is quoted free
+/// and sends nothing; undo turns it off again.
+#[test]
+fn the_reuse_switch_turns_caching_on_and_a_reused_result_is_not_paid_for() {
+    let (mut h, runs) = scene("mock-square");
+    let shown_on = |h: &Harness<'static, NodeCraftApp>| {
+        h.get_by_role_and_label(Role::CheckBox, "Reuse identical results").accesskit_node().toggled() == Some(egui::accesskit::Toggled::True)
+    };
+    assert!(!shown_on(&h), "a model card runs fresh by default");
+    assert!(!nodecraft_engine::cache::enabled(node(h.state()), h.state().session.kinds()));
+    press(&mut h, Role::CheckBox, "Reuse identical results");
+    assert!(nodecraft_engine::cache::enabled(node(h.state()), h.state().session.kinds()), "pressed, it reuses");
+    assert!(shown_on(&h), "and the card says so");
+
+    // An identical result already made: the quote reuses it and prices nothing.
+    let hash = {
+        let app = h.state();
+        let canvas = app.session.document().canvases().get(&C).unwrap();
+        nodecraft_exec::staleness::input_hash(canvas, app.session.kinds(), N).unwrap()
+    };
+    let generation = nodecraft_graph::Generation {
+        id: nodecraft_types::GenerationId::from_bytes([88; 16]),
+        outputs: vec![Value::Text("An answer".into())],
+        input_hash: Some(hash),
+        items: Vec::new(),
+        settings: Vec::new(),
+        incomplete: None,
+        source_versions: Vec::new(),
+    };
+    h.state_mut().session.dispatch("run.record", &json!({"canvas": C, "results": [{"node": N, "generation": generation}]})).unwrap();
+    let quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas": C, "mode": "selected", "nodes": [N]})).unwrap();
+    assert_eq!((quote["reused"].clone(), quote["steps"].clone()), (json!([N]), json!([])), "{quote}");
+    assert!(runs.lock().unwrap().is_empty());
+
+    // Undo takes the result back, then the switch.
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
+    h.run();
+    assert!(!nodecraft_engine::cache::enabled(node(h.state()), h.state().session.kinds()), "one undo step turns it off");
+    assert!(!shown_on(&h));
 }

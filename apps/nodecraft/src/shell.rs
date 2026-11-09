@@ -9,6 +9,8 @@ pub struct Shell {
     pub agent: AgentPanel,
     pub channel: Option<Channel>,
     pub storage_window: Option<crate::storage_window::StorageWindow>,
+    /// The journal whose focus endpoint starts once the startup keep-aside settles (#1053).
+    pub storage_window_pending: Option<std::path::PathBuf>,
     /// Settings › Automation's MCP server (#116), and the pump answering its requests.
     pub mcp: Option<(std::rc::Rc<std::cell::RefCell<crate::mcp_server::Server>>, crate::control::CallPump)>,
 }
@@ -28,8 +30,29 @@ impl Shell {
     }
 }
 
+impl Shell {
+    /// Once the startup keep-aside has settled, the window that took the journal over listens
+    /// for a second window asking it to come forward (#968, #1053).
+    pub fn start_storage_window(&mut self, ctx: &egui::Context) {
+        if self.app.keeping_aside() {
+            return;
+        }
+        let Some(path) = self.storage_window_pending.take() else {
+            return;
+        };
+        self.storage_window = crate::storage_window::StorageWindow::start(&mut self.app, ctx, &path)
+            .map_err(|error| log::warn!("storage window focus unavailable: {}", error.message))
+            .ok()
+            .flatten();
+    }
+}
+
 impl eframe::App for Shell {
     fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The project named at startup starts opening before any request is pumped, so one sent
+        // meanwhile is refused as busy instead of landing on the sample project (#367).
+        self.app.begin_startup_open();
+        self.start_storage_window(ctx);
         if let Some(window) = &mut self.storage_window {
             window.pump(&mut self.app, ctx);
         }

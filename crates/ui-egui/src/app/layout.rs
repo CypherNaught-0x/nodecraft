@@ -209,7 +209,7 @@ impl NodeCraftApp {
         let area = egui::Area::new(egui::Id::new("selection_format_toolbar"))
             .order(egui::Order::Foreground)
             .movable(false)
-            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin + self.closed_tag_width() + t.navigation_gap, self.topbar_rect().top() + t.navigation_gap))
+            .fixed_pos(Pos2::new(self.viewport.left() + t.navigation_margin, self.topbar_rect().top() + t.navigation_gap))
             .show(&ctx, |ui| {
                 let button =
                     ui.add_enabled(can_open, egui::Button::new("Format selection").min_size(Vec2::new(self.layout_toolbar_width(), t.navigation_toolbar_height)));
@@ -222,8 +222,9 @@ impl NodeCraftApp {
                             mode = Some(choice);
                             ui.close();
                         }
+                        // Disabled, it says why: plain hover text would be hidden then (#1113).
                         if let Err(error) = enabled {
-                            response.on_hover_text(error.message);
+                            response.on_disabled_hover_text(error.message);
                         }
                     }
                 });
@@ -251,9 +252,9 @@ impl NodeCraftApp {
     pub(super) fn apply_layout_menu(&mut self, ctx: &egui::Context, mode: &str, owner: egui::Id) {
         // Owner is an actual popup ID captured from this toolbar or the card response.
         if let Err(error) = self.dispatch_layout_scoped(ctx, &json!({"mode":mode}), Some(owner)) {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         } else {
-            self.notice = None;
+            self.notices.clear();
         }
     }
 }

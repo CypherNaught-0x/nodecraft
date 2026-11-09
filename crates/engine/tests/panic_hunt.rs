@@ -14,6 +14,8 @@ fn panic_hunt() {
     let original = common::project();
     let mut session = Session::new(original.clone()).unwrap();
     plugins::register(&mut session);
+    // The window's interface size (#1107), so its commands reach their real checks.
+    nodecraft_engine::ui_scale_cmds::install(&mut session, Default::default()).unwrap();
     // The generic corpus also reaches actual result-service parameter/identity checks.
     let mut result_services = nodecraft_engine::commands::Services::default();
     let worker = nodecraft_engine::plugin_cmds::PluginWorker::spawn(
@@ -25,6 +27,11 @@ fn panic_hunt() {
     // keep the real synchronous memory store and private file acquisition fixture.
     nodecraft_engine::plugin_cmds::register_plugin_worker(&mut result_services, worker).unwrap();
     let mut results = Session::new(original.clone()).unwrap().with_services(result_services);
+    // run.jobs and run.cancel reach a real run host's job board.
+    let mut run_services = nodecraft_engine::commands::Services::default();
+    let run_host = runs::host();
+    run_host.register(&mut run_services).unwrap();
+    let mut runs_session = Session::new(original.clone()).unwrap().with_services(run_services);
     let ids: Vec<_> = session.registry().specs().map(|spec| spec.id).collect();
     let mut deep = Value::Null;
     for _ in 0..128 {
@@ -43,6 +50,13 @@ fn panic_hunt() {
         deep,
         json!("x".repeat(1024 * 1024 + 1)),
         json!(vec![Value::Null; 16_385]),
+        // Sizes (#1107): zero, huge, negative, fractional and NaN (which JSON writes as null).
+        json!({"percent":0}),
+        json!({"percent":1e9}),
+        json!({"percent":-1}),
+        json!({"percent":0.5}),
+        json!({"percent":f64::NAN}),
+        json!({"percent":f64::MAX}),
     ];
     // Exercise typed parameter decoding and graph validation, not only top-level JSON errors.
     for raw in [json!("not-an-id"), Value::Null, json!(u64::MAX), json!({}), json!([])] {
@@ -95,7 +109,13 @@ fn panic_hunt() {
     corpus.push(json!({"canvas":common::canvas(),"ids":vec![common::node_id(1);257],"revision":0,"name":"text","value":null}));
     corpus.push(json!({"canvas":common::canvas(),"ids":[common::node_id(1),common::node_id(1)],"revision":0,"name":"text","value":null}));
     for id in ids {
-        let session = if matches!(id, "plugins.result" | "plugins.forget") { &mut results } else { &mut session };
+        let session = if matches!(id, "plugins.result" | "plugins.forget") {
+            &mut results
+        } else if matches!(id, "run.jobs" | "run.cancel") {
+            &mut runs_session
+        } else {
+            &mut session
+        };
         for params in &corpus {
             let before = session.document().clone();
             let revision = session.revision();
@@ -544,6 +564,9 @@ fn template(id: &str) -> (Session, Value) {
     let plugin_old =
         if id.starts_with("plugins.") && !matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register(&mut session)) } else { None };
     let pending = if matches!(id, "plugins.result" | "plugins.forget") { Some(plugins::register_results(&mut session)) } else { None };
+    if id.starts_with("view.ui_scale.") {
+        nodecraft_engine::ui_scale_cmds::install(&mut session, Default::default()).unwrap();
+    }
     let movement = json!({"canvas":canvas(),"id":node_id(1),"pos":{"x":12,"y":0}});
     let params = match id {
         "tag.put" => json!({"canvas":canvas(),"tag":{"id":nodecraft_types::TagId::from_bytes([9;16]),"title":"After","color":"blue"}}),
@@ -688,6 +711,9 @@ fn template(id: &str) -> (Session, Value) {
         // No MCP server host here either (#116): refused cleanly, never started.
         "automation.mcp_server_set" => json!({"enabled": true}),
         "automation.mcp_server_status" => json!({}),
+        // Interface size (#1107): the hunt's session has the frontend's scale installed.
+        "view.ui_scale.increase" | "view.ui_scale.decrease" | "view.ui_scale.reset" => json!({}),
+        "view.ui_scale.set" => json!({"percent": 150}),
         "edge.rewire" => {
             let moved = nodecraft_graph::Edge { id: nodecraft_types::EdgeId::from_bytes([9; 16]), ..edge() };
             json!({"canvas":canvas(),"edge":moved,"replace":[edge().id]})
@@ -758,6 +784,8 @@ fn template(id: &str) -> (Session, Value) {
         "history.export" => json!({"canvas":canvas(),"id":node_id(1),"generation":gen_id(0x21),"path":"/nodecraft-panic-hunt/out.png"}),
         "export.status" => json!({}),
         "export.cancel" => json!({"id":1}),
+        "run.jobs" => json!({}),
+        "run.cancel" => json!({"run":1,"job":1}),
         "node.create" => json!({"canvas":canvas(),"id":node_id(7),"kind":"source.text","pos":{"x":1,"y":2}}),
         "node.create_connected" => json!({"canvas":canvas(),"id":node_id(7),"kind":"structure.router","pos":{"x":1,"y":2},
             "from":{"node":node_id(1),"port":"out"},"edge":nodecraft_types::EdgeId::from_bytes([0x77; 16])}),
@@ -781,7 +809,7 @@ fn template(id: &str) -> (Session, Value) {
         "file.open" => json!({"location":"template.ncraft","discard_dirty":true}),
         "file.save" => Value::Null,
         "file.save_as" => json!({"location":"new.ncraft"}),
-        "file.cancel" | "file.focus_owner" => json!({}),
+        "file.cancel" | "file.focus_owner" | "file.status" => json!({}),
         // Real memory store and private package files, never caller-selected filesystem paths.
         "plugins.list" | "plugins.prune" => json!({}),
         "plugins.import" | "plugins.update" => json!({"location":"palette.ncraft-plugin","dry_run":true}),
@@ -1236,5 +1264,32 @@ fn template_fetch_corpus_reaches_shared_commands_without_project_mutation() {
         }
         assert_eq!(session.document(), &before);
         assert_eq!(session.revision(), revision);
+    }
+}
+
+/// A run host whose runtime runs nothing, for the commands that only read or queue on it.
+mod runs {
+    use nodecraft_exec::driver::{Runtime, TaskFuture};
+    use std::sync::{Arc, Mutex};
+
+    struct Idle;
+    impl Runtime for Idle {
+        fn spawn(&self, _: TaskFuture<()>) {}
+        fn sleep(&self, _: u64) -> TaskFuture<()> {
+            Box::pin(async {})
+        }
+        fn now_ms(&self) -> u64 {
+            0
+        }
+    }
+
+    pub(super) fn host() -> nodecraft_engine::run_host::RunHost {
+        let budget = nodecraft_engine::jobs::JobBudget {
+            log: Arc::new(Mutex::new(Default::default())),
+            budgets: Arc::new(Mutex::new(Default::default())),
+            session: "panic-hunt".into(),
+            wall_clock_ms: Arc::new(|| 0),
+        };
+        nodecraft_engine::run_host::RunHost::new(Arc::new(Idle), budget)
     }
 }

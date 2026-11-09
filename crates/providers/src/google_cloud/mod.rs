@@ -5,7 +5,7 @@ mod credential;
 #[cfg(feature = "google-gemini-images")]
 pub mod gemini_images;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod token;
 #[cfg(feature = "google-tts")]
 pub mod tts;

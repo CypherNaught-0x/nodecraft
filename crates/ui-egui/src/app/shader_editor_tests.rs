@@ -49,6 +49,11 @@ fn scene() -> (Harness<'static, NodeCraftApp>, Runs) {
 
 /// [`scene`], with a shader library in `shaders` when given.
 fn scene_with(shaders: Option<&nodecraft_engine::library::MemoryLibrary>) -> (Harness<'static, NodeCraftApp>, Runs) {
+    scene_sized(shaders, Vec2::new(1200.0, 850.0))
+}
+
+/// [`scene_with`] in a window of `size`.
+fn scene_sized(shaders: Option<&nodecraft_engine::library::MemoryLibrary>, size: Vec2) -> (Harness<'static, NodeCraftApp>, Runs) {
     let snapshot = GenerationCatalog::new(RunCatalog::new(nodecraft_catalog::Catalog::from_toml(WRITER).unwrap()).unwrap()).unwrap();
     let kinds = snapshot.registry().unwrap();
     let mut project = Project::new(ProjectId::from_bytes([92; 16]), "Shader editor").unwrap();
@@ -72,7 +77,7 @@ fn scene_with(shaders: Option<&nodecraft_engine::library::MemoryLibrary>) -> (Ha
         nodecraft_engine::shader_library::install(&mut session, Box::new(store.clone())).unwrap();
     }
     let app = NodeCraftApp::from_session(session, C).unwrap();
-    let mut h = Harness::builder().with_size(Vec2::new(1200.0, 850.0)).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
+    let mut h = Harness::builder().with_size(size).with_max_steps(120).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app);
     h.run();
     (h, runs)
 }
@@ -101,7 +106,7 @@ fn open((mut h, runs): (Harness<'static, NodeCraftApp>, Runs)) -> (Harness<'stat
             break;
         }
     }
-    assert!(h.state().shader_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().shader_editor.is_some(), "{:?}", h.state().notice());
     (h, runs)
 }
 
@@ -369,4 +374,15 @@ fn a_damaged_library_is_reported_not_hidden() {
     let (h, _) = open(scene_with(Some(&store)));
     assert!(h.query_by_label_contains("The shader library can't be used").is_some());
     assert!(h.query_by_label("Save to library").is_none());
+}
+
+/// #959: the shader editor opens inside the panel area with no crossing controls, in a narrow and
+/// a wide window, each opened at that size.
+#[test]
+fn the_shader_editor_lays_out_without_overlaps_at_both_sizes() {
+    for size in [Vec2::new(1000.0, 700.0), Vec2::new(1600.0, 900.0)] {
+        let (mut h, _runs) = open(scene_sized(None, size));
+        h.run_steps(12);
+        crate::app::panel_check::check_open_panels(&h, &format!("Custom shader at {size:?}"));
+    }
 }

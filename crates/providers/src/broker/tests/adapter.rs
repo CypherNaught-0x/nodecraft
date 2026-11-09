@@ -126,10 +126,21 @@ fn every_failure_after_the_paid_request_may_have_billed() {
 }
 
 #[test]
-fn an_ambiguous_submit_is_retried_only_under_an_idempotency_key() {
-    assert!(broker(template(), Transport::new(vec![])).retry_ambiguous_submit());
+fn an_ambiguous_submit_is_never_retried_on_the_publishers_word() {
+    assert!(template().idempotency.is_some(), "the template claims its service deduplicates by key");
+    assert!(!broker(template(), Transport::new(vec![])).retry_ambiguous_submit());
     let plain = decode(&without("/idempotency")).unwrap();
     assert!(!broker(plain, Transport::new(vec![])).retry_ambiguous_submit());
+}
+
+#[test]
+fn a_submit_gets_at_least_thirty_seconds_whatever_the_template_says() {
+    let short = decode(&with("/limits/timeout_ms", json!(1000))).unwrap();
+    let submit = plan_submit(&short, &job()).unwrap();
+    assert_eq!(submit.timeout_ms, crate::broker::plan::MIN_SUBMIT_TIMEOUT_MS);
+    assert_eq!(plan_poll(&short, &handle()).unwrap().timeout_ms, 1000, "a poll keeps the template's own timeout");
+    let long = decode(&with("/limits/timeout_ms", json!(90_000))).unwrap();
+    assert_eq!(plan_submit(&long, &job()).unwrap().timeout_ms, 90_000);
 }
 
 #[test]

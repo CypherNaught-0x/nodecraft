@@ -1,0 +1,23 @@
+#usda 1.0
+(
+    metersPerUnit = 1
+    defaultPrim = "Square"
+    upAxis = "Y"
+)
+def Mesh "Square"
+{
+    int[] faceVertexCounts = [3, 3]
+    int[] faceVertexIndices = [0, 1, 2, 0, 2, 3]
+    normal3f[] normals = [(0, 0, 1), (0, 0, 1), (0, 0, 1), (0, 0, 1)] (
+        interpolation = "vertex"
+    )
+    point3f[] points = [(-1, 0, 0), (1, 0, 0), (1, 1, 0), (-1, 1, 0)]
+    color3f[] primvars:displayColor = [(1, 0, 0), (0, 1, 0), (0, 0, 1), (1, 1, 0)] (
+        interpolation = "vertex"
+    )
+    float[] primvars:displayOpacity = [0, 0.25, 0.5, 1] (
+        interpolation = "vertex"
+    )
+    uniform token orientation = "rightHanded"
+    uniform token subdivisionScheme = "none"
+}

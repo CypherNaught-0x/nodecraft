@@ -95,10 +95,10 @@ impl StorageWindow {
         }
         if let Ok(result) = self.outcomes.try_recv() {
             self.busy.store(false, Ordering::SeqCst);
-            app.notice = Some(match result {
-                Ok(()) => "The storage window was asked to come forward. Use its File menu to open or save a project; this window's edits stay here.".into(),
-                Err(_) => "The other NodeCraft window could not be reached. Switch to it manually and use its File menu. If it has closed, close this window and reopen NodeCraft; this window's edits cannot be saved.".into(),
-            });
+            match result {
+                Ok(()) => app.notices.info("The storage window was asked to come forward. Use its File menu to open or save a project; this window's edits stay here."),
+                Err(_) => app.notices.error("The other NodeCraft window could not be reached. Switch to it manually and use its File menu. If it has closed, close this window and reopen NodeCraft; this window's edits cannot be saved."),
+            }
         }
         if self.busy.load(Ordering::SeqCst) {
             ctx.request_repaint_after(std::time::Duration::from_millis(50));

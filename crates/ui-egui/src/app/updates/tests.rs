@@ -66,12 +66,12 @@ fn asking_when_up_to_date_or_offline_says_so() {
     h.state_mut().dispatch_palette_command("app.check_updates");
     answered(&mut h);
     assert_eq!(banner(&h), None);
-    assert_eq!(h.state().notice.as_deref(), Some(format!("NodeCraft {VERSION} is up to date.").as_str()));
+    assert_eq!(h.state().notice(), Some(format!("NodeCraft {VERSION} is up to date.").as_str()));
 
     let mut h = with_releases(Err(Error::new(ErrorKind::Network, "GitHub couldn't be reached: offline")));
     h.state_mut().dispatch_palette_command("app.check_updates");
     answered(&mut h);
-    assert_eq!(h.state().notice.as_deref(), Some("Couldn't check for updates: GitHub couldn't be reached: offline"));
+    assert_eq!(h.state().notice(), Some("Couldn't check for updates: GitHub couldn't be reached: offline"));
 }
 
 #[test]
@@ -82,7 +82,7 @@ fn the_startup_check_is_silent_unless_it_finds_an_undismissed_release() {
         h.state_mut().check_updates_at_startup(&settings);
         answered(&mut h);
         assert_eq!(banner(&h), None);
-        assert_eq!(h.state().notice, None);
+        assert_eq!(h.state().notice(), None);
     }
 
     let mut h = with_releases(Ok(vec![release("99.0.0")]));
@@ -112,7 +112,7 @@ fn a_dismissed_release_returns_only_when_asked_for() {
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
     assert_eq!(banner(&h), None);
-    assert_eq!(h.state().notice, None);
+    assert_eq!(h.state().notice(), None);
 
     h.state_mut().dispatch_palette_command("app.check_updates");
     answered(&mut h);
@@ -142,7 +142,7 @@ fn the_banner_buttons_keep_their_choice_in_settings() {
     h.get_by_label("Don't check at startup").click();
     h.run();
     assert_eq!(banner(&h), None);
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("won't check for updates at startup")));
+    assert!(h.state().notice().is_some_and(|notice| notice.contains("won't check for updates at startup")));
     assert!(!h.state().store.as_ref().unwrap().get().updates.check);
 
     offered(&mut h);
@@ -161,7 +161,7 @@ fn without_settings_the_banner_says_its_choice_wont_last() {
     h.get_by_label("Don't check at startup").click();
     h.run();
     assert_eq!(banner(&h), None);
-    assert_eq!(h.state().notice.as_deref(), Some(UNSAVED));
+    assert_eq!(h.state().notice(), Some(UNSAVED));
 }
 
 #[test]
@@ -171,7 +171,7 @@ fn an_explicit_check_that_finds_nothing_takes_down_an_earlier_offer() {
     h.state_mut().dispatch_palette_command("app.check_updates");
     answered(&mut h);
     assert_eq!(banner(&h), None);
-    assert!(h.state().notice.as_deref().is_some_and(|notice| notice.ends_with("is up to date.")));
+    assert!(h.state().notice().is_some_and(|notice| notice.ends_with("is up to date.")));
 }
 
 /// A harness offering 99.0.0 whose installer stages `payload` as an AppImage in a temporary

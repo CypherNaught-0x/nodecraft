@@ -39,6 +39,11 @@ fn url(template: &Template, path: &PathTemplate, model: &str, job: Option<&str>)
     out
 }
 
+/// The least time a paid submit is given, whatever the template says (#174): a submit cut off
+/// while the service is still accepting it leaves a job that may be billed with no handle to
+/// follow, so a template can't make that the common case with a short timeout.
+pub const MIN_SUBMIT_TIMEOUT_MS: u64 = 30_000;
+
 fn bounded(template: &Template, request: HttpRequest) -> HttpRequest {
     request.timeout_ms(template.limits.timeout_ms).max_response_bytes(template.limits.response_bytes)
 }
@@ -111,7 +116,9 @@ pub fn plan_submit(template: &Template, job: &ProviderJob) -> Result<HttpRequest
         }
         request = request.header(header.name(), key.clone());
     }
-    Ok(bounded(template, request))
+    let request = bounded(template, request);
+    let timeout = template.limits.timeout_ms.max(MIN_SUBMIT_TIMEOUT_MS);
+    Ok(request.timeout_ms(timeout))
 }
 
 fn handle_parts<'a>(template: &'a Template, handle: &'a JobHandle) -> Result<(&'a str, &'a str), ProviderError> {
@@ -239,7 +246,7 @@ pub fn read_poll(template: &Template, body: &[u8], secret: &str) -> Result<JobPr
             .and_then(|p| reply.pointer(p))
             .and_then(Value::as_str)
             .filter(|m| secret.is_empty() || !m.contains(secret))
-            .map(|m| excerpt(m.as_bytes()));
+            .map(|m| untrusted(&excerpt(m.as_bytes())));
         JobProgress::Failed(ProviderError::new(ErrorKind::JobFailed, said.unwrap_or_else(|| "the provider says the job failed".into())))
     } else if s.queued.contains(status) {
         JobProgress::Queued { position: None }
@@ -248,4 +255,11 @@ pub fn read_poll(template: &Template, body: &[u8], secret: &str) -> Result<JobPr
         // failing a paid job on a new status would lose what it is producing.
         JobProgress::Running { fraction: None, message: None, partial: None }
     })
+}
+
+/// Text a plugin's service wrote, quoted and marked as its own words (#174 review): an error
+/// reaches the agent's context too, and a third party's text there is data, never instructions.
+pub(crate) fn untrusted(said: &str) -> String {
+    // Escaped, so its own quotes can't end the quote and make what follows read as the host's.
+    format!("the plugin provider said (unchecked): {said:?}")
 }

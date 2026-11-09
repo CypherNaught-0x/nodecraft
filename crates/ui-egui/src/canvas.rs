@@ -165,7 +165,7 @@ pub fn paint_grid(painter: &egui::Painter, viewport: Rect, view: &CanvasView, t:
 
 /// The zoom factor and pan for one frame's scroll and pinch input, under the user's preferences.
 /// `scroll` is the frame's scroll delta in points and `pinch` egui's zoom delta (pinch and
-/// ⌘/Ctrl-scroll). Returns `(zoom factor, pan delta)`.
+/// Command-scroll). Returns `(zoom factor, pan delta)`.
 pub fn scroll_to_view_change(scroll: Vec2, pinch: f32, prefs: &CanvasSettings) -> (f32, Vec2) {
     let speed = prefs.zoom_speed();
     let mut zoom = if pinch.is_finite() && pinch > 0.0 { pinch.powf(speed) } else { 1.0 };
@@ -194,7 +194,7 @@ pub enum ScrollNavigation {
 }
 
 /// Background navigation for one frame: drag with the primary button on empty canvas, or with the
-/// middle or secondary button anywhere, pans; pinch or ⌘/Ctrl-scroll zooms around the pointer; ⌘0
+/// middle or secondary button anywhere, pans; pinch or Command-scroll zooms around the pointer; ⌘0
 /// resets, ⌘= and ⌘- zoom around the centre.
 ///
 /// Plain scroll is applied by [`scroll`] once the cards have taken their share of it (#413).
@@ -219,13 +219,15 @@ pub fn navigate(
         view.pan_by(background.drag_delta());
     }
     let (zoom, pointer, reset, zoom_in, zoom_out) = ui.input(|i| {
+        // With Alt held these keys size the interface instead (#1107, `view.ui_scale.*`).
         let cmd = egui::Modifiers::COMMAND;
+        let zoom_keys = i.modifiers.matches_logically(cmd) && !i.modifiers.alt;
         (
             i.zoom_delta(),
             i.pointer.hover_pos(),
-            i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Num0),
-            i.modifiers.matches_logically(cmd) && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
-            i.modifiers.matches_logically(cmd) && i.key_pressed(egui::Key::Minus),
+            zoom_keys && i.key_pressed(egui::Key::Num0),
+            zoom_keys && (i.key_pressed(egui::Key::Equals) || i.key_pressed(egui::Key::Plus)),
+            zoom_keys && i.key_pressed(egui::Key::Minus),
         )
     });
     if scroll_navigation == ScrollNavigation::Enabled

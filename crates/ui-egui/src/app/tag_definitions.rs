@@ -69,7 +69,7 @@ impl NodeCraftApp {
         }
         let current = self.session.document().canvases().get(&editor.canvas).and_then(|c| c.tags().get(&editor.original.id));
         if current != Some(&editor.original) {
-            self.notice = Some("The tag changed or was removed. Open its controls again.".into());
+            self.notices.warning("The tag changed or was removed. Open its controls again.");
             return false;
         }
         let t = self.theme.tokens();

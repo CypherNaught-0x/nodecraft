@@ -238,3 +238,26 @@ fn the_catalog_trains_what_the_adapter_sends() {
     assert!(matches!(entry.pricing, nodecraft_catalog::Pricing::PerCall { .. }), "priced before it is sent");
     training::prepare(&trainer("Mara", photos(1)), Limits::HARD).unwrap();
 }
+
+#[test]
+fn only_a_descriptor_the_trainer_writes_names_a_soul_id() {
+    let trained = nodecraft_media::style::Style {
+        provider: "higgsfield".into(),
+        trainer: SOUL_TRAINER.into(),
+        family: SOUL_FAMILY.into(),
+        trigger: String::new(),
+        weights: format!("https://api.higgsfield.ai/v1/custom-references/{}", SOUL_ID.to_ascii_uppercase()),
+    };
+    assert_eq!(soul_id(&trained).as_deref(), Some(SOUL_ID), "lowercased, as requests send it");
+    let other = |edit: fn(&mut nodecraft_media::style::Style)| {
+        let mut style = trained.clone();
+        edit(&mut style);
+        soul_id(&style)
+    };
+    assert_eq!(other(|s| s.provider = "fal".into()), None);
+    assert_eq!(other(|s| s.trainer = "fal-ai/flux-lora-fast-training".into()), None);
+    assert_eq!(other(|s| s.family = "flux-1".into()), None);
+    assert_eq!(other(|s| s.weights = "https://api.higgsfield.ai/v1/custom-references/not-a-uuid".into()), None);
+    assert_eq!(other(|s| s.weights = format!("https://elsewhere.example/v1/custom-references/{SOUL_ID}")), None);
+    assert_eq!(other(|s| s.weights = format!("https://api.higgsfield.ai/v1/custom-references/{SOUL_ID}/x")), None);
+}

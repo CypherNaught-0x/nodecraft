@@ -1,5 +1,6 @@
 //! UI-only location acquisition. Every file mutation still goes through Session dispatch.
 use super::*;
+use crate::notices::FILE_SAVE;
 use nodecraft_engine::settings::ProjectSettings;
 use std::{
     future::Future,
@@ -43,7 +44,61 @@ enum Phase {
         saved_path: Option<PathBuf>,
     },
     /// A background open of this file is running (#367); edits are refused until it settles.
-    Opening(PathBuf),
+    Opening {
+        path: PathBuf,
+        after: AfterOpen,
+    },
+    /// Recovery's "Recover" is restoring the offered work in the background (#367). The offer
+    /// stays here, so a failure or cancellation asks the question again.
+    Recovering(Box<super::recovery::RecoveryOffer>),
+}
+/// Why a background open didn't replace the project, so each purpose can say it in its own words.
+pub(super) enum OpenFailed {
+    /// The person (or an agent) cancelled it before it published.
+    Cancelled,
+    /// It failed with this message (an engine or admission error, one sentence or clause).
+    Error(String),
+    /// It finished without confirming the project opened.
+    Unconfirmed,
+    /// The host replaced the session, or the open ended without an outcome.
+    Unfinished,
+}
+impl OpenFailed {
+    pub(super) fn from_error(error: &Error) -> Self {
+        // The engine's own wording for an open (or recovery) its cancel stopped before publishing.
+        if error.kind == ErrorKind::Conflict && (error.message.starts_with("opening was cancelled") || error.message.starts_with("recovering was cancelled")) {
+            Self::Cancelled
+        } else {
+            Self::Error(error.message.clone())
+        }
+    }
+    /// The reason, with any advice it carries ("…; update NodeCraft"), as a clause to follow a
+    /// colon: lower-case first letter, no closing full stop.
+    pub(super) fn clause(&self) -> String {
+        match self {
+            Self::Cancelled => "it was cancelled".to_owned(),
+            Self::Error(message) => {
+                let message = message.trim().trim_end_matches('.');
+                let mut chars = message.chars();
+                chars.next().map(|first| first.to_lowercase().chain(chars).collect()).unwrap_or_default()
+            }
+            Self::Unconfirmed => "it didn't confirm it finished".to_owned(),
+            Self::Unfinished => "it ended without a result".to_owned(),
+        }
+    }
+}
+fn file_name(path: &Path) -> String {
+    path.file_name().map_or_else(|| "The project".to_owned(), |name| name.to_string_lossy().into_owned())
+}
+/// What a background open was started for, which decides what its outcome does (#367).
+pub(super) enum AfterOpen {
+    /// File > Open, a recent project, or the open after "Save changes before opening?".
+    File,
+    /// The project named on the command line, opened once the window shows its first frame.
+    Startup,
+    /// Recovery's "Start from last save". The selected copy is discarded only once the open
+    /// has succeeded; a failure or cancellation offers it again.
+    LastSave(Box<super::recovery::RecoveryOffer>),
 }
 struct Pending {
     stamp: Stamp,
@@ -55,11 +110,15 @@ pub(super) struct FileDialogs {
     pub(super) projects: ProjectSettings,
     observed: Option<String>,
     menu_open: bool,
+    /// Whether the File menu was open as this frame began (#1123).
+    menu_was_open: bool,
     // Completed-frame number: every pass of the choice/completion frame stays owned.
     owner_frame: Option<u64>,
     storage_problem: Option<(Arc<()>, String, bool)>,
     /// Frame time the running background save or open was first seen, for the progress window.
     progress_since: Option<f64>,
+    /// The project to open at startup, started by the first frame (#367).
+    pub(super) startup: Option<PathBuf>,
 }
 impl Default for FileDialogs {
     fn default() -> Self {
@@ -73,9 +132,11 @@ impl Default for FileDialogs {
             projects: Default::default(),
             observed: None,
             menu_open: false,
+            menu_was_open: false,
             owner_frame: None,
             storage_problem: None,
             progress_since: None,
+            startup: None,
         }
     }
 }
@@ -110,6 +171,14 @@ fn selected_path(path: &Path) -> Result<PathBuf, String> {
     Ok(path.to_path_buf())
 }
 impl FileDialogs {
+    /// No save, open or file pick is under way.
+    pub(super) fn idle(&self) -> bool {
+        self.pending.is_none()
+    }
+    /// Whether the File menu is open (#1123).
+    pub(super) fn menu_open(&self) -> bool {
+        self.menu_open
+    }
     pub(super) fn owns_input(&self) -> bool {
         self.pending.is_some()
     }
@@ -191,7 +260,7 @@ impl NodeCraftApp {
             || self.navigation.drag.is_some()
             || ctx.input(|i| i.pointer.primary_down())
     }
-    pub(super) fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) -> Option<String> {
+    pub(super) fn file_shortcut(&mut self, ctx: &egui::Context, save: bool, save_as: bool) {
         let id = if save_as {
             "file.save_as"
         } else if save {
@@ -200,43 +269,51 @@ impl NodeCraftApp {
             "file.open"
         };
         self.begin_file(id, ctx);
-        self.notice.take()
     }
-    pub(super) fn begin_file(&mut self, id: &str, ctx: &egui::Context) {
+    /// Starts an open, save or save as; whether it started (a save, or a picker opened). A busy
+    /// file operation, unavailable storage or uncommitted edits refuse it.
+    pub(super) fn begin_file(&mut self, id: &str, ctx: &egui::Context) -> bool {
         if self.files.pending.is_some() || self.file_busy(ctx) {
-            return;
+            return false;
         }
         if let Some(message) = self.file_unavailable_message() {
-            self.notice = Some(message);
+            self.notices.error(message);
             self.files.menu_open = true;
             self.files.own_frame(ctx);
             ctx.request_repaint();
-            return;
+            return false;
         }
         if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
-            self.notice = Some("Finish or discard the current field edits before saving or opening a project.".into());
-            return;
+            self.notices.warning("Finish or discard the current field edits before saving or opening a project.");
+            return false;
         }
         if !self.commit_mesh_views(ctx, true) {
-            return;
+            return false;
         }
         self.files.own_frame(ctx);
-        self.notice = None;
+        self.notices.clear();
         let status = self.session.file_status();
         if id == "file.save" && status.location.is_some() && !status.read_only {
             self.start_file_save(None, None, Stamp::capture(self));
-            return;
+            return true;
         }
         let purpose = if id == "file.open" { Purpose::Open } else { Purpose::Save { then_open: None } };
-        self.start_picker(Stamp::capture(self), purpose);
+        let started = self.start_picker(Stamp::capture(self), purpose);
         ctx.request_repaint();
+        started
     }
-    fn start_picker(&mut self, stamp: Stamp, purpose: Purpose) {
+    fn start_picker(&mut self, stamp: Stamp, purpose: Purpose) -> bool {
         let save = matches!(purpose, Purpose::Save { .. });
         let future = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| (self.files.picker)(save)));
         match future {
-            Ok(Ok(future)) => self.files.pending = Some(Pending { stamp, phase: Phase::Picking { future, purpose } }),
-            _ => self.notice = Some("The native file picker could not be opened. Try again or use an explicit file command.".into()),
+            Ok(Ok(future)) => {
+                self.files.pending = Some(Pending { stamp, phase: Phase::Picking { future, purpose } });
+                true
+            }
+            _ => {
+                self.notices.error("The native file picker could not be opened. Try again or use an explicit file command.");
+                false
+            }
         }
     }
     fn remember_project(&mut self, path: &Path) {
@@ -249,23 +326,84 @@ impl NodeCraftApp {
             let projects = self.files.projects.clone();
             store.update(|s| s.projects = projects);
             if store.is_read_only() || store.flush().is_err() {
-                self.notice = Some("The project operation succeeded, but recent projects could not be saved in settings.".into());
+                self.notices.warning("The project operation succeeded, but recent projects could not be saved in settings.");
             }
         }
     }
     /// Opens `path` on the save runner (#367), so a large project doesn't hold the window; the
     /// open settles in [`Self::file_save_completed`]. Without a runner it opens inline.
     fn open_selected(&mut self, path: PathBuf, discard: bool) {
+        self.start_background_open(path, discard, AfterOpen::File);
+    }
+    /// The startup open (#367), started before anything else can reach the session: the host
+    /// calls it first in its frame logic, ahead of the control channel, MCP and the agent, so a
+    /// command sent meanwhile is refused as busy ("still opening") rather than applied to the
+    /// sample project and then discarded. Should something have changed the sample project all
+    /// the same, the file isn't opened over it. The progress window shows at once rather than
+    /// after [`progress::SHOW_AFTER`], since the open is all this window is doing.
+    pub fn begin_startup_open(&mut self) {
+        let Some(path) = self.files.startup.take() else { return };
+        if self.session.can_undo() || self.session.can_redo() {
+            self.notices.warning(format!(
+                "{} wasn't opened at startup because this window's project already has changes. Save them, then use File > Open.",
+                file_name(&path)
+            ));
+            return;
+        }
+        self.start_background_open(path, true, AfterOpen::Startup);
+    }
+    pub(super) fn start_background_open(&mut self, path: PathBuf, discard: bool, after: AfterOpen) {
         let result = admitted(&path, false).and_then(|location| {
             self.session.dispatch("file.open", &json!({"location":location,"discard_dirty":discard,"background":true})).map_err(|e| e.message)
         });
+        let flag = |value: &serde_json::Value, key: &str| value.get(key).and_then(serde_json::Value::as_bool) == Some(true);
         match result {
-            Ok(result) if result.get("opening").and_then(serde_json::Value::as_bool) == Some(true) => {
-                self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Opening(path) });
+            Ok(result) if flag(&result, "opening") => {
+                if matches!(after, AfterOpen::Startup) {
+                    // Shown from the first frame on: the open is all this window is doing.
+                    self.files.progress_since = Some(f64::NEG_INFINITY);
+                }
+                self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Opening { path, after } });
             }
-            Ok(_) => self.file_opened(path),
-            Err(error) => self.notice = Some(error),
+            // The runner refused the job and it ran inline.
+            Ok(result) if flag(&result, "opened") => self.open_settled(path, after, Ok(()), true),
+            Ok(_) => self.open_settled(path, after, Err(OpenFailed::Unconfirmed), true),
+            Err(error) => self.open_settled(path, after, Err(OpenFailed::Error(error)), true),
         }
+    }
+    /// A background open's outcome, for what it was started for. `same_session` is false when
+    /// the host replaced the session while it ran; nothing of the old one is touched then.
+    fn open_settled(&mut self, path: PathBuf, after: AfterOpen, outcome: Result<(), OpenFailed>, same_session: bool) {
+        match (after, outcome) {
+            (AfterOpen::File | AfterOpen::Startup, Ok(())) => self.file_opened(path),
+            (AfterOpen::File, Err(failed)) => match failed {
+                OpenFailed::Cancelled => self.notices.info(format!("Opening {} was cancelled; the current project is unchanged.", file_name(&path))),
+                OpenFailed::Error(message) => self.notices.error(message),
+                OpenFailed::Unconfirmed => self.notices.error("The project did not confirm it opened; the current project was kept."),
+                OpenFailed::Unfinished => self.notices.error("The project didn't finish opening. Open it again."),
+            },
+            (AfterOpen::Startup, Err(OpenFailed::Cancelled)) => {
+                self.notices.info(format!("Opening {} was cancelled; the new project is open instead.", file_name(&path)));
+            }
+            (AfterOpen::Startup, Err(failed)) => {
+                self.notices.error(format!("{} couldn't be opened: {}. The new project is open instead and can be saved.", file_name(&path), failed.clause()));
+            }
+            (AfterOpen::LastSave(offer), Ok(())) => {
+                self.file_opened(path);
+                self.started_from_last_save(&offer);
+            }
+            (AfterOpen::LastSave(offer), Err(failed)) => self.last_save_not_opened(*offer, &failed, same_session),
+        }
+    }
+    /// Whether a "Start from last save" open or a "Recover" is running: its question isn't
+    /// answered yet.
+    pub(super) fn last_save_opening(&self) -> bool {
+        self.files.pending.as_ref().is_some_and(|pending| matches!(pending.phase, Phase::Opening { after: AfterOpen::LastSave(_), .. } | Phase::Recovering(_)))
+    }
+    /// "Recover" started restoring `offer` in the background; its outcome settles in
+    /// [`Self::file_save_completed`].
+    pub(super) fn recovering(&mut self, offer: super::recovery::RecoveryOffer) {
+        self.files.pending = Some(Pending { stamp: Stamp::capture(self), phase: Phase::Recovering(Box::new(offer)) });
     }
     fn file_opened(&mut self, path: PathBuf) {
         self.after_file_open();
@@ -273,7 +411,7 @@ impl NodeCraftApp {
     }
     fn choose_open(&mut self, path: PathBuf, stamp: Stamp) {
         if let Err(error) = admitted(&path, false) {
-            self.notice = Some(error);
+            self.notices.error(error);
             return;
         }
         if self.session.file_status().dirty {
@@ -303,19 +441,21 @@ impl NodeCraftApp {
             Ok(result) if result.get("saved").and_then(serde_json::Value::as_bool) == Some(true) => {
                 self.complete_file_save(stamp, then_open, path, Ok(()));
             }
-            Ok(_) => self.notice = Some("The save did not confirm publication; the current project was kept.".into()),
-            Err(error) => self.notice = Some(error),
+            Ok(_) => self.notices.error_for(FILE_SAVE, "The save did not confirm publication; the current project was kept."),
+            Err(error) => self.notices.error_for(FILE_SAVE, error),
         }
     }
     fn complete_file_save(&mut self, stamp: Stamp, then_open: Option<PathBuf>, saved_path: Option<PathBuf>, result: Result<(), String>) {
         if !stamp.matches(self) {
-            self.notice = Some("The project changed while saving. Open the project again.".into());
+            self.notices.warning("The project changed while saving. Open the project again.");
             return;
         }
         if let Err(error) = result {
-            self.notice = Some(error);
+            self.notices.error_for(FILE_SAVE, error);
             return;
         }
+        // A save that went through takes back the earlier failed one (#1110).
+        self.notices.settle(FILE_SAVE);
         if let Some(path) = saved_path {
             self.remember_project(&path);
         }
@@ -325,15 +465,33 @@ impl NodeCraftApp {
     }
     pub(super) fn file_save_completed(&mut self, ctx: &egui::Context, result: Result<serde_json::Value, Error>) {
         let opened = result.as_ref().is_ok_and(|value| value.get("opened").and_then(serde_json::Value::as_bool) == Some(true));
-        if let Some(Pending { phase: Phase::Opening(path), stamp }) = self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening(_))) {
+        if let Some(Pending { phase: Phase::Recovering(offer), stamp }) = self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Recovering(_))) {
             self.files.own_frame(ctx);
+            let same_session = Arc::ptr_eq(&stamp.session, &self.session.view_identity());
+            let recovered = result.as_ref().is_ok_and(|value| value.get("recovered").and_then(serde_json::Value::as_bool) == Some(true));
             match result {
-                // The open replaced this session's document; a replaced session's open never
-                // reaches this poll, so the identity check is all that's left to make.
-                Ok(_) if opened && Arc::ptr_eq(&stamp.session, &self.session.view_identity()) => self.file_opened(path),
-                Ok(_) => self.notice = Some("The project did not confirm it opened; the current project was kept.".into()),
-                Err(error) => self.notice = Some(error.message),
+                Ok(_) if recovered && same_session => self.recovered_work(*offer),
+                Ok(_) if same_session => self.recovery_not_restored(*offer, &OpenFailed::Unconfirmed, true),
+                Ok(_) => self.recovery_not_restored(*offer, &OpenFailed::Unfinished, false),
+                Err(error) => self.recovery_not_restored(*offer, &OpenFailed::from_error(&error), same_session),
             }
+            self.clear_file_input(ctx);
+            return;
+        }
+        if let Some(Pending { phase: Phase::Opening { path, after }, stamp }) =
+            self.files.pending.take_if(|pending| matches!(pending.phase, Phase::Opening { .. }))
+        {
+            self.files.own_frame(ctx);
+            // A replaced session's open never reaches this poll, so the identity check is
+            // all that's left to make.
+            let same_session = Arc::ptr_eq(&stamp.session, &self.session.view_identity());
+            let outcome = match result {
+                Ok(_) if opened && same_session => Ok(()),
+                Ok(_) if same_session => Err(OpenFailed::Unconfirmed),
+                Ok(_) => Err(OpenFailed::Unfinished),
+                Err(error) => Err(OpenFailed::from_error(&error)),
+            };
+            self.open_settled(path, after, outcome, same_session);
             self.clear_file_input(ctx);
             return;
         }
@@ -342,7 +500,7 @@ impl NodeCraftApp {
                 // An open another surface started in the background: show its project too.
                 Ok(_) if opened => self.after_file_open(),
                 Ok(_) => {}
-                Err(error) => self.notice = Some(error.message),
+                Err(error) => self.notices.report(error),
             }
             return;
         }
@@ -403,12 +561,12 @@ impl NodeCraftApp {
                     }
                     Ok(Poll::Ready(Ok(path))) => path,
                     Ok(Poll::Ready(Err(error))) => {
-                        self.notice = Some(error);
+                        self.notices.error(error);
                         self.clear_file_input(ctx);
                         return true;
                     }
                     Err(_) => {
-                        self.notice = Some("The native file picker failed; no project was changed.".into());
+                        self.notices.error("The native file picker failed; no project was changed.");
                         self.clear_file_input(ctx);
                         return true;
                     }
@@ -416,7 +574,7 @@ impl NodeCraftApp {
                 progressed = true;
                 if let Some(path) = path {
                     if !pending.stamp.matches(self) {
-                        self.notice = Some("The project changed while the file picker was open. Choose the file again.".into());
+                        self.notices.warning("The project changed while the file picker was open. Choose the file again.");
                     } else if let Phase::Picking { purpose, .. } = pending.phase {
                         match purpose {
                             Purpose::Open => self.choose_open(path, pending.stamp),
@@ -432,22 +590,33 @@ impl NodeCraftApp {
                     self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Saving { then_open, saved_path } });
                     ctx.request_repaint_after(std::time::Duration::from_millis(16));
                 } else {
-                    self.notice = Some("The project changed while saving. Open the project again.".into());
+                    self.notices.warning("The project changed while saving. Open the project again.");
                 }
                 self.file_progress(ctx);
             }
-            Phase::Opening(path) => {
-                if Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity()) && self.session.file_status().operation.is_some() {
-                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening(path) });
+            Phase::Opening { path, after } => {
+                let same_session = Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity());
+                if same_session && self.session.file_status().operation.is_some() {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Opening { path, after } });
                 } else {
                     // The host replaced the session, or the open ended without an outcome.
-                    self.notice = Some("The project didn't finish opening. Open it again.".into());
+                    self.open_settled(path, after, Err(OpenFailed::Unfinished), same_session);
+                }
+                self.file_progress(ctx);
+            }
+            Phase::Recovering(offer) => {
+                let same_session = Arc::ptr_eq(&pending.stamp.session, &self.session.view_identity());
+                if same_session && self.session.file_status().operation.is_some() {
+                    self.files.pending = Some(Pending { stamp: pending.stamp, phase: Phase::Recovering(offer) });
+                } else {
+                    // The host replaced the session, or the recovery ended without an outcome.
+                    self.recovery_not_restored(*offer, &OpenFailed::Unfinished, same_session);
                 }
                 self.file_progress(ctx);
             }
             Phase::Confirm(path) => {
                 if !pending.stamp.matches(self) {
-                    self.notice = Some("The project changed while the confirmation was open. Open the project again.".into());
+                    self.notices.warning("The project changed while the confirmation was open. Open the project again.");
                 } else {
                     let mut choice = None;
                     egui::Modal::new(egui::Id::new("file_dirty_confirmation")).show(ctx, |ui| {
@@ -482,45 +651,26 @@ impl NodeCraftApp {
         true
     }
     pub(super) fn clear_file_input(&self, ctx: &egui::Context) {
-        ctx.input_mut(|i| {
-            i.events.clear();
-            i.raw.events.clear();
-            i.raw.dropped_files.clear();
-            i.keys_down.clear();
-            i.modifiers = egui::Modifiers::NONE;
-            i.smooth_scroll_delta = egui::Vec2::ZERO;
-        });
+        super::topbar::clear_menu_input(ctx);
     }
-    pub(super) fn file_button(&mut self, ui: &egui::Ui, t: &Tokens) {
-        egui::Area::new(egui::Id::new(super::floating_bounds::FILE_CONTROL_ID))
-            .order(egui::Order::Foreground)
-            .fixed_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 4.0))
-            .show(ui.ctx(), |ui| {
-                egui::Frame::NONE.fill(t.panel_fill).inner_margin(t.card_padding * 0.5).show(ui, |ui| {
-                    if ui
-                        .add_enabled(
-                            self.recovery.is_none() && self.files.pending.is_none() && self.model_choice.is_none() && !self.model_frame_owned,
-                            egui::Button::new("File"),
-                        )
-                        .clicked()
-                    {
-                        self.files.menu_open = !self.files.menu_open;
-                        self.files.own_frame(ui.ctx());
-                        ui.ctx().request_repaint();
-                    }
-                });
-            });
+    /// The top bar's File entry (#1123): opens the File menu, or closes it when it was open as
+    /// this frame began (the click that reaches the entry also closed it as a click outside).
+    pub(super) fn toggle_file_menu(&mut self, ctx: &egui::Context) {
+        self.files.menu_open = !self.files.menu_was_open;
+        self.files.own_frame(ctx);
+        ctx.request_repaint();
     }
+    /// The File menu (#1123), drawn before the canvas reads input so it owns the frame's keys
+    /// and pointer while open. Its entries run the same flows the shortcuts and the palette do;
+    /// an entry that can't run now stays listed, disabled, and says why on hover.
     pub(super) fn file_menu(&mut self, ui: &egui::Ui, t: &Tokens) -> bool {
         if self.recovery.is_some() || self.files.pending.is_some() {
+            self.files.menu_was_open = false;
             return self.files.pending.is_some();
         }
-        let was_open = self.files.menu_open;
+        let was_open = super::topbar::begin_file_menu(ui.ctx(), &mut self.files.menu_open, &mut self.files.menu_was_open);
         if was_open {
             self.files.own_frame(ui.ctx());
-        }
-        if was_open && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
-            self.files.menu_open = false;
         }
         let mut action = None;
         let mut recent = None;
@@ -528,37 +678,80 @@ impl NodeCraftApp {
         let mut clear = false;
         let mut import_folder = false;
         let mut save_results = false;
-        let unavailable = self.file_unavailable_message();
-        let owner_busy = self.storage_owner_blocked();
         let mut focus_owner = false;
-        let importing = self.folder_import_busy();
-        egui::Window::new("Project files")
-            .id(egui::Id::new("project_files407"))
-            .open(&mut self.files.menu_open)
-            .collapsible(false)
-            .resizable(false)
-            .default_pos(ui.max_rect().min + Vec2::new(t.card_padding, t.card_padding * 7.0))
-            .default_width(t.card_width)
-            .max_height(ui.max_rect().height() * 0.8)
-            .vscroll(true)
-            .show(ui.ctx(), |ui| {
+        if self.files.menu_open {
+            let unavailable = self.file_unavailable_message();
+            let owner_busy = self.storage_owner_blocked();
+            let focus_enabled = owner_busy && self.session.enabled("file.focus_owner", &json!({})).is_ok();
+            let importing = self.folder_import_busy();
+            let paths = self.files.projects.recent();
+            let shortcut = |id: &str| self.session.registry().specs().find(|spec| spec.id == id).and_then(|spec| spec.shortcut);
+            let entries = [
+                ("file.open", "Open…", shortcut("file.open"), crate::icons::Icon::Open),
+                ("file.save", "Save", shortcut("file.save"), crate::icons::Icon::Save),
+                ("file.save_as", "Save as…", shortcut("file.save_as"), crate::icons::Icon::Save),
+            ];
+            let anchor = self.topbar.file.unwrap_or_else(|| self.topbar_rect());
+            let mut open = true;
+            super::topbar::file_popup(ui.ctx(), anchor, &mut open, t, |ui| {
                 if let Some(message) = &unavailable {
-                    ui.label(egui::RichText::new(message).color(t.danger));
+                    // Left-aligned: the menu's justified layout would stretch the words apart.
+                    ui.vertical(|ui| ui.add(egui::Label::new(egui::RichText::new(message).color(t.danger)).wrap()));
                     if owner_busy {
                         focus_owner = ui
-                            .add_enabled(self.session.enabled("file.focus_owner", &json!({})).is_ok(), egui::Button::new("Focus the other window"))
+                            .add_enabled(focus_enabled, egui::Button::new("Focus the other window"))
                             .on_disabled_hover_text("Switch to the other NodeCraft window with your window switcher. Its File menu can open or save projects.")
                             .clicked();
                     }
                     ui.separator();
                 }
-                for (id, label, icon) in [
-                    ("file.open", "Open project…", crate::icons::Icon::Open),
-                    ("file.save", "Save project", crate::icons::Icon::Save),
-                    ("file.save_as", "Save project as…", crate::icons::Icon::Save),
-                ] {
-                    if ui.add(icon.button(ui, label, t)).clicked() {
-                        action = Some(id);
+                let blocked = unavailable.as_deref();
+                let (first, rest) = entries.split_at(1);
+                for (id, label, key, icon) in first {
+                    if super::topbar::menu_item(ui, *icon, label, *key, blocked, t).clicked() {
+                        action = Some(*id);
+                    }
+                }
+                // Up to 16 projects and Clear: the list scrolls in a short window.
+                let recent_room = (ui.ctx().content_rect().height() - t.navigation_margin * 2.0).max(t.navigation_toolbar_height);
+                let (submenu, _) = egui::containers::menu::SubMenuButton::new("Open recent").ui(ui, |ui| {
+                    ui.set_max_width(t.file_menu_width);
+                    egui::ScrollArea::vertical().max_height(recent_room).show(ui, |ui| {
+                        if paths.is_empty() {
+                            ui.add_enabled(false, egui::Label::new(egui::RichText::new("No recent projects").color(t.text_muted)));
+                        }
+                        for path in &paths {
+                            ui.horizontal(|ui| {
+                                let label = Path::new(path)
+                                    .file_name()
+                                    .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
+                                    .unwrap_or_default();
+                                let response = ui.add_enabled(blocked.is_none(), egui::Button::new(label).truncate());
+                                let response = match blocked {
+                                    Some(why) => response.on_disabled_hover_text(why),
+                                    None => response,
+                                };
+                                if response.clicked() {
+                                    recent = Some(PathBuf::from(path));
+                                }
+                                if ui.small_button("Remove").on_hover_text("Forget this project; the file stays where it is").clicked() {
+                                    remove = Some(path.clone());
+                                }
+                            });
+                        }
+                        ui.separator();
+                        clear = ui
+                            .add_enabled(!paths.is_empty(), egui::Button::new("Clear recent projects"))
+                            .on_hover_text("Forget every project in this list; the files stay where they are")
+                            .on_disabled_hover_text("There are no recent projects to clear")
+                            .clicked();
+                    });
+                });
+                // Named without the arrow egui draws after it.
+                submenu.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, "Open recent"));
+                for (id, label, key, icon) in rest {
+                    if super::topbar::menu_item(ui, *icon, label, *key, blocked, t).clicked() {
+                        action = Some(*id);
                     }
                 }
                 ui.separator();
@@ -574,38 +767,19 @@ impl NodeCraftApp {
                     .on_hover_text("Add a folder's files as one Folder card")
                     .on_disabled_hover_text("A folder is being imported")
                     .clicked();
-                ui.separator();
-                ui.label("Recent projects");
-                let paths = self.files.projects.recent();
-                if paths.is_empty() {
-                    ui.label("No recent projects");
-                }
-                for path in paths {
-                    ui.horizontal(|ui| {
-                        let label = Path::new(&path)
-                            .file_name()
-                            .map(|x| x.to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect::<String>())
-                            .unwrap_or_default();
-                        if ui.button(label).clicked() {
-                            recent = Some(PathBuf::from(&path));
-                        }
-                        if ui.small_button("Remove").clicked() {
-                            remove = Some(path.clone());
-                        }
-                    });
-                }
-                if ui.button("Clear recent projects").clicked() {
-                    clear = true;
-                }
             });
+            if !open {
+                self.files.menu_open = false;
+            }
+        }
         if focus_owner {
-            self.notice = Some(match self.session.dispatch("file.focus_owner", &json!({})) {
-                Ok(_) => "Asking the window that owns project storage to come forward…".into(),
-                Err(error) => error.message,
-            });
+            match self.session.dispatch("file.focus_owner", &json!({})) {
+                Ok(_) => self.notices.info("Asking the window that owns project storage to come forward…"),
+                Err(error) => self.notices.report(error),
+            }
         }
         let owns = was_open || self.files.menu_open || action.is_some() || recent.is_some() || import_folder || save_results;
-        if action.is_some() || recent.is_some() || import_folder || save_results {
+        if action.is_some() || recent.is_some() || import_folder || save_results || focus_owner {
             self.files.menu_open = false;
         }
         if save_results {
@@ -626,7 +800,7 @@ impl NodeCraftApp {
             && !self.file_busy(ui.ctx())
         {
             if self.editors.values().any(EditorState::has_uncommitted) || self.bulk.has_uncommitted() || self.sheet_drafts_pending() {
-                self.notice = Some("Finish or discard the current field edits before opening a project.".into());
+                self.notices.warning("Finish or discard the current field edits before opening a project.");
             } else {
                 self.choose_open(path, Stamp::capture(self));
             }
@@ -641,7 +815,7 @@ impl NodeCraftApp {
                 let projects = self.files.projects.clone();
                 store.update(|s| s.projects = projects);
                 if store.is_read_only() || store.flush().is_err() {
-                    self.notice = Some("Recent projects could not be saved in settings.".into());
+                    self.notices.warning("Recent projects could not be saved in settings.");
                 }
             }
         }
@@ -649,6 +823,6 @@ impl NodeCraftApp {
     }
 }
 
-mod progress;
+pub(in crate::app) mod progress;
 #[cfg(test)]
 mod tests;

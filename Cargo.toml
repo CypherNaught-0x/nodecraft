@@ -6,7 +6,7 @@ members = ["crates/*", "apps/*", "xtask"]
 version = "0.6.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
-rust-version = "1.95"
+rust-version = "1.97.1"
 repository = "https://github.com/CypherNaught-0x/nodecraft"
 
 [workspace.dependencies]
@@ -14,6 +14,7 @@ getrandom = { version = "0.3.4", features = ["wasm_js"] }
 # internal (layers: docs/architecture.md, enforced by `cargo xtask layers`)
 nodecraft-types = { path = "crates/types" }
 nodecraft-media = { path = "crates/media" }
+nodecraft-mesh-preview = { path = "crates/mesh-preview" }
 nodecraft-plugin = { path = "crates/plugin" }
 nodecraft-plugin-store = { path = "crates/plugin-store" }
 nodecraft-comfy = { path = "crates/comfy" }
@@ -64,6 +65,8 @@ serde_path_to_error = "0.1"
 # Catalog data files; parsing only (no writer), and no std-only extras so wasm builds.
 toml = { version = "1", default-features = false, features = ["std", "serde", "parse"] }
 url = "2"
+# Substring search for the broker's credential-echo scan; already in the tree through futures-util.
+memchr = "2.8"
 reqwest = { version = "0.13", default-features = false, features = ["http2"] }
 tokio = { version = "1", default-features = false }
 tempfile = "3"
