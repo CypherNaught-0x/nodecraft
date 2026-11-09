@@ -380,6 +380,8 @@ mod key_wiring_tests;
 mod layer_editor;
 mod layer_fonts;
 mod layout;
+#[cfg(test)]
+mod layout959_tests;
 mod library_browsers;
 #[cfg(not(target_arch = "wasm32"))]
 mod library_import;

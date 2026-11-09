@@ -457,101 +457,109 @@ impl NodeCraftApp {
         let providers_ready = !self.guidance || !self.can_add_nodes() || self.providers_ready();
         let (mut open_keys, mut open_comfy) = (false, false);
         let modal = egui::Modal::new(egui::Id::new("run_confirm")).show(ui.ctx(), |ui| {
-            ui.set_width(t.dialog_width);
+            ui.set_width(crate::floating::question_width(ui.ctx(), &t));
             ui.heading(confirm.kind.title());
-            // Nothing can generate until a provider is set up (#1119): say so, with the way there.
-            if !providers_ready {
-                ui.label(egui::RichText::new(super::empty_canvas::NO_PROVIDER).color(t.stale));
-                ui.horizontal(|ui| {
-                    open_keys = ui.button("Open API keys").clicked();
-                    open_comfy = ui.button("Open ComfyUI").clicked();
-                });
-            }
-            let quote = &confirm.quote;
-            if stale {
-                ui.label("The canvas changed after this price was quoted. Nothing was started.");
-            } else if !quote.allowed {
-                ui.label("This run can't start:");
-                for reason in &quote.reasons {
-                    ui.label(reason);
+            // Keep the action row outside the details' scroll viewport. Explanations may
+            // include eight full-length reasons, provider estimates and recovery guidance.
+            let actions = ui.spacing().interact_size.y + ui.spacing().item_spacing.y;
+            let heading = ui.min_rect().height();
+            let details = (crate::floating::question_height(ui.ctx(), &t) - heading - actions).max(1.0);
+            egui::ScrollArea::vertical().id_salt("run_quote_details").max_height(details).auto_shrink([false, true]).show(ui, |ui| {
+                // Nothing can generate until a provider is set up (#1119): say so, with the way there.
+                if !providers_ready {
+                    ui.label(egui::RichText::new(super::empty_canvas::NO_PROVIDER).color(t.stale));
+                    ui.horizontal(|ui| {
+                        open_keys = ui.button("Open API keys").clicked();
+                        open_comfy = ui.button("Open ComfyUI").clicked();
+                    });
                 }
-                if confirm.estimating.is_some() {
-                    ui.label(
-                        "Asking the provider for a price, which sends it this run's inputs (nothing is charged). The run is checked again when it answers.",
-                    );
-                }
-                if let Some(note) = &confirm.estimate_note {
-                    ui.label(note);
-                }
-            } else {
-                ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
-                if let Some(runs) = &runs {
-                    ui.label(runs);
-                }
-                if quote.waiting > 0 {
-                    ui.label(format!(
-                        "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
-                        quote.waiting,
-                        crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
-                    ));
-                }
-                if busy > 0 {
-                    ui.colored_label(
-                        t.danger,
-                        format!(
-                            "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
-                        ),
-                    );
-                }
-                if quote.reused > 0 {
-                    ui.label(format!("{} reused, free", quote.reused));
-                }
-                if quote.cached_only {
-                    ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
-                }
-                if !quote.complete {
-                    if quote.unpriced_jobs > 0 {
-                        ui.label(format!("{} job(s) are priced only while they run.", quote.unpriced_jobs));
+                let quote = &confirm.quote;
+                if stale {
+                    ui.label("The canvas changed after this price was quoted. Nothing was started.");
+                } else if !quote.allowed {
+                    ui.label("This run can't start:");
+                    for reason in &quote.reasons {
+                        ui.label(reason);
                     }
-                    ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
-                    ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
-                }
-                if confirm.estimating.is_some() {
-                    ui.label("Asking the provider for a price, which sends it this run's inputs (nothing is charged)…");
-                }
-                if quote.quoted > 0 {
-                    ui.label(format!("{} step(s) are priced by their provider's quote.", quote.quoted));
-                }
-                if let Some(note) = &confirm.estimate_note {
-                    ui.label(note);
-                }
-                if quote.alike > 0 {
-                    ui.colored_label(t.stale, ALIKE);
-                }
-                if quote.resumable {
-                    ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
-                }
-                if !quote.listed {
-                    ui.label("This run has more steps than can be reviewed here. Run it from the CLI or select fewer nodes.");
-                }
-                for reason in &quote.reasons {
-                    ui.label(reason);
-                }
-            }
-            if confirm.drafts {
-                ui.label(if confirm.kind.whole() {
-                    "Unsaved edits on cards are not part of this run."
+                    if confirm.estimating.is_some() {
+                        ui.label(
+                            "Asking the provider for a price, which sends it this run's inputs (nothing is charged). The run is checked again when it answers.",
+                        );
+                    }
+                    if let Some(note) = &confirm.estimate_note {
+                        ui.label(note);
+                    }
                 } else {
-                    "Unsaved edits on this card are not part of this run."
-                });
-            }
-            if let Some(error) = &confirm.error {
-                ui.colored_label(t.danger, error);
-                // The host may have taken the run before it failed, so the same price is never
-                // offered again from here; generating again quotes afresh.
-                ui.label("The run may have started. Check its results before generating again.");
-            }
-            ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new(quote.price()).color(t.text).strong());
+                    if let Some(runs) = &runs {
+                        ui.label(runs);
+                    }
+                    if quote.waiting > 0 {
+                        ui.label(format!(
+                            "{} card(s) after a batch wait for this run's results: press {} (Run changed) again once it finishes.",
+                            quote.waiting,
+                            crate::shortcut::format_shortcut(ui.ctx(), "Command+Enter")
+                        ));
+                    }
+                    if busy > 0 {
+                        ui.colored_label(
+                            t.danger,
+                            format!(
+                                "{busy} card(s) in this run are still running from an earlier run. Wait for them to finish, then quote again, so they aren't generated and charged twice."
+                            ),
+                        );
+                    }
+                    if quote.reused > 0 {
+                        ui.label(format!("{} reused, free", quote.reused));
+                    }
+                    if quote.cached_only {
+                        ui.label("Uses cached results where needed; results already active stay in place. No generation runs.");
+                    }
+                    if !quote.complete {
+                        if quote.unpriced_jobs > 0 {
+                            ui.label(format!("{} job(s) are priced only while they run.", quote.unpriced_jobs));
+                        }
+                        ui.label("Part of the price is unknown or estimated. The run stops at the amount shown above.");
+                        ui.checkbox(&mut confirm.partial, "Accept the unknown part of the price");
+                    }
+                    if confirm.estimating.is_some() {
+                        ui.label("Asking the provider for a price, which sends it this run's inputs (nothing is charged)…");
+                    }
+                    if quote.quoted > 0 {
+                        ui.label(format!("{} step(s) are priced by their provider's quote.", quote.quoted));
+                    }
+                    if let Some(note) = &confirm.estimate_note {
+                        ui.label(note);
+                    }
+                    if quote.alike > 0 {
+                        ui.colored_label(t.stale, ALIKE);
+                    }
+                    if quote.resumable {
+                        ui.label("A batch is priced for every item. Items it finished before aren't charged again if its inputs come out the same.");
+                    }
+                    if !quote.listed {
+                        ui.label("This run has more steps than can be reviewed here. Run it from the CLI or select fewer nodes.");
+                    }
+                    for reason in &quote.reasons {
+                        ui.label(reason);
+                    }
+                }
+                if confirm.drafts {
+                    ui.label(if confirm.kind.whole() {
+                        "Unsaved edits on cards are not part of this run."
+                    } else {
+                        "Unsaved edits on this card are not part of this run."
+                    });
+                }
+                if let Some(error) = &confirm.error {
+                    ui.colored_label(t.danger, error);
+                    // The host may have taken the run before it failed, so the same price is never
+                    // offered again from here; generating again quotes afresh.
+                    ui.label("The run may have started. Check its results before generating again.");
+                }
+            });
+            let quote = &confirm.quote;
+            ui.horizontal_wrapped(|ui| {
                 let failed = confirm.error.is_some();
                 if stale && !failed {
                     requote = ui.button("Quote again").clicked();

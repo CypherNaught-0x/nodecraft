@@ -953,6 +953,10 @@ separates existing tests from new probes and unverified states. It also reconcil
 checkboxes against the issue states at the reviewed snapshot. #959 remains open until its fixes,
 per-surface acceptance checks and before/after evidence are complete.
 
+The [layout repair record](reviews/2026-11-09-ui-ux-layout-repairs.md) describes the bounded Mask
+editor, scrollable provider settings, constrained Layer Editor title and scrollable run-quote
+details, with pointer/key regressions in both themes and at 200% interface size.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**

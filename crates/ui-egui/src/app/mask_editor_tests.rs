@@ -302,3 +302,44 @@ fn a_new_image_of_the_same_shape_offers_to_keep_the_strokes() {
     assert_eq!(kept.over.map(|o| (o.width, o.height)), Some((32, 24)));
     assert!(h.query_by_label("Keep strokes").is_none());
 }
+
+#[test]
+fn layout959_mask_scrolls_inside_small_windows_and_resizing_keeps_image_coordinates() {
+    use super::layout959_tests as layout;
+    for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        let mut h = opened();
+        stroke(&mut h, Vec2::new(0.2, 0.5), Vec2::new(0.8, 0.5));
+        let original = strokes(&h);
+        for (size, percent) in layout::CASES {
+            layout::viewport(&mut h, theme, size, percent);
+            layout::modal(&h, "mask_editor");
+            assert_eq!(strokes(&h), original, "resizing never rewrites image-space strokes");
+            h.get_by_label("Brush").scroll_to_me();
+            h.run_steps(4);
+            let modal = layout::modal(&h, "mask_editor");
+            assert!(modal.contains_rect(h.get_by_label("Brush").rect()));
+            // A wheel scroll reaches the footer without moving the underlying canvas.
+            let view = h.state().view;
+            layout::wheel(&mut h, modal.center(), -2000.0);
+            assert_eq!(h.state().view, view);
+            let close = h.get_by_label("Close").rect();
+            assert!(modal.contains_rect(close), "Close {close:?} is reachable at {size:?}/{percent}%");
+            layout::evidence(&mut h, "mask-footer", theme, size, percent);
+        }
+        h.get_by_label("Mask painting area").scroll_to_me();
+        h.run_steps(6);
+        let paint = h.get_by_label("Mask painting area").rect();
+        assert!(h.ctx.content_rect().contains_rect(paint));
+        stroke(&mut h, Vec2::new(0.2, 0.5), Vec2::new(0.8, 0.5));
+        let painted = strokes(&h);
+        assert_eq!(painted.strokes.len(), 2);
+        let last = painted.strokes.last().unwrap();
+        assert!((last.points.first().unwrap()[0] - 0.2).abs() < 0.05);
+        assert!(last.points.last().unwrap()[0] > 0.7);
+        h.get_by_label("Close").scroll_to_me();
+        h.run_steps(6);
+        h.get_by_label("Close").click();
+        h.run_steps(3);
+        assert!(h.state().mask_editor.is_none());
+    }
+}

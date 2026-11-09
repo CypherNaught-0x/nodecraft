@@ -761,3 +761,39 @@ fn the_reuse_switch_turns_caching_on_and_a_reused_result_is_not_paid_for() {
     assert!(!nodecraft_engine::cache::enabled(node(h.state()), h.state().session.kinds()), "one undo step turns it off");
     assert!(!shown_on(&h));
 }
+
+#[test]
+fn layout959_full_length_blocking_reasons_scroll_but_cancel_stays_visible_and_enter_never_runs() {
+    use super::layout959_tests as layout;
+    for theme in [ThemeKind::Dark, ThemeKind::Light] {
+        for (size, percent) in layout::CASES {
+            let (mut h, runs) = scene("mock-square");
+            press(&mut h, Role::Button, "Generate");
+            let mut quote = h.state_mut().session.dispatch("run.quote", &json!({"canvas":C,"mode":"selected","nodes":[N]})).unwrap();
+            quote["allowed"] = json!(false);
+            quote["blocked"] = json!(
+                (1..=8).map(|i| format!("Card {i}: {}", "A required input must be connected before this workflow can run. ".repeat(5))).collect::<Vec<_>>()
+            );
+            h.state_mut().run_confirm.as_mut().unwrap().set_quote(&quote);
+            layout::viewport(&mut h, theme, size, percent);
+            let modal = layout::modal(&h, "run_confirm");
+            let cancel = h.get_by_role_and_label(Role::Button, "Cancel").rect();
+            assert!(modal.contains_rect(cancel));
+            let before = h.get_by_label_contains("Card 8:").rect();
+            h.key_press(egui::Key::Enter);
+            h.run_steps(3);
+            assert!(h.state().run_confirm.is_some());
+            assert!(runs.lock().unwrap().is_empty(), "Enter cannot run a quote");
+            layout::wheel(&mut h, modal.center(), -2000.0);
+            let after = h.get_by_label_contains("Card 8:").rect();
+            assert!(after.min.y < before.min.y - 1.0, "the admitted reasons scroll");
+            assert!(modal.contains_rect(after), "last reason {after:?} becomes readable in {modal:?}");
+            assert_eq!(h.get_by_role_and_label(Role::Button, "Cancel").rect(), cancel, "scrolling never moves the action row");
+            layout::evidence(&mut h, "blocked-quote-last-reason", theme, size, percent);
+            h.get_by_role_and_label(Role::Button, "Cancel").click();
+            h.run_steps(3);
+            assert!(h.state().run_confirm.is_none());
+            assert!(runs.lock().unwrap().is_empty());
+        }
+    }
+}
