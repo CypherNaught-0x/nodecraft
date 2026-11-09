@@ -947,6 +947,12 @@ The dialogs migrated in #1116 consume their Escape (each test checks the canvas 
 survives it); the remaining top-bar panels still close only by their button, since several canvas
 handlers read Escape without consuming it.
 
+The [9 November 2026 audit](reviews/2026-11-09-ui-ux-audit.md) extends this index to the native
+Agent sidebar and every direct modal, records new narrow-window and AccessKit findings, and
+separates existing tests from new probes and unverified states. It also reconciles #1125's stale
+checkboxes against the issue states at the reviewed snapshot. #959 remains open until its fixes,
+per-surface acceptance checks and before/after evidence are complete.
+
 ## Saving results
 
 Generated media previews and their card menus offer **Save as…** and **Save to folder…**
