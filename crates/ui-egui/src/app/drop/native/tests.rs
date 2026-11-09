@@ -652,6 +652,7 @@ fn visible_pending_cancel_unavailable_and_success_are_real_ui_states() {
     h.step();
     entered.recv_timeout(Duration::from_secs(10)).unwrap();
     h.run();
+    crate::app::panel_check::menu_evidence(&mut h, "pending-drop-progress");
     h.get_by_role_and_label(egui::accesskit::Role::Button, "Cancel file reading").click();
     h.run();
     assert!(!h.state().drop_pending());

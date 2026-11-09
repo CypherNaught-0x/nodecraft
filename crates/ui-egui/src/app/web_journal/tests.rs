@@ -685,8 +685,8 @@ fn render_browser_recovery_budget_evidence() {
     app.decide_web_recovery(Choice::Recover);
     app.web_recovery.as_mut().unwrap().budget = 0;
     frame_at(&mut app, &ctx, INVENTORY_SECS);
-    let notice = app.notice().unwrap();
-    assert!(notice.contains("Save it to a file") && notice.contains("Removed 1 old recovery copy"));
+    assert!(app.notices.iter().any(|notice| notice.text.contains("Save it to a file")), "recovery guidance remains available");
+    assert!(app.notices.iter().any(|notice| notice.text.contains("Removed 1 old recovery copy")), "pruning has its own notice");
     let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut NodeCraftApp| {
             app.web_recovery_frame(ui.ctx());

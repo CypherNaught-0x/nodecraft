@@ -91,6 +91,7 @@ fn expand_shows_full_unicode_multiline_text_and_owns_canvas_shortcuts() {
     assert!(h.query_by_label(&text).is_none(), "the full large value isn't laid out in the card");
     h.get_by_label("Expand Output out").click();
     h.run();
+    super::panel_check::menu_evidence(&mut h, "full-text-preview");
     h.get_by_label(&text);
     let before = h.state().session.document().clone();
     h.key_press(egui::Key::Delete);
