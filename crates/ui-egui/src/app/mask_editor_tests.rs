@@ -112,8 +112,15 @@ fn create_edit_wires_a_generation_card_and_closes() {
     stroke(&mut h, Vec2::new(0.3, 0.3), Vec2::new(0.6, 0.6));
     h.state_mut().mask_editor.as_mut().unwrap().prompt = "a red door".into();
     h.run();
+    // The footer belongs to the bounded editor's scroll viewport; clicking a clipped
+    // accessibility rect would hit the modal's backdrop and merely close the editor.
+    h.get_by_label("Create edit").scroll_to_me();
+    h.run_steps(6);
+    let modal = super::layout959_tests::modal(&h, "mask_editor");
+    let create = h.get_by_label("Create edit").rect();
+    assert!(modal.contains_rect(create));
     h.get_by_label("Create edit").click();
-    h.run();
+    h.run_steps(3);
     assert!(h.state().mask_editor.is_none(), "{:?}", h.state().notice());
     let edit = of_kind(&h, nodecraft_nodes::generation::KIND).expect("an edit card");
     assert_eq!(edit.params.get(nodecraft_nodes::generation::PROMPT), Some(&Value::Text("a red door".into())));

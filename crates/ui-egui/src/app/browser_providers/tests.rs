@@ -38,6 +38,20 @@ fn harness(app: NodeCraftApp) -> Harness<'static, NodeCraftApp> {
     Harness::builder().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(|ui, app: &mut NodeCraftApp| app.show(ui), app)
 }
 
+/// Save is in the panel's scrollable body. A global accessibility query can find a
+/// clipped control too; reach it with the pointer before clicking rather than hitting
+/// the empty canvas at the control's unscrolled geometry.
+fn save_servers(h: &mut Harness<'static, NodeCraftApp>) {
+    h.run_steps(6);
+    let panel = egui::AreaState::load(&h.ctx, egui::Id::new("nodecraft.browser_providers")).unwrap().rect();
+    crate::app::layout959_tests::wheel(h, panel.center(), -2000.0);
+    let save = h.get_by_label("Save servers").rect();
+    assert!(panel.contains_rect(save), "Save {save:?} leaves the panel {panel:?}");
+    assert!(h.ctx.content_rect().contains_rect(save));
+    h.get_by_label("Save servers").click();
+    h.run_steps(6);
+}
+
 #[test]
 fn server_panel_saves_through_commands_and_a_reload_reads_the_same_origin() {
     let origin = Arc::new(Origin::default());
@@ -52,8 +66,7 @@ fn server_panel_saves_through_commands_and_a_reload_reads_the_same_origin() {
     providers.comfyui = "http://127.0.0.1:8188".into();
     providers.litellm = "https://proxy.example".into();
     h.run();
-    h.get_by_label("Save servers").click();
-    h.run();
+    save_servers(&mut h);
     assert!(h.query_by_label("Provider servers saved for this site.").is_some());
     let settings = h.state().provider_settings();
     assert_eq!(nodecraft_engine::browser_providers::comfyui_url(&settings).as_deref(), Some("http://127.0.0.1:8188"));
@@ -70,8 +83,7 @@ fn bad_server_input_preserves_saved_settings_and_never_enters_the_project() {
     h.run();
     h.state_mut().browser_providers.as_mut().unwrap().comfyui = "https://user:secret721@server.example".into();
     h.run();
-    h.get_by_label("Save servers").click();
-    h.run();
+    save_servers(&mut h);
     assert_eq!(h.state().provider_settings(), ProviderSettings::default());
     assert_eq!(h.state().session.document(), &document);
     assert!(!h.state().browser_providers.as_ref().unwrap().notice.as_ref().unwrap().contains("secret721"));
@@ -91,16 +103,14 @@ fn custom_endpoint_fields_come_from_the_provider_list_and_save_through_the_comma
     // A remote plain-HTTP address is refused, without echoing it, and nothing is saved.
     h.state_mut().browser_providers.as_mut().unwrap().base_urls.insert("openai", "http://proxy.example/v1".into());
     h.run();
-    h.get_by_label("Save servers").click();
-    h.run();
+    save_servers(&mut h);
     assert_eq!(h.state().provider_settings(), ProviderSettings::default());
     let notice = h.state().browser_providers.as_ref().unwrap().notice.clone().unwrap();
     assert!(notice.contains("HTTPS") && !notice.contains("proxy.example"), "{notice}");
     // A local proxy is saved, normalised, and read back after a reload.
     h.state_mut().browser_providers.as_mut().unwrap().base_urls.insert("openai", "http://127.0.0.1:4000/v1/".into());
     h.run();
-    h.get_by_label("Save servers").click();
-    h.run();
+    save_servers(&mut h);
     assert!(h.query_by_label("Provider servers saved for this site.").is_some());
     let settings = h.state().provider_settings();
     assert_eq!(settings.base_urls.get("openai").and_then(nodecraft_engine::custom_endpoints::BaseUrlEntry::text), Some("http://127.0.0.1:4000/v1"));
@@ -123,8 +133,7 @@ fn render_browser_provider_settings_evidence() {
     providers.comfyui = "http://127.0.0.1:8188".into();
     providers.litellm = "https://proxy.example".into();
     h.run();
-    h.get_by_label("Save servers").click();
-    h.run();
+    save_servers(&mut h);
     h.render().unwrap().save(folder.join("after-provider-servers.png")).unwrap();
 }
 
