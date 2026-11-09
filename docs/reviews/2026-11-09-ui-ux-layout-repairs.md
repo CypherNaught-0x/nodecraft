@@ -28,8 +28,8 @@ applies interface scale before resizing and checks the resulting size in points.
 The Mask test checks stored strokes across resize, paints again in image coordinates after
 scrolling, and closes through the reached footer. The provider test scrolls, saves and reloads
 settings through the origin store. The Layer Editor test checks the full accessible title and
-notice, keeps every header action in view, and verifies that view changes do not edit the
-project. The blocked-quote test scrolls to its final reason, checks that Cancel does not move,
+notice, keeps every header action in view, and verifies that view changes preserve editable node parameters, title and position (the compositor may still
+record derived history while the UI settles). The blocked-quote test scrolls to its final reason, checks that Cancel does not move,
 presses Enter without submitting a run, and then cancels with a pointer click.
 
 Optional public-safe repair screenshots are emitted by these tests when

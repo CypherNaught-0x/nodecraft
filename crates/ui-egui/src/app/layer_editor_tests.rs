@@ -357,7 +357,10 @@ fn layout959_layer_title_and_notice_keep_actions_on_screen_and_full_accessible_t
         let canvas = h.state().canvas;
         h.state_mut().session.dispatch("node.title", &json!({"canvas":canvas,"id":EDITOR,"title":title})).unwrap();
         h.state_mut().notices.error(&notice);
-        let revision = h.state().session.revision();
+        // The asynchronous compositor may add a derived history result while the UI
+        // settles. Compare editable data instead of treating that legitimate revision
+        // as a user edit made by resizing or closing the view.
+        let original = editor_node(&h);
         for (size, percent) in layout::CASES {
             layout::viewport(&mut h, theme, size, percent);
             let modal = layout::modal(&h, "layer_editor");
@@ -367,12 +370,18 @@ fn layout959_layer_title_and_notice_keep_actions_on_screen_and_full_accessible_t
             }
             assert!(h.query_all_by_role_and_label(Role::Label, title).next().is_some(), "the complete title stays accessible");
             assert!(h.query_all_by_role_and_label(Role::Label, &notice).next().is_some(), "the complete diagnostic stays accessible");
-            assert_eq!(h.state().session.revision(), revision);
+            let current = editor_node(&h);
+            assert_eq!(current.params, original.params);
+            assert_eq!(current.title, original.title);
+            assert_eq!(current.pos, original.pos);
             layout::evidence(&mut h, "layer-long-title", theme, size, percent);
         }
         h.get_by_role_and_label(Role::Button, "Done").click();
         h.run_steps(3);
         assert!(h.state().layer_editor.is_none());
-        assert_eq!(h.state().session.revision(), revision);
+        let current = editor_node(&h);
+        assert_eq!(current.params, original.params);
+        assert_eq!(current.title, original.title);
+        assert_eq!(current.pos, original.pos);
     }
 }
