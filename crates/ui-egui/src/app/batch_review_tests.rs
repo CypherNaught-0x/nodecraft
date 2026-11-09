@@ -361,3 +361,52 @@ fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
         assert_eq!(h.state().session.document(), &before_document);
     }
 }
+
+/// Real desktop/browser hosts enable guidance: its persistent button must yield to a tool
+/// moved over the bottom-left corner, while the uncovered part remains usable.
+#[test]
+fn review959_add_node_guidance_stays_below_floating_tools() {
+    use egui::accesskit::Role;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let pairs = [(0, 0), (0, 2), (0, 1), (1, 0), (1, 1), (1, 2)];
+        let (session, canvas) = project_with_times(&pairs, Some(5), "at dawn\nat night\nat noon");
+        let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+        app.theme = theme;
+        app.guidance = true;
+        app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
+        app.selection.only(CARD);
+        let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(160).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                crate::theme::apply(ui.ctx(), theme);
+                app.show(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        let add = h.get_by_role_and_label(Role::Button, "+ Add node").rect();
+        let panel_id = egui::Id::new(super::batch_review::BATCH_REVIEW_ID);
+        let tool = crate::floating::shown(&h.ctx).into_iter().find(|(id, _)| *id == panel_id).unwrap().1;
+        let overlap = add.intersect(tool.shrink(8.0));
+        assert!(overlap.is_positive(), "fixture must overlap the actual guidance button and tool body: {add:?}, {tool:?}");
+        let before_document = h.state().session.document().clone();
+        let before_view = h.state().view;
+        super::panel_check::menu_evidence(&mut h, &format!("guidance-tool-overlap-{theme:?}"));
+        h.hover_at(overlap.center());
+        h.run_steps(3);
+        press_at(&mut h, overlap.center(), egui::PointerButton::Primary);
+        assert!(h.state().palette.is_none(), "pressing a floating tool must not activate the covered Add node button");
+        assert_eq!(h.ctx.layer_id_at(overlap.center()), Some(crate::floating::layer(panel_id)));
+        assert_eq!(h.state().session.document(), &before_document);
+        assert_eq!(h.state().view, before_view);
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 0);
+
+        let exposed = Pos2::new((add.left() + tool.left()) * 0.5, add.center().y);
+        assert!(add.contains(exposed) && !tool.contains(exposed), "the fixture also leaves part of Add node uncovered");
+        h.hover_at(exposed);
+        h.run_steps(3);
+        press_at(&mut h, exposed, egui::PointerButton::Primary);
+        assert!(h.state().palette.is_some(), "the uncovered guidance button still opens quick-add");
+        assert_eq!(h.state().session.document(), &before_document);
+        assert_eq!(h.state().view, before_view);
+    }
+}

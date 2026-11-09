@@ -94,7 +94,8 @@ impl NodeCraftApp {
     fn add_node_button(&mut self, ctx: &egui::Context, viewport: Rect, blocked: bool, t: &Tokens) {
         let mut add = false;
         egui::Area::new(egui::Id::new("nodecraft.add_node"))
-            .order(egui::Order::Foreground)
+            // Canvas guidance follows navigation's layer rule: tools own their covered area.
+            .order(egui::Order::Background)
             .pivot(egui::Align2::LEFT_BOTTOM)
             .fixed_pos(viewport.left_bottom() + Vec2::new(t.card_padding, -t.card_padding))
             .constrain_to(viewport)
