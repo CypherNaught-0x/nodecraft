@@ -187,13 +187,18 @@ impl Resolving {
 
 impl NodeCraftApp {
     /// Opens the review on the list of groups and the reconciled charges still open.
-    pub(super) fn open_ownership_review(&mut self) {
+    /// Whether it opened: false when a listing failed (the notice says why).
+    pub(super) fn open_ownership_review(&mut self) -> bool {
         match self.ownership_listings() {
             Ok((groups, unsettled, unresolved)) => {
                 self.notices.clear();
                 self.ownership = Some(OwnershipReview { groups, unsettled, unresolved, group: None, resolving: None });
+                true
             }
-            Err(error) => self.notices.report(error),
+            Err(error) => {
+                self.notices.report(error);
+                false
+            }
         }
     }
 

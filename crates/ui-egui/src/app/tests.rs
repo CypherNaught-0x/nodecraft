@@ -394,7 +394,8 @@ fn invalid_unfocused_draft_survives_unrelated_undo_and_redo() {
         spec("enabled", ParamControl::Toggle, Value::Bool(false)),
     ]);
     enter_text(&mut h, "count", "9");
-    click(&mut h, Pos2::new(50.0, 50.0));
+    // Empty canvas below the top bar (#1123 put File at the row's left end).
+    click(&mut h, Pos2::new(50.0, 300.0));
     h.get_by_role_and_label(Role::CheckBox, "enabled").click();
     h.run();
     h.state_mut().session.dispatch("edit.undo", &serde_json::Value::Null).unwrap();
@@ -1702,7 +1703,8 @@ fn palette_keys_and_wheel_never_reach_the_canvas() {
     h.run();
     // (Double-clicking empty canvas clears the selection, so select while the palette is open.)
     h.state_mut().selection.only(id);
-    let corner = h.state().palette.as_ref().map(|p| p.screen).unwrap();
+    // The popup may open upward from where it was double-clicked (#1121): use its real corner.
+    let corner = egui::AreaState::load(&h.ctx, egui::Id::new("quick_add_palette")).unwrap().rect().min;
     // A click on the popup's padding takes focus off the query, but the palette stays open...
     click(&mut h, corner + Vec2::splat(3.0));
     assert!(h.state().palette.is_some());

@@ -317,6 +317,10 @@ mod tests {
             ("kling", NO_CHECK),
             // bedrock-runtime has no OpenAI model list, and its other routes need a Region (#46).
             ("bedrock", NO_CHECK),
+            // AWS access keys only sign requests (#1163); nothing free checks them.
+            ("bedrock:aws-access-key-id", NO_CHECK),
+            ("bedrock:aws-secret-access-key", NO_CHECK),
+            ("bedrock:aws-session-token", NO_CHECK),
             ("google-cloud", NO_CHECK),
             ("comfyui:gpu-box:8188", NO_CHECK),
         ] {

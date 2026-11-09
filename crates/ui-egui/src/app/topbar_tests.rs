@@ -15,7 +15,9 @@ fn search_label() -> &'static str {
 pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
     if (matches!(
         label,
-        "API keys"
+        "File"
+            | "Tag filter"
+            | "API keys"
             | "Techniques"
             | "Elements"
             | "ComfyUI"
@@ -46,6 +48,8 @@ pub(super) fn reveal(h: &mut Harness<'static, NodeCraftApp>, label: &str) {
 fn expected() -> Vec<(topbar::Entry, &'static str)> {
     use topbar::Entry::*;
     vec![
+        (File, "File"),
+        (Tags, "Tag filter"),
         (Sheets, "Sheets"),
         (Techniques, "Techniques"),
         (Elements, "Elements"),

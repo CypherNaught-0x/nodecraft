@@ -443,6 +443,7 @@ mod timeline_editor;
 mod topbar;
 #[cfg(test)]
 mod topbar_tests;
+mod ui_scale;
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod updates;
 #[cfg(any(test, target_arch = "wasm32"))]
@@ -483,6 +484,10 @@ pub struct NodeCraftApp {
     navigation_mailbox: Rc<RefCell<Option<serde_json::Value>>>,
     /// What `history.copy` last put on the clipboard, until the frame hands it to egui (#831).
     copied: Rc<RefCell<Option<nodecraft_engine::copy_cmds::Clip>>>,
+    /// The interface size (#1107), shared with the session's `view.ui_scale.*` commands.
+    ui_scale: ui_scale::UiScale,
+    /// The size last applied to the window; `None` until the first frame applies one.
+    ui_scale_applied: Option<nodecraft_engine::settings::InterfaceSize>,
     #[cfg(not(target_arch = "wasm32"))]
     store: Option<nodecraft_engine::settings::SettingsStore>,
     #[cfg(not(target_arch = "wasm32"))]
@@ -712,6 +717,9 @@ impl NodeCraftApp {
         #[cfg(target_arch = "wasm32")]
         let (mut app, accounts) = Self::browser()?;
         app.apply_settings(ctx, &NodeCraftSettings::default());
+        // The browser keeps the interface size for this origin (#1107).
+        #[cfg(target_arch = "wasm32")]
+        app.apply_interface_size(Self::browser_interface_size());
         // No settings file remembers the accounts in the browser: list the ones with a stored key.
         #[cfg(target_arch = "wasm32")]
         for account in &accounts {
@@ -925,6 +933,7 @@ impl NodeCraftApp {
             Theme::Light => ThemeKind::Light,
         };
         self.canvas_prefs = settings.canvas.clone();
+        self.apply_interface_size(settings.appearance.interface_size);
         self.key_accounts = settings.keys.clone();
         self.set_budget_caps(settings.budgets.clone());
         self.set_media_tools(settings.media.tools());
@@ -1177,6 +1186,8 @@ impl NodeCraftApp {
             return Err(Error::new(ErrorKind::NotFound, "canvas does not exist"));
         }
         metrics::install_clock(&mut session);
+        let ui_scale = ui_scale::UiScale::default();
+        nodecraft_engine::ui_scale_cmds::install(&mut session, ui_scale.clone())?;
         let navigation_mailbox = Rc::new(RefCell::new(None));
         let mailbox = Rc::clone(&navigation_mailbox);
         session.register_host_service(nodecraft_engine::navigation_cmds::SERVICE, move |request| {
@@ -1241,6 +1252,8 @@ impl NodeCraftApp {
             comments_mailbox,
             navigation_mailbox,
             copied,
+            ui_scale,
+            ui_scale_applied: None,
             #[cfg(not(target_arch = "wasm32"))]
             store: None,
             #[cfg(not(target_arch = "wasm32"))]
@@ -1415,6 +1428,8 @@ impl NodeCraftApp {
 
     fn show_frame(&mut self, ui: &mut egui::Ui) {
         self.keep_canvas();
+        // Before anything reads the keyboard: Ctrl+Alt+= must not also zoom the canvas.
+        self.ui_scale_frame(ui.ctx());
         #[cfg(any(test, target_arch = "wasm32"))]
         self.browser_paste_frame(ui.ctx());
         // Dismissing or choosing from a palette must not replay another key from the same
@@ -1496,10 +1511,9 @@ impl NodeCraftApp {
         #[cfg(not(target_arch = "wasm32"))]
         let file_menu_owns_input = self.file_menu(ui, t);
         #[cfg(target_arch = "wasm32")]
-        let file_menu_owns_input = false;
-        #[cfg(not(target_arch = "wasm32"))]
+        let file_menu_owns_input = self.web_file_menu(ui, t);
         if file_menu_owns_input {
-            self.clear_file_input(ui.ctx());
+            topbar::clear_menu_input(ui.ctx());
         }
         if !self.centred {
             let home = self.home();
@@ -1827,7 +1841,7 @@ impl NodeCraftApp {
         {
             self.marquee = Some(Marquee { start: self.view.to_world(viewport.min, origin), base: self.selection.clone(), cancelled: false });
         }
-        let home = if ui.input(|i| i.modifiers.command && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
+        let home = if ui.input(|i| i.modifiers.command && !i.modifiers.alt && i.key_pressed(egui::Key::Num0)) { self.home() } else { Pos2::ZERO };
         // Menus draw later in the frame. Leave their wheel input untouched and keep their world
         // insertion point fixed, including when the pointer is outside or a zoom modifier is held.
         let scroll_navigation =
@@ -2834,16 +2848,38 @@ impl NodeCraftApp {
             match open.show(ui.ctx(), &entries, t) {
                 palette::Outcome::Open => self.palette = Some(open),
                 palette::Outcome::Closed => {}
-                palette::Outcome::Chosen(palette::Target::Kind(kind)) => self.create_node(&kind, open.world),
+                // Recent remembers a choice only once it has run (#1121).
+                palette::Outcome::Chosen(palette::Target::Kind(kind)) => {
+                    let revision = self.session.revision();
+                    self.create_node(&kind, open.world);
+                    if self.session.revision() != revision {
+                        palette::remember(ui.ctx(), &palette::Target::Kind(kind));
+                    }
+                }
                 palette::Outcome::Chosen(palette::Target::Command("perf.report")) => match self.session.dispatch("perf.report", &json!({})) {
                     // The report is for reading elsewhere: put it on the clipboard.
                     Ok(report) => {
                         ui.ctx().copy_text(serde_json::to_string_pretty(&report).unwrap_or_default());
                         self.notices.success("Performance report copied to the clipboard.");
+                        palette::remember(ui.ctx(), &palette::Target::Command("perf.report"));
                     }
                     Err(error) => self.notices.report(error),
                 },
-                palette::Outcome::Chosen(palette::Target::Command(id)) => self.run_palette_command(ui.ctx(), id),
+                palette::Outcome::Chosen(palette::Target::Command(id)) => {
+                    // A file command runs once its file is picked; choosing it opens the picker.
+                    let ran = if matches!(id, "file.open" | "file.save" | "file.save_as") {
+                        #[cfg(not(target_arch = "wasm32"))]
+                        let started = self.begin_file(id, ui.ctx());
+                        #[cfg(target_arch = "wasm32")]
+                        let started = self.web_file(id, ui.ctx());
+                        started
+                    } else {
+                        self.dispatch_live_palette_command(ui.ctx(), id)
+                    };
+                    if ran {
+                        palette::remember(ui.ctx(), &palette::Target::Command(id));
+                    }
+                }
             }
         }
         if let Some(mut open) = self.turn_into.take() {
@@ -2863,10 +2899,6 @@ impl NodeCraftApp {
         self.bulk.finish_frame(ui.ctx());
         self.text_focused = canvas::text_input_focused(ui.ctx());
         self.last_text_focus = self.text_focused.then(|| ui.ctx().memory(|m| m.focused())).flatten();
-        #[cfg(not(target_arch = "wasm32"))]
-        self.file_button(ui, t);
-        #[cfg(target_arch = "wasm32")]
-        self.web_file_button(ui, t);
         self.publish_floating_bounds(ui.ctx());
         self.keys_panel(ui.ctx(), t);
         self.plugin_panel.show(ui.ctx(), &mut self.session, t);
@@ -3549,33 +3581,35 @@ impl NodeCraftApp {
         }
     }
 
-    /// What the palette offers: every node kind, then every command that runs without
-    /// parameters right now, plus the active canvas staleness query.
+    /// What the palette offers, in listing order (#1121): every node kind, every command that
+    /// runs without parameters (or with the active canvas), and those that can't run now with
+    /// the reason their `enabled` gives.
     fn palette_entries(&self) -> Vec<palette::Entry> {
-        let mut kinds: Vec<palette::Entry> = self
-            .session
-            .kinds()
-            .descriptors()
-            .map(|d| palette::Entry { target: palette::Target::Kind(d.id.clone()), label: d.label.clone(), shortcut: d.quick_add.clone() })
-            .collect();
-        kinds.sort_by(|a, b| a.label.cmp(&b.label));
-        let commands = self
-            .session
-            .registry()
-            .specs()
-            .filter(|spec| {
-                // Live view commands are admitted separately with fresh shell context.
-                if Self::is_navigation_command(spec.id) {
-                    return false;
+        let mut entries: Vec<palette::Entry> = self.session.kinds().descriptors().map(palette::Entry::kind).collect();
+        for spec in self.session.registry().specs() {
+            // Live view commands are admitted separately with fresh shell context.
+            if Self::is_navigation_command(spec.id) {
+                continue;
+            }
+            // They pick their file when chosen.
+            if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
+                if self.session.file_status().available {
+                    entries.push(palette::Entry::command(spec, None));
                 }
-                // They pick their file when chosen.
-                if matches!(spec.id, "file.open" | "file.save" | "file.save_as") {
-                    return self.session.file_status().available;
-                }
-                self.session.enabled(spec.id, &self.palette_command_params(spec.id)).is_ok()
-            })
-            .map(|spec| palette::Entry { target: palette::Target::Command(spec.id), label: spec.label.to_owned(), shortcut: spec.shortcut.map(str::to_owned) });
-        kinds.into_iter().chain(commands).collect()
+                continue;
+            }
+            let params = self.palette_command_params(spec.id);
+            if !palette::takes(spec, &params) {
+                continue;
+            }
+            match self.session.enabled(spec.id, &params) {
+                Ok(()) => entries.push(palette::Entry::command(spec, None)),
+                Err(error) if palette::explains(&error) => entries.push(palette::Entry::command(spec, Some(&error))),
+                Err(_) => {}
+            }
+        }
+        palette::sort(&mut entries);
+        entries
     }
 
     /// Paint the noodle being dragged and, once the pointer is released, choose the command it
@@ -3976,6 +4010,8 @@ mod video_tests;
 
 #[cfg(test)]
 mod marquee_tests;
+#[cfg(test)]
+mod palette1121_tests;
 #[cfg(test)]
 mod palette_scroll_tests;
 #[cfg(test)]

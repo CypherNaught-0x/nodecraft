@@ -101,6 +101,8 @@ pub struct Tokens {
     pub search_width: f32,
     pub search_height: f32,
     pub search_button_width: f32,
+    /// The File menu's width (#1123): its entries, their shortcuts and a storage problem's text.
+    pub file_menu_width: f32,
     pub comments_width: f32,
     pub comments_height: f32,
     /// The shader editor window (#90): its width, its source area's height, a parameter name field's width.
@@ -326,6 +328,7 @@ pub const DARK: Tokens = Tokens {
     search_width: 420.0,
     search_height: 128.0,
     search_button_width: 130.0,
+    file_menu_width: 260.0,
     comments_width: 340.0,
     comments_height: 500.0,
     shader_editor_width: 560.0,

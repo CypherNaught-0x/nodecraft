@@ -41,6 +41,9 @@ the same change that adds it (CONTRIBUTING.md, "Clean-room").
 | `assets/icons/tabler/alert-triangle.svg` | Tabler outline alert-triangle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-triangle.svg) | MIT |
 | `assets/icons/tabler/alert-circle.svg` | Tabler outline alert-circle icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/alert-circle.svg) | MIT |
 | `assets/icons/tabler/x.svg` | Tabler outline x icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/x.svg) | MIT |
+| `assets/icons/tabler/file.svg` | Tabler outline file icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/file.svg) | MIT |
+| `assets/icons/tabler/tag.svg` | Tabler outline tag icon (unmodified) | Paweł Kuna and Tabler contributors | [tabler/tabler-icons@a4ce140](https://github.com/tabler/tabler-icons/blob/a4ce1404bc6d24d3c365afe7b258d6bf6f48d62d/icons/outline/tag.svg) | MIT |
+| `crates/providers/src/aws/fixtures/sigv4/` | AWS SigV4 test-suite cases (22 of `tests/aws-signing-test-suite/v4`, unmodified: `context.json`, `request.txt` and the expected canonical request, string to sign and signature; AWS's public example credentials only) | Amazon.com, Inc. or its affiliates | [awslabs/aws-c-auth@bdb7cef](https://github.com/awslabs/aws-c-auth/tree/bdb7cef99d8bd1ad3c189b1400140a7787e47105/tests/aws-signing-test-suite/v4) | Apache-2.0 |
 
 ## Tabler icon license
 
@@ -69,4 +72,16 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+```
+
+## aws-c-auth NOTICE
+
+The SigV4 test-suite fixtures in `crates/providers/src/aws/fixtures/sigv4/` come from
+[awslabs/aws-c-auth](https://github.com/awslabs/aws-c-auth), licensed under the Apache License,
+Version 2.0. Its NOTICE file reads, per section 4(d) of that licence:
+
+```text
+AWS C Auth
+Copyright Amazon.com, Inc. or its affiliates. All Rights Reserved.
+SPDX-License-Identifier: Apache-2.0.
 ```

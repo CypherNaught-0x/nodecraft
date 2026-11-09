@@ -122,7 +122,7 @@ impl NodeCraftApp {
         let available = (self.viewport.width() - 2.0 * t.navigation_margin).max(1.0);
         let left = self.viewport.min.x + t.navigation_margin;
         let width_limit = if self.tag_filter.open && self.comments.open { ((available - t.navigation_gap) / 2.0).max(1.0) } else { available };
-        let width = if self.tag_filter.open { t.tag_panel_width } else { self.closed_tag_width() }
+        let width = if self.tag_filter.open { t.tag_panel_width } else { t.search_button_width }
             .min(width_limit)
             .min((self.viewport.max.x - t.navigation_margin - left).max(1.0));
         let top = if !self.tag_filter.open {
@@ -136,20 +136,19 @@ impl NodeCraftApp {
             if self.tag_filter.open { t.tag_panel_height } else { t.navigation_toolbar_height }.min((self.viewport.max.y - top - t.navigation_margin).max(1.0));
         Rect::from_min_size(Pos2::new(left, top), Vec2::new(width, height))
     }
-    pub(super) fn closed_tag_width(&self) -> f32 {
-        let t = self.theme.tokens();
-        let available = self.viewport.width() - t.navigation_margin * 2.0;
-        let remaining = if self.selection.len() >= 2 { available - self.layout_toolbar_width() - t.navigation_gap * 3.0 } else { available - t.navigation_gap };
-        t.search_button_width.min((remaining * 0.5).max(1.0))
-    }
     fn tag_context(&mut self, ctx: &egui::Context) -> TagFilterContext {
+        self.tag_context_scoped(ctx, None)
+    }
+    /// The filter's context, with the popup `owner` (the top bar's More menu, which lists the
+    /// Tag filter entry when the row has no room for it) not counting as a blocking popup.
+    pub(super) fn tag_context_scoped(&mut self, ctx: &egui::Context, owner: Option<egui::Id>) -> TagFilterContext {
         self.sync_tag_session();
         self.tag_filter.sync(self.session.document(), self.canvas, self.session.revision());
         TagFilterContext {
             canvas: self.canvas,
             viewport_available: canvas::valid_rect(self.viewport) && self.viewport.width() > 0.0 && self.viewport.height() > 0.0,
             blocked: self.tag_definition.is_some()
-                || egui::Popup::is_any_open(ctx)
+                || (egui::Popup::is_any_open(ctx) && !owner.is_some_and(|id| egui::Popup::is_id_open(ctx, id)))
                 || canvas::text_input_focused(ctx)
                 || (self.text_focused && !self.tag_owns_focus(ctx))
                 || self.drag.is_some()
@@ -247,6 +246,21 @@ impl NodeCraftApp {
         if self.tag_filter.scanning || self.tag_filter.indexing {
             ctx.request_repaint();
         }
+        if !self.tag_filter.open {
+            // Closed, the filter is the top bar's Tag filter entry (#1123); a filter still applies.
+            // The panel's area stays alive, empty and inert, so opening it keeps its place in the
+            // stacking order instead of jumping above a popup opened before it.
+            egui::Area::new(ui.id().with("tag_filter_overlay"))
+                .order(egui::Order::Foreground)
+                .fixed_pos(self.tag_rect().min)
+                .movable(false)
+                .interactable(false)
+                .constrain(false)
+                .show(&ctx, |_| {});
+            self.tag_focus_ids.clear();
+            self.apply_tag_frame(&ctx);
+            return false;
+        }
         let rect = self.tag_rect();
         let t = self.theme.tokens();
         let allowed = !self.tag_context(&ctx).blocked;
@@ -280,22 +294,6 @@ impl NodeCraftApp {
                     ui.set_min_size(rect.size());
                     ui.set_max_size(rect.size());
                     ui.set_clip_rect(rect);
-                    if !self.tag_filter.open {
-                        let response = ui.add_enabled(
-                            allowed,
-                            egui::Button::new(if self.tag_filter.active() {
-                                format!("Tags · {} matches", self.tag_filter.results.len())
-                            } else {
-                                "Tag filter".into()
-                            }),
-                        );
-                        focus_ids.push(response.id);
-                        control_rects.push(response.rect);
-                        if response.clicked() {
-                            action = Some("canvas.tag_filter_open");
-                        }
-                        return;
-                    }
                     ui.painter().rect(rect, t.panel_radius, t.panel_fill, egui::Stroke::new(t.handle_stroke, t.panel_stroke), egui::StrokeKind::Inside);
                     ui.add_space(t.navigation_gap);
                     let header = ui.add_enabled(allowed, egui::Button::new("Tag filter · highlight matches"));

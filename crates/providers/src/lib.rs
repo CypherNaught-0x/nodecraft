@@ -16,6 +16,9 @@
 //! `CancelToken` as a [`CancelSignal`] and the app's runtime as a [`Clock`]. A failed run that
 //! carries a handle ([`RunFailure::handle`]) must be resumed, never resubmitted.
 
+/// AWS credentials and SigV4 signing (#1163), for Bedrock.
+#[cfg(feature = "llm")]
+pub mod aws;
 pub mod base_url;
 #[cfg(feature = "bfl")]
 pub mod bfl;

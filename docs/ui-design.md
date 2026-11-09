@@ -134,7 +134,7 @@ selected border more visible than the resting one, in both themes.
 | Click a noodle / Shift-click | select it / add or remove it; box select also takes noodles it crosses. Every noodle is also an AccessKit node named **Image from A to B · reference** (its media, cards and the input it lands on) and marked when selected, so screen readers can list connections (#1109) |
 | Delete or Backspace outside text fields | delete the selected nodes, noodles and field in one undo step (`canvas.delete`; a deleted field's cards stay) |
 | `T` / `I` / `V` / `A` / `R` (no modifier, outside text fields) | quick-add a Text / Image / Video / Audio / Router node centred under the pointer and select it (`node.create`, one undo step; a quick-added router carries text, since `node.create` sets no config). Keys come from each kind's `quick_add`, so new kinds bring their own |
-| Double-click empty canvas | the quick-add palette: type to search node kinds and the commands that can run now, scroll to reach the full list, ↑↓ to move and reveal the highlighted row, ↵ to choose, Escape or a click elsewhere to close. Scrolling keeps the canvas fixed while this or the Turn into menu is open. A kind is created where you double-clicked. Each row shows its label on the left and its shortcut right-aligned in monospace `text_muted` |
+| Double-click empty canvas | the quick-add palette (#1121): with nothing typed it lists Recent (the last five chosen; view state, gone on restart), node kinds by the media they make (Text, Image, Video, Audio, 3D, Document, Other), Actions, then Commands, under `text_muted` headings. Typing ranks every entry together, best first, naming its section on the right. Each row has its modality's `wire_*` dot (`tag_identity_size`), its label, its shortcut right-aligned in monospace `text_muted`, and a one-line summary in `text_muted` from the kind's or command's `summary()`. A command that can't run now is listed greyed after those that can, its `enabled` reason in place of the summary; ↵ or a click on it does nothing. ↑↓ move and keep the highlighted row in view, ↵ chooses, Escape or a click elsewhere closes; scrolling keeps the canvas fixed while this or the Turn into menu is open. It opens at the double-click, or upward from it when there's no room below, inside the window less `navigation_margin`. A kind is created where you double-clicked. See the [decision](decisions/2026-11-08-palette-sections-and-summaries.md) |
 | ⌘/Ctrl+C, X, V outside text fields | copy / cut / paste the selected nodes and the noodles between them through the OS clipboard (versioned JSON, so another project or window can paste them); paste lands centred on the pointer with fresh ids and selects the result, one undo step (`canvas.paste`). Generation results are not copied. Plain text pastes as a Text node; recognized ComfyUI workflow JSON pastes as a workflow card after the server's nodes have been read, with the same validation as a file drop; a copied image pastes as an Image node at the pointer, with one undo step. Desktop pixels are read off the UI thread and encoded as PNG; browser PNG reads require clipboard permission. Copied native file references use the bounded file importer. Text editors keep ordinary paste; on the canvas typed native file references take precedence over their plain-text names (#319, #633) |
 | ⌘/Ctrl+D outside text fields | duplicate the selection, offset 40 points |
 | `F` (no modifier, outside text fields) | make a field: around the selected cards, which become its members, or an empty 320×240 zone at the pointer (`field.create`, one undo step). The zone takes in every selected card, including one added this frame. The new field is selected |
@@ -359,7 +359,9 @@ The quick-add palette also offers enabled navigation commands that need no param
 Fit all nodes, Fit selected nodes, Toggle minimap and Toggle prompt overlays. Its search field lends focus only to these palette
 choices; other editors, popups and active gestures still prevent navigation. Choosing a row
 releases the palette query and uses the same live command bridge, without editing the project or
-its undo history. Commands requiring coordinates, such as Pan to world point, remain absent.
+its undo history. Commands requiring coordinates, such as Pan to world point, remain absent. One
+that can't run now, such as Fit selected nodes with nothing selected, is listed greyed with its
+reason (#1121).
 
 ## Canvas search
 
@@ -553,21 +555,41 @@ threshold. Cache admission limits and rationale are in the
 
 ## Application menu
 
-The application row (#956) uses one icon-and-label control style for Sheets, Techniques,
-Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments. Navigation,
-activity and settings/services are separated by dividers, with Search and Comments on the right.
+The application row (#956) uses one icon-and-label control style for File, Tag filter, Sheets,
+Techniques, Elements, Queue, Share, Budgets, API keys, ComfyUI, Plugins, Search and Comments.
+File and Tag filter lead the row (#1123); navigation, activity and settings/services follow,
+separated by dividers, with Search and Comments on the right.
 Browser server settings add Providers, and a selected Technique adds Open as app. Every entry
 uses the same token-based height, padding, hover, active and disabled styling. Queue counts
 appear beside its label and remain in its accessible name; unavailable services stay disabled.
 
 If the measured row does not fit, entries move into one More menu from the row's right (#1115):
 first the navigation, activity and service entries from the right, then the entry of an open panel
-(kept in the row while others go), then Comments, then Search. More sits after the entries the row
+(kept in the row while others go), then Tag filter, then Comments, then Search, and File last of
+all (#1123): it is the only way to open and save (`Entry::rank`, pinned by
+`small_windows1115_tests::fit1123_*`). More sits after the entries the row
 keeps, before Search and Comments, and lists only what moved, with the same icons, states and
-order. Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, they move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
-entries. More yields to active text editors and canvas gestures. The existing Tag filter has a
-reserved left slot; Format selection reserves the next slot when present, with the Tags panel
-below both controls. Sharing status is
+order. File, Search and Comments stay in the row down to the desktop's smallest window (640 points) while the agent sidebar is closed; with it open there, Search and Comments move into More too. It scrolls in short viewports; keyboard focus follows visual order and skips disabled
+entries. More yields to active text editors and canvas gestures; pressing a disabled entry while a
+text editor has the focus leaves the focus there. Format selection keeps a slot at the row's left
+while several cards are selected.
+
+**File** opens the File menu below it (below More once File has moved there): Open…, Open
+recent ▸ (the recent projects, each with Remove, then Clear recent projects), Save, Save as…,
+then Save workflow results… and Import folder…. Shortcuts show on the right as this platform
+spells them, and in each entry's accessible name ("Open… (Ctrl+O)"). The entries run the same
+flows as the shortcuts and the palette (`file.open`, `file.save`, `file.save_as`, the results save,
+the folder import, opening a recent project). An entry that can't run now stays listed, disabled,
+and says why on hover; without project storage the reason also heads the menu, with Focus the
+other window when another window owns storage. The menu is `file_menu_width` wide, it and its
+Open recent list scroll in a short window, and it closes on Escape, when an entry is chosen, or on
+a click outside, which never reaches the canvas (a click on another top-bar entry or a panel's
+control still acts, as before). The browser's File menu offers Open…, Save and Save as…, with
+the same rules: while it is open the canvas gets no keys or clicks.
+
+**Tag filter** opens the tag panel below the row, and closes it again. While a filter is active the
+entry shows the match count beside its label and in its accessible name ("Tag filter (3
+matches)"). Sharing status is
 available on Share's tooltip and collaborator avatars are in its panel. See the
 [layout and ownership decision](decisions/2026-10-27-unified-top-bar.md) and the
 [small-window decision](decisions/2026-11-08-small-window-layout.md).
@@ -660,6 +682,40 @@ saved files and says in the notice what it recovered and where the old index was
 entries ticked than one request takes, the bulk buttons are disabled with the reason. In the browser My library lasts until the page is
 closed, and says so ([decision](decisions/2026-11-03-library-url-import-and-global-library.md)).
 
+## Interface size
+
+The interface size (#1107) draws the whole shell larger or smaller, from 80 %
+to 200 % (default 100 %). It is a setting of this installation, not of a project:
+`[appearance] interface_size = 150` in `config.toml` on the desktop, this origin's
+`localStorage` (`nodecraft.interface_size`) in the browser. The shell applies it as egui's zoom
+factor (`Context::set_zoom_factor`), so every token in points (text, spacing, radii, panel widths)
+grows together and nothing needs its own scaled size. A value the file holds that isn't a number
+from 80 to 200 reads as 100 %, is written back as 100 %, and the startup notice says so; the rest
+of `[appearance]` keeps its values.
+
+Commands, which the palette, shortcuts, control channel and MCP share: `view.ui_scale.increase`
+(⌘⌥= or ⌘⌥+, Ctrl+Alt elsewhere) and `view.ui_scale.decrease` (⌘⌥-) step by 10 % to the next
+multiple of ten; `view.ui_scale.reset` (⌘⌥0) returns to 100 %; `view.ui_scale.set {percent}`
+takes any number from 80 to 200, rounded to a whole percent, and refuses anything else. Increase,
+decrease and reset are disabled when they would do nothing (at 200 %, at 80 %, at 100 %); a
+damaged value counts as 100 % once the shell has saved the clean value on its first frame. Each
+returns `{percent, previous}`. They record no document change and no undo step. They are
+live-only: the control channel routes them to the window, and without one (`nodecraft-cli`, a
+headless session) they are unsupported. The shortcuts match the key's logical character; only `0`
+also matches its physical key, as the other digit shortcuts do, so an AltGr character on the `-`
+or `=` key (Ctrl+Alt is AltGr on many layouts) never changes the size. They are taken before the
+canvas reads its zoom keys, so Ctrl+Alt+= never also zooms the canvas, and never while a text
+field has focus, where AltGr types a character. On macOS, ⌥⌘= and ⌥⌘- are also the system's
+Accessibility Zoom shortcuts when that feature and its keyboard shortcuts are turned on; macOS
+then takes them first, and the palette entries still work.
+
+Canvas zoom is unchanged and separate: the zoom badge still reads the canvas zoom, and cards,
+which are drawn in points like everything else, grow with the interface the way a browser's page
+zoom grows a page ([decision](decisions/2026-11-08-interface-size-is-a-zoom-factor.md)). Previews
+are requested at `pixels_per_point`, so they stay sharp. At 200 % a 1280×720 window is 640×360
+points: the top bar overflows into More (#1115), floating panels are clamped to the panel area,
+and questions (#1116) fit, which a test checks at 150 % and 200 %.
+
 ## Overlays and stacking
 
 One rule decides how every surface over the canvas moves, resizes and stacks (#957). It is
@@ -671,9 +727,9 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 1. **Canvas** (`Background`): the board, cards and wires.
 2. **Floating panels** (`Middle`, `floating::PANEL_ORDER`): the last opened or pressed panel is
    in front. Opening one never reorders the others.
-3. **Pinned chrome** (`Foreground`): the application row, Tag filter, Format selection, Search,
+3. **Pinned chrome** (`Foreground`): the application row, the Tags panel, Format selection, Search,
    Discussions, the minimap and comment pins.
-4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More menu, quick-add,
+4. **Menus, popups and dialogs** (`Foreground`, shown after chrome): the More and File menus, quick-add,
    Turn into, mention lists, egui menus and combo boxes, and question dialogs.
 5. **Notices** (`Foreground`, bottom-left): the notice and staleness check, update banner,
    pending drop, folder import, library import and background export progress. They are above panels and
@@ -683,6 +739,10 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 
 **Floating panels** are built by `floating::panel` and behave the same everywhere:
 
+- **Header** (#1123): one style for every panel, drawn by `floating::panel` rather than egui's
+  title bar (which centres the title): the title on the left at `body_size` in the `text` colour,
+  the close button on the right, a `panel_stroke` divider below. egui's default fonts have no
+  semibold face, so size, colour and the divider set the title apart.
 - **Move** by dragging the header (title bar). Dragging inside the body never moves a panel.
 - **Resize** from the right or bottom edge or the bottom-right corner, never larger than the
   panel area. Every panel is pivoted at its top-left corner, so the header and the top-left stay
@@ -718,8 +778,8 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
   items, taken before the canvas reads it, but only when no other Escape owner is active: a
   question, a popup, quick-add or Turn into, a text field (Escape leaves it first), the keyboard
   connect flow, Search, Discussions, the Tag filter, any drag or gesture, or a browser file read
-  each take Escape first and the tool stays open. Choose a model and Project files close on
-  Escape too.
+  each take Escape first and the tool stays open. Choose a model closes on Escape too, and the
+  File menu (#1123) takes Escape at the top of the frame, before any of these.
 - Nothing uses a raw `egui::Window`: `floating.rs` is the only place that builds one (inside
   `panel` and `pinned`), and `floating::tests::no_raw_windows_outside_floating` fails on a new one
   elsewhere in non-test code.
@@ -728,11 +788,10 @@ panels do not position themselves. See the [decision](decisions/2026-10-28-float
 |---|---|---|---|---|
 | Sheets, Techniques, Elements, Queue, Share live, Budgets, API keys, ComfyUI servers, Provider servers (browser), Plugins, Automation | floating panel | header | right/bottom edges, corner | close button or its row control |
 | Custom shader, Image viewer, PDF reader, Charges to review, Batch items, Workflow fields, Choose a model | floating panel (viewer/review/tool) | header | right/bottom edges, corner | close button or Escape |
-| Project files (File menu) | floating panel, opening below the File button (#1123 makes it a menu) | header | right/bottom edges, corner | close button, File or Escape |
 | Shared parameters (bulk) | fixed: pinned top-right while several nodes are selected; panels opening over it step below its header | no | no | change the selection |
 | Application row, Tag filter, Format selection, Search, Discussions, minimap | pinned chrome | no | no | its own control |
 | Comment pins, generation toolbar, Save result toolbar | attached to their card or comment | with the canvas | no | deselect |
-| More menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
+| More menu, File menu, quick-add, Turn into, mentions, context menus | menu | no | no | Esc or click outside |
 | Model preview changed, Review model change, Rename field | question (`floating::question`), above panels | no (centred) | no | its buttons, Enter (primary), Escape or the backdrop (cancel) |
 | Unsaved changes (browser) | question (`floating::question`), above panels | no (centred) | no | its buttons; Escape or the backdrop cancels; Enter does nothing |
 | Recovery, run quote, export and the other modals | modal, above panels | no (centred) | no | their buttons only (Escape where noted); Enter is never wired to a paid run |
@@ -803,7 +862,8 @@ and no crossing controls inside their `Dialog` node.
 | Image viewer | the toolbar's Expand | floating panel | `runs_tests` (with the layout check), `preview_tests` (a tall image at 1000 × 700 and 1600 × 900) |
 | Batch items | a fanned card's menu, Review items… | floating panel | `batch_review_tests` (with the layout check; at 640 × 400 with Escape) |
 | Workflow fields | a ComfyUI workflow card's menu, Edit workflow fields… | floating panel | `comfy_mapping::tests` (with the layout check; at 640 × 400 with Escape) |
-| Project files | the File button (top left) | floating panel | `file_dialogs::tests` (with the layout check, at 1000 × 700 and 1600 × 900), `small_windows1115_tests` (640 × 400, below the File button, Escape) |
+| File menu | top bar, File (first entry) | menu | `file_dialogs::tests` (`panel_check::check_menu` at 1000 × 700 and 1600 × 900; Open recent, Remove, Clear; disabled with reasons), `small_windows1115_tests` (640 × 400: below File, Open recent lists entries, Escape), `ui_scale_tests` (150 % and 200 %, with Open recent) |
+| Tags panel | top bar, Tag filter | pinned chrome | `small_windows1115_tests` (opens below the row, closes, the count badge) |
 | Choose a model | a card's Change model… | floating panel | `models::comfy970_tests` (with the layout check, while searching), `models::tests` (640 × 400, Escape; a failed choice shows at its top) |
 | Shared parameters | selecting two or more cards | pinned panel | `small_windows1115_tests` (on screen at 640 × 400, goes when Escape clears the selection) |
 | Rename field | a field's menu, Rename field… | question | `fields_tests` (with the question check; at 640 × 400, Enter saves, Escape cancels) |
@@ -812,11 +872,11 @@ and no crossing controls inside their `Dialog` node.
 | Search | top bar, Ctrl/⌘+F | pinned chrome | `menus959_tests` (open, Escape), `topbar_tests` (focus) |
 | Comments (Discussions) | top bar | pinned chrome | `menus959_tests` (open, close) |
 | More (overflow) | top bar at narrow widths | menu | `topbar_tests` (order, icons, disabled, Escape, focus), `small_windows1115_tests` (what moves, at 640 × 400, 800 × 520 and 1440 × 900) |
-| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `turn_into_tests` |
+| Quick-add, Turn into | canvas | menus | `palette_scroll_tests`, `palette1121_tests` (sections, ranking, unavailable commands, on screen from the bottom-right corner at 1440 × 900 and 640 × 400), `turn_into_tests` |
 
 Since #1116 there are no windows outside `floating.rs`: questions are modals sized to the window,
 tools are floating panels clamped to the panel area.
-`small_windows1115_tests` opens Techniques, Budgets, API keys and Project files at 640 × 400,
+`small_windows1115_tests` opens Techniques, Budgets, API keys and the File menu at 640 × 400,
 800 × 520 and 1440 × 900 with the layout checks.
 
 **Outcome so far.** Every panel in the first two rows passes at both sizes and in both themes.
@@ -887,6 +947,8 @@ them and one attribution row per file. See the [choice and comparison](decisions
 | `More` | `dots.svg` | application menu overflow |
 | `Apps` | `apps.svg` | Open as app |
 | `Cloud` | `cloud.svg` | browser Providers |
+| `File` | `file.svg` | the top bar's File entry |
+| `Tag` | `tag.svg` | the top bar's Tag filter entry |
 
 Use `Icon::button` for an icon beside action text; it retains the ordinary Button label,
 keyboard behavior and disabled state. For an icon-only control use `Icon::icon_button`, which

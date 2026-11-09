@@ -3,10 +3,12 @@
 //! Two wire dialects cover the endpoints in #10:
 //! - [`Dialect::OpenAi`]: Chat Completions, spoken by OpenAI, Ollama, LM Studio, vLLM, OpenRouter
 //!   and LiteLLM (which also reports per-request spend);
-//! - [`Dialect::Anthropic`]: the Anthropic Messages API.
+//! - [`Dialect::Anthropic`]: the Anthropic Messages API;
+//! - [`Dialect::Converse`]: Amazon Bedrock's native Converse API (#1150).
 //!
-//! Both are spoken through `rig-core`'s wires over our own transport (#1122): `rig_chat` sends,
-//! `openai` and `anthropic` turn requests, replies and errors to and from the crate's terms.
+//! The first two are spoken through `rig-core`'s wires over our own transport (#1122): `rig_chat`
+//! sends, `openai` and `anthropic` turn requests, replies and errors to and from the crate's
+//! terms. The crate has no Bedrock provider, so `converse` speaks Converse over [`Http`] itself.
 //!
 //! [`LlmClient`] sends a [`ChatRequest`] (a conversation of text, images, tool calls and tool
 //! results, plus the tools the model may call) and returns a [`ChatResponse`], either whole or
@@ -18,6 +20,7 @@
 mod anthropic;
 mod azure;
 mod bedrock;
+mod converse;
 #[cfg(test)]
 mod custom_base_tests;
 mod openai;
@@ -31,7 +34,10 @@ mod vendors_tests;
 
 pub use anthropic::DEFAULT_MODEL as ANTHROPIC_DEFAULT_MODEL;
 pub use azure::validate_azure_deployment;
-pub use bedrock::{BEDROCK, validate_bedrock_region};
+pub use bedrock::{
+    BEDROCK, BEDROCK_AWS_ACCESS_KEY_ID, BEDROCK_AWS_EXPIRATION, BEDROCK_AWS_SECRET_ACCESS_KEY, BEDROCK_AWS_SESSION_TOKEN, BedrockAuth, validate_bedrock_region,
+};
+pub use converse::{CONVERSE_MAX_DOCUMENT_BYTES, CONVERSE_MAX_IMAGE_BYTES};
 
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -103,6 +109,8 @@ impl std::fmt::Debug for ApiKey {
 pub enum Dialect {
     OpenAi,
     Anthropic,
+    /// Amazon Bedrock's Converse API (`bedrock-runtime`), with a Bedrock API key or SigV4.
+    Converse,
 }
 
 /// Where to send chat requests.
@@ -373,7 +381,7 @@ impl ChatRequest {
             return bad("the conversation must end with a user message".into());
         }
         if let Some(t) = self.temperature {
-            let max = if dialect == Dialect::Anthropic { 1.0 } else { 2.0 };
+            let max = if matches!(dialect, Dialect::Anthropic | Dialect::Converse) { 1.0 } else { 2.0 };
             if !t.is_finite() || !(0.0..=max).contains(&t) {
                 return bad(format!("temperature must be between 0 and {max}"));
             }
@@ -575,7 +583,7 @@ impl LlmClient {
     fn limits(&self, req: &ChatRequest, stream: bool) -> (usize, u64) {
         let sent_limit = match self.endpoint.dialect {
             Dialect::Anthropic => Some(req.max_tokens.unwrap_or(DEFAULT_MAX_TOKENS)),
-            Dialect::OpenAi => req.max_tokens,
+            Dialect::OpenAi | Dialect::Converse => req.max_tokens,
         };
         if stream {
             let cap = match sent_limit {
@@ -590,7 +598,7 @@ impl LlmClient {
 
     fn auth(&self, mut http: HttpRequest) -> HttpRequest {
         match (self.endpoint.dialect, &self.endpoint.key) {
-            (Dialect::OpenAi, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
+            (Dialect::OpenAi | Dialect::Converse, Some(key)) => http = http.secret_header("Authorization", format!("Bearer {}", key.expose())),
             (Dialect::Anthropic, Some(key)) => http = http.secret_header("x-api-key", key.expose()),
             (_, None) => {}
         }
@@ -637,11 +645,16 @@ impl LlmClient {
         match self.endpoint.dialect {
             Dialect::OpenAi => self.openai_chat(req, on_text, context).await,
             Dialect::Anthropic => self.anthropic_chat(req, on_text, context).await,
+            Dialect::Converse => self.converse_chat(req, on_text, context).await,
         }
     }
 
     /// The model ids the endpoint offers (`GET /models`; Anthropic's list is paged).
     pub async fn list_models(&self) -> Result<Vec<String>, ProviderError> {
+        if self.endpoint.dialect == Dialect::Converse {
+            // Bedrock lists models on its control-plane host, not on `bedrock-runtime`.
+            return Err(ProviderError::new(ErrorKind::UnsupportedInput, "Bedrock's runtime has no model list; pick a model from the catalog"));
+        }
         let mut ids = Vec::new();
         let mut after: Option<String> = None;
         for _ in 0..MAX_MODEL_PAGES {
@@ -687,8 +700,10 @@ impl LlmClient {
             return Ok(response);
         }
         let mut e = match self.endpoint.dialect {
+            Dialect::OpenAi if self.endpoint.id == BEDROCK => openai::bedrock_error(response.status, &response.headers, &response.body),
             Dialect::OpenAi => openai::error(response.status, &response.body),
             Dialect::Anthropic => anthropic::error(response.status, &response.body),
+            Dialect::Converse => converse::error(response.status, &response.headers, &response.body),
         };
         e.retry_after_ms = retry_after(response.header("retry-after"));
         Err(e)

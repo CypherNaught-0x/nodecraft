@@ -310,7 +310,7 @@ fn reply(response: &CompletionResponse, streamed: bool) -> Result<ChatResponse, 
 }
 
 /// How this dialect reads its errors.
-const RULES: rig_chat::Rules = rig_chat::Rules { status: error, event: event_error, unended: "messages reply without content" };
+const RULES: rig_chat::Rules = rig_chat::Rules { status: |status, _, body| error(status, body), event: event_error, unended: "messages reply without content" };
 
 fn event_error(err: &Value) -> ProviderError {
     error_from(err, None)

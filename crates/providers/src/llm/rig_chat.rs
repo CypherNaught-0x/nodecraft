@@ -12,10 +12,13 @@ use serde_json::Value;
 use crate::rig_http::{Exchange, RigHttp};
 use crate::{ErrorKind, ProviderError};
 
+/// Reads an error status, its headers and its body.
+pub(super) type StatusRule = fn(u16, &[(String, String)], &[u8]) -> ProviderError;
+
 /// How a dialect reads its errors.
 pub(super) struct Rules {
-    /// An error status and its body.
-    pub status: fn(u16, &[u8]) -> ProviderError,
+    /// An error status, its headers and its body.
+    pub status: StatusRule,
     /// The `error` object of an error event inside a 200 reply.
     pub event: fn(&Value) -> ProviderError,
     /// What a whole reply that doesn't end the turn is called.
@@ -28,7 +31,7 @@ pub(super) fn failure(error: &rig_core::ProviderError, exchange: Exchange, strea
     match exchange {
         Exchange::Failed(e) => return e,
         Exchange::Answered { status, headers, body } if !(200..300).contains(&status) => {
-            let mut e = (rules.status)(status, &body);
+            let mut e = (rules.status)(status, &headers, &body);
             e.retry_after_ms = super::retry_after(headers.iter().find(|(n, _)| n.eq_ignore_ascii_case("retry-after")).map(|(_, v)| v.as_str()));
             return e;
         }
