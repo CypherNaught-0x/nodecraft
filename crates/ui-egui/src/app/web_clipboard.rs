@@ -88,7 +88,7 @@ impl NodeCraftApp {
             self.web_paste.installed = true;
             match browser::Listener::new(Rc::clone(&self.web_paste.inbox), _ctx.clone()) {
                 Ok(listener) => self.web_paste.listener = Some(listener),
-                Err(error) => self.notice = Some(error),
+                Err(error) => self.notices.error(error),
             }
         }
         // Always drain at frame entry, including frames where an editor owns canvas input.
@@ -102,7 +102,7 @@ impl NodeCraftApp {
     pub(super) fn poll_browser_paste(&mut self, ctx: &egui::Context) {
         let Some(pending) = self.web_paste.pending.take() else { return };
         if !pending.target.current(self) {
-            self.notice = Some("The document changed while reading the clipboard; nothing was added. Paste again.".into());
+            self.notices.warning("The document changed while reading the clipboard; nothing was added. Paste again.");
             return;
         }
         let result = pending
@@ -115,7 +115,7 @@ impl NodeCraftApp {
             // a still-unsettled read expires when the app next gets a frame.
             let now = ctx.input(|i| i.time);
             if !now.is_finite() || now >= pending.deadline {
-                self.notice = Some("The browser didn't finish reading the clipboard; nothing was pasted. Close its permission request and try again.".into());
+                self.notices.error("The browser didn't finish reading the clipboard; nothing was pasted. Close its permission request and try again.");
                 return;
             }
             self.web_paste.pending = Some(pending);
@@ -127,7 +127,7 @@ impl NodeCraftApp {
         drop(state); // Abort/release the browser buffer before synchronous engine decoding.
         match result {
             Ok(png) => self.import_pasted_png(target, &png),
-            Err(error) => self.notice = Some(error),
+            Err(error) => self.notices.error(error),
         }
     }
 
@@ -139,14 +139,14 @@ impl NodeCraftApp {
             return false;
         }
         let Some(centre) = self.paste_target(ui, t) else {
-            self.notice = Some("There is no unobscured canvas space for this paste.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "There is no unobscured canvas space for this paste.");
             return true;
         };
         let target = Target::capture(self, centre, t);
-        self.notice = Some(match self.web_paste.start(ui.ctx(), target) {
-            Ok(()) => "Reading the copied image…".into(),
-            Err(error) => error,
-        });
+        match self.web_paste.start(ui.ctx(), target) {
+            Ok(()) => self.notices.info("Reading the copied image…"),
+            Err(error) => self.notices.error(error),
+        }
         true
     }
 }

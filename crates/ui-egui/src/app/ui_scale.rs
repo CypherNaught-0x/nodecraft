@@ -80,7 +80,7 @@ impl NodeCraftApp {
                 && self.session.enabled(id, &json!({})).is_ok()
                 && let Err(error) = self.session.dispatch(id, &json!({}))
             {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
         }
         let size = self.ui_scale.get();
@@ -129,10 +129,7 @@ impl NodeCraftApp {
     pub(super) fn apply_interface_size(&mut self, size: InterfaceSize) {
         self.ui_scale.set(size);
         if size.damaged() {
-            self.notice = Some(match self.notice.take() {
-                Some(previous) => format!("{previous} {}", InterfaceSize::DAMAGED),
-                None => InterfaceSize::DAMAGED.to_owned(),
-            });
+            self.notices.warning(InterfaceSize::DAMAGED);
         }
     }
 

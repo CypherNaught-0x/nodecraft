@@ -180,7 +180,7 @@ impl NodeCraftApp {
     /// Opens the system's file picker for files to import into the library.
     pub(super) fn pick_library_files(&mut self) {
         if self.library.browsers.import.busy() {
-            self.notice = Some("Files are already being imported; wait for them or cancel.".into());
+            self.notices.warning("Files are already being imported; wait for them or cancel.");
             return;
         }
         #[cfg(not(test))]
@@ -199,7 +199,7 @@ impl NodeCraftApp {
     /// Starts reading `paths` on their own thread; `false` (with a notice) when it can't start.
     pub(super) fn read_library_files(&mut self, paths: Vec<PathBuf>) -> bool {
         if self.library.browsers.import.reading.is_some() || self.library.browsers.import.probing.is_some() {
-            self.notice = Some("Files are already being imported; wait for them or cancel.".into());
+            self.notices.warning("Files are already being imported; wait for them or cancel.");
             return false;
         }
         if paths.is_empty() {
@@ -227,10 +227,10 @@ impl NodeCraftApp {
             let _ = send.send(outcome);
         });
         if spawned.is_err() {
-            self.notice = Some("File reading is unavailable; restart the app to try again.".into());
+            self.notices.error("File reading is unavailable; restart the app to try again.");
             return false;
         }
-        self.notice = None;
+        self.notices.clear();
         self.library.browsers.import.reading = Some(Reading { project: self.session.document().id(), canvas: self.canvas, total, cancel, done, result });
         true
     }
@@ -239,13 +239,13 @@ impl NodeCraftApp {
     /// can't start. The address is checked first, so a refused one starts nothing.
     pub(super) fn fetch_library_url(&mut self, address: String) -> bool {
         if self.library.browsers.import.busy() {
-            self.notice = Some("A file is already being imported; wait for it or cancel.".into());
+            self.notices.warning("A file is already being imported; wait for it or cancel.");
             return false;
         }
         let host = match nodecraft_engine::url_import::check(&address) {
             Ok(checked) => checked.host(),
             Err(error) => {
-                self.notice = Some(format!("That address isn't imported: {}.", error.message));
+                self.notices.error(format!("That address isn't imported: {}.", error.message));
                 return false;
             }
         };
@@ -269,10 +269,10 @@ impl NodeCraftApp {
             let _ = send.send(outcome);
         });
         if spawned.is_err() {
-            self.notice = Some("Downloading is unavailable; restart the app to try again.".into());
+            self.notices.error("Downloading is unavailable; restart the app to try again.");
             return false;
         }
-        self.notice = None;
+        self.notices.clear();
         self.library.browsers.import.fetching = Some(Fetching { project: self.session.document().id(), canvas: self.canvas, host, cancel, result });
         true
     }
@@ -289,7 +289,7 @@ impl NodeCraftApp {
             Err(mpsc::TryRecvError::Empty) => {
                 if progress(ctx, t, &format!("Downloading from {}…", sheet_line(&fetching.host)), None) {
                     // Dropping the fetch stops it at its next piece.
-                    self.notice = Some("Download cancelled; nothing was added.".into());
+                    self.notices.info("Download cancelled; nothing was added.");
                 } else {
                     self.library.browsers.import.fetching = Some(fetching);
                     ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -312,7 +312,7 @@ impl NodeCraftApp {
             Err(error) => {
                 let line = ImportLine { name: format!("From {}", sheet_line(&host)), state: error.message.clone(), failed: true };
                 self.library.browsers.report = Some(ImportReport { summary: "1 failed".into(), lines: vec![line], retry: Vec::new() });
-                self.notice = Some(format!("Nothing was imported: {}.", error.message));
+                self.notices.error(format!("Nothing was imported: {}.", error.message));
             }
         }
         true
@@ -333,7 +333,7 @@ impl NodeCraftApp {
                     self.read_library_files(paths);
                 }
                 Ok(Poll::Ready(None)) => {}
-                Err(_) => self.notice = Some("The file picker could not be opened; try again.".into()),
+                Err(_) => self.notices.error("The file picker could not be opened; try again."),
             }
         }
         if let Some(mut probing) = self.library.browsers.import.probing.take() {
@@ -343,7 +343,7 @@ impl NodeCraftApp {
             } else {
                 let cancel = progress(ctx, t, "Checking the videos' lengths…", None);
                 if cancel {
-                    self.notice = Some("Import cancelled; nothing was added.".into());
+                    self.notices.info("Import cancelled; nothing was added.");
                 } else {
                     self.library.browsers.import.probing = Some(probing);
                     ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -362,11 +362,11 @@ impl NodeCraftApp {
                 return;
             }
             Ok(Err(message)) => {
-                self.notice = Some(message);
+                self.notices.error(message);
                 return;
             }
             Err(mpsc::TryRecvError::Disconnected) => {
-                self.notice = Some("Reading the files failed unexpectedly; nothing was added.".into());
+                self.notices.error("Reading the files failed unexpectedly; nothing was added.");
                 return;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -376,7 +376,7 @@ impl NodeCraftApp {
         let cancel = progress(ctx, t, &format!("Reading files for the library… {done} of {}", reading.total), Some(ratio));
         if cancel {
             // Dropping the reading stops the reader at its next file.
-            self.notice = Some("Import cancelled; nothing was added.".into());
+            self.notices.info("Import cancelled; nothing was added.");
         } else {
             self.library.browsers.import.reading = Some(reading);
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
@@ -393,14 +393,14 @@ impl NodeCraftApp {
         if project != self.session.document().id() || canvas != self.canvas {
             let why = "the project or canvas changed while it was read";
             self.library.browsers.report = Some(failed_all(read, why));
-            self.notice = Some("The project or canvas changed while the files were read; nothing was added. Retry to import them here.".into());
+            self.notices.warning("The project or canvas changed while the files were read; nothing was added. Retry to import them here.");
             return;
         }
         let centre = match self.browse_centre(t) {
             Ok(centre) => centre,
             Err(error) => {
                 self.library.browsers.report = Some(failed_all(read, &error.message));
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 return;
             }
         };
@@ -421,7 +421,7 @@ impl NodeCraftApp {
         }
         if !allocated {
             self.library.browsers.report = Some(failed_all(read, "couldn't allocate node ids; retry"));
-            self.notice = Some("Couldn't allocate node ids; nothing was added. Retry the import.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; nothing was added. Retry the import.");
             return;
         }
         let incoming: Vec<Incoming<'_>> =
@@ -437,7 +437,7 @@ impl NodeCraftApp {
             Ok(imported) => imported,
             Err(error) => {
                 drop(incoming);
-                self.notice = Some(error.message.clone());
+                self.notices.report(error.clone());
                 self.library.browsers.report = Some(failed_all(read, &error.message));
                 return;
             }
@@ -479,7 +479,7 @@ impl NodeCraftApp {
         if !nodes.is_empty() {
             self.selection.replace(nodes.into_iter().collect());
         }
-        self.notice = None;
+        self.notices.clear();
         self.library.browsers.report = Some(ImportReport { summary, lines, retry });
     }
 }

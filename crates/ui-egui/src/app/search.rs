@@ -156,7 +156,7 @@ impl NodeCraftApp {
             match header {
                 Some(header) => header,
                 None => {
-                    self.notice = unexpanded.map(|(_, notice)| notice);
+                    self.notices.set(crate::notices::NoticeKind::Warning, unexpanded.map(|(_, notice)| notice));
                     ctx.request_repaint();
                     return;
                 }
@@ -165,7 +165,7 @@ impl NodeCraftApp {
             self.selection.only(id);
             self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
             let Some(body) = self.navigation.geometry.rects.get(&id).copied() else {
-                self.notice = Some(format!("{source} selected; its instance geometry is unavailable."));
+                self.notices.warning(format!("{source} selected; its instance geometry is unavailable."));
                 ctx.request_repaint();
                 return;
             };
@@ -203,7 +203,7 @@ impl NodeCraftApp {
         let score =
             |region: Rect| ((region.width() - 2.0 * padding) / bounds.width().max(1.0)).min((region.height() - 2.0 * padding) / bounds.height().max(1.0));
         let Some(usable) = regions.into_iter().filter(|region| score(*region) > 0.0).max_by(|a, b| score(*a).total_cmp(&score(*b))) else {
-            self.notice = Some(unexpanded.map_or_else(|| format!("{source} selected; the canvas is too small to frame it."), |(_, notice)| notice));
+            self.notices.warning(unexpanded.map_or_else(|| format!("{source} selected; the canvas is too small to frame it."), |(_, notice)| notice));
             ctx.request_repaint();
             return;
         };
@@ -231,13 +231,16 @@ impl NodeCraftApp {
             }
             if next.pan.is_finite() {
                 self.view = next;
-                self.notice = result.clamped.then(|| format!("{source} centered at minimum zoom; complete containment is unavailable."));
+                self.notices.set(
+                    crate::notices::NoticeKind::Warning,
+                    result.clamped.then(|| format!("{source} centered at minimum zoom; complete containment is unavailable.")),
+                );
             }
         } else {
-            self.notice = Some(format!("{source} selected; the canvas is too small to frame it."));
+            self.notices.warning(format!("{source} selected; the canvas is too small to frame it."));
         }
         if let Some((_, notice)) = unexpanded {
-            self.notice = Some(notice);
+            self.notices.warning(notice);
         }
         ctx.request_repaint();
     }
@@ -246,14 +249,14 @@ impl NodeCraftApp {
         if !self.search_context(&ctx).blocked {
             let open = ui.input_mut(|i| consume_shortcut(i, "Command+F") || consume_shortcut(i, "Ctrl+F"));
             if open && let Err(error) = self.dispatch_search(&ctx, "canvas.search_open", &json!({})) {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
             if self.search.open
                 && !self.search_context(&ctx).blocked
                 && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
                 && let Err(error) = self.dispatch_search(&ctx, "canvas.search_close", &json!({}))
             {
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
         }
         if !self.search.open {
@@ -343,7 +346,7 @@ impl NodeCraftApp {
         if changed {
             let query = self.search.draft.clone();
             if let Err(error) = self.dispatch_search(&ctx, "canvas.search_query", &json!({"query":query})) {
-                self.notice = Some(error.message);
+                self.notices.report(error);
                 query_ok = false;
             }
         }
@@ -355,7 +358,7 @@ impl NodeCraftApp {
         {
             // A failed open must not leave a stale focus request for a later open.
             self.search_focus_pending = false;
-            self.notice = Some(error.message);
+            self.notices.report(error);
         }
         self.navigation.geometry.refresh(&mut self.session, self.canvas, self.theme);
         let was_scanning = self.search.scanning;
@@ -734,7 +737,7 @@ mod tests {
             h.run();
             assert!(*retained.borrow());
             assert!(!h.state().search.open);
-            assert!(h.state().notice.is_none());
+            assert!(h.state().notices.is_empty());
             assert_eq!(h.state().view, view);
             assert_eq!(h.state().selection, selection);
             assert_eq!(h.state().session.document(), &document);

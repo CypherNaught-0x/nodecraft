@@ -53,7 +53,7 @@ fn opened() -> Harness<'static, NodeCraftApp> {
     h.get_by_label("Inpaint…").click();
     h.run_steps(3);
     h.run_steps(3);
-    assert!(h.state().mask_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().mask_editor.is_some(), "{:?}", h.state().notice());
     h
 }
 
@@ -84,7 +84,7 @@ fn the_menu_adds_expand_and_mask_cards_and_a_drag_paints_one_stroke() {
     assert!(of_kind(&h, "image.expand").is_some());
     stroke(&mut h, Vec2::new(0.2, 0.5), Vec2::new(0.8, 0.5));
     let painted = strokes(&h);
-    assert_eq!(painted.strokes.len(), 1, "{:?}", h.state().notice);
+    assert_eq!(painted.strokes.len(), 1, "{:?}", h.state().notice());
     let points = &painted.strokes[0].points;
     assert!(points.len() >= 3, "{points:?}");
     assert!((points[0][0] - 0.2).abs() < 0.05 && (points[0][1] - 0.5).abs() < 0.05, "{points:?}");
@@ -114,7 +114,7 @@ fn create_edit_wires_a_generation_card_and_closes() {
     h.run();
     h.get_by_label("Create edit").click();
     h.run();
-    assert!(h.state().mask_editor.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().mask_editor.is_none(), "{:?}", h.state().notice());
     let edit = of_kind(&h, nodecraft_nodes::generation::KIND).expect("an edit card");
     assert_eq!(edit.params.get(nodecraft_nodes::generation::PROMPT), Some(&Value::Text("a red door".into())));
     let canvas = h.state().session.document().canvases().get(&h.state().canvas).unwrap();
@@ -210,7 +210,7 @@ fn typing_a_margin_keeps_the_painted_stroke_over_the_same_pixels() {
     h.key_press(egui::Key::Enter);
     h.run_steps(3);
     let expand = of_kind(&h, "image.expand").unwrap();
-    assert_eq!(nodecraft_engine::mask_cmds::margins(&expand).right, 16, "{:?}", h.state().notice);
+    assert_eq!(nodecraft_engine::mask_cmds::margins(&expand).right, 16, "{:?}", h.state().notice());
     // 16 wide becomes 32: every point is half as far across, and stays at the same height.
     let after = strokes(&h).strokes[0].points.clone();
     for (old, new) in before.iter().zip(&after) {
@@ -280,7 +280,7 @@ fn a_reshaped_image_badges_the_mask_and_the_editor_fits_the_strokes() {
     h.get_by_label("Fit to new image").click();
     h.run_steps(3);
     let fitted = strokes(&h);
-    assert_eq!(fitted.over.map(|o| (o.width, o.height)), Some((32, 12)), "{:?}", h.state().notice);
+    assert_eq!(fitted.over.map(|o| (o.width, o.height)), Some((32, 12)), "{:?}", h.state().notice());
     // The old image sits in the middle half of the new one.
     let x = fitted.strokes[0].points[0][0];
     assert!((x - (0.25 + 0.2 * 0.5)).abs() < 0.05, "{x}");

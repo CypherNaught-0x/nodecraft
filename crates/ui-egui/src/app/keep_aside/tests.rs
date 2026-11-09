@@ -163,7 +163,7 @@ fn decide_later_keeps_every_byte_and_leaves_the_journal_for_the_next_launch() {
     assert!(h.state().keep_aside.as_ref().is_some_and(|job| job.cancelling()), "the cancel was asked for");
     held.release();
     settle(&mut h);
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.contains("offers it again the next time it starts"), "{notice}");
     assert!(!h.state().session.file_status().available, "this window can't save, and says so");
     assert_eq!(std::fs::read(dir.journal()).unwrap(), before, "the journal is as it was");
@@ -205,7 +205,7 @@ fn quitting_while_it_is_held_or_dropped_keeps_every_byte() {
     h.step();
     held.drop_jobs();
     settle(&mut h);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("stopped before it finished")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("stopped before it finished")), "{:?}", h.state().notice());
     assert_eq!(std::fs::read(dir.journal()).unwrap(), before);
     assert!(dir.copies().is_empty());
 }
@@ -404,7 +404,7 @@ fn until_idle(h: &mut Harness<'static, NodeCraftApp>) {
     let deadline = Instant::now() + Duration::from_secs(30);
     while h.state().session.file_status().operation.is_some() || h.state().files.owns_input() {
         h.step();
-        assert!(Instant::now() < deadline, "the file operation never settled: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "the file operation never settled: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(1));
     }
     h.step();
@@ -425,7 +425,7 @@ fn recovered_media_from_the_reused_replay_save_and_save_again() {
     h.get_by_label("Recover").click();
     h.step();
     until_idle(&mut h);
-    assert!(h.state().recovery.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().recovery.is_none(), "{:?}", h.state().notice());
     assert!(hashes.iter().all(|hash| readable(h.state(), hash)));
     let file = dir.0.join("recovered.ncraft");
     for round in 0..3 {
@@ -450,7 +450,7 @@ fn start_from_last_save_opens_beside_the_reused_replays_media() {
     h.get_by_label("Start from last save").click();
     h.step();
     until_idle(&mut h);
-    assert!(h.state().recovery.is_none(), "the open succeeded: {:?}", h.state().notice);
+    assert!(h.state().recovery.is_none(), "the open succeeded: {:?}", h.state().notice());
     assert_eq!(h.state().session.file_status().location, Some(nodecraft_format::StorageLocation::Path(file)));
     assert!(hashes.iter().take(3).all(|hash| readable(h.state(), hash)), "the saved media open");
     assert!(dir.copies().is_empty(), "the discarded copy is gone");
@@ -471,7 +471,7 @@ fn decide_later_while_only_looking_for_earlier_copies_still_takes_the_journal_ov
     settle(&mut h);
     assert!(h.state().session.file_status().available, "the live journal held nothing, so the window can save");
     assert!(h.state().recovery.is_none());
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("offered the next time")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("offered the next time")), "{:?}", h.state().notice());
     assert_eq!(std::fs::read(dir.0.join("session.journal.unrecovered-1")).unwrap(), good, "the copy stays");
     let canvas = h.state().canvas;
     h.state_mut().session.dispatch("node.add", &serde_json::json!({"canvas": canvas, "node": nodecraft_graph::Node::new(ADDED, "source.text")})).unwrap();

@@ -82,7 +82,7 @@ fn a_technique_node_upgrades_from_its_menu_and_opens_its_workflow() {
     right_click(&mut h, PLACED);
     h.get_by_label("Upgrade to v2").click();
     h.run();
-    assert_eq!(placed_version(&h), 2, "{:?}", h.state().notice);
+    assert_eq!(placed_version(&h), 2, "{:?}", h.state().notice());
     right_click(&mut h, PLACED);
     assert!(h.query_by_label("Technique · v2").is_some());
     assert!(h.query_by_label_contains("Upgrade to").is_none());
@@ -100,7 +100,7 @@ fn detaching_from_the_menu_selects_what_replaced_the_node_in_one_undo_step() {
     h.run();
     let app = h.state();
     let nodes = app.session.document().canvases().get(&app.canvas).unwrap().nodes();
-    assert!(!nodes.contains_key(&PLACED), "{:?}", app.notice);
+    assert!(!nodes.contains_key(&PLACED), "{:?}", app.notice());
     assert_eq!(app.selection.nodes().len(), 1);
     assert!(app.selection.nodes().iter().all(|id| nodes.get(id).is_some_and(|node| node.kind == "source.text")));
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);

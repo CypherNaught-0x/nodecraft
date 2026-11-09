@@ -86,7 +86,7 @@ fn typed_clipboard_files_use_bounded_drop_acquisition_and_one_undo() {
     }
     let existing = before.canvases().get(&h.state().canvas).unwrap().nodes();
     let added: Vec<_> = nodes(&h).into_iter().filter(|node| !existing.contains_key(&node.id)).collect();
-    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice());
     assert!(added.iter().any(|node| node.kind == "source.text"));
     assert!(added.iter().any(|node| node.kind == "source.image"));
     let world = h.state().view.to_world(h.state().viewport.min, Pos2::new(600.0, 300.0));
@@ -96,7 +96,7 @@ fn typed_clipboard_files_use_bounded_drop_acquisition_and_one_undo() {
         let rect = super::super::payload_rect(&h.state().session, node, tokens);
         assert!((rect.center() - expected).length() < 1.0, "copied files use the same payload centering as native drops");
     }
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -117,7 +117,7 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
     drop_at(&mut h, at, &paths);
     let existing = before.canvases().get(&h.state().canvas).unwrap().nodes().clone();
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !existing.contains_key(&n.id)).collect();
-    assert_eq!(added.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(added.len(), 2, "{:?}", h.state().notice());
     let text = added.iter().find(|n| n.kind == "source.text").unwrap();
     assert_eq!(text.params.get("text"), Some(&nodecraft_types::Value::Text("Dropped words".into())));
     assert!(added.iter().any(|n| n.kind == "source.image"));
@@ -130,7 +130,7 @@ fn dropped_files_become_nodes_at_the_pointer_as_one_undo_step() {
         assert!((rect.center() - expected).length() < 1.0, "actual {kind} geometry must center under pointer/grid");
     }
     assert_eq!(h.state().selection.nodes(), &added.iter().map(|n| n.id).collect());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before, "one undo removes the whole drop");
@@ -221,11 +221,11 @@ fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
     let pdf = scratch.write("paper.pdf", b"%PDF-1.7\n");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[big, pdf]);
     assert_eq!(nodes(&h).len(), count);
-    assert_eq!(h.state().notice.as_deref(), Some("big.bin wasn't added: files over 16 MiB can't be added (and 1 more files weren't)."));
+    assert_eq!(h.state().notice(), Some("big.bin wasn't added: files over 16 MiB can't be added (and 1 more files weren't)."));
     assert!(!h.state().session.can_undo());
     let missing = std::env::temp_dir().join("nodecraft-drop-does-not-exist.txt");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[missing]);
-    assert_eq!(h.state().notice.as_deref(), Some("nodecraft-drop-does-not-exist.txt wasn't added: the file can't be read."));
+    assert_eq!(h.state().notice(), Some("nodecraft-drop-does-not-exist.txt wasn't added: the file can't be read."));
     // A dropped folder goes to a Folder card instead; nothing in this one can be held.
     drop_at(&mut h, Pos2::new(600.0, 300.0), std::slice::from_ref(&scratch.0));
     let end = std::time::Instant::now() + std::time::Duration::from_secs(10);
@@ -234,7 +234,7 @@ fn unsupported_and_oversized_files_are_skipped_with_a_notice() {
         assert!(std::time::Instant::now() < end, "bounded folder import");
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.starts_with("nothing in nodecraft-drop-") && notice.contains("can be added"), "{notice}");
     assert_eq!(nodes(&h).len(), count);
 }
@@ -246,14 +246,14 @@ fn a_drop_reads_at_most_its_total_and_its_file_count() {
     // Four text-free files of almost 16 MiB: the fourth would pass the drop's 48 MiB and isn't read.
     let big: Vec<PathBuf> = (0..4u8).map(|n| scratch.write(&format!("{n}.bin"), &vec![b'a' + n; MAX_DROP_BYTES - 1])).collect();
     drop_at(&mut h, Pos2::new(600.0, 300.0), &big);
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.starts_with("3.bin wasn't added: a drop reads at most 48 MiB"), "{notice}");
     // 40 tiny text files: 32 are added, the rest are counted in the notice.
     let many: Vec<PathBuf> = (0..40).map(|n| scratch.write(&format!("t{n}.txt"), format!("note {n}").as_bytes())).collect();
     let before = nodes(&h).len();
     drop_at(&mut h, Pos2::new(300.0, 300.0), &many);
     assert_eq!(nodes(&h).len(), before + MAX_FILES);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("at most 32 files")), "{:?}", h.state().notice);
+    assert!(h.state().notice().is_some_and(|n| n.contains("at most 32 files")), "{:?}", h.state().notice());
 }
 
 #[cfg(unix)]
@@ -265,11 +265,11 @@ fn a_dropped_fifo_is_refused_without_blocking_the_worker() {
     assert!(std::process::Command::new("mkfifo").arg(&fifo).status().unwrap().success());
     // No writer ever opens it: a blocking open would hold the worker until the deadline.
     drop_at(&mut h, Pos2::new(600.0, 300.0), std::slice::from_ref(&fifo));
-    assert_eq!(h.state().notice.as_deref().map(|n| n.ends_with("only files can be added, not folders or devices.")), Some(true), "{:?}", h.state().notice);
+    assert_eq!(h.state().notice().map(|n| n.ends_with("only files can be added, not folders or devices.")), Some(true), "{:?}", h.state().notice());
     let before = nodes(&h).len();
     let text = scratch.write("after.txt", b"still reading");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[text]);
-    assert_eq!(nodes(&h).len(), before + 1, "the worker is free again: {:?}", h.state().notice);
+    assert_eq!(nodes(&h).len(), before + 1, "the worker is free again: {:?}", h.state().notice());
 }
 
 #[test]
@@ -279,12 +279,12 @@ fn hdr394_drop_shows_an_actionable_notice_without_adding_nodes() {
     let scratch = Scratch::new("hdr394");
     let exr = scratch.write("sample.exr", b"\x76\x2f\x31\x01");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[exr]);
-    assert_eq!(h.state().notice.as_deref(), Some("sample.exr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
+    assert_eq!(h.state().notice(), Some("sample.exr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
     assert_eq!(nodes(&h).len(), count);
     assert!(!h.state().session.can_undo());
     let hdr = scratch.write("sample.hdr", b"#?RGBE\n");
     drop_at(&mut h, Pos2::new(600.0, 300.0), &[hdr]);
-    assert_eq!(h.state().notice.as_deref(), Some("sample.hdr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
+    assert_eq!(h.state().notice(), Some("sample.hdr wasn't added: HDR images can't be added yet; convert to PNG or JPEG first."));
     assert_eq!(nodes(&h).len(), count);
     assert!(!h.state().session.can_undo());
 }
@@ -297,7 +297,7 @@ fn a_dropped_pdf_becomes_a_pdf_card_showing_its_page_count() {
     let paper = scratch.write("paper.pdf", &nodecraft_media::pdf_fixture::pdf(&["BT /F1 12 Tf 20 150 Td (Hello) Tj ET", ""]));
     drop_at(&mut h, Pos2::new(700.0, 150.0), &[paper]);
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !before.iter().any(|b| b.id == n.id)).collect();
-    let [document] = added.as_slice() else { panic!("one node: {:?}", h.state().notice) };
+    let [document] = added.as_slice() else { panic!("one node: {:?}", h.state().notice()) };
     assert_eq!(document.kind, nodecraft_nodes::document::SOURCE);
     h.run();
     assert!(h.query_by_label("PDF, 2 pages").is_some(), "the card says how many pages the PDF has");
@@ -313,7 +313,7 @@ fn a_dropped_comfyui_workflow_asks_for_the_servers_nodes_then_becomes_its_card()
     let before = nodes(&h).len();
     drop_at(&mut h, Pos2::new(700.0, 150.0), std::slice::from_ref(&path));
     assert_eq!(nodes(&h).len(), before);
-    let notice = h.state().notice.clone().unwrap_or_default();
+    let notice = h.state().notice().map(str::to_owned).unwrap_or_default();
     assert!(notice.contains("fox.json") && notice.contains("Read ComfyUI server nodes"), "{notice}");
 
     let info = br#"{"CLIPTextEncode": {"input": {"required": {"text": ["STRING", {}]}}, "output": ["IMAGE"]},
@@ -350,7 +350,7 @@ fn a_missing_file_acquisition_service_does_not_discard_plain_clipboard_text() {
     let added: Vec<_> = nodes(&h).into_iter().filter(|n| !old.contains_key(&n.id)).collect();
     assert_eq!(added.len(), 1);
     assert_eq!(added[0].params.get("text"), Some(&nodecraft_types::Value::Text("Public text with no file service".into())));
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -371,7 +371,7 @@ fn files_dropped_onto_a_sheet_become_its_sources() {
     drop_at(&mut h, Pos2::new(700.0, 300.0), &[scratch.write("pic.png", &png)]);
     let canvas = h.state().session.document().canvases().get(&sheet).unwrap();
     let kinds: Vec<&str> = canvas.nodes().values().map(|node| node.kind.as_str()).collect();
-    assert_eq!(kinds, ["source.image"], "{:?}", h.state().notice);
+    assert_eq!(kinds, ["source.image"], "{:?}", h.state().notice());
     assert!(nodecraft_engine::sheet_cmds::rows(canvas).is_empty(), "a source is not a row");
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();

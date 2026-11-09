@@ -1097,7 +1097,7 @@ fn dragging_an_output_fans_out_and_replaces_a_single_input_in_one_step() {
     wire_drag(&mut h, from, to);
     // A now feeds B and C; C's single input dropped B.
     assert_eq!(links(&h), [link(1, 2), link(1, 3)].into_iter().collect());
-    assert!(h.state().notice.is_none());
+    assert!(h.state().notices.is_empty());
     h.key_press_modifiers(egui::Modifiers::COMMAND, egui::Key::Z);
     h.run();
     assert_eq!(h.state().session.document(), &before);
@@ -1119,7 +1119,7 @@ fn invalid_drops_leave_the_document_alone_and_explain_why() {
         let (from, to) = (port_point(&h, a, noodle::Side::Output), port_point(&h, b, noodle::Side::Input));
         wire_drag(&mut h, from, to);
         assert_eq!(h.state().session.document(), &before, "{a}->{b}");
-        assert_eq!(h.state().notice.as_deref(), Some(message));
+        assert_eq!(h.state().notice(), Some(message));
     }
     // Dropping on empty canvas only opens "Turn into" (a new drag closes it), and Escape
     // mid-drag does nothing.
@@ -1254,7 +1254,7 @@ fn list_inputs_collect_in_order_reject_duplicates_and_accept_reroutes() {
     let from = port_point(&h, 1, noodle::Side::Output);
     wire_drag(&mut h, from, into);
     assert_eq!(h.state().session.document(), &before);
-    assert_eq!(h.state().notice.as_deref(), Some("These ports are already connected."));
+    assert_eq!(h.state().notice(), Some("These ports are already connected."));
     // Rerouting B → C onto the list appends it after the existing items.
     let from = port_point(&h, 3, noodle::Side::Input);
     wire_drag(&mut h, from, into);
@@ -1828,7 +1828,7 @@ fn a_fit_while_the_palette_is_open_closes_it() {
 }
 
 /// The text the last frames asked the platform to copy, if any.
-fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
+pub(super) fn copied(h: &Harness<'static, NodeCraftApp>) -> Option<String> {
     h.output().platform_output.commands.iter().find_map(|command| match command {
         egui::OutputCommand::CopyText(text) => Some(text.clone()),
         _ => None,
@@ -1938,7 +1938,7 @@ fn paste_lands_centred_duplicate_offsets_and_unreadable_copies_explain() {
     h.event(egui::Event::Paste(text.replace("\"version\":1", "\"version\":9")));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.starts_with("Can't paste these nodes")));
+    assert!(h.state().notice().is_some_and(|n| n.starts_with("Can't paste these nodes")));
 }
 
 #[test]
@@ -1951,7 +1951,7 @@ fn cut_with_a_stale_selection_still_removes_what_remains() {
     h.state_mut().session.dispatch("node.remove", &json!({"canvas": canvas, "id": chain_id(3)})).unwrap();
     h.event(egui::Event::Cut);
     h.run();
-    assert!(h.state().notice.is_none(), "{:?}", h.state().notice);
+    assert!(h.state().notices.is_empty(), "{:?}", h.state().notice());
     assert!(!h.state().session.document().canvases().get(&canvas).unwrap().nodes().contains_key(&chain_id(4)));
 }
 
@@ -1973,7 +1973,7 @@ fn copies_that_could_not_paste_back_are_refused_and_cut_keeps_them() {
     assert!(copied(&h).is_none());
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("too large to copy")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("too large to copy")));
 }
 
 #[test]
@@ -1984,7 +1984,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
     h.event(egui::Event::Paste("x".repeat(clipboard::MAX_BYTES + 1)));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("16 MiB")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("16 MiB")));
     // An Image node referencing an asset, copied from another project.
     let mut image = h.state().session.kinds().get("source.image").unwrap().descriptor().instantiate(NodeId::from_bytes([9; 16]), &BTreeMap::new()).unwrap();
     let asset = nodecraft_types::AssetRef { hash: nodecraft_types::Blake3::from_bytes([1; 32]), mime: "image/png".parse().unwrap(), meta: Default::default() };
@@ -1999,7 +1999,7 @@ fn oversized_and_missing_media_pastes_are_refused() {
     h.event(egui::Event::Paste(clipboard::to_text(&foreign).unwrap()));
     h.run();
     assert_eq!(h.state().session.document(), &before);
-    assert!(h.state().notice.as_deref().is_some_and(|n| n.contains("missing asset")));
+    assert!(h.state().notice().is_some_and(|n| n.contains("missing asset")));
     // The same UUID is not evidence of availability either.
     let local = clipboard::Payload { project: Some(h.state().session.document().id()), ..foreign };
     h.event(egui::Event::Paste(clipboard::to_text(&local).unwrap()));
@@ -3166,7 +3166,7 @@ fn bulk71_mixed_text_edits_all_with_one_undo_and_owns_shortcuts() {
         canvas.nodes().values().all(|node| node.params.get("text") == Some(&Value::Text("A shared public-safe prompt".into()))),
         "actual nodes: {:?}, notice: {:?}, revision: {}",
         canvas.nodes(),
-        h.state().notice,
+        h.state().notice(),
         h.state().session.revision()
     );
     assert_eq!(h.state().session.revision(), 1);

@@ -26,7 +26,7 @@ impl NodeCraftApp {
     pub(super) fn paid_result_close_request(&mut self, ctx: &egui::Context) -> bool {
         let waiting = close_request(ctx, self.runs.as_ref().is_some_and(super::runs::Runs::is_preparing_results));
         if waiting {
-            self.notice = Some("Saving paid results before closing…".into());
+            self.notices.info("Saving paid results before closing…");
         }
         waiting
     }

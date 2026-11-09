@@ -205,10 +205,10 @@ impl NodeCraftApp {
             crate::bulk::Intent::OpenModel { canvas, exact_ids, revision } => self.open_model_picker(canvas, exact_ids, revision),
         };
         match result {
-            Ok(()) => self.notice = None,
+            Ok(()) => self.notices.clear(),
             Err(error) => {
                 self.bulk.failed(error.message.clone());
-                self.notice = Some(error.message);
+                self.notices.report(error);
             }
         }
     }

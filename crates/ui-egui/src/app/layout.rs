@@ -252,9 +252,9 @@ impl NodeCraftApp {
     pub(super) fn apply_layout_menu(&mut self, ctx: &egui::Context, mode: &str, owner: egui::Id) {
         // Owner is an actual popup ID captured from this toolbar or the card response.
         if let Err(error) = self.dispatch_layout_scoped(ctx, &json!({"mode":mode}), Some(owner)) {
-            self.notice = Some(error.message);
+            self.notices.report(error);
         } else {
-            self.notice = None;
+            self.notices.clear();
         }
     }
 }

@@ -81,7 +81,7 @@ fn upscale_adds_a_model_card_without_running_it() {
     h.run();
     let card = nodes(&h).into_iter().find(|n| n.kind == nodecraft_nodes::generation::KIND).expect("an image card");
     assert_eq!(card.params.get(nodecraft_nodes::generation::MODEL), Some(&Value::Text("fal.esrgan".into())));
-    assert!(fed_by_image(&h, card.id), "{:?}", h.state().notice);
+    assert!(fed_by_image(&h, card.id), "{:?}", h.state().notice());
 }
 
 #[test]
@@ -91,7 +91,7 @@ fn open_in_3d_adds_a_3d_card() {
     h.get_by_label_contains("Open in 3D").click();
     h.run();
     let card = nodes(&h).into_iter().find(|n| n.kind == nodecraft_nodes::generation::MESH_KIND).expect("a 3D card");
-    assert!(fed_by_image(&h, card.id), "{:?}", h.state().notice);
+    assert!(fed_by_image(&h, card.id), "{:?}", h.state().notice());
 }
 
 #[test]

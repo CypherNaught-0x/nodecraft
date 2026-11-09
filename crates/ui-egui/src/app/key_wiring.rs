@@ -188,7 +188,7 @@ impl NodeCraftApp {
                 {
                     self.focus_port(ctx, pending.origin.0, &pending.origin.1);
                 }
-                self.notice = None;
+                self.notices.clear();
             }
             Some(Step::Move(forward)) => self.key_wiring_move(ctx, forward),
             Some(Step::Commit) => self.key_wiring_commit(ctx),
@@ -222,7 +222,7 @@ impl NodeCraftApp {
             Ok(Some(wiring)) => wiring,
             Ok(None) => return,
             Err(message) => {
-                self.notice = Some(message);
+                self.notices.error(message);
                 return;
             }
         };
@@ -231,12 +231,12 @@ impl NodeCraftApp {
         let current = wiring.moving.and_then(|id| canvas.edges().get(&id)).map(|edge| edge.to.clone());
         let target = current.filter(|to| candidates.iter().any(|(at, _)| at == to)).or_else(|| candidates.first().map(|(at, _)| at.clone()));
         let Some(target) = target else {
-            self.notice = Some("No port on screen can connect to this one.".into());
+            self.notices.warning("No port on screen can connect to this one.");
             return;
         };
         let side = Self::candidate_side(&wiring);
         self.focus_port(ctx, side, &target);
-        self.notice = Some("Connecting: Tab or the arrow keys choose a port, Enter connects, Escape cancels.".into());
+        self.notices.info("Connecting: Tab or the arrow keys choose a port, Enter connects, Escape cancels.");
         self.key_wiring = Some(KeyWiring { wiring, origin: (port.side, port.at), target: Some(target) });
     }
 
@@ -291,7 +291,7 @@ impl NodeCraftApp {
         let result = match command {
             Err(message) => {
                 // Refused: the flow stays open so another port can be chosen.
-                self.notice = Some(message);
+                self.notices.error(message);
                 return;
             }
             Ok(None) => Ok(()),
@@ -299,12 +299,12 @@ impl NodeCraftApp {
         };
         match result {
             Ok(()) => {
-                self.notice = None;
+                self.notices.clear();
                 if let Some(pending) = self.key_wiring.take() {
                     self.focus_port(ctx, pending.origin.0, &pending.origin.1);
                 }
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -318,18 +318,18 @@ impl NodeCraftApp {
         };
         let id = match edges.as_slice() {
             [] => {
-                self.notice = Some("This port has no connection to remove.".into());
+                self.notices.warning("This port has no connection to remove.");
                 return;
             }
             [id] => *id,
             more => {
-                self.notice = Some(format!("This output has {} connections; focus the input to remove one.", more.len()));
+                self.notices.warning(format!("This output has {} connections; focus the input to remove one.", more.len()));
                 return;
             }
         };
         match self.session.dispatch("edge.disconnect", &json!({"canvas": self.canvas, "id": id})) {
-            Ok(_) => self.notice = None,
-            Err(error) => self.notice = Some(error.message),
+            Ok(_) => self.notices.clear(),
+            Err(error) => self.notices.report(error),
         }
     }
 

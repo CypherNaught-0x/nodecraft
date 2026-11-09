@@ -95,7 +95,7 @@ fn frames_until(h: &mut Harness<'static, NodeCraftApp>, done: impl Fn(&Harness<'
         if done(h) {
             return;
         }
-        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice);
+        assert!(Instant::now() < deadline, "never got there; notice: {:?}", h.state().notice());
         std::thread::sleep(Duration::from_millis(5));
     }
 }

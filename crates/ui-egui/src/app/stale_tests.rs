@@ -49,7 +49,7 @@ fn open(h: &mut Harness<'static, NodeCraftApp>, query: &str) {
         }
     }
     h.run();
-    assert!(h.state().palette.is_some(), "opening {query}; snapshot={} notice={:?}", h.state().stale_snapshot.is_some(), h.state().notice);
+    assert!(h.state().palette.is_some(), "opening {query}; snapshot={} notice={:?}", h.state().stale_snapshot.is_some(), h.state().notice());
     h.event(egui::Event::Text(query.into()));
     h.run();
 }
@@ -169,7 +169,7 @@ fn actual_palette_report_preserves_state_and_shared_cause_count_without_rehashin
     let status_revision = h.state().session.status_revision();
     let selection = h.state().selection.clone();
     let view = h.state().view;
-    h.state_mut().notice = Some("Existing notice".into());
+    h.state_mut().notices.error("Existing notice");
     open(&mut h, "List stale results");
     assert_eq!(calls.load(Ordering::SeqCst), 0, "opening/filtering must not hash");
     h.key_press(egui::Key::Enter);
@@ -409,7 +409,7 @@ fn actual_engine_router_budget_failure_is_visible_instead_of_zero_success() {
     // Avoid rendering this deliberately large router fixture; exercise the same chosen-command handler.
     app.dispatch_palette_command("canvas.stale");
     assert!(app.stale_snapshot.is_none());
-    let notice = app.notice.as_deref().unwrap();
+    let notice = app.notice().unwrap();
     assert!(notice.contains("invalid_input"));
     assert!(notice.contains("routers"));
     assert!(!notice.contains("0 stale"));
@@ -437,7 +437,7 @@ fn newly_chosen_query_installs_in_activation_frame_and_preserves_other_notices()
     // egui may perform the first Area sizing pass before exposing its accessibility children.
     h.run();
     assert!(visible(&h));
-    h.state_mut().notice = Some("Unrelated failure".into());
+    h.state_mut().notices.error("Unrelated failure");
     h.run();
     h.get_by_label("Unrelated failure");
     assert!(visible(&h));
@@ -466,7 +466,7 @@ fn performance_palette_report_keeps_main_clipboard_behavior() {
     h.event(egui::Event::Key { key: egui::Key::Enter, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE });
     h.step();
     assert!(h.state().palette.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some("Performance report copied to the clipboard."));
+    assert_eq!(h.state().notice(), Some("Performance report copied to the clipboard."));
     let copied = h
         .output()
         .platform_output
@@ -519,7 +519,7 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     h.event(egui::Event::Text("Retain this public unsaved draft".into()));
     h.run();
     h.state_mut().view.zoom = 0.15;
-    h.state_mut().notice = Some("Keep this unrelated notice".into());
+    h.state_mut().notices.error("Keep this unrelated notice");
     h.run();
     assert!(h.state().editors.values().any(|editor| editor.hidden_dirty));
     let drafts: Vec<_> = h.state().editors.iter().map(|(id, editor)| (*id, editor.draft_count(), editor.hidden_dirty)).collect();
@@ -538,7 +538,7 @@ fn dismissing_staleness_check_preserves_document_history_notices_and_hidden_draf
     assert!(h.query_by_role_and_label(Role::Button, "Dismiss check").is_none());
     h.get_by_label("Keep this unrelated notice");
     h.get_by_role_and_label(Role::Button, "Discard drafts");
-    assert_eq!(h.state().notice.as_deref(), Some("Keep this unrelated notice"));
+    assert_eq!(h.state().notice(), Some("Keep this unrelated notice"));
     assert_eq!(h.state().session.document(), &document);
     assert_eq!(h.state().session.revision(), revision);
     assert_eq!(h.state().session.events_since(0).unwrap(), events);

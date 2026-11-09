@@ -163,9 +163,9 @@ fn overflow_search_and_comments_dispatch_and_keep_their_first_frame_focus() {
         h.run();
         assert!(!egui::Popup::is_id_open(&h.ctx, topbar::popup_id()));
         if label == "Comments" {
-            assert!(h.state().comments.open, "notice={:?}", h.state().notice);
+            assert!(h.state().comments.open, "notice={:?}", h.state().notice());
         } else {
-            assert!(h.state().search.open, "notice={:?}", h.state().notice);
+            assert!(h.state().search.open, "notice={:?}", h.state().notice());
             assert_eq!(h.ctx.memory(|m| m.focused()), Some(h.state().search_input_id()));
         }
         assert_eq!(h.state().session.document(), &document);

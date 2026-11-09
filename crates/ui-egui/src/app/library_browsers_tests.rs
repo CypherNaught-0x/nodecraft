@@ -79,7 +79,7 @@ fn the_assets_tab_shows_a_thumbnail_filters_by_kind_and_inserts_the_asset_in_one
     h.get_by_label("Insert").click();
     h.run();
     let cards = holding(&h, &asset);
-    assert_eq!(cards.len(), 2, "a second card holds the same asset: {:?}", h.state().notice);
+    assert_eq!(cards.len(), 2, "a second card holds the same asset: {:?}", h.state().notice());
     let inserted = cards.into_iter().find(|id| *id != PHOTO).unwrap();
     assert_eq!(h.state().selection.nodes().iter().copied().collect::<Vec<_>>(), [inserted]);
     let node = canvas(&h).nodes().get(&inserted).unwrap();
@@ -118,12 +118,12 @@ fn the_history_tab_restores_an_older_result_and_places_one_as_a_card() {
     assert_eq!(uses.len(), 2);
     uses[1].click();
     h.run();
-    assert_eq!(canvas(&h).nodes().get(&TEXT).unwrap().active, Some(g(1)), "{:?}", h.state().notice);
+    assert_eq!(canvas(&h).nodes().get(&TEXT).unwrap().active, Some(g(1)), "{:?}", h.state().notice());
 
     let before = canvas(&h).nodes().len();
     h.query_all_by_label("Place").next().unwrap().click();
     h.run();
-    assert_eq!(canvas(&h).nodes().len(), before + 1, "{:?}", h.state().notice);
+    assert_eq!(canvas(&h).nodes().len(), before + 1, "{:?}", h.state().notice());
     let placed = *h.state().selection.nodes().iter().next().unwrap();
     let node = canvas(&h).nodes().get(&placed).unwrap();
     assert_eq!(node.params.get("text"), Some(&Value::Text("Take 2: a forest".into())), "the newest result, as a source card");
@@ -192,7 +192,7 @@ fn the_styles_tab_marks_soul_ids_and_the_provider_and_uses_a_style_on_the_select
     uses[1].click();
     h.run();
     let wired: Vec<NodeId> = canvas(&h).edges().values().filter(|e| e.to.node == card && e.to.port == "style").map(|e| e.from.node).collect();
-    assert_eq!(wired, [NEON], "the neon style replaced the ink one: {:?}", h.state().notice);
+    assert_eq!(wired, [NEON], "the neon style replaced the ink one: {:?}", h.state().notice());
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     assert_eq!(h.state().session.document(), &before, "one undo step");
 
@@ -240,7 +240,7 @@ fn ticked_results_go_on_the_canvas_together_in_one_undo_step() {
     let count = canvas(&h).nodes().len();
     h.get_by_label("Place on canvas").click();
     h.run();
-    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice);
+    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice());
     let placed: Vec<NodeId> = h.state().selection.nodes().iter().copied().collect();
     assert_eq!(placed.len(), 2, "the placed cards are selected");
     let mut titles: Vec<String> = placed.iter().map(|id| canvas(&h).nodes()[id].title.clone()).collect();
@@ -270,7 +270,7 @@ fn ticked_assets_are_placed_and_only_results_on_this_canvas_export() {
     let count = canvas(&h).nodes().len();
     h.get_by_label("Place on canvas").click();
     h.run();
-    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice);
+    assert_eq!(canvas(&h).nodes().len(), count + 2, "{:?}", h.state().notice());
     assert_eq!(holding(&h, &photo).len(), 2, "the photo again, from the project's stored bytes");
     // Ticking a painting alone allows Export: an entry labelled with its card was found in a result.
     h.query_all_by_label("Painter").next().unwrap().click();
@@ -296,7 +296,7 @@ fn ticked_results_export_through_the_workflow_result_save_after_a_folder_is_chos
     h.state_mut().exports.answer = Some(dir.path().to_path_buf());
     h.get_by_label("Export…").click();
     h.run_steps(3);
-    assert!(h.query_by_label("Save workflow results").is_some(), "{:?}", h.state().notice);
+    assert!(h.query_by_label("Save workflow results").is_some(), "{:?}", h.state().notice());
     assert!(h.query_by_label("Only the chosen historical result items.").is_some());
     assert!(h.query_by_label("2 media files; 2 ready").is_some());
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0, "nothing is written before Save files");
@@ -322,7 +322,7 @@ fn a_ticked_result_that_is_deleted_is_unticked() {
     let count = canvas(&h).nodes().len();
     h.get_by_label("Place on canvas").click();
     h.run();
-    assert_eq!(canvas(&h).nodes().len(), count + 1, "the rest still places: {:?}", h.state().notice);
+    assert_eq!(canvas(&h).nodes().len(), count + 1, "the rest still places: {:?}", h.state().notice());
     // Undoing the placement and the deletion brings the result back, unticked.
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
@@ -341,13 +341,13 @@ fn a_ticked_asset_is_saved_to_my_library_placed_from_it_and_removed() {
     h.run();
     h.get_by_label("Save to My library").click();
     h.run();
-    assert_eq!(h.state().notice.as_deref(), Some("1 saved to My library"));
+    assert_eq!(h.state().notice(), Some("1 saved to My library"));
     assert!(h.query_by_label("Save to My library").is_none(), "the ticks were cleared");
 
     h.get_by_label("My library").click();
     h.run();
     h.run();
-    assert!(h.query_by_label("Image Holiday photo").is_some(), "the entry is listed: {:?}", h.state().notice);
+    assert!(h.query_by_label("Image Holiday photo").is_some(), "the entry is listed: {:?}", h.state().notice());
     assert!(h.query_by_label_contains("Image · from ").is_some(), "with the project it came from");
     assert!(h.query_by_label_contains("1 file · ").is_some());
 
@@ -355,7 +355,7 @@ fn a_ticked_asset_is_saved_to_my_library_placed_from_it_and_removed() {
     h.get_by_label("Place").click();
     h.run();
     let cards = holding(&h, &asset);
-    assert_eq!(cards.len(), 2, "{:?}", h.state().notice);
+    assert_eq!(cards.len(), 2, "{:?}", h.state().notice());
     let placed = cards.into_iter().find(|id| *id != PHOTO).unwrap();
     assert_eq!(canvas(&h).nodes()[&placed].title, "Holiday photo");
     assert_eq!(h.state().selection.nodes().iter().copied().collect::<Vec<_>>(), [placed]);
@@ -365,7 +365,7 @@ fn a_ticked_asset_is_saved_to_my_library_placed_from_it_and_removed() {
     h.get_by_label("Remove from My library").click();
     h.run();
     h.run();
-    assert_eq!(h.state().notice.as_deref(), Some("Removed 1 file from My library."));
+    assert_eq!(h.state().notice(), Some("Removed 1 file from My library."));
     assert!(h.query_by_label_contains("Nothing saved yet").is_some());
     h.get_by_label("This project").click();
     h.run();
@@ -392,11 +392,11 @@ fn a_soul_id_is_set_on_a_selected_soul_2_card_and_marked_unavailable_on_another_
     h.run();
     h.run();
     let use_it = h.get_by_label("Use on selected card");
-    assert!(!use_it.accesskit_node().is_disabled(), "SOUL 2 takes a Soul ID: {:?}", h.state().notice);
+    assert!(!use_it.accesskit_node().is_disabled(), "SOUL 2 takes a Soul ID: {:?}", h.state().notice());
     use_it.click();
     h.run();
     let card = &canvas(&h).nodes()[&SOUL_2];
-    assert_eq!(card.params.get("custom_reference_id"), Some(&Value::Text(SOUL_ID.into())), "{:?}", h.state().notice);
+    assert_eq!(card.params.get("custom_reference_id"), Some(&Value::Text(SOUL_ID.into())), "{:?}", h.state().notice());
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
 
     // Another account's list: the Library says it is unavailable here, and won't set it.

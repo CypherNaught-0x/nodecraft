@@ -99,7 +99,7 @@ fn answered(h: &mut Harness<'static, NodeCraftApp>) -> String {
         let ctx = h.ctx.clone();
         h.state_mut().tick_option_fetch(&ctx);
         if !h.state().option_fetch.as_ref().unwrap().is_waiting() {
-            return h.state().notice.clone().unwrap_or_default();
+            return h.state().notice().map(str::to_owned).unwrap_or_default();
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
@@ -347,7 +347,7 @@ mod picker {
         assert_eq!(status["last"]["id"], pending["pending"]);
         assert_eq!(status["last"]["error"], "the provider server changed; refresh again");
         assert_eq!(status["last"]["installed"], json!([]));
-        assert!(h.state().notice.as_deref().is_some_and(|notice| notice.contains("server changed")));
+        assert!(h.state().notice().is_some_and(|notice| notice.contains("server changed")));
         ready.set(true);
         wake.borrow_mut().take().unwrap().wake();
         h.state_mut().tick_option_fetch(&ctx);

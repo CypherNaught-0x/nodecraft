@@ -269,6 +269,10 @@ pub struct Tokens {
     pub dim: f32,
     /// A number inside a round badge, as a fraction of the badge's radius (input order badges).
     pub badge_text_ratio: f32,
+    /// The coloured edge on a notice's left side, in its kind's colour (#1110).
+    pub notice_edge: f32,
+    /// The width of the bottom-left notice stack, before it is fitted to the window.
+    pub notice_width: f32,
 }
 
 pub const DARK: Tokens = Tokens {
@@ -449,6 +453,8 @@ pub const DARK: Tokens = Tokens {
     inset: 2.0,
     dim: 0.6,
     badge_text_ratio: 1.2,
+    notice_edge: 3.0,
+    notice_width: 380.0,
 };
 
 pub const LIGHT: Tokens = Tokens {

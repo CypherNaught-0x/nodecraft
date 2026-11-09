@@ -62,13 +62,13 @@ fn the_chip_menu_copies_text_and_image_results() {
 
     let text = copy(&mut h, "Result 2 of 2, active");
     assert!(matches!(text.as_slice(), [egui::OutputCommand::CopyText(t)] if t == "a quiet forest"), "{text:?}");
-    assert_eq!(h.state().notice.as_deref(), Some("Copied the text."));
+    assert_eq!(h.state().notice(), Some("Copied the text."));
 
     let image = copy(&mut h, "Result 1 of 2");
     let [egui::OutputCommand::CopyImage(image)] = image.as_slice() else { panic!("{image:?}") };
     assert_eq!(image.size, [2, 1]);
     assert_eq!(image.pixels, vec![egui::Color32::from_rgb(255, 0, 0), egui::Color32::from_rgba_premultiplied(0, 0, 255, 128)]);
-    assert_eq!(h.state().notice.as_deref(), Some("Copied the 2×1 image."));
+    assert_eq!(h.state().notice(), Some("Copied the 2×1 image."));
     assert_eq!(h.state().session.revision(), revision, "copying doesn't edit the project");
 }
 

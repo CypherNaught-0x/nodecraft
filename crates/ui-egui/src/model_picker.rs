@@ -378,7 +378,7 @@ impl ModelPicker {
         let id = egui::Id::new("model_picker157");
         crate::floating::panel(ctx, "Choose a model", id, crate::floating::Home::CenterTop, t).open(&mut open).default_width(t.dialog_width).show(ctx, |ui| {
             if let Some(error) = error {
-                ui.colored_label(t.danger, error);
+                crate::notices::inline_error(ui, t, error);
             }
             let search = ui.add(egui::TextEdit::singleline(&mut self.query).hint_text("Search models or providers…").char_limit(QUERY_CHARS));
             if self.focus {

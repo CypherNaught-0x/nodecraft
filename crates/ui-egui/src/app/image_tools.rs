@@ -102,13 +102,13 @@ impl NodeCraftApp {
         let revision = self.session.revision();
         let seed = ("image-tool", tool.id(), from.node, revision);
         let (Some(id), Some(first)) = (ids::node_id(document, (seed, 0)), ids::edge_id(document, (seed, 0))) else {
-            self.notice = Some("Couldn't allocate node ids; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
             return;
         };
         let mut params = json!({"canvas": self.canvas, "tool": tool.id(), "from": from, "id": id, "edges": [first], "pos": mask_cmds::beside(source.pos, 1.0)});
         if tool == Tool::SplitLayers {
             let (Some(editor), Some(second)) = (ids::node_id(document, (seed, 1)), ids::edge_id(document, (seed, 1))) else {
-                self.notice = Some("Couldn't allocate node ids; try again.".into());
+                self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate node ids; try again.");
                 return;
             };
             params["edges"] = json!([first, second]);
@@ -116,10 +116,10 @@ impl NodeCraftApp {
         }
         match self.session.dispatch("image.tool", &params) {
             Ok(_) => {
-                self.notice = None;
+                self.notices.clear();
                 self.selection.only(id);
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 }

@@ -106,7 +106,7 @@ fn open((mut h, runs): (Harness<'static, NodeCraftApp>, Runs)) -> (Harness<'stat
             break;
         }
     }
-    assert!(h.state().shader_editor.is_some(), "{:?}", h.state().notice);
+    assert!(h.state().shader_editor.is_some(), "{:?}", h.state().notice());
     (h, runs)
 }
 

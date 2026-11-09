@@ -167,7 +167,7 @@ fn a_reload_offers_the_work_and_recover_restores_it() {
     app.decide_web_recovery(Choice::Recover);
     assert_eq!(app.session.document(), &edited);
     assert!(!app.web_recovery_owns_input());
-    assert!(app.notice.as_deref().unwrap().starts_with("Recovered"));
+    assert!(app.notice().unwrap().starts_with("Recovered"));
     assert!(app.web_unsaved(), "the recovered work is unsaved, so leaving asks");
     frame(&mut app, &ctx);
     {
@@ -252,12 +252,12 @@ fn a_failed_write_is_said_once_and_leaves_an_older_consistent_state() {
     disk.borrow_mut().failures.push_back("this site's browser storage is full".into());
     add_text(&mut app, 2);
     frame(&mut app, &ctx);
-    let notice = app.notice.take().unwrap();
+    let notice = app.notices.take_latest().unwrap();
     assert!(notice.contains("this site's browser storage is full") && notice.contains("keeps trying"), "{notice}");
     // Later frames would follow a gap: they wait for the slot to be written whole.
     add_text(&mut app, 3);
     frame(&mut app, &ctx);
-    assert_eq!(app.notice, None, "said once");
+    assert_eq!(app.notice(), None, "said once");
     assert_eq!(disk.borrow().slots[&slot(1)].frames.len(), 1);
 
     // The next checkpoint (here: a save's) starts the slot over, and frames follow it.
@@ -269,7 +269,7 @@ fn a_failed_write_is_said_once_and_leaves_an_older_consistent_state() {
     disk.borrow_mut().failures.push_back("this site's browser storage is full".into());
     add_text(&mut app, 5);
     frame(&mut app, &ctx);
-    assert!(app.notice.is_some(), "a new failure, after writes landed again, is said again");
+    assert!(app.notice().is_some(), "a new failure, after writes landed again, is said again");
 }
 
 #[test]
@@ -407,7 +407,7 @@ fn without_web_locks_nothing_is_kept_and_that_is_said() {
     disk.borrow_mut().no_locks = true;
     let mut app = tab(&disk, 1);
     frame(&mut app, &ctx);
-    assert!(app.notice.as_deref().unwrap().contains("can't keep unsaved work"));
+    assert!(app.notice().unwrap().contains("can't keep unsaved work"));
     assert!(!app.web_recovery_owns_input());
     add_text(&mut app, 1);
     frame(&mut app, &ctx);
@@ -457,7 +457,7 @@ fn total_budget_prunes_oldest_unlocked_work_and_reports_the_count() {
     let mut app = tab_with_budget(&disk, 20, budget);
     frame(&mut app, &ctx);
     assert_eq!(offer(&app).unwrap().slot, slot(12), "the newest recovery copy remains offered");
-    assert!(app.notice.as_deref().unwrap().contains("Removed 9 old recovery copies"));
+    assert!(app.notice().unwrap().contains("Removed 9 old recovery copies"));
     let disk = disk.borrow();
     assert_eq!(disk.slots.keys().cloned().collect::<Vec<_>>(), [slot(10), slot(11), slot(12), slot(20)]);
     assert!(disk.slots.values().map(stored_size).sum::<usize>() <= budget);
@@ -497,7 +497,7 @@ fn growing_work_prunes_old_copies_in_its_write_batch() {
     app.decide_web_recovery(Choice::Later);
     add_text(&mut app, 3);
     frame(&mut app, &ctx);
-    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    assert!(app.notice().unwrap().contains("Removed 1 old recovery copy"));
     let disk = disk.borrow();
     assert!(!disk.slots.contains_key(&slot(1)), "oldest abandoned work makes room for the growing tab");
     assert!(disk.slots.contains_key(&slot(2)), "the previously offered copy is still claimed until the page exits");
@@ -518,7 +518,7 @@ fn failed_budget_pruning_keeps_copies_and_releases_temporary_claims() {
     disk.borrow_mut().failures.push_back("this site's browser storage is full".into());
     add_text(&mut app, 3);
     frame_at(&mut app, &ctx, 1.0);
-    assert!(app.notice.as_deref().unwrap().contains("keeps trying"));
+    assert!(app.notice().unwrap().contains("keeps trying"));
     {
         let disk = disk.borrow();
         assert!(disk.slots.contains_key(&slot(1)), "pruning and publication both rolled back");
@@ -527,7 +527,7 @@ fn failed_budget_pruning_keeps_copies_and_releases_temporary_claims() {
     }
     frame_at(&mut app, &ctx, 1.0 + RETRY_SECS);
     assert!(!disk.borrow().slots.contains_key(&slot(1)), "retry inventories storage again and prunes atomically");
-    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    assert!(app.notice().unwrap().contains("Removed 1 old recovery copy"));
 }
 
 #[test]
@@ -548,7 +548,7 @@ fn deferred_or_failed_recovery_stays_reserved_when_pruning_cannot_reach_the_budg
         if failed_recover {
             add_text(&mut app, 3);
             app.decide_web_recovery(Choice::Recover);
-            assert!(app.notice.as_deref().unwrap().contains("offered again next time"));
+            assert!(app.notice().unwrap().contains("offered again next time"));
         } else {
             app.decide_web_recovery(Choice::Later);
             add_text(&mut app, 3);
@@ -590,13 +590,15 @@ fn cleanup_preserves_recovery_guidance_and_replaces_its_previous_count() {
     app.decide_web_recovery(Choice::Recover);
     app.web_recovery.as_mut().unwrap().budget = 0;
     frame(&mut app, &ctx);
-    assert!(app.notice.as_deref().unwrap().contains("Save it to a file to keep it."));
-    assert!(app.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    // The guidance and the cleanup count are separate notices in the stack (#1110).
+    let all = |app: &NodeCraftApp| app.notices.iter().map(|notice| notice.text.clone()).collect::<Vec<_>>().join("\n");
+    assert!(all(&app).contains("Save it to a file to keep it."));
+    assert!(app.notice().unwrap().contains("Removed 1 old recovery copy"));
     disk.borrow_mut().slots.insert(slot(0), stored);
     frame_at(&mut app, &ctx, INVENTORY_SECS);
-    let notice = app.notice.as_deref().unwrap();
-    assert!(notice.contains("Save it to a file to keep it."));
-    assert_eq!(notice.matches("Removed 1 old recovery copy").count(), 1, "periodic cleanup replaces its suffix instead of growing the notice");
+    let notices = all(&app);
+    assert!(notices.contains("Save it to a file to keep it."));
+    assert_eq!(notices.matches("Removed 1 old recovery copy").count(), 1, "periodic cleanup replaces its count instead of stacking another");
 }
 
 #[test]
@@ -619,7 +621,7 @@ fn periodic_inventory_catches_another_tabs_growth_and_close_without_own_writes()
     frame_at(&mut second, &ctx, INVENTORY_SECS);
     assert!(!disk.borrow().slots.contains_key(&slot(1)), "closed-tab growth is noticed even with no local writes or quota error");
     assert!(disk.borrow().slots[&slot(2)].frames.is_empty(), "this tab did not need to edit to trigger cleanup");
-    assert!(second.notice.as_deref().unwrap().contains("Removed 1 old recovery copy"));
+    assert!(second.notice().unwrap().contains("Removed 1 old recovery copy"));
 }
 
 #[test]
@@ -634,7 +636,7 @@ fn a_scan_cleanup_failure_does_not_claim_other_tabs_recovery_copies() {
     let disk = disk.borrow();
     assert!(disk.slots.contains_key(&slot(1)) && disk.slots.contains_key(&slot(2)));
     assert!(!disk.locks.contains_key(&slot(1)) && !disk.locks.contains_key(&slot(2)));
-    assert!(app.notice.as_deref().unwrap().contains("can't keep unsaved work"));
+    assert!(app.notice().unwrap().contains("can't keep unsaved work"));
 }
 
 #[test]
@@ -683,7 +685,7 @@ fn render_browser_recovery_budget_evidence() {
     app.decide_web_recovery(Choice::Recover);
     app.web_recovery.as_mut().unwrap().budget = 0;
     frame_at(&mut app, &ctx, INVENTORY_SECS);
-    let notice = app.notice.as_deref().unwrap();
+    let notice = app.notice().unwrap();
     assert!(notice.contains("Save it to a file") && notice.contains("Removed 1 old recovery copy"));
     let mut h = egui_kittest::Harness::builder().wgpu().with_size(egui::Vec2::new(1200.0, 800.0)).build_ui_state(
         |ui, app: &mut NodeCraftApp| {

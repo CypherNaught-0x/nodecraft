@@ -145,11 +145,11 @@ impl NodeCraftApp {
     /// they have selected.
     fn go_to(&mut self, presence: &Presence) {
         let Some(canvas) = presence.canvas else {
-            self.notice = Some("They aren't on a canvas.".into());
+            self.notices.info("They aren't on a canvas.");
             return;
         };
         if !self.session.document().canvases().contains_key(&canvas) {
-            self.notice = Some("They're on a canvas you can't see.".into());
+            self.notices.info("They're on a canvas you can't see.");
             return;
         }
         self.open_canvas(canvas);

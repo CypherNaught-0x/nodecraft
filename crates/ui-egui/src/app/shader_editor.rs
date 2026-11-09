@@ -107,7 +107,7 @@ impl NodeCraftApp {
                 let library = self.library_shaders();
                 self.shader_editor = Some(ShaderEditor::new(self.canvas, node, shader, from.as_ref(), library));
             }
-            Err(error) => self.notice = Some(error.message),
+            Err(error) => self.notices.report(error),
         }
     }
 
@@ -371,7 +371,7 @@ impl NodeCraftApp {
             params["error"] = json!(message);
         }
         let Some(card) = ids::node_id(self.session.document(), ("shader-write", node, self.session.revision())) else {
-            self.notice = Some("Couldn't allocate a node id; try again.".into());
+            self.notices.error_for(crate::notices::CANVAS_ADD, "Couldn't allocate a node id; try again.");
             return;
         };
         params["id"] = json!(card);

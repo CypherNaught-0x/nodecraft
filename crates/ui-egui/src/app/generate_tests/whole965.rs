@@ -101,7 +101,7 @@ fn nothing_to_run_says_so_without_a_dialog() {
     record_fresh(&mut h, N, 90);
     ctrl_enter(&mut h);
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some(generate::NOTHING_TO_RUN));
+    assert_eq!(h.state().notice(), Some(generate::NOTHING_TO_RUN));
     // An empty canvas has no workflow either.
     for id in [N, M] {
         h.state_mut().session.dispatch("node.remove", &json!({"canvas": C, "id": id})).unwrap();
@@ -109,7 +109,7 @@ fn nothing_to_run_says_so_without_a_dialog() {
     h.state_mut().dispatch_palette_command("run.workflow");
     h.run();
     assert!(h.state().run_confirm.is_none());
-    assert_eq!(h.state().notice.as_deref(), Some(generate::NO_WORKFLOW));
+    assert_eq!(h.state().notice(), Some(generate::NO_WORKFLOW));
     assert!(runs.lock().unwrap().is_empty());
 }
 

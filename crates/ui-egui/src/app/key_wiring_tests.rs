@@ -109,7 +109,7 @@ fn enter_connects_a_focused_output_to_the_chosen_input_in_one_undo_step() {
     assert!(edges(&h).is_empty(), "choosing changes nothing");
     press(&mut h, egui::Key::Enter);
     assert!(h.state().key_wiring.is_none());
-    assert_eq!(edges(&h), [(ALPHA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice);
+    assert_eq!(edges(&h), [(ALPHA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice());
     // Focus returns to where the connection started.
     assert_eq!(focused(&h), Some(port(&h, ALPHA, Side::Output)));
     h.state_mut().session.dispatch("edit.undo", &json!({})).unwrap();
@@ -128,7 +128,7 @@ fn space_starts_from_an_unconnected_input_and_connects_an_upstream_output() {
     press(&mut h, egui::Key::ArrowRight);
     assert_eq!(focused(&h), Some(port(&h, BETA, Side::Output)));
     press(&mut h, egui::Key::Space);
-    assert_eq!(edges(&h), [(BETA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice);
+    assert_eq!(edges(&h), [(BETA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice());
 }
 
 #[test]
@@ -152,7 +152,7 @@ fn a_connected_input_reroutes_its_noodle_and_shift_delete_disconnects_it() {
     assert_eq!(focused(&h), Some(port(&h, RELAY, Side::Input)));
     press(&mut h, egui::Key::ArrowDown);
     press(&mut h, egui::Key::Enter);
-    assert_eq!(edges(&h), [(BETA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice);
+    assert_eq!(edges(&h), [(BETA, SECOND)].into_iter().collect(), "notice: {:?}", h.state().notice());
     let replaced = h.state().session.document().clone();
     // Shift+Delete on the focused input removes its connection.
     tab_to(&mut h, SECOND, Side::Input);

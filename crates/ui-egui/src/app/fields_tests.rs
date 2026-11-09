@@ -268,7 +268,7 @@ fn rename_saves_through_the_dialog_and_oversized_titles_keep_the_draft() {
     h.run();
     assert_eq!(h.state().session.document(), &before);
     assert_eq!(h.state().fields.rename.as_ref().map(|(_, title)| title.as_str()), Some(draft.as_str()));
-    assert!(h.state().notice.as_deref().unwrap_or_default().contains("4096"));
+    assert!(h.state().notice().unwrap_or_default().contains("4096"));
 }
 
 #[test]
@@ -446,7 +446,7 @@ fn search_next_expands_a_collapsed_field_to_show_its_match_in_one_undo_step() {
         h.state().search.query,
         h.state().search.results,
         h.state().search.current,
-        h.state().notice
+        h.state().notice()
     );
     assert!(h.state().selection.contains(node), "the match is focused");
     let drawn = card(&h).expect("the match is drawn");
@@ -470,7 +470,7 @@ fn tag_navigation_expands_a_collapsed_field_to_show_its_card() {
     h.state_mut().dispatch_tag_filter(&ctx, "canvas.tag_filter_next", &json!({})).unwrap();
     h.run();
     assert!(!canvas(&h).fields().get(&id).unwrap().collapsed);
-    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice);
+    assert!(h.state().selection.contains(node), "notice {:?}", h.state().notice());
     assert!(card(&h).is_some(), "the card is drawn");
 }
 
