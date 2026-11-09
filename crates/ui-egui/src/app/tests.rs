@@ -2883,9 +2883,13 @@ fn a_real_choice_popup_over_the_tag_panel_keeps_its_parameter_intent() {
     )]);
     h.get_by_role_and_label(Role::ComboBox, "quality").click();
     h.run();
-    let high = h.get_by_label("High").rect().center();
-    h.state_mut().view.pan += Pos2::new(150.0, 180.0) - high;
     h.state_mut().tag_filter.open = true;
+    h.run();
+    // The Tag filter now floats at the right. Position the live choice popup over
+    // its actual rectangle, rather than the previous pinned panel's fixed position.
+    let high = h.get_by_label("High").rect().center();
+    let target = h.state().tag_rect().center();
+    h.state_mut().view.pan += target - high;
     h.run();
     let high = h.get_by_label("High").rect().center();
     assert!(h.state().tag_rect().contains(high));

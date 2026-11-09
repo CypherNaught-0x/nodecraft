@@ -430,7 +430,12 @@ impl KeysPanel {
         self.load(settings);
         self.prune(settings);
         let mut open = self.open;
-        crate::floating::panel(ctx, "API keys", egui::Id::new("nodecraft.keys"), crate::floating::Home::RightTop, t).open(&mut open).show(ctx, |ui| {
+        let id = egui::Id::new("nodecraft.keys");
+        let panel = crate::floating::panel(ctx, "API keys", id, crate::floating::Home::RightTop, t)
+            .open(&mut open)
+            .max_height(crate::floating::body_room(ctx, id, t))
+            .vscroll(true);
+        panel.show(ctx, |ui| {
             ui.label(egui::RichText::new(STORED_WHERE).color(t.text_muted));
             ui.add_space(t.control_gap);
             let rows = self.rows.clone();
