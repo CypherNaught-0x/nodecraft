@@ -63,6 +63,19 @@ fn app_mode959_exposes_a_named_modal_with_its_own_controls() {
     assert!(h.state().app_mode.is_none());
 }
 
+#[test]
+fn app_mode959_scaled_dialog_bounds_contain_its_controls() {
+    use egui::accesskit::Role;
+    let mut h = with_app();
+    h.set_size(egui::vec2(1280.0, 800.0));
+    h.ctx.set_zoom_factor(2.0);
+    open(&mut h);
+    h.run_steps(3);
+    let dialog = h.get_by_role_and_label(Role::Dialog, "App mode");
+    let done = dialog.get_by_role_and_label(Role::Button, "Done");
+    assert!(dialog.rect().contains_rect(done.rect()), "scaled container {:?} must contain its control {:?}", dialog.rect(), done.rect());
+}
+
 fn open(h: &mut Harness<'static, NodeCraftApp>) {
     h.state_mut().selection.only(PLACED);
     // The top bar grows to fit the button, then settles.

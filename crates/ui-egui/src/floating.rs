@@ -309,11 +309,13 @@ pub fn modal(ctx: &Context, id: Id, title: &str) -> egui::Modal {
     // content is placed inside it rather than at the root of the tree.
     // Its bounds are where it was last drawn: it stays centred, so they only lag on its first pass.
     let last = egui::AreaState::load(ctx, id).map(|state| state.rect()).filter(|rect| rect.is_finite());
+    let pixels_per_point = ctx.pixels_per_point();
     ctx.accesskit_node_builder(id.with("move"), |node| {
         node.set_role(egui::accesskit::Role::Dialog);
         node.set_label(title);
         node.set_modal();
         if let Some(rect) = last {
+            let rect = rect * pixels_per_point;
             node.set_bounds(egui::accesskit::Rect { x0: rect.min.x.into(), y0: rect.min.y.into(), x1: rect.max.x.into(), y1: rect.max.y.into() });
         }
     });
