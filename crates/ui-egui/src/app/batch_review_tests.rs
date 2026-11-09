@@ -297,3 +297,43 @@ fn dialogs1116_an_unfocused_tag_filter_leaves_escape_to_the_review() {
     h.run();
     assert!(h.state().batch_review.is_none(), "Escape closed the review");
 }
+
+/// A real pointer in a grid cell must select the item even near fixed canvas chrome.
+#[test]
+fn review959_grid_cell_pointer_never_triggers_the_canvas_fit_toolbar() {
+    use egui::accesskit::Role;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        let (session, canvas) = project(&CROSS, Some(3));
+        let mut app = NodeCraftApp::from_session(session, canvas).unwrap();
+        app.theme = theme;
+        app.batch_review = Some(super::batch_review::BatchReview::new(CARD));
+        app.selection.only(CARD);
+        let mut h = Harness::builder().with_size(Vec2::new(640.0, 400.0)).with_max_steps(160).build_ui_state(
+            move |ui, app: &mut NodeCraftApp| {
+                crate::theme::apply(ui.ctx(), theme);
+                app.show(ui);
+            },
+            app,
+        );
+        h.run_steps(8);
+        let cell = h.get_by_role_and_label(Role::Button, "fox night").rect();
+        let fit = h.get_by_role_and_label(Role::Button, "Fit all").rect();
+        let overlap = cell.intersect(fit);
+        // Probe the edge previously occupied by the overlaid toolbar, not only its label.
+        let at = if overlap.is_positive() { overlap.center() } else { cell.right_bottom() - Vec2::splat(3.0) };
+        eprintln!("theme={theme:?} cell={cell:?} fit={fit:?} overlap={overlap:?} at={at:?} layer={:?}", h.ctx.layer_id_at(at));
+        super::panel_check::menu_evidence(&mut h, &format!("batch-navigation-{theme:?}"));
+        let before_view = h.state().view;
+        let before_document = h.state().session.document().clone();
+        h.hover_at(at);
+        h.run_steps(3);
+        for pressed in [true, false] {
+            h.event(egui::Event::PointerButton { pos: at, button: egui::PointerButton::Primary, pressed, modifiers: egui::Modifiers::NONE });
+            h.step();
+        }
+        h.run_steps(4);
+        assert_eq!(h.state().batch_review.as_ref().unwrap().item, 1, "the actual grid cell receives the pointer");
+        assert_eq!(h.state().view, before_view, "choosing a batch item never fits the canvas");
+        assert_eq!(h.state().session.document(), &before_document);
+    }
+}
