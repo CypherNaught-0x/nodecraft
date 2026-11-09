@@ -2695,6 +2695,7 @@ The fixture tests make no network requests. To opt into a paid smoke test, set
 `NODECRAFT_LIVE_<PROVIDER>_MODEL` to replace the catalog default. Providers are `TOGETHER`,
 `MOONSHOT`, `ZAI`, `MINIMAX`, `PERPLEXITY`, `HYPERBOLIC`, `MIRA`, and `COHERE`.
 Mira requires `NODECRAFT_LIVE_MIRA_MODEL` because its model names come from the account.
+The generic card stores the remote name in `mira_model`, separate from the node's `model` selector.
 Each enabled test sends one streamed and one whole request. No live tests run by default.
 
 Hyperbolic requires a current `sk_live_` key and uses `api.hyperbolic.ai/inference/v1`; its old

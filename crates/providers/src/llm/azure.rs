@@ -27,7 +27,7 @@ impl LlmClient {
             request.model = deployment.to_owned();
         }
         if self.endpoint.id == "mira" && job.model == "nodecraft-model" {
-            let model = job.params.get("model").and_then(serde_json::Value::as_str).map(str::trim).unwrap_or_default();
+            let model = job.params.get("mira_model").and_then(serde_json::Value::as_str).map(str::trim).unwrap_or_default();
             if model.is_empty() || model.len() > 256 || model.chars().any(char::is_control) {
                 return Err(ProviderError::new(ErrorKind::UnsupportedInput, "choose a Mira model id from your account's model list"));
             }
