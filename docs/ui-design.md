@@ -869,7 +869,7 @@ colour is never the only cue. Its text is `text`.
   notice's action button) has the keyboard focus and the stack was drawn the frame before. The
   notice takes Escape early, with the tools (`take_tool_escape`; on a sheet, before its table),
   and only when no other Escape owner is active; without the focus, Escape
-  goes where it did before (it clears the selection).
+  goes to its normal owner (the frontmost eligible tool, otherwise the canvas).
 - An optional **action** button runs a command id as the palette would.
 - Each notice's text is an AccessKit **live region**: polite for information and successes,
   assertive for warnings and errors, described by its kind.

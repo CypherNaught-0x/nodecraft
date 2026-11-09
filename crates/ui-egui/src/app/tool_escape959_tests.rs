@@ -275,3 +275,26 @@ fn remembered_canvas_owners_do_not_block_sheet_tools_or_focused_notices() {
         }
     }
 }
+
+#[test]
+fn an_inline_library_question_keeps_the_tool_and_canvas_selection() {
+    let mut h = super::tests::harness();
+    let canvas = h.state().canvas;
+    let card = NodeId::from_bytes([84; 16]);
+    h.state_mut().session.dispatch("node.create", &json!({"canvas":canvas,"id":card,"kind":nodecraft_nodes::shader::ID,"pos":{"x":0,"y":0}})).unwrap();
+    h.state_mut().session.dispatch("shader.save", &json!({"canvas":canvas,"id":card,"name":"Public glow"})).unwrap();
+    h.state_mut().library.open = true;
+    h.state_mut().selection.only(card);
+    h.run();
+    h.get_by_label("Remove").click();
+    h.run();
+    h.get_by_label("Remove Public glow and its versions?");
+    let document = h.state().session.document().clone();
+    h.key_press(egui::Key::Escape);
+    h.run();
+    assert!(h.state().library.confirm.is_none(), "Escape answers Keep");
+    assert!(h.state().library.open, "the question's Escape does not close its tool");
+    assert!(h.state().selection.contains(card), "the canvas never receives the question's Escape");
+    assert_eq!(h.state().session.document(), &document);
+    h.get_by_label("Public glow · v1");
+}

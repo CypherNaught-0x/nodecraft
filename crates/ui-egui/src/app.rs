@@ -3114,10 +3114,13 @@ impl NodeCraftApp {
             || egui::Popup::is_any_open(ctx)
             || ctx.dragged_id().is_some()
             || canvas_owned
-            || (self.library.open && self.library.confirm.is_some())
             || self.drop_pointer_owned()
             || reading;
         if owned {
+            return None;
+        }
+        // An inline question keeps its cancellation before notices and tools too.
+        if self.library_question_escape(ctx) {
             return None;
         }
         // A notice takes Escape before any tool.
