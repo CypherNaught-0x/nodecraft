@@ -5,6 +5,59 @@ use crate::notices::{Notice, NoticeKind};
 use egui_kittest::kittest::Queryable;
 
 #[test]
+fn long_notices1110_keep_details_and_controls_inside_small_windows() {
+    use egui_kittest::kittest::NodeT;
+    for theme in [crate::theme::ThemeKind::Dark, crate::theme::ThemeKind::Light] {
+        for percent in [100_u16, 200] {
+            let scale = f32::from(percent) / 100.0;
+            let mut h = harness();
+            h.set_size(egui::vec2(640.0, 400.0));
+            h.run_steps(3);
+            h.state_mut().session.dispatch("view.ui_scale.set", &serde_json::json!({"percent": percent})).unwrap();
+            h.state_mut().theme = theme;
+            let text = format!("{}Final public detail.", "The provider refused this example; no run was started. ".repeat(45));
+            let owner = "long-notice-layout";
+            h.state_mut()
+                .notices
+                .push_notice(Notice::new(NoticeKind::Error, &text).from_run().owned_by(owner).with_action("Show map", "canvas.minimap_toggle"));
+            h.run_steps(5);
+            let screen = h.ctx.content_rect();
+            assert!((screen.width() - 640.0 / scale).abs() < 1.0 && (screen.height() - 400.0 / scale).abs() < 1.0, "{percent}%: {screen:?}");
+            for label in ["Dismiss notice", "Show map"] {
+                let rect = h.get_by_label(label).rect();
+                assert!(screen.contains_rect(rect), "{theme:?} {scale}: {label}: {rect:?} outside {screen:?}");
+            }
+            let label = h.get_by_label(&text);
+            assert_eq!(label.accesskit_node().live(), egui::accesskit::Live::Assertive);
+            assert!(label.accesskit_node().is_live_atomic());
+            // Scroll within the details. Reading a long error neither discards it nor runs its action.
+            let at = label.rect().min + egui::vec2(5.0, 5.0);
+            let before = h.state().view;
+            h.hover_at(at);
+            h.event(egui::Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Point,
+                phase: egui::TouchPhase::Move,
+                delta: egui::vec2(0.0, -10_000.0),
+                modifiers: egui::Modifiers::NONE,
+            });
+            h.run_steps(5);
+            assert_eq!(h.state().view, before, "scrolling notice details must not move the canvas");
+            assert_eq!(h.state().notice(), Some(text.as_str()));
+            if let Some(folder) = std::env::var_os("NODECRAFT_REVIEW_EVIDENCE") {
+                let folder = std::path::PathBuf::from(folder);
+                std::fs::create_dir_all(&folder).unwrap();
+                h.render().unwrap().save(folder.join(format!("long-notice-{theme:?}-{scale}.png"))).unwrap();
+            }
+            h.get_by_label("Dismiss notice").focus();
+            h.run_steps(2);
+            h.key_press(egui::Key::Escape);
+            h.run_steps(2);
+            assert!(h.state().notices.is_empty());
+        }
+    }
+}
+
+#[test]
 fn escape_dismisses_a_focused_notice_and_reaches_nothing_else() {
     let mut h = harness();
     let id = node(h.state()).id;

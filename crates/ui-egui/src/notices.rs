@@ -227,6 +227,8 @@ pub struct Notices {
     /// The notice whose button had the keyboard focus, or that the pointer was over, last frame.
     focused: Option<u64>,
     hovered: Option<u64>,
+    /// Passing notices outside the bounded stack's scroll viewport do not expire unseen.
+    hidden_by_scroll: Vec<u64>,
 }
 
 impl Notices {
@@ -390,6 +392,7 @@ impl Notices {
         if !running {
             self.focused = None;
             self.hovered = None;
+            self.hidden_by_scroll.clear();
         }
         let paused = [self.focused, self.hovered];
         // Only the drawn (newest) notices age; one pushed since the last tick starts next tick.
@@ -398,7 +401,7 @@ impl Notices {
             if std::mem::take(&mut notice.fresh) {
                 continue;
             }
-            if !notice.sticky && !paused.contains(&Some(notice.id)) {
+            if !notice.sticky && !paused.contains(&Some(notice.id)) && !self.hidden_by_scroll.contains(&notice.id) {
                 notice.shown += step;
             }
         }
@@ -424,24 +427,31 @@ impl Notices {
         }
         let mut shown = Shown::default();
         let mut dismissed = Vec::new();
+        let mut hidden_by_scroll = Vec::new();
         let (mut focused, mut hovered) = (None, None);
         let pointer = ui.input(|i| i.pointer.hover_pos());
-        for notice in self.queue.iter().rev().take(MAX_NOTICES) {
-            let id = ui.id().with(("notice", notice.id));
-            let response = show_one(ui, t, id, notice);
-            if response.closed {
-                dismissed.push(notice.id);
+        let stack_height = ui.ctx().content_rect().height() * 0.45;
+        egui::ScrollArea::vertical().id_salt("notice_stack").max_height(stack_height).auto_shrink([false, true]).show(ui, |ui| {
+            for notice in self.queue.iter().rev().take(MAX_NOTICES) {
+                let id = ui.id().with(("notice", notice.id));
+                let response = show_one(ui, t, id, notice);
+                if !response.rect.intersect(ui.clip_rect()).is_positive() {
+                    hidden_by_scroll.push(notice.id);
+                }
+                if response.closed {
+                    dismissed.push(notice.id);
+                }
+                if response.action {
+                    shown.action = notice.action.as_ref().map(|action| action.command.clone());
+                }
+                if response.focused {
+                    focused = Some(notice.id);
+                }
+                if pointer.is_some_and(|pos| response.rect.intersect(ui.clip_rect()).contains(pos)) {
+                    hovered = Some(notice.id);
+                }
             }
-            if response.action {
-                shown.action = notice.action.as_ref().map(|action| action.command.clone());
-            }
-            if response.focused {
-                focused = Some(notice.id);
-            }
-            if pointer.is_some_and(|pos| response.rect.contains(pos)) {
-                hovered = Some(notice.id);
-            }
-        }
+        });
         // Older notices wait under the stack, counted, until the shown ones are dismissed.
         let more = self.queue.len().saturating_sub(MAX_NOTICES);
         if more > 0 {
@@ -460,6 +470,7 @@ impl Notices {
         }
         self.focused = focused;
         self.hovered = hovered;
+        self.hidden_by_scroll = hidden_by_scroll;
         shown
     }
 }
@@ -486,13 +497,25 @@ fn show_one(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, notice: &Notice) -> One
                 let close = Icon::Close.icon_button(ui, "Dismiss notice", t);
                 closed = close.clicked();
                 focused |= close.has_focus();
+                if close.has_focus() {
+                    close.scroll_to_me(None);
+                }
                 if let Some(button) = &notice.action {
                     let pressed = ui.button(button.label.as_str());
                     action = pressed.clicked();
                     focused |= pressed.has_focus();
+                    if pressed.has_focus() {
+                        pressed.scroll_to_me(None);
+                    }
                 }
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Min), |ui| {
-                    let text = ui.push_id(id, |ui| ui.add(egui::Label::new(egui::RichText::new(notice.text.as_str()).color(t.text)).wrap())).inner;
+                    let body_height = (ui.ctx().content_rect().height() * 0.25).min(t.comments_height);
+                    let text = egui::ScrollArea::vertical()
+                        .id_salt(id.with("details"))
+                        .max_height(body_height)
+                        .auto_shrink([false, true])
+                        .show(ui, |ui| ui.push_id(id, |ui| ui.add(egui::Label::new(egui::RichText::new(notice.text.as_str()).color(t.text)).wrap())).inner)
+                        .inner;
                     let (live, kind) = (notice.kind.live(), notice.kind.label());
                     ui.ctx().accesskit_node_builder(text.id, |node| {
                         node.set_live(live);
@@ -514,16 +537,16 @@ fn show_one(ui: &mut egui::Ui, t: &Tokens, id: egui::Id, notice: &Notice) -> One
 /// An error bound to a control (a card's parameter, the model picker's choice): `danger` text
 /// after the error icon, so colour isn't the only cue.
 pub fn inline_error(ui: &mut egui::Ui, t: &Tokens, text: &str) -> egui::Response {
-    inline(ui, t, NoticeKind::Error, text)
+    inline(ui, t, NoticeKind::Error, text, false)
 }
 
-/// The newest notice as one line inside a view that has no notice corner (a deck being edited
-/// or presented, an app form): its kind's icon, then its text.
+/// The newest notice as one compact line in an editor header. The global notice stack keeps
+/// its full scrollable details and dismissal/action controls.
 pub fn inline_notice(ui: &mut egui::Ui, t: &Tokens, notice: &Notice) -> egui::Response {
-    inline(ui, t, notice.kind, &notice.text)
+    inline(ui, t, notice.kind, &notice.text, true)
 }
 
-fn inline(ui: &mut egui::Ui, t: &Tokens, kind: NoticeKind, text: &str) -> egui::Response {
+fn inline(ui: &mut egui::Ui, t: &Tokens, kind: NoticeKind, text: &str, compact: bool) -> egui::Response {
     // Warnings and errors are drawn in their colour (both are 4.5:1 text tokens); the rest in text.
     let ink = match kind {
         NoticeKind::Error => t.danger,
@@ -533,7 +556,8 @@ fn inline(ui: &mut egui::Ui, t: &Tokens, kind: NoticeKind, text: &str) -> egui::
     ui.horizontal(|ui| {
         let icon = ui.add(kind.icon().image(ui.ctx(), t.icon_size, t).tint(kind.colour(t)).alt_text(kind.label()));
         icon.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Label, true, kind.label()));
-        ui.add(egui::Label::new(egui::RichText::new(text).color(ink)).wrap())
+        let label = egui::Label::new(egui::RichText::new(text).color(ink));
+        ui.add(if compact { label.truncate() } else { label.wrap() })
     })
     .inner
 }
