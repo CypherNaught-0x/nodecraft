@@ -303,7 +303,7 @@ fn mira_generic_model_requires_an_explicit_bounded_model_id() {
         idempotency_key: "fixture".into(),
     };
     assert_eq!(block_on(client.submit(&job)).unwrap_err().kind, ErrorKind::UnsupportedInput);
-    job.params.insert("model".into(), json!("account/model"));
+    job.params.insert("mira_model".into(), json!("account/model"));
     assert!(matches!(block_on(client.submit(&job)).unwrap(), Submission::Finished(_)));
 }
 
