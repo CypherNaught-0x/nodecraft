@@ -10,6 +10,8 @@ Keep the floating tools' existing geometry and scrolling room. Reserving a full-
 band would unnecessarily shrink unrelated panels and clip forms with their own fixed content.
 Application chrome, menus, questions, notices and tooltips retain their existing layer rules.
 When navigation is uncovered its map and toolbar remain interactive above the board and cards.
+Drawing and canvas quick-add admission share the same layer identity, so an idle map hover
+retains its keyboard quick-add behavior.
 
 Early minimap pan admission must agree with painting: remember the navigation area's actual
 layer and admit a new map press only when that layer is under the pointer. An already-owned map

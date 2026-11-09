@@ -54,3 +54,30 @@ valid 640×400 before images are retained. The layout repair fixtures instead as
 physical 1280×720 at 200%. Long-notice repair captures are exact physical 640×400 in both themes
 at 100% and 200%. Underlying canvas controls and intentionally scrolled-away content are not
 counted as panel overlap defects.
+
+## Finite evidence completion and navigation follow-through
+
+The local inventory packet now contains 153 actual matched PNG file pairs: 108 established
+fixture pairs, 23 native gallery pairs and 22 additional fixture pairs. These are file pairs,
+not 153 unique surfaces. Of those, 152 share a viewport; the legacy Tag-filter Undo comparison
+is explicitly a semantic state pair with different sizes, with separate same-size #958 footer
+evidence retained. The fresh baseline uses exact `caecbb32` product source and a test-only
+capture patch. Browser question fixtures apply the selected theme to both app tokens and egui;
+earlier mixed-theme Light diagnostics are preserved as invalid evidence, not counted as the
+final Light-theme pictures. Source, patch, image hashes and actual fixture results remain in
+the local packet. This completes the concrete original capture gaps.
+
+That completed sweep exposed an eighth preexisting finding: fixed navigation painted over
+floating-tool controls. A real pointer in a broad Batch grid cell executed Fit all instead of
+selecting the item; a covered Shader request field could not receive text. Navigation now keeps
+its geometry above the canvas root and below floating tools. Its early minimap admission checks
+the actual painted layer outside the Context input lock. The shared layer identity preserves
+ordinary keyboard quick-add over an uncovered idle map.
+
+Both pointer regressions pass in both themes, including last-row scroll/select and unchanged
+view/document/no-provider invariants. An additional quick-add/undo regression passes. The
+focused correction passed 151 test executions across 13 filters (including repeated tests);
+initial independent review and sole verification closed without unresolved findings. Separate
+Dark before/after repair pairs and additional Light after captures preserve this repair without
+relabeling the 153 historical inventory pairs. The parent integration task records the final
+full Cargo gate result separately.
