@@ -231,3 +231,48 @@ async fn live_groq() {
 async fn live_xai() {
     live_vendor("XAI", Endpoint::xai, "grok-4.3").await;
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_together1152() {
+    live_vendor("TOGETHER", Endpoint::together, "meta-llama/Llama-3.3-70B-Instruct-Turbo").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_moonshot1152() {
+    live_vendor("MOONSHOT", Endpoint::moonshot, "kimi-k3").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_zai1152() {
+    live_vendor("ZAI", Endpoint::zai, "glm-4.6").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_minimax1152() {
+    live_vendor("MINIMAX", Endpoint::minimax, "MiniMax-M3").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_perplexity1152() {
+    live_vendor("PERPLEXITY", Endpoint::perplexity, "sonar").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_hyperbolic1152() {
+    live_vendor("HYPERBOLIC", Endpoint::hyperbolic, "meta-llama/Llama-3.3-70B-Instruct").await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn live_cohere1152() {
+    live_vendor("COHERE", Endpoint::cohere, "command-a-03-2025").await;
+}
+
+/// Mira model ids are account-specific: NODECRAFT_LIVE_MIRA_MODEL is required.
+#[tokio::test(flavor = "current_thread")]
+async fn live_mira1152() {
+    if !enabled("MIRA") {
+        return;
+    }
+    let model = std::env::var("NODECRAFT_LIVE_MIRA_MODEL").expect("choose a model from your Mira account");
+    live_vendor("MIRA", Endpoint::mira, &model).await;
+}

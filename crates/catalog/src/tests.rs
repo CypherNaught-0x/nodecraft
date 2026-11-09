@@ -1334,3 +1334,26 @@ default = { type = "unsigned", value = "1024" }"#;
         assert!(Catalog::from_toml(&model(&pricing, height)).is_err(), "{pricing} with {height:?}");
     }
 }
+
+#[test]
+fn additional_key_only_chat_models_keep_unverified_prices_unknown() {
+    let catalog = Catalog::builtin().unwrap();
+    for id in [
+        "together.llama-3.3-70b",
+        "moonshot.kimi-k3",
+        "zai.glm-4.6",
+        "minimax.m3",
+        "perplexity.sonar",
+        "hyperbolic.llama-3.3-70b",
+        "mira.model",
+        "cohere.command-a",
+    ] {
+        let model = catalog.get(id).unwrap();
+        assert_eq!(model.pricing, Pricing::ByUsage { currency: Currency::USD }, "{id}");
+        assert_eq!(model.quote(&ParamValues::new()).unwrap(), None, "{id}");
+        assert!(model.usage.is_none(), "{id}: no invented token rate");
+        assert_eq!(model.modes.len(), 1);
+        assert_eq!(model.modes[0].output, Modality::Text);
+        assert!(model.modes[0].inputs.iter().all(|input| input.modality == Modality::Text));
+    }
+}

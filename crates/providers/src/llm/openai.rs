@@ -21,7 +21,9 @@ use rig_core::message::{
     MimeType as _, Reasoning, Text, ToolCall as RigCall, ToolFunction, ToolName, ToolResult, ToolResultContent, UserContent,
 };
 use rig_core::providers::openai::OpenAIConfig;
-use rig_core::providers::openai::wire::{Auth, BodyRewrite, Chat, DEEPSEEK, Dialect as RigDialect, GROQ, MISTRAL, Quirks};
+use rig_core::providers::openai::wire::{
+    Auth, BodyRewrite, Chat, DEEPSEEK, Dialect as RigDialect, GROQ, HYPERBOLIC, MINIMAX, MIRA, MISTRAL, MOONSHOT, PERPLEXITY, Quirks, TOGETHER, ZAI,
+};
 use rig_core::providers::xai::DIALECT as XAI;
 use serde_json::Value;
 
@@ -45,6 +47,13 @@ fn dialect(id: &str) -> RigDialect {
         MISTRAL_ID => MISTRAL,
         GROQ_ID => GROQ,
         XAI_ID => XAI,
+        "together" => TOGETHER,
+        "moonshot" => MOONSHOT,
+        "zai" => ZAI,
+        "minimax" => MINIMAX,
+        "perplexity" => PERPLEXITY,
+        "hyperbolic" => HYPERBOLIC,
+        "mira" => MIRA,
         _ => DIALECT,
     }
 }
@@ -59,7 +68,7 @@ pub(super) const XAI_ID: &str = "xai";
 /// thinking models want every earlier turn's `reasoning_content` back when the request carries
 /// tools (https://api-docs.deepseek.com/guides/thinking_mode, read 2026-11-08).
 fn keeps_reasoning(id: &str) -> bool {
-    id == DEEPSEEK_ID
+    matches!(id, DEEPSEEK_ID | "moonshot" | "zai" | "minimax")
 }
 
 /// The reasoning a reply kept, as the part that carries it to the next turn.
@@ -86,7 +95,7 @@ fn tool_name(name: &str) -> Result<ToolName, ProviderError> {
 
 /// The request in the crate's terms, and the tool calls whose arguments must go back as they came.
 /// `reasoning`: earlier turns' kept reasoning goes back as reasoning (see [`keeps_reasoning`]).
-fn request(req: &ChatRequest, completion_cap: bool, reasoning: bool) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
+pub(super) fn request(req: &ChatRequest, completion_cap: bool, reasoning: bool) -> Result<(CompletionRequest, HashMap<String, String>), ProviderError> {
     let mut history = Vec::new();
     if let Some(system) = &req.system {
         history.push(RigMessage::System { content: system.clone() });
@@ -221,7 +230,7 @@ fn request(req: &ChatRequest, completion_cap: bool, reasoning: bool) -> Result<(
 /// - images name no `detail`, which the wire adds to every one;
 /// - an assistant turn of only tool calls says `"content": null`;
 /// - tool arguments that weren't a JSON object go back as they came, not as `{}`.
-fn fix(body: &mut Value, raw: &HashMap<String, String>) {
+pub(super) fn fix(body: &mut Value, raw: &HashMap<String, String>) {
     let Some(messages) = body.get_mut("messages").and_then(Value::as_array_mut) else { return };
     for message in messages {
         if let Some(content) = message.get_mut("content")
@@ -299,10 +308,16 @@ fn output_tokens(usage: Option<&Value>, counted: Option<u64>, reasoning_apart: b
 
 /// `reasoning`: the reply's reasoning is kept (see [`keeps_reasoning`]). `reasoning_apart`: the
 /// endpoint counts reasoning tokens apart from `completion_tokens` (see [`output_tokens`]).
-fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) -> Result<ChatResponse, ProviderError> {
+pub(super) fn reply(response: &CompletionResponse, reasoning: bool, reasoning_apart: bool) -> Result<ChatResponse, ProviderError> {
     // The wire leaves out a call that never names its tool; here such a reply is malformed, as
     // the agent can't answer the call. The reply's provider document still has it.
-    let calls = response.raw.pointer("/choices/0/message/tool_calls").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let calls = response
+        .raw
+        .pointer("/choices/0/message/tool_calls")
+        .or_else(|| response.raw.pointer("/message/tool_calls"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_default();
     let unnamed = |call: &Value| {
         let kind = call.get("type").and_then(Value::as_str);
         let name = call.pointer("/function/name").or_else(|| call.pointer("/custom/name")).and_then(Value::as_str);
