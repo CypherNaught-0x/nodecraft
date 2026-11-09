@@ -394,6 +394,7 @@ mod tests {
                 },
                 app,
             );
+            crate::app::topbar_tests::reveal(&mut h, "Tag filter");
             let trigger = h.get_by_role_and_label(Role::Button, "Tag filter").rect().center();
             press_at(&mut h, trigger, egui::PointerButton::Primary);
             h.run();

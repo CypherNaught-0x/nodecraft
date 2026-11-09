@@ -83,11 +83,14 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
             (Icon::Next, "Next", "Next match", steps, Some("canvas.tag_filter_next")),
             (Icon::Clear, "Clear", "Clear tag filter", allowed && state.active(), None),
         ] {
-            let response = ui.add_enabled(enabled, icon.button(ui, label, t).frame(false)).on_hover_text(accessible).on_disabled_hover_text(if enabled {
-                accessible
+            let reason = if !allowed {
+                "Finish the current edit or interaction first"
+            } else if !state.active() {
+                "Choose a tag or Untagged to filter cards"
             } else {
-                "Choose a tag or Untagged to navigate matching cards"
-            });
+                "No cards match the current tag filter"
+            };
+            let response = ui.add_enabled(enabled, icon.button(ui, label, t).frame(false)).on_hover_text(accessible).on_disabled_hover_text(reason);
             response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, enabled, accessible));
             result.focus.push(response.id);
             result.buttons.push(response.id);
