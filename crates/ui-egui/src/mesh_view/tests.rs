@@ -57,6 +57,23 @@ fn a_busy_read_is_asked_again_and_a_corrupt_one_is_not() {
 }
 
 #[test]
+fn transient_worker_failures_retry_without_reloading_but_bad_models_stay_failed() {
+    use nodecraft_mesh_preview::Error as E;
+    let mut meshes = Meshes::default();
+    for (index, error) in [E::Timeout, E::Unavailable, E::Cancelled].into_iter().enumerate() {
+        let identity = hash(index as u8);
+        meshes.finish(identity, Err(Failure::worker(error)));
+        let Some(Entry::Retry { at, .. }) = meshes.entries.get(&identity) else { panic!("transient worker failure must retry") };
+        assert_eq!(*at, RETRY_FRAMES, "a failed worker is not restarted every frame");
+    }
+    for (index, error) in [E::Invalid, E::TooLarge, E::Coordinates, E::Protocol, E::Capacity].into_iter().enumerate() {
+        let identity = hash(index as u8 + 10);
+        meshes.finish(identity, Err(Failure::worker(error)));
+        assert!(matches!(meshes.entries.get(&identity), Some(Entry::Failed(_))), "{error:?}");
+    }
+}
+
+#[test]
 fn only_3d_assets_are_a_cards_model() {
     let Ok(kinds) = nodecraft_nodes::Registry::builtins() else { panic!("registry") };
     let asset = |mime: &str| nodecraft_types::AssetRef { hash: hash(3), mime: mime.parse().unwrap_or_else(|_| panic!("mime")), meta: Default::default() };

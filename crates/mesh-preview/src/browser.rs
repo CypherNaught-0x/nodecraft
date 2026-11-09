@@ -126,10 +126,8 @@ impl Browser {
 }
 impl Active {
     fn step(&mut self) -> Option<Result<Prepared, Error>> {
-        match now() {
-            Ok(t) if t <= self.deadline => {}
-            _ => return Some(Err(Error::Timeout)),
-        }
+        // A background tab may stop painting while the worker finishes. Consume its queued
+        // answer first: an elapsed polling deadline does not invalidate completed work.
         let signal = self.inbox.borrow_mut().take();
         if let Some(signal) = signal {
             let Signal::Message(data) = signal else {
@@ -138,6 +136,10 @@ impl Active {
             if let Err(error) = self.receive(data) {
                 return Some(Err(error));
             }
+        }
+        match now() {
+            Ok(t) if t <= self.deadline => {}
+            _ => return Some(Err(Error::Timeout)),
         }
         match &mut self.phase {
             Phase::Sending { bytes, buffer, at } => {
@@ -228,6 +230,7 @@ impl Active {
                 let message = wire::array(&data, 3)?;
                 wire::check_header(&message, "ready")?;
                 self.phase = Phase::Sending { bytes: bytes.clone(), buffer: wire::allocate(self.job.length)?, at: 0 };
+                self.deadline = now()? + START_MS;
                 Ok(())
             }
             Phase::Decoding => {
@@ -238,10 +241,11 @@ impl Active {
                     if wire::job(&message)? != self.job {
                         return Err(Error::Cancelled);
                     }
-                    return Err(match wire::number(&message.get(7), 3)? {
+                    return Err(match wire::number(&message.get(7), 4)? {
                         1 => Error::TooLarge,
                         2 => Error::Capacity,
                         3 => Error::Coordinates,
+                        4 => Error::Protocol,
                         _ => Error::Invalid,
                     });
                 }
@@ -275,6 +279,77 @@ fn error_listener(slot: Rc<RefCell<Option<Signal>>>, repaint: Rc<dyn Fn()>) -> C
         *slot.borrow_mut() = Some(Signal::Failed);
         repaint();
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use wasm_bindgen_test::wasm_bindgen_test;
+
+    wasm_bindgen_test::wasm_bindgen_test_configure!(run_in_browser);
+
+    const TRIANGLE: &[u8] = b"v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+
+    fn client() -> Browser {
+        let mut client = Browser::default();
+        client.start(*blake3::hash(TRIANGLE).as_bytes(), Arc::from(TRIANGLE), || {}).unwrap();
+        client
+    }
+
+    #[wasm_bindgen_test]
+    fn completed_reply_survives_an_elapsed_polling_deadline() {
+        let mut client = client();
+        let reference = crate::prepare(TRIANGLE, crate::Profile::Browser).unwrap();
+        let fingerprint = reference.fingerprint();
+        let active = client.active.as_mut().unwrap();
+        active.phase = Phase::Decoding;
+        active.deadline = -1.0;
+        let reply = wire::header("done");
+        wire::append_job(&reply, active.job);
+        let layout = reference.layout();
+        for count in [layout.vertices, layout.triangles, layout.edge_words] {
+            reply.push(&count.into());
+        }
+        let bounds = Array::new();
+        for value in reference.bounds().min.into_iter().chain(reference.bounds().max) {
+            bounds.push(&value.into());
+        }
+        reply.push(&bounds);
+        for buffer in reference.buffers() {
+            reply.push(&wire::owned(buffer).unwrap());
+        }
+        *active.inbox.borrow_mut() = Some(Signal::Message(reply.into()));
+        for _ in 0..8 {
+            if let Some(result) = client.poll() {
+                assert_eq!(result.unwrap().fingerprint(), fingerprint);
+                assert!(!client.busy());
+                return;
+            }
+        }
+        panic!("completed reply must be incrementally adopted");
+    }
+
+    #[wasm_bindgen_test]
+    fn ready_reply_renews_the_send_deadline_after_a_background_pause() {
+        let mut client = client();
+        let active = client.active.as_mut().unwrap();
+        active.deadline = -1.0;
+        *active.inbox.borrow_mut() = Some(Signal::Message(wire::header("ready").into()));
+        assert!(client.poll().is_none());
+        assert!(matches!(client.active.as_ref().unwrap().phase, Phase::Decoding));
+        assert!(client.active.as_ref().unwrap().deadline > now().unwrap());
+    }
+
+    #[wasm_bindgen_test]
+    fn worker_protocol_errors_keep_their_identity() {
+        let mut client = client();
+        let active = client.active.as_mut().unwrap();
+        active.phase = Phase::Decoding;
+        let response = crate::worker::error(active.job, Error::Protocol);
+        *active.inbox.borrow_mut() = Some(Signal::Message(response.into()));
+        assert_eq!(client.poll().unwrap().unwrap_err(), Error::Protocol);
+        assert!(!client.busy());
+    }
 }
 
 /// Test-only probes compile into the separate conformance binary, never release packages.

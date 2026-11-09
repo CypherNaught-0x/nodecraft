@@ -48,13 +48,14 @@ pub fn start(admit: fn([f32; 3], f32) -> bool) -> Result<(), Error> {
     LISTENER.with(|slot| *slot.borrow_mut() = Some(listener));
     scope.post_message(&wire::header("ready")).map_err(|_| Error::Unavailable)
 }
-fn error(job: wire::Job, why: Error) -> Array {
+pub(crate) fn error(job: wire::Job, why: Error) -> Array {
     let out = wire::header("error");
     wire::append_job(&out, job);
     let code = match why {
         Error::TooLarge => 1,
         Error::Capacity => 2,
         Error::Coordinates => 3,
+        Error::Protocol => 4,
         _ => 0,
     };
     out.push(&code.into());

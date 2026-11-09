@@ -28,8 +28,8 @@ impl Error {
             Self::Coordinates => "3D preview unavailable at this coordinate range",
             Self::TooLarge => "This 3D model is too large to preview",
             Self::Capacity => "Not enough memory for this 3D preview",
-            Self::Timeout => "3D preview timed out; reload to retry",
-            Self::Unavailable => "3D preview unavailable; reload to retry",
+            Self::Timeout => "3D preview timed out; retrying",
+            Self::Unavailable => "3D preview unavailable; retrying",
             Self::Cancelled => "3D preview cancelled",
             Self::Protocol => "3D preview version mismatch; reload to retry",
         }

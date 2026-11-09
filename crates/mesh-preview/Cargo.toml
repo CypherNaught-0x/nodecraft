@@ -24,3 +24,6 @@ blake3.workspace = true
 wasm-bindgen = "0.2.129"
 js-sys = "0.3.106"
 web-sys = { version = "0.3.106", features = ["Document", "DedicatedWorkerGlobalScope", "Event", "EventTarget", "Location", "MessageEvent", "Performance", "Url", "Window", "Worker", "WorkerOptions", "WorkerType"] }
+
+[target.'cfg(target_arch = "wasm32")'.dev-dependencies]
+wasm-bindgen-test = "=0.3.79"

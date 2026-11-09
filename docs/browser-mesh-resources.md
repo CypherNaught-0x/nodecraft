@@ -28,10 +28,17 @@ free or grant an unbounded model/storage profile.
 The browser holds one active job and up to eight FIFO entries of one hash and owner ID each.
 It looks up the current hash before reading a queued asset or adopting an active reply. Session,
 project, canvas and asset-context changes terminate the worker and clear the queue. Deleted
-or replaced owners, wrong generation/hash/build, malformed extents and late replies cannot
+or replaced owners, wrong job identity/hash/build and malformed extents cannot
 supply current geometry. Pan, zoom, orbit and unrelated document edits keep the same scope
 and do not decode again. The startup deadline is 15 seconds and decode/adoption uses a
-30-second deadline. The browser never falls back to inline decode.
+30-second deadline. The job's generation mirrors its monotonic sequence; cancelling terminates
+the worker and detaches its listeners, which prevents an old worker from supplying a later job.
+Queued worker answers are processed before checking the polling deadline, so a completed
+background-tab decode is retained on return. Timeout and worker-unavailable failures retry
+after the existing cache delay rather than requiring a page reload; invalid data stays failed.
+The browser never falls back to inline decode. `cargo xtask browser` checks queued replies
+after elapsed deadlines and protocol-error replies in headless Chrome; CI also runs the
+nineteen adversarial web-package inventory cases.
 
 Coverage: real9,000,084-byte original300×300 tessellated pyramid,180,000 facets/540,000 decoded
 vertices/540,000 unique indexed edges/28,080,000 prepared bytes. Native/browser-profile exact

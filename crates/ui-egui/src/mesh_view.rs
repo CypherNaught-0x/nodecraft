@@ -140,6 +140,12 @@ impl Failure {
         use nodecraft_format::PreviewReadError as E;
         Self { why: read_message(reason), retry: matches!(reason, E::Busy | E::Cancelled) }
     }
+
+    #[cfg(any(target_arch = "wasm32", test))]
+    fn worker(reason: nodecraft_mesh_preview::Error) -> Self {
+        use nodecraft_mesh_preview::Error as E;
+        Self { why: reason.message(), retry: matches!(reason, E::Timeout | E::Unavailable | E::Cancelled) }
+    }
 }
 
 /// A card's current camera, including an unfinished gesture over its saved presentation.
@@ -302,7 +308,7 @@ impl Meshes {
         {
             if let Some(result) = self.browser.poll() {
                 if let Some((hash, _)) = self.browser_hash.take() {
-                    self.finish(hash, result.and_then(Model::prepared).map_err(|e| Failure::permanent(e.message())));
+                    self.finish(hash, result.and_then(Model::prepared).map_err(Failure::worker));
                 }
             }
         }
@@ -509,7 +515,7 @@ impl Meshes {
                     ctx.request_repaint_after(std::time::Duration::from_millis(250));
                     MeshPreview::Pending
                 }
-                Err(error) => self.failed(ctx, hash, Failure::permanent(error.message())),
+                Err(error) => self.failed(ctx, hash, Failure::worker(error)),
             }
         }
     }
