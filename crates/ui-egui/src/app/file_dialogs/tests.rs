@@ -1209,7 +1209,7 @@ fn past_progress_delay(h: &mut Harness<'static, NodeCraftApp>) {
     }
 }
 fn progress_shown(h: &Harness<'static, NodeCraftApp>, title: &str) -> bool {
-    h.query_by_label(title).is_some()
+    h.query_by_role_and_label(egui::accesskit::Role::Dialog, title).is_some()
 }
 
 #[test]
