@@ -10,12 +10,16 @@ use std::sync::Mutex;
 /// A provider: its endpoint, the URL chat requests go to, and a model of its catalog.
 type Vendor = (fn(ApiKey) -> Endpoint, &'static str, &'static str);
 
-fn vendors() -> [Vendor; 4] {
+fn vendors() -> [Vendor; 8] {
     [
         (Endpoint::deepseek, "https://api.deepseek.com/chat/completions", "deepseek-flash"),
         (Endpoint::mistral, "https://api.mistral.ai/v1/chat/completions", "mistral-small-2603"),
         (Endpoint::groq, "https://api.groq.com/openai/v1/chat/completions", "openai/gpt-oss-20b"),
         (Endpoint::xai, "https://api.x.ai/v1/chat/completions", "grok-4.3"),
+        (Endpoint::together, "https://api.together.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct-Turbo"),
+        (Endpoint::moonshot, "https://api.moonshot.ai/v1/chat/completions", "kimi-k3"),
+        (Endpoint::zai, "https://api.z.ai/api/paas/v4/chat/completions", "glm-4.6"),
+        (Endpoint::minimax, "https://api.minimax.io/v1/chat/completions", "MiniMax-M3"),
     ]
 }
 
@@ -253,4 +257,79 @@ fn reasoning_tokens_are_settled_with_the_reply() {
     let odd = r#"{"choices":[{"message":{"content":"pong"},"finish_reason":"stop"}],"usage":{"prompt_tokens":26,"completion_tokens":5,"total_tokens":3}}"#;
     let r = block_on(LlmClient::new(Endpoint::groq(ApiKey::new("k")), Canned::new(200, odd)).chat(&ask("m"))).unwrap();
     assert_eq!(r.usage.output_tokens, Some(5));
+}
+
+/// Endpoints whose vendor dialects do not offer tools. Raw tool params must not bypass that.
+#[test]
+fn text_only_vendors_preserve_text_and_refuse_tools_before_sending() {
+    for (endpoint, url, model) in [
+        (Endpoint::perplexity as fn(ApiKey) -> Endpoint, "https://api.perplexity.ai/chat/completions", "sonar"),
+        (Endpoint::hyperbolic, "https://api.hyperbolic.xyz/v1/chat/completions", "meta-llama/Llama-3.3-70B-Instruct"),
+        (Endpoint::mira, "https://api.mira.network/v1/chat/completions", "account-model"),
+    ] {
+        let http = Canned::new(200, REPLY);
+        let client = LlmClient::new(endpoint(ApiKey::new("fixture-secret")), http.clone());
+        let reply = block_on(client.chat(&ask(model))).unwrap();
+        assert_eq!(reply.text, "pong");
+        assert_eq!(http.request().url, url);
+        assert_eq!(http.body()["messages"][1]["content"], "ping");
+        assert!(http.body().get("tools").is_none());
+        let error = block_on(client.chat(&ChatRequest { tools: vec![weather()], ..ask(model) })).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert!(error.message.contains("tool calling"));
+        let body = "data: {\"choices\":[{\"delta\":{\"content\":\"pong\"},\"finish_reason\":\"stop\"}]}\n\ndata: [DONE]\n\n";
+        let streamed = Arc::new(Sse { body: body.into(), seen: Mutex::default() });
+        let client = LlmClient::new(endpoint(ApiKey::new("fixture-secret")), streamed.clone());
+        let reply = block_on(client.chat_stream(&ask(model), &mut |_| {})).unwrap();
+        assert_eq!(reply.text, "pong");
+        let sent: Value = serde_json::from_slice(&streamed.seen.lock().unwrap()[0].body).unwrap();
+        if model != "meta-llama/Llama-3.3-70B-Instruct" {
+            assert!(sent.get("stream_options").is_none(), "{url}: vendor rejects usage options");
+        }
+        let before = streamed.seen.lock().unwrap().len();
+        let error = block_on(client.chat_stream(&ChatRequest { tools: vec![weather()], ..ask(model) }, &mut |_| {})).unwrap_err();
+        assert_eq!(error.kind, ErrorKind::UnsupportedInput);
+        assert_eq!(streamed.seen.lock().unwrap().len(), before);
+    }
+}
+
+#[test]
+fn mira_generic_model_requires_an_explicit_bounded_model_id() {
+    let client = LlmClient::new(Endpoint::mira(ApiKey::new("fixture")), Canned::new(200, REPLY));
+    let mut job = ProviderJob {
+        model: "nodecraft-model".into(),
+        params: serde_json::Map::new(),
+        inputs: vec![JobInput::Text { role: "prompt".into(), text: "ping".into() }],
+        idempotency_key: "fixture".into(),
+    };
+    assert_eq!(block_on(client.submit(&job)).unwrap_err().kind, ErrorKind::UnsupportedInput);
+    job.params.insert("model".into(), json!("account/model"));
+    assert!(matches!(block_on(client.submit(&job)).unwrap(), Submission::Finished(_)));
+}
+
+#[test]
+fn mira_bare_string_response_is_kept_as_text() {
+    let reply = block_on(LlmClient::new(Endpoint::mira(ApiKey::new("fixture")), Canned::new(200, r#""pong""#)).chat(&ask("account-model"))).unwrap();
+    assert_eq!(reply.text, "pong");
+}
+
+#[test]
+fn added_vendors_refuse_unverified_media_without_sending() {
+    for endpoint in [
+        Endpoint::together as fn(ApiKey) -> Endpoint,
+        Endpoint::moonshot,
+        Endpoint::zai,
+        Endpoint::minimax,
+        Endpoint::perplexity,
+        Endpoint::hyperbolic,
+        Endpoint::mira,
+        Endpoint::cohere,
+    ] {
+        let http = Canned::new(200, REPLY);
+        let client = LlmClient::new(endpoint(ApiKey::new("fixture")), http.clone());
+        let mut request = ask("m");
+        request.messages[0].parts.push(Part::Image { mime: "image/png".into(), bytes: Arc::from(&b"PNG"[..]) });
+        assert_eq!(block_on(client.chat(&request)).unwrap_err().kind, ErrorKind::UnsupportedInput);
+        assert!(http.seen.lock().unwrap().is_empty());
+    }
 }
