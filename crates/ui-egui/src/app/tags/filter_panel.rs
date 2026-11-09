@@ -51,6 +51,7 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
         list(ui, canvas, state, allowed, t, &mut result);
     }
 
+    let footer_start = ui.cursor().top();
     let mut untagged = state.untagged;
     let untagged_response = counted_row(ui, None, state.count(None), None, allowed, |_| checkbox(&mut untagged, "Untagged"), t);
     result.focus.push(untagged_response.id);
@@ -103,6 +104,20 @@ pub(super) fn body(ui: &mut egui::Ui, canvas: Option<&Canvas>, state: &mut TagFi
             }
         }
     });
+    // Measure the actual footer, including wrapped action rows, for the next layout pass.
+    // Reserving three rows everywhere needlessly clips short tag lists in ordinary panels.
+    let height = ui.cursor().top() - footer_start;
+    let memory = ui.id().with("tag_filter_footer_height");
+    if height.is_finite() && height > 0.0 {
+        let prior = ui.ctx().data_mut(|data| {
+            let prior = data.get_temp::<f32>(memory);
+            data.insert_temp(memory, height);
+            prior
+        });
+        if prior.is_none_or(|prior| (prior - height).abs() > 0.5) {
+            ui.ctx().request_repaint();
+        }
+    }
     result
 }
 
@@ -120,7 +135,12 @@ fn list(ui: &mut egui::Ui, canvas: &Canvas, state: &TagFilter, allowed: bool, t:
         });
     } else {
         // Keep the Untagged row, footer and dividers outside the virtualized list.
-        let footer = t.tag_definition_row_height + ui.spacing().interact_size.y * 4.0 + ui.spacing().item_spacing.y * 2.0 + t.navigation_gap * 3.0;
+        let memory = ui.id().with("tag_filter_footer_height");
+        let footer = ui
+            .ctx()
+            .data(|data| data.get_temp::<f32>(memory))
+            .filter(|height| height.is_finite() && *height > 0.0)
+            .unwrap_or(t.tag_definition_row_height + ui.spacing().interact_size.y * 2.0 + t.navigation_gap * 3.0);
         let height = (ui.available_height() - footer).max(t.tag_definition_row_height);
         egui::ScrollArea::vertical().id_salt("filter_tags").max_height(height).show_rows(ui, t.tag_definition_row_height, ids.len(), |ui, range| {
             for id in ids.get(range).unwrap_or_default() {
